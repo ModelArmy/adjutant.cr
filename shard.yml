@@ -1,0 +1,15 @@
+name: adjutant
+version: 0.1.0
+license: MPL2
+
+description: >
+  A safe Ruby-like scripting interpreter for agent harnesses —
+  with a controlled effect boundary, module capability registry,
+  and information flow control.
+
+authors:
+  - nogginly@icloud.com
+
+development_dependencies:
+  ameba:
+    github: crystal-ameba/ameba
