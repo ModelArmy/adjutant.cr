@@ -1,5 +1,7 @@
 require "./adjutant/security_label"
 require "./adjutant/value"
+require "./adjutant/token"
+require "./adjutant/lexer"
 
 module Adjutant
   # Read this at compile time from shard.yml one day
