@@ -1,4 +1,4 @@
-# Disclosure for Commandant
+# Disclosure for Adjutant
 
 ## AI Usage
 

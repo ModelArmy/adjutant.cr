@@ -30,6 +30,3 @@ actions:
   test:
     command: crystal spec -Dtest
     description: Run all tests
-options:
-  environment:
-    RULESETS_PATH: ${RULESETS_PATH:-../commandant-rules-core/rulesets}
