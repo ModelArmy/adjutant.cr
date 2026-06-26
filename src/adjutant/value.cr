@@ -23,6 +23,7 @@ module Adjutant
   struct ValueRaw
     property i : Int64
     property f : Float64
+    # ameba:disable Naming/QueryBoolMethods - Storing, not testing
     property b : Bool
     property ptr : Pointer(Void)
 
