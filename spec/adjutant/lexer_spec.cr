@@ -260,5 +260,64 @@ module Adjutant
         ]
       end
     end
+
+    describe "UTF-8 support" do
+      it "lexes a string containing UTF-8 characters" do
+        pairs(%("héllo wörld")).should eq [{TokenKind::String, %("héllo wörld")}]
+      end
+
+      it "lexes a string containing CJK characters" do
+        pairs(%("日本語")).should eq [{TokenKind::String, %("日本語")}]
+      end
+
+      it "lexes a string containing emoji" do
+        pairs(%("hello 🌍")).should eq [{TokenKind::String, %("hello 🌍")}]
+      end
+
+      it "skips a comment containing UTF-8 characters" do
+        kinds("# こんにちは\n42").should eq [TokenKind::Newline, TokenKind::Integer]
+      end
+
+      it "tracks line numbers correctly across multi-byte characters" do
+        tokens = Lexer.new("# héllo\nfoo").tokenize
+        foo = tokens.find { |t| t.lexeme == "foo" }
+        foo.should_not be_nil
+        foo.not_nil!.line.should eq 2
+      end
+
+      # UTF-8 identifier characters are not yet supported in symbols or
+      # identifiers — ident_continue? uses ascii_alphanumeric? by design.
+      # This test asserts current behaviour: the non-ASCII suffix becomes
+      # an Error token. Remove once Unicode identifiers are supported.
+      it "produces an error token for non-ASCII characters in a symbol" do
+        result = pairs(":café")
+        result[0].should eq({TokenKind::Symbol, ":caf"})
+        result[1][0].should eq TokenKind::Error
+      end
+    end
+
+    describe "IO constructor" do
+      it "tokenizes source from a String IO" do
+        io = IO::Memory.new("x = 42")
+        tokens = Lexer.new(io).tokenize.reject { |t| t.kind == TokenKind::EOF }
+        tokens.map(&.kind).should eq [
+          TokenKind::Identifier,
+          TokenKind::Eq,
+          TokenKind::Integer,
+        ]
+      end
+
+      it "reads multi-line source from IO" do
+        io = IO::Memory.new("foo\nbar")
+        tokens = Lexer.new(io).tokenize.reject { |t| t.kind == TokenKind::EOF }
+        tokens.last.line.should eq 2
+      end
+
+      it "accepts a filename from IO constructor" do
+        io = IO::Memory.new("42")
+        lex = Lexer.new(io, "test.rb")
+        lex.next_token.kind.should eq TokenKind::Integer
+      end
+    end
   end
 end

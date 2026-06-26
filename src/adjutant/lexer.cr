@@ -6,14 +6,23 @@ module Adjutant
   # Call #next_token repeatedly until EOF, or use #tokenize to
   # collect all tokens at once (useful for testing).
   class Lexer
-    def initialize(source : String, filename : String = "<input>")
-      @source = source
+    # Primary constructor - reads the IO eagerly into a String.
+    # Random access (peek, backtrack, lexeme slicing) requires the full
+    # source in memory; true streaming would add complexity for no gain
+    # since scripts are short.
+    def initialize(io : IO, filename : String = "<input>")
+      @source = io.gets_to_end
       @filename = filename
       @pos = 0
       @line = 1
       @column = 1
       @in_interp = false
       @interp_brace_depth = 0
+    end
+
+    # Convenience constructor for string literals and tests.
+    def initialize(source : String, filename : String = "<input>")
+      initialize(IO::Memory.new(source), filename)
     end
 
     # Tokenize the entire source and return all tokens including EOF.
@@ -134,6 +143,7 @@ module Adjutant
     end
 
     # Main scan dispatch — called after consuming the first character `c`.
+    # ameba:disable Metrics/CyclomaticComplexity
     private def scan(c : Char, start : Int32, line : Int32, col : Int32) : Token
       case c
       when .ascii_letter?, '_'
@@ -243,6 +253,7 @@ module Adjutant
       make_token(TokenKind::GVar, lexeme_from(start), line, col)
     end
 
+    # ameba:disable Metrics/CyclomaticComplexity
     private def scan_number(start : Int32, line : Int32, col : Int32) : Token
       if @source[start] == '0' && (current_char == 'x' || current_char == 'X')
         advance
@@ -295,6 +306,7 @@ module Adjutant
       make_token(TokenKind::String, lexeme_from(start), line, col)
     end
 
+    # ameba:disable Metrics/CyclomaticComplexity
     private def scan_colon(start : Int32, line : Int32, col : Int32) : Token
       if current_char == ':'
         advance

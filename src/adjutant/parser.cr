@@ -92,6 +92,7 @@ module Adjutant
 
     # --- Statement ----------------------------------------------------------
 
+    # ameba:disable Metrics/CyclomaticComplexity
     private def parse_statement : Node
       l, c = line, col
       case current_kind
@@ -312,6 +313,7 @@ module Adjutant
 
     # --- Primary expressions -----------------------------------------------
 
+    # ameba:disable Metrics/CyclomaticComplexity
     private def parse_primary : Node
       l, c = line, col
       case current_kind
