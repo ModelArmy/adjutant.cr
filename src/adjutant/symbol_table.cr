@@ -61,7 +61,7 @@ module Adjutant
     # Look up a Sym by its integer ID — O(n) linear scan.
     # Only used for debugging/disassembly; not on the hot path.
     def name_for(id : Int32) : String?
-      @table.each_value { |s| return s.name if s.value == id }
+      @table.each_value { |sym| return sym.name if sym.value == id }
       nil
     end
 

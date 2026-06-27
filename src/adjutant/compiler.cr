@@ -171,7 +171,7 @@ module Adjutant
     end
 
     private def compile_interp_string(node : InterpString) : Nil
-      node.parts.each { |p| compile_node(p) }
+      node.parts.each { |part| compile_node(part) }
       @chunk.emit(Op::Concat, node.line, a: node.parts.size.to_u8)
     end
 
@@ -372,7 +372,10 @@ module Adjutant
       tc = node.targets.size.to_u8
       vc = node.values.size.to_u8
       @chunk.emit(Op::MultiUnpack, node.line, a: tc, b: vc.to_u16)
-      node.targets.reverse_each { |t| emit_store(t, node.line); @chunk.emit(Op::Pop, node.line) }
+      node.targets.reverse_each do |target|
+        emit_store(target, node.line)
+        @chunk.emit(Op::Pop, node.line)
+      end
       emit_nil(node.line)
     end
 
@@ -403,7 +406,7 @@ module Adjutant
       if node.receiver
         compile_node(node.receiver.not_nil!)
       end
-      node.args.each { |a| compile_node(a) }
+      node.args.each { |arg| compile_node(arg) }
       # Register block if present
       if blk = node.block
         blk_chunk = Compiler.compile_proc(blk.body, @symbols, in_block: true)
@@ -562,7 +565,7 @@ module Adjutant
       @chunk.patch_jump(jmp_exit, @chunk.pos)
 
       scope = @loop_stack.pop
-      scope.breaks.each { |b| @chunk.patch_jump(b, @chunk.pos) }
+      scope.breaks.each { |brk| @chunk.patch_jump(brk, @chunk.pos) }
       emit_nil(node.line)
     end
 
@@ -578,7 +581,7 @@ module Adjutant
       @chunk.emit(Op::Jump, node.line, c: loop_start.to_u32)
 
       scope = @loop_stack.pop
-      scope.breaks.each { |b| @chunk.patch_jump(b, @chunk.pos) }
+      scope.breaks.each { |brk| @chunk.patch_jump(brk, @chunk.pos) }
       emit_nil(node.line)
     end
 
@@ -602,7 +605,7 @@ module Adjutant
 
       node.whens.each do |patterns, when_body|
         pattern_patches = [] of Int32
-        patterns.each_with_index do |pat, i|
+        patterns.each_with_index do |pat, _i|
           if node.subject
             @chunk.emit(Op::Dup, node.line)
             compile_node(pat)
@@ -616,7 +619,7 @@ module Adjutant
           pattern_patches << @chunk.emit_jump(Op::JumpIfTrue, node.line)
         end
         jmp_skip = @chunk.emit_jump(Op::Jump, node.line)
-        pattern_patches.each { |p| @chunk.patch_jump(p, @chunk.pos) }
+        pattern_patches.each { |patch| @chunk.patch_jump(patch, @chunk.pos) }
         @chunk.emit(Op::Pop, node.line) if node.subject # pop subject dup
         compile_body(when_body)
         end_patches << @chunk.emit_jump(Op::Jump, node.line)
@@ -629,7 +632,7 @@ module Adjutant
       else
         emit_nil(node.line)
       end
-      end_patches.each { |p| @chunk.patch_jump(p, @chunk.pos) }
+      end_patches.each { |patch| @chunk.patch_jump(patch, @chunk.pos) }
     end
 
     private def compile_return(node : ReturnNode) : Nil
@@ -678,12 +681,12 @@ module Adjutant
     end
 
     private def compile_yield(node : YieldNode) : Nil
-      node.args.each { |a| compile_node(a) }
+      node.args.each { |arg| compile_node(arg) }
       @chunk.emit(Op::Yield, node.line, a: node.args.size.to_u8)
     end
 
     private def compile_super(node : SuperNode) : Nil
-      node.args.each { |a| compile_node(a) }
+      node.args.each { |arg| compile_node(arg) }
       sym_idx = intern("super")
       nil_idx = @chunk.add_const(Value.nil_value)
       @chunk.emit(Op::SetBlock, node.line, c: nil_idx)
@@ -778,7 +781,7 @@ module Adjutant
       @chunk.patch_jump(jmp_exit, @chunk.pos)
 
       scope = @loop_stack.pop
-      scope.breaks.each { |b| @chunk.patch_jump(b, @chunk.pos) }
+      scope.breaks.each { |brk| @chunk.patch_jump(brk, @chunk.pos) }
       emit_nil(node.line)
     end
 
