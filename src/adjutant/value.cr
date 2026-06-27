@@ -1,39 +1,8 @@
 module Adjutant
-  # Discriminant for Value — determines which field of the raw storage is live.
-  enum ValueTag
-    Nil
-    Bool
-    Int
-    Float
-    String
-    Symbol
-    Array
-    Hash
-    Object
-    Proc
-    Class
-    Range
-  end
-
-  # Raw storage for a Value.
-  #
-  # Crystal has no bare union type, so we hold all scalar slots together
-  # and read only the field that matches the Value's tag.
-  # Reference types are stored as Pointer(Void) in ptr.
-  struct ValueRaw
-    property i : Int64
-    property f : Float64
-    # ameba:disable Naming/QueryBoolMethods - Storing, not testing
-    property b : Bool
-    property ptr : Pointer(Void)
-
-    def initialize
-      @i = 0_i64
-      @f = 0.0
-      @b = false
-      @ptr = Pointer(Void).null
-    end
-  end
+  # The raw storage union for a Value.
+  # Crystal's union type carries its own discriminant — no separate tag needed.
+  alias ValueRaw = Nil | Bool | Int64 | Float64 | String | Sym |
+                   Array(Value) | Hash(Value, Value)
 
   # The core runtime value type for the Adjutant interpreter.
   #
@@ -46,79 +15,106 @@ module Adjutant
   # The optional SecurityLabel reference is nil in the common unlabeled
   # case, adding only a pointer-width cost with a predictable nil check.
   struct Value
-    getter tag : ValueTag
     getter raw : ValueRaw
     getter label : SecurityLabel?
 
     # --- Constructors ---------------------------------------------------
 
-    def self.nil_value : Value
-      new(ValueTag::Nil, ValueRaw.new, nil)
+    def self.nil_value(label : SecurityLabel? = nil) : Value
+      new(nil, label)
     end
 
     def self.bool(b : Bool, label : SecurityLabel? = nil) : Value
-      raw = ValueRaw.new
-      raw.b = b
-      new(ValueTag::Bool, raw, label)
+      new(b, label)
     end
 
     def self.int(i : Int64, label : SecurityLabel? = nil) : Value
-      raw = ValueRaw.new
-      raw.i = i
-      new(ValueTag::Int, raw, label)
+      new(i, label)
     end
 
     def self.float(f : Float64, label : SecurityLabel? = nil) : Value
-      raw = ValueRaw.new
-      raw.f = f
-      new(ValueTag::Float, raw, label)
+      new(f, label)
     end
 
-    def self.string(s : ::String, label : SecurityLabel? = nil) : Value
-      raw = ValueRaw.new
-      raw.ptr = Box.box(s)
-      new(ValueTag::String, raw, label)
+    def self.string(s : String, label : SecurityLabel? = nil) : Value
+      new(s, label)
     end
 
-    def self.symbol(s : ::String, label : SecurityLabel? = nil) : Value
-      raw = ValueRaw.new
-      raw.ptr = Box.box(s)
-      new(ValueTag::Symbol, raw, label)
+    def self.symbol(sym : Sym, label : SecurityLabel? = nil) : Value
+      new(sym, label)
+    end
+
+    # --- Type predicates ------------------------------------------------
+
+    def null? : Bool
+      @raw.nil?
+    end
+
+    def bool? : Bool
+      @raw.is_a?(Bool)
+    end
+
+    def int? : Bool
+      @raw.is_a?(Int64)
+    end
+
+    def float? : Bool
+      @raw.is_a?(Float64)
+    end
+
+    def string? : Bool
+      @raw.is_a?(String)
+    end
+
+    def symbol? : Bool
+      @raw.is_a?(Sym)
+    end
+
+    def array? : Bool
+      @raw.is_a?(Array(Value))
+    end
+
+    def hash? : Bool
+      @raw.is_a?(Hash(Value, Value))
     end
 
     # --- Extractors -----------------------------------------------------
 
     def as_bool : Bool
-      raw.b
+      @raw.as(Bool)
     end
 
     def as_int : Int64
-      raw.i
+      @raw.as(Int64)
     end
 
     def as_float : Float64
-      raw.f
+      @raw.as(Float64)
     end
 
-    def as_string : ::String
-      Box(::String).unbox(raw.ptr)
+    def as_string : String
+      @raw.as(String)
     end
 
-    def as_symbol : ::String
-      Box(::String).unbox(raw.ptr)
+    def as_sym : Sym
+      @raw.as(Sym)
     end
 
-    # --- Predicates -----------------------------------------------------
-
-    def null? : Bool
-      tag == ValueTag::Nil
+    def as_array : Array(Value)
+      @raw.as(Array(Value))
     end
+
+    def as_hash : Hash(Value, Value)
+      @raw.as(Hash(Value, Value))
+    end
+
+    # --- Truthiness -----------------------------------------------------
 
     def truthy? : Bool
-      case tag
-      when ValueTag::Nil  then false
-      when ValueTag::Bool then raw.b
-      else                     true
+      case @raw
+      when Nil  then false
+      when Bool then @raw.as(Bool)
+      else           true
       end
     end
 
@@ -128,45 +124,43 @@ module Adjutant
 
     # --- IFC ------------------------------------------------------------
 
-    # Return a copy of this value with the given label attached.
     def with_label(l : SecurityLabel?) : Value
-      Value.new(tag, raw, l)
+      Value.new(@raw, l)
     end
 
-    # Return a copy of this value with the join of both labels.
     def join_label(other : Value) : Value
       joined = SecurityLabel.join(label, other.label)
-      Value.new(tag, raw, joined)
+      Value.new(@raw, joined)
     end
 
     # --- Display --------------------------------------------------------
 
     def to_s(io : IO) : Nil
-      case tag
-      when ValueTag::Nil    then io << "nil"
-      when ValueTag::Bool   then io << raw.b
-      when ValueTag::Int    then io << raw.i
-      when ValueTag::Float  then io << raw.f
-      when ValueTag::String then io << as_string
-      when ValueTag::Symbol then io << ":" << as_symbol
-      else                       io << "#<" << tag << ">"
+      case r = @raw
+      when Nil     then io << "nil"
+      when Bool    then io << r
+      when Int64   then io << r
+      when Float64 then io << r
+      when String  then io << r
+      when Sym     then io << r
+      else              io << "#<" << @raw.class << ">"
       end
     end
 
     def inspect(io : IO) : Nil
-      case tag
-      when ValueTag::String then io << '"' << as_string << '"'
-      when ValueTag::Symbol then io << ":" << as_symbol
-      else                       to_s(io)
+      case r = @raw
+      when String then io << '"' << r << '"'
+      when Sym    then io << r
+      else             to_s(io)
       end
       if l = label
         io << " [" << l << "]"
       end
     end
 
-    # --- Private constructor --------------------------------------------
+    # --- Protected constructor ------------------------------------------
 
-    protected def initialize(@tag : ValueTag, @raw : ValueRaw, @label : SecurityLabel?)
+    protected def initialize(@raw : ValueRaw, @label : SecurityLabel?)
     end
   end
 end

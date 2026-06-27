@@ -4,6 +4,7 @@ require "./adjutant/token"
 require "./adjutant/lexer"
 require "./adjutant/ast"
 require "./adjutant/parser"
+require "./adjutant/symbol_table"
 require "./adjutant/bytecode"
 require "./adjutant/compiler"
 

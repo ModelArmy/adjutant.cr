@@ -1,10 +1,13 @@
 require "../spec_helper"
 
 module Adjutant
+  # Shared symbol table for value specs
+  SPEC_SYMBOLS = SymbolTable.new
+
   describe Value do
     describe "nil value" do
       it "has Nil tag" do
-        Value.nil_value.tag.should eq ValueTag::Nil
+        Value.nil_value.null?.should be_true
       end
 
       it "is null?" do
@@ -23,7 +26,7 @@ module Adjutant
     describe "bool values" do
       it "stores true" do
         v = Value.bool(true)
-        v.tag.should eq ValueTag::Bool
+        v.bool?.should be_true
         v.as_bool.should be_true
         v.truthy?.should be_true
       end
@@ -43,7 +46,7 @@ module Adjutant
     describe "int values" do
       it "stores an integer" do
         v = Value.int(42_i64)
-        v.tag.should eq ValueTag::Int
+        v.int?.should be_true
         v.as_int.should eq 42_i64
         v.truthy?.should be_true
       end
@@ -60,7 +63,7 @@ module Adjutant
     describe "float values" do
       it "stores a float" do
         v = Value.float(3.14)
-        v.tag.should eq ValueTag::Float
+        v.float?.should be_true
         v.as_float.should be_close(3.14, 1e-10)
         v.truthy?.should be_true
       end
@@ -73,7 +76,7 @@ module Adjutant
     describe "string values" do
       it "stores a string" do
         v = Value.string("hello")
-        v.tag.should eq ValueTag::String
+        v.string?.should be_true
         v.as_string.should eq "hello"
         v.truthy?.should be_true
       end
@@ -89,18 +92,18 @@ module Adjutant
 
     describe "symbol values" do
       it "stores a symbol" do
-        v = Value.symbol("ok")
-        v.tag.should eq ValueTag::Symbol
-        v.as_symbol.should eq "ok"
+        v = Value.symbol(SPEC_SYMBOLS.intern("ok"))
+        v.symbol?.should be_true
+        v.as_sym.name.should eq "ok"
         v.truthy?.should be_true
       end
 
       it "renders with colon prefix" do
-        Value.symbol("name").to_s.should eq ":name"
+        Value.symbol(SPEC_SYMBOLS.intern("name")).to_s.should eq ":name"
       end
 
       it "renders with colon prefix via inspect" do
-        Value.symbol("name").inspect.should eq ":name"
+        Value.symbol(SPEC_SYMBOLS.intern("name")).inspect.should eq ":name"
       end
     end
 

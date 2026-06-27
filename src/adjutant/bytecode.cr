@@ -15,12 +15,12 @@ module Adjutant
     Dup   # duplicate top of stack
 
     # Variables
-    GetGlobal # push globals[constants[c].as_symbol]
-    SetGlobal # pop → globals[constants[c].as_symbol]
-    GetIvar   # push self.ivars[constants[c].as_symbol]
-    SetIvar   # pop → self.ivars[constants[c].as_symbol]
-    GetCvar   # push class.cvars[constants[c].as_symbol]
-    SetCvar   # pop → class.cvars[constants[c].as_symbol]
+    GetGlobal # push globals[constants[c].as_sym.name]
+    SetGlobal # pop → globals[constants[c].as_sym.name]
+    GetIvar   # push self.ivars[constants[c].as_sym.name]
+    SetIvar   # pop → self.ivars[constants[c].as_sym.name]
+    GetCvar   # push class.cvars[constants[c].as_sym.name]
+    SetCvar   # pop → class.cvars[constants[c].as_sym.name]
 
     # Indexing
     GetIndex  # pop index, pop target → push target[index]
@@ -154,11 +154,8 @@ module Adjutant
     # Add a constant to the pool, returning its index.
     # Deduplicates nil, bool, and symbol constants.
     def add_const(value : Value) : UInt32
-      # Deduplicate cheap scalars
-      if value.tag == ValueTag::Nil ||
-         value.tag == ValueTag::Bool ||
-         value.tag == ValueTag::Symbol
-        existing = @consts.index { |v| v.tag == value.tag && values_equal?(v, value) }
+      if value.null? || value.bool? || value.symbol?
+        existing = @consts.index { |v| values_equal?(v, value) }
         return existing.to_u32 if existing
       end
       @consts << value
@@ -177,9 +174,10 @@ module Adjutant
     end
 
     private def values_equal?(a : Value, b : Value) : Bool
-      return true if a.tag == ValueTag::Nil && b.tag == ValueTag::Nil
-      return a.as_bool == b.as_bool if a.tag == ValueTag::Bool
-      return a.as_symbol == b.as_symbol if a.tag == ValueTag::Symbol
+      return true if a.null? && b.null?
+      return a.as_bool == b.as_bool if a.bool? && b.bool?
+      # Sym comparison uses integer ID — O(1)
+      return a.as_sym == b.as_sym if a.symbol? && b.symbol?
       false
     end
   end

@@ -31,7 +31,8 @@ module Adjutant
     MAX_LOOP_DEPTH =         16
     NO_SUPER       = 0xFFFF_u16
 
-    def initialize
+    def initialize(symbols : SymbolTable)
+      @symbols = symbols
       @chunk = Chunk.new
       @loop_stack = [] of LoopScope
       @class_depth = 0
@@ -39,16 +40,16 @@ module Adjutant
     end
 
     # Compile a full program body and return the resulting Chunk.
-    def self.compile(body : Body) : Chunk
-      c = new
+    def self.compile(body : Body, symbols : SymbolTable) : Chunk
+      c = new(symbols)
       c.compile_body(body)
       c.chunk
     end
 
     # Compile a method/block body, returning the Chunk.
     # Used by child compilers for def and block nodes.
-    def self.compile_proc(body : Body, in_block : Bool = false) : Chunk
-      c = new
+    def self.compile_proc(body : Body, symbols : SymbolTable, in_block : Bool = false) : Chunk
+      c = new(symbols)
       c.in_block = in_block
       c.compile_body(body)
       c.emit_ret(0) # implicit return nil if body doesn't return
@@ -56,6 +57,7 @@ module Adjutant
     end
 
     protected getter chunk
+    protected getter symbols
     protected setter in_block
 
     # -----------------------------------------------------------------------
@@ -174,7 +176,7 @@ module Adjutant
     end
 
     private def compile_symbol(node : SymbolLiteral) : Nil
-      idx = @chunk.add_const(Value.symbol(node.value))
+      idx = intern(node.value)
       @chunk.emit(Op::Const, node.line, c: idx)
     end
 
@@ -200,27 +202,27 @@ module Adjutant
     # --- Variables ----------------------------------------------------------
 
     private def compile_identifier(node : Identifier) : Nil
-      sym_idx = add_symbol(node.name)
+      sym_idx = intern(node.name)
       @chunk.emit(Op::GetGlobal, node.line, c: sym_idx)
     end
 
     private def compile_constant(node : Constant) : Nil
-      sym_idx = add_symbol(node.name)
+      sym_idx = intern(node.name)
       @chunk.emit(Op::GetGlobal, node.line, c: sym_idx)
     end
 
     private def compile_ivar(node : IVar) : Nil
-      sym_idx = add_symbol(node.name)
+      sym_idx = intern(node.name)
       @chunk.emit(Op::GetIvar, node.line, c: sym_idx)
     end
 
     private def compile_cvar(node : CVar) : Nil
-      sym_idx = add_symbol(node.name)
+      sym_idx = intern(node.name)
       @chunk.emit(Op::GetCvar, node.line, c: sym_idx)
     end
 
     private def compile_self(node : SelfNode) : Nil
-      sym_idx = add_symbol("self")
+      sym_idx = intern("self")
       @chunk.emit(Op::GetGlobal, node.line, c: sym_idx)
     end
 
@@ -275,7 +277,7 @@ module Adjutant
     private def compile_spaceship(node : Binary) : Nil
       compile_node(node.left)
       compile_node(node.right)
-      sym_idx = add_symbol("<=>")
+      sym_idx = intern("<=>")
       nil_idx = @chunk.add_const(Value.nil_value)
       @chunk.emit(Op::SetBlock, node.line, c: nil_idx)
       @chunk.emit(Op::Call, node.line, a: 2_u8, c: sym_idx)
@@ -378,13 +380,13 @@ module Adjutant
     private def emit_store(target : Node, line : Int32) : Nil
       case target
       when Identifier, Constant
-        sym_idx = add_symbol(target.name)
+        sym_idx = intern(target.name)
         @chunk.emit(Op::SetGlobal, line, c: sym_idx)
       when IVar
-        sym_idx = add_symbol(target.name)
+        sym_idx = intern(target.name)
         @chunk.emit(Op::SetIvar, line, c: sym_idx)
       when CVar
-        sym_idx = add_symbol(target.name)
+        sym_idx = intern(target.name)
         @chunk.emit(Op::SetCvar, line, c: sym_idx)
       when Index
         compile_node(target.target)
@@ -404,7 +406,7 @@ module Adjutant
       node.args.each { |a| compile_node(a) }
       # Register block if present
       if blk = node.block
-        blk_chunk = Compiler.compile_proc(blk.body, in_block: true)
+        blk_chunk = Compiler.compile_proc(blk.body, @symbols, in_block: true)
         blk_val = Value.string("__block__") # placeholder; VM will wrap as Proc
         blk_idx = @chunk.add_const(blk_val)
         @chunk.emit(Op::SetBlock, node.line, c: blk_idx)
@@ -412,7 +414,7 @@ module Adjutant
         nil_idx = @chunk.add_const(Value.nil_value)
         @chunk.emit(Op::SetBlock, node.line, c: nil_idx)
       end
-      sym_idx = add_symbol(node.method)
+      sym_idx = intern(node.method)
       safe = node.safe? ? 1_u16 : 0_u16
       recv = node.receiver ? 1_u8 : 0_u8
       argc = (node.args.size + recv).to_u8
@@ -437,11 +439,11 @@ module Adjutant
     # --- Definitions --------------------------------------------------------
 
     private def compile_def(node : DefNode) : Nil
-      proc_chunk = Compiler.compile_proc(node.body)
+      proc_chunk = Compiler.compile_proc(node.body, @symbols)
       proc_val = Value.string("__proc__:#{node.name}") # placeholder; VM wraps as Proc
       proc_idx = @chunk.add_const(proc_val)
       @chunk.emit(Op::Const, node.line, c: proc_idx)
-      sym_idx = add_symbol(node.name)
+      sym_idx = intern(node.name)
       if recv = node.receiver
         compile_node(recv)
         @chunk.emit(Op::DefSingleton, node.line, c: sym_idx)
@@ -453,13 +455,13 @@ module Adjutant
     end
 
     private def compile_class(node : ClassNode) : Nil
-      name_idx = add_symbol(node.name)
+      name_idx = intern(node.name)
       super_idx = if s = node.superclass
-                    add_symbol(s).to_u16
+                    intern(s).to_u16
                   else
                     NO_SUPER
                   end
-      self_sym = add_symbol("self")
+      self_sym = intern("self")
 
       @chunk.emit(Op::GetClass, node.line)
       @chunk.emit(Op::MakeClass, node.line, b: super_idx, c: name_idx)
@@ -477,7 +479,7 @@ module Adjutant
     end
 
     private def compile_module(node : ModuleNode) : Nil
-      name_idx = add_symbol(node.name)
+      name_idx = intern(node.name)
 
       @chunk.emit(Op::GetClass, node.line)
       @chunk.emit(Op::MakeModule, node.line, c: name_idx)
@@ -492,7 +494,7 @@ module Adjutant
     end
 
     private def compile_lambda(node : Lambda) : Nil
-      lam_chunk = Compiler.compile_proc(node.body, in_block: true)
+      lam_chunk = Compiler.compile_proc(node.body, @symbols, in_block: true)
       lam_val = Value.string("__lambda__")
       lam_idx = @chunk.add_const(lam_val)
       @chunk.emit(Op::Const, node.line, c: lam_idx)
@@ -585,7 +587,7 @@ module Adjutant
       # → `expr.each { |i| body }`
       compile_node(node.iter)
       # Build a synthetic block
-      sym_idx = add_symbol("each")
+      sym_idx = intern("each")
       nil_idx = @chunk.add_const(Value.nil_value)
       @chunk.emit(Op::SetBlock, node.line, c: nil_idx)
       @chunk.emit(Op::Call, node.line, a: 1_u8, c: sym_idx)
@@ -604,7 +606,7 @@ module Adjutant
           if node.subject
             @chunk.emit(Op::Dup, node.line)
             compile_node(pat)
-            sym_idx = add_symbol("===")
+            sym_idx = intern("===")
             nil_idx = @chunk.add_const(Value.nil_value)
             @chunk.emit(Op::SetBlock, node.line, c: nil_idx)
             @chunk.emit(Op::Call, node.line, a: 2_u8, c: sym_idx)
@@ -682,7 +684,7 @@ module Adjutant
 
     private def compile_super(node : SuperNode) : Nil
       node.args.each { |a| compile_node(a) }
-      sym_idx = add_symbol("super")
+      sym_idx = intern("super")
       nil_idx = @chunk.add_const(Value.nil_value)
       @chunk.emit(Op::SetBlock, node.line, c: nil_idx)
       @chunk.emit(Op::Call, node.line, a: node.args.size.to_u8, c: sym_idx)
@@ -709,7 +711,7 @@ module Adjutant
         @chunk.patch_jump(try_at, @chunk.pos)
         if rvar = node.rescue_var
           @chunk.emit(Op::PushError, node.line)
-          sym_idx = add_symbol(rvar)
+          sym_idx = intern(rvar)
           @chunk.emit(Op::SetGlobal, node.line, c: sym_idx)
           @chunk.emit(Op::Pop, node.line)
         end
@@ -732,7 +734,7 @@ module Adjutant
 
     private def compile_require(node : RequireNode) : Nil
       compile_node(node.path)
-      sym_idx = add_symbol("require")
+      sym_idx = intern("require")
       nil_idx = @chunk.add_const(Value.nil_value)
       @chunk.emit(Op::SetBlock, node.line, c: nil_idx)
       @chunk.emit(Op::Call, node.line, a: 1_u8, c: sym_idx)
@@ -740,11 +742,11 @@ module Adjutant
 
     private def compile_alias(node : AliasNode) : Nil
       # alias is handled as a runtime call: __alias__(new_name, old_name)
-      new_idx = @chunk.add_const(Value.symbol(node.new_name))
-      old_idx = @chunk.add_const(Value.symbol(node.old_name))
+      new_idx = intern(node.new_name)
+      old_idx = intern(node.old_name)
       @chunk.emit(Op::Const, node.line, c: new_idx)
       @chunk.emit(Op::Const, node.line, c: old_idx)
-      sym_idx = add_symbol("__alias__")
+      sym_idx = intern("__alias__")
       nil_idx = @chunk.add_const(Value.nil_value)
       @chunk.emit(Op::SetBlock, node.line, c: nil_idx)
       @chunk.emit(Op::Call, node.line, a: 2_u8, c: sym_idx)
@@ -782,8 +784,9 @@ module Adjutant
 
     # --- Helpers ------------------------------------------------------------
 
-    private def add_symbol(name : String) : UInt32
-      @chunk.add_const(Value.symbol(name))
+    private def intern(name : String) : UInt32
+      sym = @symbols.intern(name)
+      @chunk.add_const(Value.symbol(sym))
     end
   end
 end

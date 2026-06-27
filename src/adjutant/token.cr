@@ -181,7 +181,7 @@ module Adjutant
 
   struct Token
     getter kind : TokenKind
-    getter lexeme : ::String
+    getter lexeme : String
     getter line : Int32
     getter column : Int32
 

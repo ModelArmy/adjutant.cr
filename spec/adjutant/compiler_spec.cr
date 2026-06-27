@@ -1,10 +1,14 @@
 require "../spec_helper"
 
 module Adjutant
+  # Shared symbol table for compiler specs — simulates multiple scripts
+  # compiled against the same interpreter instance.
+  COMPILER_SPEC_SYMBOLS = SymbolTable.new
+
   # Helper: parse source and compile to a Chunk.
   private def self.compile(source : String) : Chunk
     body = Parser.new(source).parse
-    Compiler.compile(body)
+    Compiler.compile(body, COMPILER_SPEC_SYMBOLS)
   end
 
   # Helper: return just the opcode sequence (excluding Const setup noise).
@@ -17,7 +21,7 @@ module Adjutant
       it "compiles nil to Const" do
         chunk = compile("nil")
         chunk.code.first.op.should eq Op::Const
-        chunk.consts.first.tag.should eq ValueTag::Nil
+        chunk.consts.first.null?.should be_true
       end
 
       it "compiles true" do
@@ -57,7 +61,7 @@ module Adjutant
 
       it "compiles a symbol" do
         chunk = compile(":ok")
-        chunk.consts.first.as_symbol.should eq "ok"
+        chunk.consts.first.as_sym.name.should eq "ok"
       end
 
       it "compiles an array literal" do
@@ -89,17 +93,17 @@ module Adjutant
     describe "constant pool deduplication" do
       it "deduplicates nil constants" do
         chunk = compile("nil")
-        chunk.consts.count { |v| v.tag == ValueTag::Nil }.should eq 1
+        chunk.consts.count { |v| v.null? }.should eq 1
       end
 
       it "deduplicates boolean constants" do
         chunk = compile("true")
-        chunk.consts.count { |v| v.tag == ValueTag::Bool && v.as_bool }.should eq 1
+        chunk.consts.count { |v| v.bool? && v.as_bool }.should eq 1
       end
 
       it "deduplicates symbol constants" do
         chunk = compile("x = 1\nx")
-        x_count = chunk.consts.count { |v| v.tag == ValueTag::Symbol && v.as_symbol == "x" }
+        x_count = chunk.consts.count { |v| v.symbol? && v.as_sym.name == "x" }
         x_count.should eq 1
       end
     end
@@ -201,7 +205,7 @@ module Adjutant
       it "compiles return" do
         # return is in the method body chunk, not the outer chunk
         chunk = compile("def f\nreturn 1\nend")
-        proc_str = chunk.consts.find { |v| v.tag == ValueTag::String }
+        proc_str = chunk.consts.find { |v| v.string? }
         proc_str.should_not be_nil
       end
 
@@ -289,7 +293,7 @@ module Adjutant
         o = ops(%{require "io"})
         o.should contain(Op::Call)
         chunk = compile(%{require "io"})
-        has_require = chunk.consts.any? { |v| v.tag == ValueTag::Symbol && v.as_symbol == "require" }
+        has_require = chunk.consts.any? { |v| v.symbol? && v.as_sym.name == "require" }
         has_require.should be_true
       end
     end
