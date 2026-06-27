@@ -1,0 +1,789 @@
+require "./ast"
+require "./bytecode"
+
+module Adjutant
+  class CompileError < Exception
+    getter line : Int32
+    getter column : Int32
+
+    def initialize(message : String, @line, @column)
+      super("#{message} (line #{line}, col #{column})")
+    end
+  end
+
+  # Compiler state for a single loop scope.
+  private struct LoopScope
+    property start_pos : Int32     # position of condition check (jump-back target)
+    property body_pos : Int32      # position after condition (redo target)
+    property breaks : Array(Int32) # indices of Break jumps to patch
+
+    def initialize(@start_pos, @body_pos = 0)
+      @breaks = [] of Int32
+    end
+  end
+
+  # Compiler: walks an AST and emits bytecode into a Chunk.
+  #
+  # One Compiler instance per scope (script, method, block).
+  # Nested scopes (method bodies, blocks) create child Compiler instances
+  # that produce independent Chunks, stored as constants in the parent.
+  class Compiler
+    MAX_LOOP_DEPTH =         16
+    NO_SUPER       = 0xFFFF_u16
+
+    def initialize
+      @chunk = Chunk.new
+      @loop_stack = [] of LoopScope
+      @class_depth = 0
+      @in_block = false
+    end
+
+    # Compile a full program body and return the resulting Chunk.
+    def self.compile(body : Body) : Chunk
+      c = new
+      c.compile_body(body)
+      c.chunk
+    end
+
+    # Compile a method/block body, returning the Chunk.
+    # Used by child compilers for def and block nodes.
+    def self.compile_proc(body : Body, in_block : Bool = false) : Chunk
+      c = new
+      c.in_block = in_block
+      c.compile_body(body)
+      c.emit_ret(0) # implicit return nil if body doesn't return
+      c.chunk
+    end
+
+    protected getter chunk
+    protected setter in_block
+
+    # -----------------------------------------------------------------------
+
+    protected def compile_body(body : Body) : Nil
+      if body.stmts.empty?
+        emit_nil(body.line)
+        return
+      end
+      body.stmts.each_with_index do |stmt, i|
+        compile_node(stmt)
+        # Pop intermediate results; keep the last one as the body value
+        @chunk.emit(Op::Pop, stmt.line) unless i == body.stmts.size - 1
+      end
+    end
+
+    protected def emit_ret(line : Int32) : Nil
+      @chunk.emit(Op::Ret, line)
+    end
+
+    # ameba:disable Metrics/CyclomaticComplexity
+    protected def compile_node(node : Node) : Nil
+      case node
+      when NilLiteral     then emit_nil(node.line)
+      when BoolLiteral    then compile_bool(node)
+      when IntLiteral     then compile_int(node)
+      when FloatLiteral   then compile_float(node)
+      when StringLiteral  then compile_string(node)
+      when StringFragment then compile_string_fragment(node)
+      when InterpString   then compile_interp_string(node)
+      when SymbolLiteral  then compile_symbol(node)
+      when ArrayLiteral   then compile_array(node)
+      when HashLiteral    then compile_hash(node)
+      when RangeLiteral   then compile_range(node)
+      when Identifier     then compile_identifier(node)
+      when Constant       then compile_constant(node)
+      when IVar           then compile_ivar(node)
+      when CVar           then compile_cvar(node)
+      when SelfNode       then compile_self(node)
+      when MethodName     then compile_method_name(node)
+      when Binary         then compile_binary(node)
+      when Unary          then compile_unary(node)
+      when Ternary        then compile_ternary(node)
+      when Assign         then compile_assign(node)
+      when OpAssign       then compile_op_assign(node)
+      when CondAssign     then compile_cond_assign(node)
+      when MultiAssign    then compile_multi_assign(node)
+      when Call           then compile_call(node)
+      when Index          then compile_index(node)
+      when IndexAssign    then compile_index_assign(node)
+      when DefNode        then compile_def(node)
+      when ClassNode      then compile_class(node)
+      when ModuleNode     then compile_module(node)
+      when Lambda         then compile_lambda(node)
+      when Body           then compile_body(node)
+      when IfNode         then compile_if(node)
+      when UnlessNode     then compile_unless(node)
+      when WhileNode      then compile_while(node)
+      when LoopNode       then compile_loop(node)
+      when ForNode        then compile_for(node)
+      when CaseNode       then compile_case(node)
+      when ReturnNode     then compile_return(node)
+      when BreakNode      then compile_break(node)
+      when NextNode       then compile_next(node)
+      when RedoNode       then compile_redo(node)
+      when YieldNode      then compile_yield(node)
+      when SuperNode      then compile_super(node)
+      when BeginNode      then compile_begin(node)
+      when RetryNode      then compile_retry(node)
+      when RequireNode    then compile_require(node)
+      when AliasNode      then compile_alias(node)
+      when ModifierIf     then compile_modifier_if(node)
+      when ModifierWhile  then compile_modifier_while(node)
+      else
+        raise CompileError.new("unknown node type: #{node.class}", node.line, node.column)
+      end
+    end
+
+    # --- Literals -----------------------------------------------------------
+
+    private def emit_nil(line : Int32) : Nil
+      idx = @chunk.add_const(Value.nil_value)
+      @chunk.emit(Op::Const, line, c: idx)
+    end
+
+    private def compile_bool(node : BoolLiteral) : Nil
+      idx = @chunk.add_const(Value.bool(node.value))
+      @chunk.emit(Op::Const, node.line, c: idx)
+    end
+
+    private def compile_int(node : IntLiteral) : Nil
+      raw = node.value
+      n = raw.starts_with?("0x") || raw.starts_with?("0X") ? raw[2..].to_i64(16) : raw.to_i64
+      idx = @chunk.add_const(Value.int(n))
+      @chunk.emit(Op::Const, node.line, c: idx)
+    end
+
+    private def compile_float(node : FloatLiteral) : Nil
+      idx = @chunk.add_const(Value.float(node.value.to_f64))
+      @chunk.emit(Op::Const, node.line, c: idx)
+    end
+
+    private def compile_string(node : StringLiteral) : Nil
+      idx = @chunk.add_const(Value.string(node.value))
+      @chunk.emit(Op::Const, node.line, c: idx)
+    end
+
+    private def compile_string_fragment(node : StringFragment) : Nil
+      idx = @chunk.add_const(Value.string(node.value))
+      @chunk.emit(Op::Const, node.line, c: idx)
+    end
+
+    private def compile_interp_string(node : InterpString) : Nil
+      node.parts.each { |p| compile_node(p) }
+      @chunk.emit(Op::Concat, node.line, a: node.parts.size.to_u8)
+    end
+
+    private def compile_symbol(node : SymbolLiteral) : Nil
+      idx = @chunk.add_const(Value.symbol(node.value))
+      @chunk.emit(Op::Const, node.line, c: idx)
+    end
+
+    private def compile_array(node : ArrayLiteral) : Nil
+      node.elements.each { |e| compile_node(e) }
+      @chunk.emit(Op::MakeArray, node.line, a: node.elements.size.to_u8)
+    end
+
+    private def compile_hash(node : HashLiteral) : Nil
+      node.pairs.each do |k, v|
+        compile_node(k)
+        compile_node(v)
+      end
+      @chunk.emit(Op::MakeHash, node.line, a: node.pairs.size.to_u8)
+    end
+
+    private def compile_range(node : RangeLiteral) : Nil
+      compile_node(node.start_node)
+      compile_node(node.end_node)
+      @chunk.emit(Op::MakeRange, node.line, a: node.exclusive? ? 1_u8 : 0_u8)
+    end
+
+    # --- Variables ----------------------------------------------------------
+
+    private def compile_identifier(node : Identifier) : Nil
+      sym_idx = add_symbol(node.name)
+      @chunk.emit(Op::GetGlobal, node.line, c: sym_idx)
+    end
+
+    private def compile_constant(node : Constant) : Nil
+      sym_idx = add_symbol(node.name)
+      @chunk.emit(Op::GetGlobal, node.line, c: sym_idx)
+    end
+
+    private def compile_ivar(node : IVar) : Nil
+      sym_idx = add_symbol(node.name)
+      @chunk.emit(Op::GetIvar, node.line, c: sym_idx)
+    end
+
+    private def compile_cvar(node : CVar) : Nil
+      sym_idx = add_symbol(node.name)
+      @chunk.emit(Op::GetCvar, node.line, c: sym_idx)
+    end
+
+    private def compile_self(node : SelfNode) : Nil
+      sym_idx = add_symbol("self")
+      @chunk.emit(Op::GetGlobal, node.line, c: sym_idx)
+    end
+
+    private def compile_method_name(node : MethodName) : Nil
+      @chunk.emit(Op::GetMethodName, node.line)
+    end
+
+    # --- Binary expressions -------------------------------------------------
+
+    private def compile_binary(node : Binary) : Nil
+      case node.op
+      when TokenKind::OrOr, TokenKind::KwOr
+        compile_short_circuit_or(node)
+      when TokenKind::AndAnd, TokenKind::KwAnd
+        compile_short_circuit_and(node)
+      when TokenKind::Spaceship
+        compile_spaceship(node)
+      when TokenKind::NEq
+        compile_node(node.left)
+        compile_node(node.right)
+        @chunk.emit(Op::Eq, node.line)
+        @chunk.emit(Op::Not, node.line)
+      else
+        compile_node(node.left)
+        compile_node(node.right)
+        @chunk.emit(binary_op(node.op), node.line)
+      end
+    end
+
+    private def compile_short_circuit_or(node : Binary) : Nil
+      compile_node(node.left)
+      @chunk.emit(Op::Dup, node.line)
+      jmp_true = @chunk.emit_jump(Op::JumpIfFalse, node.line)
+      jmp_end = @chunk.emit_jump(Op::Jump, node.line)
+      @chunk.patch_jump(jmp_true, @chunk.pos)
+      @chunk.emit(Op::Pop, node.line)
+      compile_node(node.right)
+      @chunk.patch_jump(jmp_end, @chunk.pos)
+    end
+
+    private def compile_short_circuit_and(node : Binary) : Nil
+      compile_node(node.left)
+      @chunk.emit(Op::Dup, node.line)
+      jmp_false = @chunk.emit_jump(Op::JumpIfFalse, node.line)
+      @chunk.emit(Op::Pop, node.line)
+      compile_node(node.right)
+      jmp_end = @chunk.emit_jump(Op::Jump, node.line)
+      @chunk.patch_jump(jmp_false, @chunk.pos)
+      @chunk.patch_jump(jmp_end, @chunk.pos)
+    end
+
+    private def compile_spaceship(node : Binary) : Nil
+      compile_node(node.left)
+      compile_node(node.right)
+      sym_idx = add_symbol("<=>")
+      nil_idx = @chunk.add_const(Value.nil_value)
+      @chunk.emit(Op::SetBlock, node.line, c: nil_idx)
+      @chunk.emit(Op::Call, node.line, a: 2_u8, c: sym_idx)
+    end
+
+    private def binary_op(op : TokenKind) : Op
+      case op
+      when TokenKind::Plus    then Op::Add
+      when TokenKind::Minus   then Op::Sub
+      when TokenKind::Star    then Op::Mul
+      when TokenKind::Slash   then Op::Div
+      when TokenKind::Percent then Op::Mod
+      when TokenKind::Amp     then Op::BitAnd
+      when TokenKind::Pipe    then Op::BitOr
+      when TokenKind::Shl     then Op::Shl
+      when TokenKind::Shr     then Op::Shr
+      when TokenKind::Caret   then Op::Xor
+      when TokenKind::EqEq    then Op::Eq
+      when TokenKind::Lt      then Op::Lt
+      when TokenKind::LtE     then Op::Lte
+      when TokenKind::Gt      then Op::Gt
+      when TokenKind::GtE     then Op::Gte
+      else
+        raise "unknown binary op: #{op}"
+      end
+    end
+
+    # --- Unary --------------------------------------------------------------
+
+    private def compile_unary(node : Unary) : Nil
+      compile_node(node.expr)
+      case node.op
+      when TokenKind::Bang  then @chunk.emit(Op::Not, node.line)
+      when TokenKind::Minus then @chunk.emit(Op::Neg, node.line)
+      when TokenKind::Tilde then @chunk.emit(Op::BitNot, node.line)
+      end
+    end
+
+    # --- Ternary ------------------------------------------------------------
+
+    private def compile_ternary(node : Ternary) : Nil
+      compile_node(node.cond)
+      jmp_false = @chunk.emit_jump(Op::JumpIfFalse, node.line)
+      compile_node(node.then_branch)
+      jmp_end = @chunk.emit_jump(Op::Jump, node.line)
+      @chunk.patch_jump(jmp_false, @chunk.pos)
+      compile_node(node.else_branch)
+      @chunk.patch_jump(jmp_end, @chunk.pos)
+    end
+
+    # --- Assignment ---------------------------------------------------------
+
+    private def compile_assign(node : Assign) : Nil
+      compile_node(node.value)
+      emit_store(node.target, node.line)
+    end
+
+    private def compile_op_assign(node : OpAssign) : Nil
+      # x += y  →  x = x + y
+      compile_node(node.target)
+      compile_node(node.value)
+      @chunk.emit(binary_op(node.op), node.line)
+      emit_store(node.target, node.line)
+    end
+
+    private def compile_cond_assign(node : CondAssign) : Nil
+      # x ||= y — only assign if x is falsy
+      # x &&= y — only assign if x is truthy
+      compile_node(node.target)
+      @chunk.emit(Op::Dup, node.line)
+      if node.op == TokenKind::OrAssign
+        jmp = @chunk.emit_jump(Op::JumpIfFalse, node.line)
+        jmp_end = @chunk.emit_jump(Op::Jump, node.line)
+        @chunk.patch_jump(jmp, @chunk.pos)
+        @chunk.emit(Op::Pop, node.line)
+        compile_node(node.value)
+        emit_store(node.target, node.line)
+        @chunk.patch_jump(jmp_end, @chunk.pos)
+      else # AndAssign
+        jmp = @chunk.emit_jump(Op::JumpIfTrue, node.line)
+        jmp_end = @chunk.emit_jump(Op::Jump, node.line)
+        @chunk.patch_jump(jmp, @chunk.pos)
+        @chunk.emit(Op::Pop, node.line)
+        compile_node(node.value)
+        emit_store(node.target, node.line)
+        @chunk.patch_jump(jmp_end, @chunk.pos)
+      end
+    end
+
+    private def compile_multi_assign(node : MultiAssign) : Nil
+      node.values.each { |v| compile_node(v) }
+      tc = node.targets.size.to_u8
+      vc = node.values.size.to_u8
+      @chunk.emit(Op::MultiUnpack, node.line, a: tc, b: vc.to_u16)
+      node.targets.reverse_each { |t| emit_store(t, node.line); @chunk.emit(Op::Pop, node.line) }
+      emit_nil(node.line)
+    end
+
+    # Store the top-of-stack value into the appropriate variable slot.
+    private def emit_store(target : Node, line : Int32) : Nil
+      case target
+      when Identifier, Constant
+        sym_idx = add_symbol(target.name)
+        @chunk.emit(Op::SetGlobal, line, c: sym_idx)
+      when IVar
+        sym_idx = add_symbol(target.name)
+        @chunk.emit(Op::SetIvar, line, c: sym_idx)
+      when CVar
+        sym_idx = add_symbol(target.name)
+        @chunk.emit(Op::SetCvar, line, c: sym_idx)
+      when Index
+        compile_node(target.target)
+        compile_node(target.index)
+        @chunk.emit(Op::SetIndex, line)
+      else
+        raise CompileError.new("invalid assignment target: #{target.class}", line, 0)
+      end
+    end
+
+    # --- Calls --------------------------------------------------------------
+
+    private def compile_call(node : Call) : Nil
+      if node.receiver
+        compile_node(node.receiver.not_nil!)
+      end
+      node.args.each { |a| compile_node(a) }
+      # Register block if present
+      if blk = node.block
+        blk_chunk = Compiler.compile_proc(blk.body, in_block: true)
+        blk_val = Value.string("__block__") # placeholder; VM will wrap as Proc
+        blk_idx = @chunk.add_const(blk_val)
+        @chunk.emit(Op::SetBlock, node.line, c: blk_idx)
+      else
+        nil_idx = @chunk.add_const(Value.nil_value)
+        @chunk.emit(Op::SetBlock, node.line, c: nil_idx)
+      end
+      sym_idx = add_symbol(node.method)
+      safe = node.safe? ? 1_u16 : 0_u16
+      recv = node.receiver ? 1_u8 : 0_u8
+      argc = (node.args.size + recv).to_u8
+      op = node.safe? ? Op::SafeCall : Op::Call
+      @chunk.emit(op, node.line, a: argc, b: safe, c: sym_idx)
+    end
+
+    private def compile_index(node : Index) : Nil
+      compile_node(node.target)
+      compile_node(node.index)
+      op = node.safe? ? Op::SafeIndex : Op::GetIndex
+      @chunk.emit(op, node.line)
+    end
+
+    private def compile_index_assign(node : IndexAssign) : Nil
+      compile_node(node.target)
+      compile_node(node.index)
+      compile_node(node.value)
+      @chunk.emit(Op::SetIndex, node.line)
+    end
+
+    # --- Definitions --------------------------------------------------------
+
+    private def compile_def(node : DefNode) : Nil
+      proc_chunk = Compiler.compile_proc(node.body)
+      proc_val = Value.string("__proc__:#{node.name}") # placeholder; VM wraps as Proc
+      proc_idx = @chunk.add_const(proc_val)
+      @chunk.emit(Op::Const, node.line, c: proc_idx)
+      sym_idx = add_symbol(node.name)
+      if recv = node.receiver
+        compile_node(recv)
+        @chunk.emit(Op::DefSingleton, node.line, c: sym_idx)
+      elsif @class_depth > 0
+        @chunk.emit(Op::DefMethod, node.line, c: sym_idx)
+      else
+        @chunk.emit(Op::SetGlobal, node.line, c: sym_idx)
+      end
+    end
+
+    private def compile_class(node : ClassNode) : Nil
+      name_idx = add_symbol(node.name)
+      super_idx = if s = node.superclass
+                    add_symbol(s).to_u16
+                  else
+                    NO_SUPER
+                  end
+      self_sym = add_symbol("self")
+
+      @chunk.emit(Op::GetClass, node.line)
+      @chunk.emit(Op::MakeClass, node.line, b: super_idx, c: name_idx)
+      @chunk.emit(Op::SetGlobal, node.line, c: name_idx)
+      @chunk.emit(Op::Pop, node.line)
+      @chunk.emit(Op::GetGlobal, node.line, c: name_idx)
+      @chunk.emit(Op::SetClass, node.line)
+      @chunk.emit(Op::GetGlobal, node.line, c: name_idx)
+      @chunk.emit(Op::SetGlobal, node.line, c: self_sym)
+      @chunk.emit(Op::Pop, node.line)
+      @class_depth += 1
+      compile_body(node.body)
+      @class_depth -= 1
+      @chunk.emit(Op::SetClass, node.line)
+    end
+
+    private def compile_module(node : ModuleNode) : Nil
+      name_idx = add_symbol(node.name)
+
+      @chunk.emit(Op::GetClass, node.line)
+      @chunk.emit(Op::MakeModule, node.line, c: name_idx)
+      @chunk.emit(Op::SetGlobal, node.line, c: name_idx)
+      @chunk.emit(Op::Pop, node.line)
+      @chunk.emit(Op::GetGlobal, node.line, c: name_idx)
+      @chunk.emit(Op::SetClass, node.line)
+      @class_depth += 1
+      compile_body(node.body)
+      @class_depth -= 1
+      @chunk.emit(Op::SetClass, node.line)
+    end
+
+    private def compile_lambda(node : Lambda) : Nil
+      lam_chunk = Compiler.compile_proc(node.body, in_block: true)
+      lam_val = Value.string("__lambda__")
+      lam_idx = @chunk.add_const(lam_val)
+      @chunk.emit(Op::Const, node.line, c: lam_idx)
+    end
+
+    # --- Control flow -------------------------------------------------------
+
+    private def compile_if(node : IfNode) : Nil
+      compile_node(node.cond)
+      jmp_false = @chunk.emit_jump(Op::JumpIfFalse, node.line)
+      compile_body(node.then_branch)
+      patches = [jmp_false] of Int32
+
+      node.elsif_branches.each do |elsif_cond, elsif_body|
+        jmp_end = @chunk.emit_jump(Op::Jump, node.line)
+        patches << jmp_end
+        @chunk.patch_jump(patches.shift, @chunk.pos)
+        compile_node(elsif_cond)
+        jmp_f = @chunk.emit_jump(Op::JumpIfFalse, node.line)
+        compile_body(elsif_body)
+        patches.unshift(jmp_f)
+      end
+
+      jmp_end = @chunk.emit_jump(Op::Jump, node.line)
+      @chunk.patch_jump(patches.first, @chunk.pos)
+      if else_b = node.else_branch
+        compile_body(else_b)
+      else
+        emit_nil(node.line)
+      end
+      @chunk.patch_jump(jmp_end, @chunk.pos)
+    end
+
+    private def compile_unless(node : UnlessNode) : Nil
+      compile_node(node.cond)
+      jmp_true = @chunk.emit_jump(Op::JumpIfFalse, node.line)
+      jmp_body = @chunk.emit_jump(Op::Jump, node.line)
+      @chunk.patch_jump(jmp_true, @chunk.pos)
+      compile_body(node.then_branch)
+      jmp_end = @chunk.emit_jump(Op::Jump, node.line)
+      @chunk.patch_jump(jmp_body, @chunk.pos)
+      if else_b = node.else_branch
+        compile_body(else_b)
+      else
+        emit_nil(node.line)
+      end
+      @chunk.patch_jump(jmp_end, @chunk.pos)
+    end
+
+    private def compile_while(node : WhileNode) : Nil
+      raise CompileError.new("loop nesting too deep", node.line, node.column) if @loop_stack.size >= MAX_LOOP_DEPTH
+      loop_start = @chunk.pos
+      scope = LoopScope.new(loop_start)
+      @loop_stack.push(scope)
+
+      compile_node(node.cond)
+      # For `until`, invert the condition
+      @chunk.emit(Op::Not, node.line) if node.until_loop?
+      jmp_exit = @chunk.emit_jump(Op::JumpIfFalse, node.line)
+      scope.body_pos = @chunk.pos
+
+      compile_body(node.body)
+      @chunk.emit(Op::Pop, node.line)
+      @chunk.emit(Op::Jump, node.line, c: loop_start.to_u32)
+      @chunk.patch_jump(jmp_exit, @chunk.pos)
+
+      scope = @loop_stack.pop
+      scope.breaks.each { |b| @chunk.patch_jump(b, @chunk.pos) }
+      emit_nil(node.line)
+    end
+
+    private def compile_loop(node : LoopNode) : Nil
+      raise CompileError.new("loop nesting too deep", node.line, node.column) if @loop_stack.size >= MAX_LOOP_DEPTH
+      loop_start = @chunk.pos
+      scope = LoopScope.new(loop_start)
+      scope.body_pos = loop_start
+      @loop_stack.push(scope)
+
+      compile_body(node.body)
+      @chunk.emit(Op::Pop, node.line)
+      @chunk.emit(Op::Jump, node.line, c: loop_start.to_u32)
+
+      scope = @loop_stack.pop
+      scope.breaks.each { |b| @chunk.patch_jump(b, @chunk.pos) }
+      emit_nil(node.line)
+    end
+
+    private def compile_for(node : ForNode) : Nil
+      # Desugar: `for i in expr do body end`
+      # → `expr.each { |i| body }`
+      compile_node(node.iter)
+      # Build a synthetic block
+      sym_idx = add_symbol("each")
+      nil_idx = @chunk.add_const(Value.nil_value)
+      @chunk.emit(Op::SetBlock, node.line, c: nil_idx)
+      @chunk.emit(Op::Call, node.line, a: 1_u8, c: sym_idx)
+    end
+
+    private def compile_case(node : CaseNode) : Nil
+      end_patches = [] of Int32
+
+      if subject = node.subject
+        compile_node(subject)
+      end
+
+      node.whens.each do |patterns, when_body|
+        pattern_patches = [] of Int32
+        patterns.each_with_index do |pat, i|
+          if node.subject
+            @chunk.emit(Op::Dup, node.line)
+            compile_node(pat)
+            sym_idx = add_symbol("===")
+            nil_idx = @chunk.add_const(Value.nil_value)
+            @chunk.emit(Op::SetBlock, node.line, c: nil_idx)
+            @chunk.emit(Op::Call, node.line, a: 2_u8, c: sym_idx)
+          else
+            compile_node(pat)
+          end
+          pattern_patches << @chunk.emit_jump(Op::JumpIfTrue, node.line)
+        end
+        jmp_skip = @chunk.emit_jump(Op::Jump, node.line)
+        pattern_patches.each { |p| @chunk.patch_jump(p, @chunk.pos) }
+        @chunk.emit(Op::Pop, node.line) if node.subject # pop subject dup
+        compile_body(when_body)
+        end_patches << @chunk.emit_jump(Op::Jump, node.line)
+        @chunk.patch_jump(jmp_skip, @chunk.pos)
+      end
+
+      @chunk.emit(Op::Pop, node.line) if node.subject # pop remaining subject
+      if else_b = node.else_branch
+        compile_body(else_b)
+      else
+        emit_nil(node.line)
+      end
+      end_patches.each { |p| @chunk.patch_jump(p, @chunk.pos) }
+    end
+
+    private def compile_return(node : ReturnNode) : Nil
+      if v = node.value
+        compile_node(v)
+      else
+        emit_nil(node.line)
+      end
+      @chunk.emit(Op::Ret, node.line)
+    end
+
+    private def compile_break(node : BreakNode) : Nil
+      if v = node.value
+        compile_node(v)
+      else
+        emit_nil(node.line)
+      end
+      if !@loop_stack.empty?
+        jmp = @chunk.emit_jump(Op::Jump, node.line)
+        @loop_stack.last.breaks << jmp
+      else
+        @chunk.emit(Op::BlockBreak, node.line)
+      end
+    end
+
+    private def compile_next(node : NextNode) : Nil
+      if !@loop_stack.empty?
+        if v = node.value
+          compile_node(v)
+          @chunk.emit(Op::Pop, node.line)
+        end
+        @chunk.emit(Op::Jump, node.line, c: @loop_stack.last.start_pos.to_u32)
+      else
+        if v = node.value
+          compile_node(v)
+        else
+          emit_nil(node.line)
+        end
+        @chunk.emit(Op::Ret, node.line)
+      end
+    end
+
+    private def compile_redo(node : RedoNode) : Nil
+      raise CompileError.new("redo outside loop", node.line, node.column) if @loop_stack.empty?
+      @chunk.emit(Op::Jump, node.line, c: @loop_stack.last.body_pos.to_u32)
+    end
+
+    private def compile_yield(node : YieldNode) : Nil
+      node.args.each { |a| compile_node(a) }
+      @chunk.emit(Op::Yield, node.line, a: node.args.size.to_u8)
+    end
+
+    private def compile_super(node : SuperNode) : Nil
+      node.args.each { |a| compile_node(a) }
+      sym_idx = add_symbol("super")
+      nil_idx = @chunk.add_const(Value.nil_value)
+      @chunk.emit(Op::SetBlock, node.line, c: nil_idx)
+      @chunk.emit(Op::Call, node.line, a: node.args.size.to_u8, c: sym_idx)
+    end
+
+    # --- Exception handling -------------------------------------------------
+
+    private def compile_begin(node : BeginNode) : Nil
+      if node.rescue_body.nil? && node.ensure_body.nil?
+        compile_body(node.body)
+        return
+      end
+
+      try_at = @chunk.emit_jump(Op::Try, node.line)
+      if node.ensure_body
+        ensure_at = @chunk.emit_jump(Op::SetEnsure, node.line)
+      end
+
+      compile_body(node.body)
+      @chunk.emit(Op::EndTry, node.line)
+
+      if rescue_body = node.rescue_body
+        jmp_past_rescue = @chunk.emit_jump(Op::Jump, node.line)
+        @chunk.patch_jump(try_at, @chunk.pos)
+        if rvar = node.rescue_var
+          @chunk.emit(Op::PushError, node.line)
+          sym_idx = add_symbol(rvar)
+          @chunk.emit(Op::SetGlobal, node.line, c: sym_idx)
+          @chunk.emit(Op::Pop, node.line)
+        end
+        compile_body(rescue_body)
+        @chunk.patch_jump(jmp_past_rescue, @chunk.pos)
+      end
+
+      if ensure_body = node.ensure_body
+        @chunk.patch_jump(ensure_at.not_nil!, @chunk.pos)
+        @chunk.emit(Op::EnterEnsure, node.line)
+        compile_body(ensure_body)
+      end
+    end
+
+    private def compile_retry(node : RetryNode) : Nil
+      @chunk.emit(Op::Retry, node.line)
+    end
+
+    # --- Misc ---------------------------------------------------------------
+
+    private def compile_require(node : RequireNode) : Nil
+      compile_node(node.path)
+      sym_idx = add_symbol("require")
+      nil_idx = @chunk.add_const(Value.nil_value)
+      @chunk.emit(Op::SetBlock, node.line, c: nil_idx)
+      @chunk.emit(Op::Call, node.line, a: 1_u8, c: sym_idx)
+    end
+
+    private def compile_alias(node : AliasNode) : Nil
+      # alias is handled as a runtime call: __alias__(new_name, old_name)
+      new_idx = @chunk.add_const(Value.symbol(node.new_name))
+      old_idx = @chunk.add_const(Value.symbol(node.old_name))
+      @chunk.emit(Op::Const, node.line, c: new_idx)
+      @chunk.emit(Op::Const, node.line, c: old_idx)
+      sym_idx = add_symbol("__alias__")
+      nil_idx = @chunk.add_const(Value.nil_value)
+      @chunk.emit(Op::SetBlock, node.line, c: nil_idx)
+      @chunk.emit(Op::Call, node.line, a: 2_u8, c: sym_idx)
+    end
+
+    private def compile_modifier_if(node : ModifierIf) : Nil
+      compile_node(node.cond)
+      @chunk.emit(Op::Not, node.line) if node.negated?
+      jmp_skip = @chunk.emit_jump(Op::JumpIfFalse, node.line)
+      compile_node(node.body)
+      jmp_end = @chunk.emit_jump(Op::Jump, node.line)
+      @chunk.patch_jump(jmp_skip, @chunk.pos)
+      emit_nil(node.line)
+      @chunk.patch_jump(jmp_end, @chunk.pos)
+    end
+
+    private def compile_modifier_while(node : ModifierWhile) : Nil
+      raise CompileError.new("loop nesting too deep", node.line, node.column) if @loop_stack.size >= MAX_LOOP_DEPTH
+      loop_start = @chunk.pos
+      scope = LoopScope.new(loop_start)
+      scope.body_pos = loop_start
+      @loop_stack.push(scope)
+
+      compile_node(node.body)
+      compile_node(node.cond)
+      @chunk.emit(Op::Not, node.line) if node.until_loop?
+      jmp_exit = @chunk.emit_jump(Op::JumpIfFalse, node.line)
+      @chunk.emit(Op::Jump, node.line, c: loop_start.to_u32)
+      @chunk.patch_jump(jmp_exit, @chunk.pos)
+
+      scope = @loop_stack.pop
+      scope.breaks.each { |b| @chunk.patch_jump(b, @chunk.pos) }
+      emit_nil(node.line)
+    end
+
+    # --- Helpers ------------------------------------------------------------
+
+    private def add_symbol(name : String) : UInt32
+      @chunk.add_const(Value.symbol(name))
+    end
+  end
+end

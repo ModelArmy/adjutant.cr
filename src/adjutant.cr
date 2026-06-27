@@ -4,6 +4,8 @@ require "./adjutant/token"
 require "./adjutant/lexer"
 require "./adjutant/ast"
 require "./adjutant/parser"
+require "./adjutant/bytecode"
+require "./adjutant/compiler"
 
 module Adjutant
   # Read this at compile time from shard.yml one day
