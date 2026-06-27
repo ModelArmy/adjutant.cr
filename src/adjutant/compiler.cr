@@ -283,6 +283,7 @@ module Adjutant
       @chunk.emit(Op::Call, node.line, a: 2_u8, c: sym_idx)
     end
 
+    # ameba:disable Metrics/CyclomaticComplexity
     private def binary_op(op : TokenKind) : Op
       case op
       when TokenKind::Plus    then Op::Add
@@ -403,13 +404,13 @@ module Adjutant
     # --- Calls --------------------------------------------------------------
 
     private def compile_call(node : Call) : Nil
-      if node.receiver
-        compile_node(node.receiver.not_nil!)
+      if recv = node.receiver
+        compile_node(recv)
       end
       node.args.each { |arg| compile_node(arg) }
       # Register block if present
       if blk = node.block
-        blk_chunk = Compiler.compile_proc(blk.body, @symbols, in_block: true)
+        _blk_chunk = Compiler.compile_proc(blk.body, @symbols, in_block: true)
         blk_val = Value.string("__block__") # placeholder; VM will wrap as Proc
         blk_idx = @chunk.add_const(blk_val)
         @chunk.emit(Op::SetBlock, node.line, c: blk_idx)
@@ -442,7 +443,7 @@ module Adjutant
     # --- Definitions --------------------------------------------------------
 
     private def compile_def(node : DefNode) : Nil
-      proc_chunk = Compiler.compile_proc(node.body, @symbols)
+      _proc_chunk = Compiler.compile_proc(node.body, @symbols)
       proc_val = Value.string("__proc__:#{node.name}") # placeholder; VM wraps as Proc
       proc_idx = @chunk.add_const(proc_val)
       @chunk.emit(Op::Const, node.line, c: proc_idx)
@@ -497,7 +498,7 @@ module Adjutant
     end
 
     private def compile_lambda(node : Lambda) : Nil
-      lam_chunk = Compiler.compile_proc(node.body, @symbols, in_block: true)
+      _lam_chunk = Compiler.compile_proc(node.body, @symbols, in_block: true)
       lam_val = Value.string("__lambda__")
       lam_idx = @chunk.add_const(lam_val)
       @chunk.emit(Op::Const, node.line, c: lam_idx)
@@ -702,9 +703,9 @@ module Adjutant
       end
 
       try_at = @chunk.emit_jump(Op::Try, node.line)
-      if node.ensure_body
-        ensure_at = @chunk.emit_jump(Op::SetEnsure, node.line)
-      end
+      ensure_at = if node.ensure_body
+                    @chunk.emit_jump(Op::SetEnsure, node.line)
+                  end
 
       compile_body(node.body)
       @chunk.emit(Op::EndTry, node.line)
@@ -723,7 +724,9 @@ module Adjutant
       end
 
       if ensure_body = node.ensure_body
-        @chunk.patch_jump(ensure_at.not_nil!, @chunk.pos)
+        if ea = ensure_at
+          @chunk.patch_jump(ea, @chunk.pos)
+        end
         @chunk.emit(Op::EnterEnsure, node.line)
         compile_body(ensure_body)
       end
