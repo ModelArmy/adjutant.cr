@@ -20,7 +20,56 @@ dependencies:
 
 ## Usage
 
-> TODO
+The entry point is `Adjutant::Interpreter`. It owns a symbol table and globals that persist across multiple `eval` calls, making it suitable for a long-lived agent session.
+
+```crystal
+require "adjutant"
+
+# Define the physical effect boundary — what the script can write and read.
+effect = Adjutant::TestEffectHandler.new  # or your own EffectHandler subclass
+
+# Set execution limits (optional).
+limits = Adjutant::ExecutionLimits.new(
+  instruction_limit: 100_000_u64,
+  call_depth_limit:  256
+)
+
+interp = Adjutant::Interpreter.new(effect: effect, limits: limits)
+
+# Register capabilities the script is allowed to use.
+# Scripts access these exclusively via `require`.
+interp.modules.register("agent/io") do |i|
+  i.define_native("read_input") { |_args| Adjutant::Value.string(gets || "") }
+end
+
+# Run a script from a file.
+begin
+  File.open("script.rb") do |io|
+    result = interp.eval(io, "script.rb")
+    puts "Result: #{result}"
+  end
+rescue Adjutant::RuntimeError => e
+  STDERR.puts "Script error: #{e.message}"
+rescue Adjutant::ParseError => e
+  STDERR.puts "Parse error: #{e.message}"
+end
+
+# Inspect what the script wrote to stdout.
+puts effect.stdout
+```
+
+You can also compile without executing — useful for pre-validating LLM-generated scripts before running them:
+
+```crystal
+begin
+  chunk = interp.compile(source, "script.rb")
+  # chunk is an Adjutant::Chunk you can inspect or execute later
+rescue Adjutant::ParseError => e
+  STDERR.puts "Invalid script: #{e.message}"
+end
+```
+
+Globals persist across `eval` calls on the same interpreter instance, so scripts can be evaluated incrementally across a conversation turn.
 
 ## Development
 

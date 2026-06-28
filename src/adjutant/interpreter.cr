@@ -85,13 +85,12 @@ module Adjutant
     # Install a native function as a global callable from scripts.
     def define_native(name : String, &block : Array(Value) -> Value) : Nil
       sym = @symbols.intern(name)
-      @native_funcs ||= {} of Int32 => NativeFunc
-      @native_funcs.not_nil![sym.value] = NativeFunc.new { |args| block.call(args) }
+      native_funcs[sym.value] = NativeFunc.new { |args| block.call(args) }
     end
 
     # Look up a native function by symbol ID — called by VM dispatch.
     def native_func(sym_id : Int32) : NativeFunc?
-      @native_funcs.try(&.[sym_id]?)
+      @native_funcs[sym_id]?
     end
 
     private def make_vm : VM
@@ -99,6 +98,10 @@ module Adjutant
     end
 
     @globals : Hash(Int32, Value) = {} of Int32 => Value
-    @native_funcs : Hash(Int32, NativeFunc)? = nil
+    @native_funcs = {} of Int32 => NativeFunc
+
+    private def native_funcs : Hash(Int32, NativeFunc)
+      @native_funcs
+    end
   end
 end
