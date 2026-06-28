@@ -35,7 +35,7 @@ jobs:
           path: |
             lib
             bin/ameba
-          key: ${{ runner.os }}-shards-${{ hashFiles('**/shard.lock') }}
+          key: ${{ matrix.os }}-shards-${{ hashFiles('**/shard.lock') }}
 
       # ---- Build debug release and check code quality on all platforms
 
