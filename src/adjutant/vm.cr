@@ -10,7 +10,7 @@ module Adjutant
     getter chunk : Chunk
     getter name : String
     getter params : Array(String)
-    getter is_block : Bool
+    getter? is_block : Bool
 
     def initialize(@chunk, @name, @params = [] of String, @is_block = false)
     end
@@ -236,25 +236,25 @@ module Adjutant
           push(result) unless @frames.empty?
 
           # --- Arithmetic -----------------------------------------------------
-        when Op::Add    then exec_binary(inst) { |a, b| arith_add(a, b) }
-        when Op::Sub    then exec_binary(inst) { |a, b| arith_op(a, b, :-) }
-        when Op::Mul    then exec_binary(inst) { |a, b| arith_op(a, b, :*) }
-        when Op::Div    then exec_binary(inst) { |a, b| arith_div(a, b) }
-        when Op::Mod    then exec_binary(inst) { |a, b| arith_mod(a, b) }
-        when Op::BitAnd then exec_binary(inst) { |a, b| int_op(a, b, :&) }
-        when Op::BitOr  then exec_binary(inst) { |a, b| int_op(a, b, :|) }
-        when Op::Xor    then exec_binary(inst) { |a, b| int_op(a, b, :^) }
-        when Op::Shl    then exec_binary(inst) { |a, b| int_op(a, b, :<<) }
-        when Op::Shr    then exec_binary(inst) { |a, b| int_op(a, b, :>>) }
+        when Op::Add    then exec_binary(inst) { |lhs, rhs| arith_add(lhs, rhs) }
+        when Op::Sub    then exec_binary(inst) { |lhs, rhs| arith_op(lhs, rhs, :-) }
+        when Op::Mul    then exec_binary(inst) { |lhs, rhs| arith_op(lhs, rhs, :*) }
+        when Op::Div    then exec_binary(inst) { |lhs, rhs| arith_div(lhs, rhs) }
+        when Op::Mod    then exec_binary(inst) { |lhs, rhs| arith_mod(lhs, rhs) }
+        when Op::BitAnd then exec_binary(inst) { |lhs, rhs| int_op(lhs, rhs, :&) }
+        when Op::BitOr  then exec_binary(inst) { |lhs, rhs| int_op(lhs, rhs, :|) }
+        when Op::Xor    then exec_binary(inst) { |lhs, rhs| int_op(lhs, rhs, :^) }
+        when Op::Shl    then exec_binary(inst) { |lhs, rhs| int_op(lhs, rhs, :<<) }
+        when Op::Shr    then exec_binary(inst) { |lhs, rhs| int_op(lhs, rhs, :>>) }
           # --- Comparison -----------------------------------------------------
 
         when Op::Eq
           b, a = pop, pop
           push(Value.bool(values_equal?(a, b)))
-        when Op::Lt  then exec_binary(inst) { |a, b| compare_op(a, b, :<) }
-        when Op::Lte then exec_binary(inst) { |a, b| compare_op(a, b, :<=) }
-        when Op::Gt  then exec_binary(inst) { |a, b| compare_op(a, b, :>) }
-        when Op::Gte then exec_binary(inst) { |a, b| compare_op(a, b, :>=) }
+        when Op::Lt  then exec_binary(inst) { |lhs, rhs| compare_op(lhs, rhs, :<) }
+        when Op::Lte then exec_binary(inst) { |lhs, rhs| compare_op(lhs, rhs, :<=) }
+        when Op::Gt  then exec_binary(inst) { |lhs, rhs| compare_op(lhs, rhs, :>) }
+        when Op::Gte then exec_binary(inst) { |lhs, rhs| compare_op(lhs, rhs, :>=) }
           # --- Unary ----------------------------------------------------------
 
         when Op::Not
@@ -292,7 +292,7 @@ module Adjutant
           pairs = @stack.last(n)
           @stack.pop(n) if n > 0
           h = {} of Value => Value
-          pairs.each_slice(2) { |kv| h[kv[0]] = kv[1] }
+          pairs.each_slice(2) { |pair| h[pair[0]] = pair[1] }
           push(Value.new(h, nil))
         when Op::MakeRange
           rend = pop
@@ -306,15 +306,15 @@ module Adjutant
           n = inst.a.to_i
           parts = @stack.last(n)
           @stack.pop(n) if n > 0
-          str = parts.map { |p|
+          str = parts.map { |part|
             case
-            when p.string? then p.as_string
-            when p.int?    then p.as_int.to_s
-            when p.float?  then p.as_float.to_s
-            when p.bool?   then p.as_bool.to_s
-            when p.null?   then "nil"
-            when p.symbol? then p.as_sym.name
-            else                p.to_s
+            when part.string? then part.as_string
+            when part.int?    then part.as_int.to_s
+            when part.float?  then part.as_float.to_s
+            when part.bool?   then part.as_bool.to_s
+            when part.null?   then "nil"
+            when part.symbol? then part.as_sym.name
+            else                   part.to_s
             end
           }.join
           push(Value.string(str))
@@ -351,7 +351,7 @@ module Adjutant
         when Op::BlockBreak
           val = pop
           # Unwind to the nearest non-block frame
-          while !@frames.empty? && @frames.last.proc.is_block
+          while !@frames.empty? && @frames.last.proc.is_block?
             sb = @frames.last.stack_base; (@stack.size - sb).times { @stack.pop } if @stack.size > sb
             pop_frame
           end
@@ -386,7 +386,7 @@ module Adjutant
           @stack.pop(vc) if vc > 0
           # Pad or truncate to target count
           padded = Array(Value).new(tc) { |i| i < values.size ? values[i] : Value.nil_value }
-          padded.each { |v| push(v) }
+          padded.each { |value| push(value) }
         when Op::GetMethodName
           push(Value.string(f.proc.name))
         else
@@ -399,6 +399,7 @@ module Adjutant
 
     # --- Dispatch -----------------------------------------------------------
 
+    # ameba:disable Metrics/CyclomaticComplexity
     private def dispatch_call(name : String, args : Array(Value), safe : Bool, filename : String, line : Int32) : Value
       # Safe navigation: skip call if receiver (first arg) is nil
       if safe && !args.empty? && args.first.null?
@@ -429,7 +430,7 @@ module Adjutant
 
     private def call_proc(proc : ScriptProc, args : Array(Value), filename : String) : Value
       base = @stack.size
-      args.each { |a| push(a) }
+      args.each { |arg| push(arg) }
       push_frame(proc, filename, stack_base: base)
       execute
     end
@@ -439,15 +440,15 @@ module Adjutant
     private def exec_builtin(name : String, args : Array(Value), filename : String, line : Int32) : Value
       case name
       when "puts"
-        str = args.map { |a|
+        str = args.map { |arg|
           case
-          when a.string? then a.as_string
-          when a.null?   then "nil"
-          when a.bool?   then a.as_bool.to_s
-          when a.int?    then a.as_int.to_s
-          when a.float?  then a.as_float.to_s
-          when a.symbol? then a.as_sym.to_s
-          else                a.to_s
+          when arg.string? then arg.as_string
+          when arg.null?   then "nil"
+          when arg.bool?   then arg.as_bool.to_s
+          when arg.int?    then arg.as_int.to_s
+          when arg.float?  then arg.as_float.to_s
+          when arg.symbol? then arg.as_sym.to_s
+          else                  arg.to_s
           end
         }.join("\n")
         if ef = @effect
@@ -532,6 +533,7 @@ module Adjutant
 
     # --- Arithmetic helpers -------------------------------------------------
 
+    # ameba:disable Metrics/CyclomaticComplexity
     private def arith_add(a : Value, b : Value) : Value
       case
       when a.int? && b.int?       then Value.int(a.as_int + b.as_int)
@@ -544,6 +546,7 @@ module Adjutant
       end
     end
 
+    # ameba:disable Metrics/CyclomaticComplexity
     private def arith_op(a : Value, b : Value, op : Symbol) : Value
       case
       when a.int? && b.int?
@@ -582,6 +585,7 @@ module Adjutant
       end
     end
 
+    # ameba:disable Metrics/CyclomaticComplexity
     private def arith_mod(a : Value, b : Value) : Value
       raise RuntimeError.new("divided by 0") if (b.int? && b.as_int == 0) || (b.float? && b.as_float == 0.0)
       case
@@ -608,6 +612,7 @@ module Adjutant
       Value.int(n)
     end
 
+    # ameba:disable Metrics/CyclomaticComplexity
     private def compare_op(a : Value, b : Value, op : Symbol) : Value
       result = case
                when a.int? && b.int?
@@ -642,6 +647,7 @@ module Adjutant
       Value.bool(result)
     end
 
+    # ameba:disable Metrics/CyclomaticComplexity
     private def values_equal?(a : Value, b : Value) : Bool
       case
       when a.null? && b.null?     then true
@@ -658,6 +664,7 @@ module Adjutant
 
     # --- Index helpers ------------------------------------------------------
 
+    # ameba:disable Metrics/CyclomaticComplexity
     private def exec_get_index(target : Value, idx : Value, safe : Bool) : Value
       return Value.nil_value if safe && target.null?
       case
