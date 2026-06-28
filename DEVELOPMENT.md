@@ -20,16 +20,202 @@ This document explains how `adjutant` works internally. It is written for contri
 |`ops clean`                    |Remove debug and release build files                                              |
 |`ops wipe`                     |In addition to cleaning, remove all compiler caches                               |
 
-### Build and run for development
+### Run samples
 
-Use `ops run samples/<SOURCEFILE>` to compile and run the specific source.
+Run the following command to see `adjutant` in action with a sample runner (based on the example in the README) and sample Ruby script.
 
-### Build to run later
+```
+ops -q run samples/run_script -- samples/scripts/fib.rb
+```
 
-Run `ops build-release` to make a release build in the `bin/release/` folder
+You should receive the following output:
 
-Run `ops build-debug` to make a debug build in the `bin/debug/` folder
+```
+Result: 55
+```
 
 ## How Adjutant works
 
-> TODO
+Adjutant is a bytecode interpreter for a Ruby-like scripting language. Its design is shaped by four goals: safe execution of untrusted scripts, a clear and auditable effect boundary, syntax familiar to LLMs trained on Ruby, and a foundation for information flow control.
+
+### Pipeline overview
+
+A script moves through five stages before producing a result:
+
+```mermaid
+---
+displayMode: compact
+config:
+  layout: elk
+  themeVariables:
+    fontSize: 12px
+---
+flowchart LR
+    src[Source IO]
+    lex[Lexer]
+    par[Parser]
+    com[Compiler]
+    vm[VM]
+    val[Value]
+
+    src --> lex --> par --> com --> vm --> val
+```
+
+Each stage produces a self-contained artifact — `Array(Token)`, `Body` (AST), `Chunk` (bytecode), and finally a `Value`. Stages are independently testable and the compiler and VM can be used without going through the full pipeline.
+
+### Ownership and lifetime
+
+```mermaid
+---
+displayMode: compact
+config:
+  layout: elk
+  themeVariables:
+    fontSize: 12px
+---
+flowchart TD
+    interp[Interpreter]
+    sym[SymbolTable]
+    reg[ModuleRegistry]
+    globals[globals : Hash]
+    ef[EffectHandler]
+    vm[VM per eval]
+    chunk[Chunk per compile]
+
+    interp --> sym
+    interp --> reg
+    interp --> globals
+    interp --> ef
+    interp -.creates.-> vm
+    interp -.creates.-> chunk
+    vm --> sym
+    vm --> globals
+    vm --> ef
+```
+
+The `Interpreter` is long-lived and intended to span a full agent session. The `SymbolTable`, `ModuleRegistry`, and globals hash all persist across `eval` calls. A fresh `VM` is created for each execution but shares the interpreter's globals, so variables set in one `eval` are visible in the next.
+
+### The Lexer
+
+`Lexer` reads from an `IO` (eagerly into a `String` since random access is needed for peeking and lexeme slicing). It produces `Token` values carrying a `TokenKind`, lexeme string, line, and column. The source string is UTF-8 via Crystal's native `String`/`Char` handling — string and comment content in any language passes through verbatim. Identifier scanning uses `ascii_alphanumeric?` by design, so identifier names are currently ASCII-only.
+
+### The Parser
+
+`Parser` is a hand-written recursive descent parser with a Pratt loop for expression precedence. It consumes tokens from a `Lexer` and produces an `Body` — the root of the AST. AST nodes are Crystal classes rooted at `abstract class Node`, each carrying source position. The parser handles the full Ruby-like grammar including interpolated strings, blocks, modifier forms (`x if cond`), multi-assignment, and keyword arguments.
+
+Bare calls without parentheses (`puts x`) are only supported when the argument is an unambiguous literal. Identifiers as bare arguments are intentionally unsupported — this simplifies the grammar and produces clearer scripts for LLM generation.
+
+### The Compiler
+
+`Compiler` walks the AST and emits bytecode into a `Chunk`. It takes a `SymbolTable` reference so all symbol names are interned consistently across compilations in the same session.
+
+A `Chunk` contains an instruction array and a constant pool (`Array(Value)`). Instructions are fixed-size structs with an opcode and three immediates (`a : UInt8`, `b : UInt16`, `c : UInt32`). Jump targets are patched after the fact using `emit_jump` / `patch_jump`.
+
+Nested scopes (method bodies, blocks, lambdas) compile into child `Chunk` instances stored as constants in the parent chunk. This is a placeholder arrangement — a full proc/closure model will link chunks to `ScriptProc` values in a later phase.
+
+### The VM
+
+`VM` is a stack-based bytecode interpreter. It maintains a value stack (`Array(Value)`), a frame stack (`Array(Frame)`), and a shared globals hash. Each `Frame` holds a `ScriptProc`, an instruction pointer, a stack base offset, and optional rescue/ensure handler positions.
+
+The dispatch loop is a `case` on `Op` enum values, which LLVM compiles to a jump table. Each opcode handler is a short inline block — no method dispatch overhead on the hot path. Instrumentation hooks (for IFC or tracing) can be added as a single conditional before the dispatch without affecting the jump table.
+
+Execution limits (instruction count, call depth) are checked on every frame push and tick respectively.
+
+### The effect boundary
+
+The containment design separates physical effects from capability exposure:
+
+```mermaid
+---
+displayMode: compact
+config:
+  layout: elk
+  themeVariables:
+    fontSize: 12px
+---
+flowchart LR
+    script[Script]
+    ef[EffectHandler
+physical effects]
+    reg[ModuleRegistry
+capability exposure]
+    stdout[stdout]
+    vfs[VFS]
+    mods[ScriptModules]
+
+    script -->|puts / print| ef --> stdout
+    script -->|vfs_read| ef --> vfs
+    script -->|require| reg --> mods
+```
+
+`EffectHandler` handles physical effects — stdout writes and VFS reads. `ModuleRegistry` handles capability exposure — which native functions and objects a script can access. Scripts can only access capabilities that have been explicitly registered. The registry is auditable: `registered_paths` and `loaded_paths` show exactly what a script has access to and what it has used.
+
+### The Value model
+
+All runtime values are represented as `Value`, a Crystal struct:
+
+```crystal
+struct Value
+  getter raw   : Nil | Bool | Int64 | Float64 | String | Sym | Array(Value) | Hash(Value, Value)
+  getter label : SecurityLabel?
+end
+```
+
+Using a struct means values are stack-allocated and copied on assignment — no per-value heap allocation for scalars. Crystal's union type carries its own discriminant, eliminating the need for a separate tag. Type predicates (`null?`, `bool?`, `int?`, etc.) use `is_a?` on the union.
+
+Symbols are represented as `Sym` — a struct carrying an integer ID and an interned name string. The `SymbolTable` assigns stable IDs so symbol comparison is an integer equality check rather than a string comparison. A `SymbolTable` is owned by the `Interpreter` and shared across all compilations, so `:foo` always has the same ID regardless of which script introduced it.
+
+### Information flow control
+
+Every `Value` carries an optional `SecurityLabel` reference. Labels are heap-allocated classes so they can be shared across values without copying. When two labeled values are combined, their labels are joined via `SecurityLabel.join`, which computes the least upper bound in the label lattice.
+
+This is currently a stub — the lattice is a simple name-concatenation join and labels must be attached manually by native code (e.g. a module returning network data labels its values `{source: :network}`). The full IFC design will:
+
+- Define a proper lattice with partial order and meet/join operations
+- Track label propagation automatically through the VM dispatch loop
+- Enforce declassification policies at the effect boundary
+- Surface label information to the harness so the user can reason about data provenance
+
+The `SecurityLabel` field adds one pointer width to every `Value` struct. When no label is present the field is `nil`, which is a predictable nil-check on the hot path — easily branch-predicted and potentially eliminated by the compiler when IFC is disabled.
+
+### Writing a ScriptModule
+
+A `ScriptModule` is the unit of capability exposure. Implement the abstract class:
+
+```crystal
+class MyModule < Adjutant::ScriptModule
+  def name : String
+    "agent/mymodule"
+  end
+
+  def load(interp : Adjutant::Interpreter) : Nil
+    interp.define_native("my_func") do |args|
+      # args is Array(Adjutant::Value)
+      result = do_something(args.first.as_string)
+      Adjutant::Value.string(result)
+    end
+  end
+end
+
+interp.modules.register(MyModule.new)
+```
+
+For simpler cases, register with a block:
+
+```crystal
+interp.modules.register("agent/mymodule") do |i|
+  i.define_native("my_func") { |args| Adjutant::Value.string("hello") }
+end
+```
+
+Scripts load the module with `require "agent/mymodule"`. Each module is loaded at most once per interpreter instance regardless of how many times the script calls `require`.
+
+For IFC, attach labels to values your module returns:
+
+```crystal
+interp.define_native("fetch_data") do |args|
+  data = http_get(args.first.as_string)
+  label = Adjutant::SecurityLabel.new("network")
+  Adjutant::Value.string(data, label)
+end
+```
