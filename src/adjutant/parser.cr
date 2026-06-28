@@ -13,10 +13,15 @@ module Adjutant
   end
 
   class Parser
-    def initialize(source : String, filename : String = "<input>")
+    def initialize(source : IO, filename : String = "<input>")
       @lexer = Lexer.new(source, filename)
       @current = @lexer.next_token
       @next = @lexer.next_token
+    end
+
+    # Convenience constructor for string literals and tests.
+    def initialize(source : String, filename : String = "<input>")
+      initialize(IO::Memory.new(source), filename)
     end
 
     def parse : Body
