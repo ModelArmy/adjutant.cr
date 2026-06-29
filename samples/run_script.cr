@@ -2,6 +2,45 @@ require "../src/adjutant"
 
 class AssertError < RuntimeError; end
 
+# The `assert` module provides assertion test methods
+# which I hope to use to run more source tests.
+class AssertModule < Adjutant::ScriptModule
+  def name : String
+    "assert"
+  end
+
+  def load(interp : Adjutant::Interpreter) : Nil
+    interp.define_native("assert_equal") do |args|
+      if (a = args[0]?) && (b = args[1]?)
+        assert_equal(a, b)
+      else
+        raise AssertError.new("assert_equal: Expected 2 args, received #{args.size}")
+      end
+    end
+  end
+
+  # ---- implementations
+
+  private def assert_equal(a : Adjutant::Value, b : Adjutant::Value)
+    equal = case
+            when a.null? && b.null?     then true
+            when a.bool? && b.bool?     then a.as_bool == b.as_bool
+            when a.int? && b.int?       then a.as_int == b.as_int
+            when a.float? && b.float?   then a.as_float == b.as_float
+            when a.int? && b.float?     then a.as_int.to_f64 == b.as_float
+            when a.float? && b.int?     then a.as_float == b.as_int.to_f64
+            when a.string? && b.string? then a.as_string == b.as_string
+            when a.symbol? && b.symbol? then a.as_sym == b.as_sym
+            else                             false
+            end
+    if equal
+      Adjutant::Value.bool(true)
+    else
+      raise AssertError.new("assert_equal: #{a.inspect} != #{b.inspect} ")
+    end
+  end
+end
+
 USAGE = "Usage: run_script FILE\n\nOpen, compile and interpret the Ruby-ish script"
 
 script_file = ARGV.first?.try(&.strip)
@@ -20,35 +59,7 @@ interp = Adjutant::Interpreter.new(effect: effect, limits: limits)
 
 # Register capabilities the script is allowed to use.
 # Scripts access these exclusively via `require`.
-#
-# The `assert` module provides assertion test methods
-# which I hope to use to run more source tests.
-interp.modules.register("assert") do |i|
-  i.define_native("assert_equal") do |args|
-    a = args[0]?
-    b = args[1]?
-    if a && b
-      equal = case
-              when a.null? && b.null?     then true
-              when a.bool? && b.bool?     then a.as_bool == b.as_bool
-              when a.int? && b.int?       then a.as_int == b.as_int
-              when a.float? && b.float?   then a.as_float == b.as_float
-              when a.int? && b.float?     then a.as_int.to_f64 == b.as_float
-              when a.float? && b.int?     then a.as_float == b.as_int.to_f64
-              when a.string? && b.string? then a.as_string == b.as_string
-              when a.symbol? && b.symbol? then a.as_sym == b.as_sym
-              else                             false
-              end
-      if equal
-        Adjutant::Value.bool(true)
-      else
-        raise AssertError.new("assert_equal: #{a.inspect} != #{b.inspect} ")
-      end
-    else
-      raise AssertError.new("assert_equal: Expected 2 args, received #{args.size}")
-    end
-  end
-end
+interp.modules.register(AssertModule.new)
 
 # Run a script from a file.
 begin
