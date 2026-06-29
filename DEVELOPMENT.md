@@ -25,7 +25,7 @@ This document explains how `adjutant` works internally. It is written for contri
 Run the following command to see `adjutant` in action with a sample runner (based on the example in the README) and sample Ruby script.
 
 ```
-ops -q run samples/run_script -- samples/scripts/fib.rb
+ops -q run samples/run_script -- samples/scripts/fib_10.rb
 ```
 
 You should receive the following output:
