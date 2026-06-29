@@ -3,16 +3,17 @@ require "./symbol_table"
 require "./value"
 
 module Adjutant
-  # A native function callable from scripts.
-  # Receives the interpreter, arguments, and returns a Value.
   # A compiled proc (method body or block).
+  # Can be stored as a Value in the constant pool
+  # and passed as a first-class script value.
   class ScriptProc
     getter chunk : Chunk
     getter name : String
     getter params : Array(String)
+    getter local_count : Int32
     getter? is_block : Bool
 
-    def initialize(@chunk, @name, @params = [] of String, @is_block = false)
+    def initialize(@chunk, @name, @params = [] of String, @local_count = 0, @is_block = false)
     end
   end
 
@@ -23,20 +24,23 @@ module Adjutant
     property ip : Int32
     property stack_base : Int32
     getter filename : String
-
-    # The block passed to this call, if any.
     property block : ScriptProc?
-
-    # rescue handler ip — 0 means no handler active
     property rescue_ip : Int32
-
-    # ensure block ip — 0 means no ensure
     property ensure_ip : Int32
 
-    def initialize(@proc, @chunk, @stack_base, @filename, @block = nil)
+    # Local variable slots — sized from ScriptProc#local_count at frame creation.
+    getter locals : Array(Value)
+
+    # Captured locals from the enclosing frame (for block closures).
+    # nil for method frames; set to the enclosing frame's locals for blocks.
+    property outer_locals : Array(Value)?
+
+    def initialize(@proc, @chunk, @stack_base, @filename, @block = nil, outer : Array(Value)? = nil)
       @ip = 0
       @rescue_ip = 0
       @ensure_ip = 0
+      @locals = Array(Value).new(@proc.local_count, Value.nil_value)
+      @outer_locals = outer
     end
   end
 
@@ -99,11 +103,11 @@ module Adjutant
       @globals[sym.value] = value
     end
 
-    private def push_frame(proc : ScriptProc, filename : String, block : ScriptProc? = nil, stack_base : Int32 = @stack.size) : Frame
+    private def push_frame(proc : ScriptProc, filename : String, block : ScriptProc? = nil, stack_base : Int32 = @stack.size, outer : Array(Value)? = nil) : Frame
       if @limits.call_depth_limit > 0 && @frames.size >= @limits.call_depth_limit
         raise RuntimeError.new("call stack too deep (limit: #{@limits.call_depth_limit})", filename, 0)
       end
-      frame = Frame.new(proc, proc.chunk, stack_base, filename, block)
+      frame = Frame.new(proc, proc.chunk, stack_base, filename, block, outer)
       @frames.push(frame)
       frame
     end
@@ -212,12 +216,8 @@ module Adjutant
 
           # --- Calls ----------------------------------------------------------
         when Op::SetBlock
-          blk_val = chunk.consts[inst.c]
-          @current_block = if blk_val.string? && blk_val.as_string == "__block__"
-                             @current_block # already set from block compilation — no-op placeholder
-                           else
-                             nil
-                           end
+          v = pop
+          @current_block = v.proc? ? v.as_proc.as(ScriptProc) : nil
         when Op::Call, Op::SafeCall
           sym = chunk.consts[inst.c].as_sym
           argc = inst.a.to_i
@@ -226,8 +226,12 @@ module Adjutant
           args = @stack.last(argc)
           @stack.pop(argc) if argc > 0
 
-          result = dispatch_call(sym.name, args, safe, f.filename, inst.line)
-          push(result)
+          depth_before = @frames.size
+          result = dispatch_call(sym.name, args, safe, f.filename, inst.line, @current_block)
+          @current_block = nil
+          # If dispatch pushed a new ScriptProc frame, do NOT push the
+          # sentinel return value — Op::Ret will push the real result.
+          push(result) if @frames.size == depth_before
         when Op::Ret
           result = pop
           # Drain locals back to stack_base
@@ -319,6 +323,31 @@ module Adjutant
           }.join
           push(Value.string(str))
 
+          # --- Local variables ------------------------------------------------
+        when Op::GetLocal
+          slot = inst.c.to_i
+          push(slot < f.locals.size ? f.locals[slot] : Value.nil_value)
+        when Op::SetLocal
+          val = pop
+          slot = inst.c.to_i
+          if slot < f.locals.size
+            f.locals[slot] = val
+          else
+            f.locals << val
+          end
+          push(val)
+        when Op::GetOuter
+          slot = inst.c.to_i
+          outer = f.outer_locals
+          push(outer && slot < outer.size ? outer[slot] : Value.nil_value)
+        when Op::SetOuter
+          val = pop
+          slot = inst.c.to_i
+          outer = f.outer_locals
+          outer[slot] = val if outer && slot < outer.size
+          push(val)
+        when Op::MakeProc
+          push(chunk.consts[inst.c])
           # --- Class / module (stubs) ----------------------------------------
         when Op::GetClass
           push(@current_self) # simplified until object model lands
@@ -329,11 +358,15 @@ module Adjutant
           name_sym = chunk.consts[inst.c].as_sym
           push(Value.string("__class__:#{name_sym.name}"))
         when Op::DefMethod
-          _proc_val = pop # placeholder until object model lands
+          proc_val = pop
+          name_sym = chunk.consts[inst.c].as_sym
+          @globals[@symbols.intern(name_sym.name).value] = proc_val
           push(Value.nil_value)
         when Op::DefSingleton
           _recv = pop
-          _proc_val = pop
+          proc_val = pop
+          name_sym = chunk.consts[inst.c].as_sym
+          @globals[@symbols.intern(name_sym.name).value] = proc_val
           push(Value.nil_value)
 
           # --- Block / yield --------------------------------------------------
@@ -343,8 +376,9 @@ module Adjutant
           @stack.pop(argc) if argc > 0
           blk = f.block
           if blk
-            result = call_proc(blk, args, f.filename)
-            push(result)
+            depth_before = @frames.size
+            result = call_script_proc(blk, args, f.filename, nil, f.locals)
+            push(result) if @frames.size == depth_before
           else
             raise runtime_error("no block given", f)
           end
@@ -399,8 +433,7 @@ module Adjutant
 
     # --- Dispatch -----------------------------------------------------------
 
-    # ameba:disable Metrics/CyclomaticComplexity
-    private def dispatch_call(name : String, args : Array(Value), safe : Bool, filename : String, line : Int32) : Value
+    private def dispatch_call(name : String, args : Array(Value), safe : Bool, filename : String, line : Int32, blk : ScriptProc? = nil) : Value
       # Safe navigation: skip call if receiver (first arg) is nil
       if safe && !args.empty? && args.first.null?
         return Value.nil_value
@@ -414,30 +447,37 @@ module Adjutant
         end
       end
 
-      # Check globals for a proc
+      # Check globals for a ScriptProc
       sym = @symbols.lookup(name)
       if sym
         gval = @globals[sym.value]?
-        if gval && gval.string? && gval.as_string.starts_with?("__proc__:")
-          # ScriptProc stub — will be replaced with real Proc value in Phase 6
-          return Value.nil_value
+        if gval && gval.proc?
+          sproc = gval.as_proc.as(ScriptProc)
+          return call_script_proc(sproc, args, filename, blk, nil)
         end
       end
 
       # Built-in fallback operations
-      exec_builtin(name, args, filename, line)
+      exec_builtin(name, args, filename, line, blk)
     end
 
-    private def call_proc(proc : ScriptProc, args : Array(Value), filename : String) : Value
+    # Call a ScriptProc, binding arguments to param slots and optionally
+    # passing a block and outer locals for closure capture.
+    # Does NOT call execute recursively — pushes the frame and returns a
+    # sentinel. The outer execute loop continues with the new frame, and
+    # Op::Ret restores the caller frame automatically.
+    private def call_script_proc(proc : ScriptProc, args : Array(Value), filename : String, blk : ScriptProc? = nil, outer : Array(Value)? = nil) : Value
       base = @stack.size
-      args.each { |arg| push(arg) }
-      push_frame(proc, filename, stack_base: base)
-      execute
+      frame = push_frame(proc, filename, block: blk, stack_base: base, outer: outer)
+      args.each_with_index do |arg, i|
+        frame.locals[i] = arg if i < frame.locals.size
+      end
+      Value.nil_value # sentinel; Op::Ret will push the real return value
     end
 
     # Minimal built-ins needed for specs to pass before stdlib lands.
     # ameba:disable Metrics/CyclomaticComplexity
-    private def exec_builtin(name : String, args : Array(Value), filename : String, line : Int32) : Value
+    private def exec_builtin(name : String, args : Array(Value), filename : String, line : Int32, blk : ScriptProc? = nil) : Value
       case name
       when "puts"
         str = args.map { |arg|

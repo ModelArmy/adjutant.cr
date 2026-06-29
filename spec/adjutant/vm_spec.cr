@@ -349,6 +349,127 @@ require "once"))
       end
     end
 
+    describe "methods and closures" do
+      it "calls a def with params" do
+        src = <<-RUBY
+def add(a, b)
+a + b
+end
+add(3, 4)
+RUBY
+        eval(src).as_int.should eq 7_i64
+      end
+
+      it "isolates method locals from global scope" do
+        src = <<-RUBY
+        x = 1
+        def set_x
+          x = 99
+        end
+        set_x
+        x
+        RUBY
+        eval(src).as_int.should eq 1_i64
+      end
+
+      it "evaluates a recursive method" do
+        src = <<-RUBY
+        def fact(n)
+          return 1 if n < 2
+          n * fact(n - 1)
+        end
+        fact(5)
+        RUBY
+        eval(src).as_int.should eq 120_i64
+      end
+
+      it "supports multiple params" do
+        src = <<-RUBY
+        def greet(a, b, c)
+          a + b + c
+        end
+        greet(1, 2, 3)
+        RUBY
+        eval(src).as_int.should eq 6_i64
+      end
+
+      it "supports local variables inside a method" do
+        src = <<-RUBY
+        def double(n)
+          result = n * 2
+          result
+        end
+        double(21)
+        RUBY
+        eval(src).as_int.should eq 42_i64
+      end
+
+      it "supports default-nil return when body is empty" do
+        src = <<-RUBY
+        def noop()
+        end
+        noop()
+        RUBY
+        eval(src).null?.should be_true
+      end
+
+      it "yields to a block" do
+        src = <<-RUBY
+        def call_block
+          yield 10
+        end
+        call_block { |x| x * 2 }
+        RUBY
+        eval(src).as_int.should eq 20_i64
+      end
+
+      it "block does not capture enclosing local via closure" do
+        src = <<-RUBY
+        def run
+          total = 0
+          yield 1
+          yield 2
+          yield 3
+          total
+        end
+        run { |x| total += x }
+        RUBY
+        # block's SetOuter writes back to method's total slot
+        expect_raises(Adjutant::RuntimeError) do
+          eval(src)
+        end
+      end
+
+      it "computes fibonacci recursively" do
+        src = <<-RUBY
+        def fib(n)
+          return n if n < 2
+          fib(n - 1) + fib(n - 2)
+        end
+        fib(3)
+        RUBY
+        eval(src).as_int.should eq 2_i64
+      end
+
+      it "return value accumulates across calls" do
+        interp, _ = make_interp
+        interp.eval("total = 0")
+        src = <<-RUBY
+        def add_one(n)
+          n + 1
+        end
+        RUBY
+        interp.eval(src)
+        src = <<-RUBY
+        total = add_one(total)
+        total = add_one(total)
+        total = add_one(total)
+        RUBY
+        interp.eval(src)
+        interp.get_global("total").as_int.should eq 3_i64
+      end
+    end
+
     describe "realistic programs" do
       it "computes fibonacci iteratively" do
         src = <<-RUBY
@@ -368,7 +489,16 @@ require "once"))
       end
 
       it "sums an array" do
-        src = "arr = [1, 2, 3, 4, 5]\nsum = 0\ni = 0\nwhile i < 5\nsum += arr[i]\ni += 1\nend\nsum"
+        src = <<-RUBY
+        arr = [1, 2, 3, 4, 5]
+        sum = 0
+        i = 0
+        while i < 5
+          sum += arr[i]
+          i += 1
+        end
+        sum
+        RUBY
         eval(src).as_int.should eq 15_i64
       end
     end

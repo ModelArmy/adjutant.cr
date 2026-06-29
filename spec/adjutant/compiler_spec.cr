@@ -203,10 +203,11 @@ module Adjutant
       end
 
       it "compiles return" do
-        # return is in the method body chunk, not the outer chunk
+        # def compiles to MakeProc + SetGlobal; body is in the proc's chunk
         chunk = compile("def f\nreturn 1\nend")
-        proc_str = chunk.consts.find { |v| v.string? }
-        proc_str.should_not be_nil
+        chunk.code.map(&.op).should contain(Op::MakeProc)
+        proc_val = chunk.consts.find { |v| v.proc? }
+        proc_val.should_not be_nil
       end
 
       it "compiles modifier if" do
@@ -238,9 +239,9 @@ module Adjutant
     end
 
     describe "def" do
-      it "compiles a def as Const + SetGlobal at top level" do
-        o = ops("def greet\nend")
-        o.should contain(Op::Const)
+      it "compiles a def as MakeProc + SetGlobal at top level" do
+        o = ops("def greet()\nend")
+        o.should contain(Op::MakeProc)
         o.should contain(Op::SetGlobal)
       end
 

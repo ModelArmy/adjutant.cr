@@ -1,7 +1,7 @@
 module Adjutant
   # The raw storage union for a Value.
   # Crystal's union type carries its own discriminant — no separate tag needed.
-  alias ValueRaw = Nil | Bool | Int64 | Float64 | String | Sym |
+  alias ValueRaw = Nil | Bool | Int64 | Float64 | String | Sym | ScriptProc |
                    Array(Value) | Hash(Value, Value)
 
   # The core runtime value type for the Adjutant interpreter.
@@ -44,6 +44,10 @@ module Adjutant
       new(sym, label)
     end
 
+    def self.proc(p : ScriptProc, label : SecurityLabel? = nil) : Value
+      new(p, label)
+    end
+
     # --- Type predicates ------------------------------------------------
 
     def null? : Bool
@@ -78,6 +82,10 @@ module Adjutant
       @raw.is_a?(Hash(Value, Value))
     end
 
+    def proc? : Bool
+      @raw.is_a?(ScriptProc)
+    end
+
     # --- Extractors -----------------------------------------------------
 
     def as_bool : Bool
@@ -106,6 +114,10 @@ module Adjutant
 
     def as_hash : Hash(Value, Value)
       @raw.as(Hash(Value, Value))
+    end
+
+    def as_proc : ScriptProc
+      @raw.as(ScriptProc)
     end
 
     # --- Truthiness -----------------------------------------------------
@@ -137,21 +149,23 @@ module Adjutant
 
     def to_s(io : IO) : Nil
       case r = @raw
-      when Nil     then io << "nil"
-      when Bool    then io << r
-      when Int64   then io << r
-      when Float64 then io << r
-      when String  then io << r
-      when Sym     then io << r
-      else              io << "#<" << @raw.class << ">"
+      when Nil        then io << "nil"
+      when Bool       then io << r
+      when Int64      then io << r
+      when Float64    then io << r
+      when String     then io << r
+      when Sym        then io << r
+      when ScriptProc then io << "#<Proc>"
+      else                 io << "#<" << @raw.class << ">"
       end
     end
 
     def inspect(io : IO) : Nil
       case r = @raw
-      when String then io << '"' << r << '"'
-      when Sym    then io << r
-      else             to_s(io)
+      when String     then io << '"' << r << '"'
+      when Sym        then io << r
+      when ScriptProc then io << "#<Proc>"
+      else                 to_s(io)
       end
       if l = label
         io << " [" << l << "]"

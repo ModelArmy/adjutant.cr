@@ -421,9 +421,11 @@ module Adjutant
            TokenKind::String, TokenKind::StringPart,
            TokenKind::Symbol,
            TokenKind::KwNil, TokenKind::KwTrue, TokenKind::KwFalse,
-           TokenKind::Minus, TokenKind::Bang, TokenKind::Tilde,
+           TokenKind::Bang, TokenKind::Tilde,
            TokenKind::LParen
         true
+      when TokenKind::Minus
+        false # REVISIT, can minus ever be valid token after method call name?
       else
         false
       end
