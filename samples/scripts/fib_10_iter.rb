@@ -7,4 +7,6 @@ while i < 10
   b = tmp
   i += 1
 end
+
+assert_equal(a, 55)
 a
