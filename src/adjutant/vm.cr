@@ -92,9 +92,34 @@ module Adjutant
 
     # Execute a compiled chunk and return the result.
     def run(chunk : Chunk, filename : String = "<script>") : Value
+      raise RuntimeError.new("Must be fresh VM to run a compiled chunk.") unless @frames.empty?
       main_proc = ScriptProc.new(chunk, "<main>")
       push_frame(main_proc, filename)
       execute
+    end
+
+    # Execute a compiled script proc and return the result.
+    # Can be called from within an execution via a native function.
+    protected def invoke(proc : ScriptProc, args : Array(Value)) : Value
+      saved_frames = @frames
+      saved_ins_count = @instruction_count
+      saved_cur_block = @current_block
+      saved_cur_self = @current_self
+      result = Value.nil_value
+      begin
+        f = current_frame # before replacing @frames
+        @frames = [] of Frame
+        # Setup the proc call, and ...
+        call_script_proc(proc, args, f.filename, nil, f.locals)
+        # Let the VM execute the chunk
+        result = execute
+      ensure
+        @frames = saved_frames
+        @instruction_count = saved_ins_count
+        @current_block = saved_cur_block
+        @current_self = saved_cur_self
+      end
+      result
     end
 
     # Register a global variable by name.
@@ -433,7 +458,11 @@ module Adjutant
 
     # --- Dispatch -----------------------------------------------------------
 
-    private def dispatch_call(name : String, args : Array(Value), safe : Bool, filename : String, line : Int32, blk : ScriptProc? = nil) : Value
+    private def dispatch_call(name : String,
+                              args : Array(Value),
+                              safe : Bool,
+                              filename : String, line : Int32,
+                              blk : ScriptProc? = nil) : Value
       # Safe navigation: skip call if receiver (first arg) is nil
       if safe && !args.empty? && args.first.null?
         return Value.nil_value
@@ -443,7 +472,7 @@ module Adjutant
       if interp = @interpreter
         sym_id = (@symbols.lookup(name).try(&.value)) || -1
         if native = interp.native_func(sym_id)
-          return native.call(args)
+          return NativeFunctionCall.new(self, native).call(args, blk)
         end
       end
 
@@ -466,7 +495,11 @@ module Adjutant
     # Does NOT call execute recursively — pushes the frame and returns a
     # sentinel. The outer execute loop continues with the new frame, and
     # Op::Ret restores the caller frame automatically.
-    private def call_script_proc(proc : ScriptProc, args : Array(Value), filename : String, blk : ScriptProc? = nil, outer : Array(Value)? = nil) : Value
+    private def call_script_proc(proc : ScriptProc,
+                                 args : Array(Value),
+                                 filename : String,
+                                 blk : ScriptProc? = nil,
+                                 outer : Array(Value)? = nil) : Value
       base = @stack.size
       frame = push_frame(proc, filename, block: blk, stack_base: base, outer: outer)
       args.each_with_index do |arg, i|

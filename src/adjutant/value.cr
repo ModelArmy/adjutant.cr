@@ -48,6 +48,10 @@ module Adjutant
       new(p, label)
     end
 
+    def self.array(*values, label : SecurityLabel? = nil) : Value
+      new(values.to_a, label)
+    end
+
     # --- Type predicates ------------------------------------------------
 
     def null? : Bool
@@ -118,6 +122,40 @@ module Adjutant
 
     def as_proc : ScriptProc
       @raw.as(ScriptProc)
+    end
+
+    # --- Testing extractors -----------------------------------------------------
+
+    def as_bool? : Bool?
+      @raw.as?(Bool)
+    end
+
+    def as_int? : Int64?
+      @raw.as?(Int64)
+    end
+
+    def as_float? : Float64?
+      @raw.as?(Float64)
+    end
+
+    def as_string? : String?
+      @raw.as?(String)
+    end
+
+    def as_sym? : Sym?
+      @raw.as?(Sym)
+    end
+
+    def as_array? : Array(Value)?
+      @raw.as?(Array(Value))
+    end
+
+    def as_hash? : Hash(Value, Value)?
+      @raw.as?(Hash(Value, Value))
+    end
+
+    def as_proc? : ScriptProc?
+      @raw.as?(ScriptProc)
     end
 
     # --- Truthiness -----------------------------------------------------

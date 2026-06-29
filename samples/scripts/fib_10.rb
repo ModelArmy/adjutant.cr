@@ -5,7 +5,6 @@ def fib(n)
   fib(n -1) + fib(n - 2)
 end
 
-value = fib(10)
-
-assert_equal(value, 55)
-value
+value = assert_result_is(55) do
+  fib(10)
+end

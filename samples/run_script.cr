@@ -10,6 +10,25 @@ class AssertModule < Adjutant::ScriptModule
   end
 
   def load(interp : Adjutant::Interpreter) : Nil
+    interp.define_native("p_args") do |args, blk|
+      puts "#inspect_call:"
+      args.each_with_index do |arg, i|
+        puts "  #{i}: #{arg.raw.inspect}"
+      end
+      puts "  ->: #{blk.inspect}"
+
+      Adjutant::Value.nil_value
+    end
+
+    interp.define_native("times") do |args, blk, ncc|
+      if (count = args.first?.try(&.as_int?)) && blk
+        count.times { |i| ncc.invoke(blk, [Adjutant::Value.int(i)]) }
+        Adjutant::Value.int(count)
+      else
+        Adjutant::Value.nil_value
+      end
+    end
+
     interp.define_native("assert_equal") do |args|
       if (a = args[0]?) && (b = args[1]?)
         assert_equal(a, b)
@@ -17,9 +36,29 @@ class AssertModule < Adjutant::ScriptModule
         raise AssertError.new("assert_equal: Expected 2 args, received #{args.size}")
       end
     end
+
+    interp.define_native("assert_result_is") do |args, blk, ncc|
+      if expected_result = args[0]?
+        if blk
+          assert_expect(ncc, blk, expected_result)
+        else
+          raise AssertError.new("assert_expect: Expected block to yield to")
+        end
+      else
+        raise AssertError.new("assert_expect: Expected 1 args, received #{args.size}")
+      end
+    end
   end
 
   # ---- implementations
+
+  private def assert_expect(ncc : Adjutant::NativeCallContext,
+                            proc : Adjutant::ScriptProc,
+                            expected : Adjutant::Value)
+    result = ncc.invoke(proc, [] of Adjutant::Value)
+    assert_equal(result, expected)
+    result
+  end
 
   private def assert_equal(a : Adjutant::Value, b : Adjutant::Value)
     equal = case

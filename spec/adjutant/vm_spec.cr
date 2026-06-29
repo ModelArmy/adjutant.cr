@@ -432,7 +432,6 @@ module Adjutant
         end
         run { |x| total += x }
         RUBY
-        # block's SetOuter writes back to method's total slot
         expect_raises(Adjutant::RuntimeError) do
           eval(src)
         end

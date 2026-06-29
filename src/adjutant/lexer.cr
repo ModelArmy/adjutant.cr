@@ -6,6 +6,8 @@ module Adjutant
   # Call #next_token repeatedly until EOF, or use #tokenize to
   # collect all tokens at once (useful for testing).
   class Lexer
+    getter filename : String
+
     # Primary constructor - reads the IO eagerly into a String.
     # Random access (peek, backtrack, lexeme slicing) requires the full
     # source in memory; true streaming would add complexity for no gain

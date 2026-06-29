@@ -1,7 +1,7 @@
 module Adjutant
   # A native function callable from scripts.
   # Receives the call arguments and returns a Value.
-  alias NativeFunc = ::Proc(Array(Value), Value)
+  alias NativeFunc = ::Proc(Array(Value), ScriptProc?, NativeCallContext, Value)
 
   # Abstract base for a loadable script module.
   #
