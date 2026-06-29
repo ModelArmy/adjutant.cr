@@ -301,16 +301,14 @@ module Adjutant
         interp.modules.register("agent/math") do |i|
           i.define_native("double") { |args| Value.int(args.first.as_int * 2) }
         end
-        interp.eval(%(require "agent/math"
-double(5))).as_int.should eq 10_i64
+        interp.eval(%(require "agent/math"\ndouble(5))).as_int.should eq 10_i64
       end
 
       it "loads each module only once" do
         count = 0
         interp, _ = make_interp
         interp.modules.register("once") { |_| count += 1 }
-        interp.eval(%(require "once"
-require "once"))
+        interp.eval(%(require "once"\nrequire "once"))
         count.should eq 1
       end
     end
@@ -352,11 +350,11 @@ require "once"))
     describe "methods and closures" do
       it "calls a def with params" do
         src = <<-RUBY
-def add(a, b)
-a + b
-end
-add(3, 4)
-RUBY
+        def add(a, b)
+          a + b
+        end
+        add(3, 4)
+        RUBY
         eval(src).as_int.should eq 7_i64
       end
 
@@ -440,6 +438,19 @@ RUBY
         end
       end
 
+      it "block captures local from its defining scope via yield" do
+        src = <<-RUBY
+        total = 0
+        def apply
+          yield 1
+          yield 2
+          yield 3
+        end
+        apply { |x| total += x }
+        total
+        RUBY
+        eval(src).as_int.should eq 6_i64
+      end
       it "computes fibonacci recursively" do
         src = <<-RUBY
         def fib(n)

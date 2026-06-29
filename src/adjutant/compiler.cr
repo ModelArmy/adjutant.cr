@@ -456,10 +456,14 @@ module Adjutant
             @chunk.emit(Op::SetOuter, line, c: slot.to_u32)
             return
           end
-          # First assignment in this scope — define as a new local
-          slot = scope.define(name)
-          @chunk.emit(Op::SetLocal, line, c: slot.to_u32)
-          return
+          # In a block, an unresolved name falls through to global —
+          # blocks don't introduce new locals for names they can't see.
+          # In a method body, first assignment defines a new local.
+          unless scope.is_block?
+            slot = scope.define(name)
+            @chunk.emit(Op::SetLocal, line, c: slot.to_u32)
+            return
+          end
         end
         sym_idx = intern(name)
         @chunk.emit(Op::SetGlobal, line, c: sym_idx)
