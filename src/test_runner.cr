@@ -30,11 +30,11 @@ module Testing
         return 0
       end
 
-      results = files.map { |f| run_file(f) }
+      results = files.map { |file| run_file(file) }
       puts
       print_summary(results)
 
-      any_failed = results.any? { |r| r.error || r.mod.failed_count > 0 }
+      any_failed = results.any? { |result| result.error || result.mod.failed_count > 0 }
       any_failed ? 1 : 0
     end
 
@@ -55,8 +55,8 @@ module Testing
         error = "runtime error: #{e.line}: #{e.message}"
       end
 
-      mod.results.each do |r|
-        print(r.passed ? ".".colorize(:green) : "F".colorize(:light_red))
+      mod.results.each do |result|
+        print(result.passed ? ".".colorize(:green) : "F".colorize(:light_red))
       end
       print "E".colorize(:yellow) if error
 
@@ -65,22 +65,22 @@ module Testing
 
     def print_summary(results : Array(FileResult))
       puts
-      results.each do |r|
-        if err = r.error
-          puts "ERROR #{r.path}".colorize(:yellow), "  #{err}"
+      results.each do |result|
+        if err = result.error
+          puts "ERROR #{result.path}".colorize(:yellow), "  #{err}"
         end
-        r.mod.results.each do |test|
+        result.mod.results.each do |test|
           next if test.passed
-          puts "FAIL #{r.path}:#{test.line} #{test.description}".colorize(:light_red)
+          puts "FAIL #{result.path}:#{test.line} #{test.description}".colorize(:light_red)
           puts "  #{test.message}" if test.message
           puts "  cause: #{test.cause}" if test.cause
           puts
         end
       end
 
-      total_passed = results.sum { |r| r.mod.passed_count }
-      total_failed = results.sum { |r| r.mod.failed_count }
-      total_errors = results.count { |r| r.error }
+      total_passed = results.sum(&.mod.passed_count)
+      total_failed = results.sum(&.mod.failed_count)
+      total_errors = results.count(&.error)
       total = total_passed + total_failed
 
       status = (total_failed > 0 || total_errors > 0) ? :red : :green

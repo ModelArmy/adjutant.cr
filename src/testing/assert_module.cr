@@ -35,10 +35,21 @@ module Testing
     end
 
     def failed_count : Int32
-      @results.count { |r| !r.passed }
+      @results.count { |result| !result.passed }
     end
 
     def load(interp : Adjutant::Interpreter) : Nil
+      define_assert(interp)
+      define_assert_equal(interp)
+      define_assert_not_equal(interp)
+      define_assert_false(interp)
+      define_assert_true(interp)
+      define_assert_nil(interp)
+      define_assert_not_nil(interp)
+      define_assert_raise(interp)
+    end
+
+    private def define_assert(interp)
       interp.define_native("assert") do |args, blk, ncc|
         desc = args.first?.try { |v| v.string? ? v.as_string : v.to_s } || "assertion"
         if blk
@@ -53,7 +64,9 @@ module Testing
         end
         Adjutant::Value.bool(true)
       end
+    end
 
+    private def define_assert_equal(interp)
       interp.define_native("assert_equal") do |args, _blk, ncc|
         expected = args[0]? || Adjutant::Value.nil_value
         actual = args[1]? || Adjutant::Value.nil_value
@@ -62,7 +75,9 @@ module Testing
         record("assert_equal", ok, msg, ncc)
         Adjutant::Value.bool(true)
       end
+    end
 
+    private def define_assert_not_equal(interp)
       interp.define_native("assert_not_equal") do |args, _blk, ncc|
         expected = args[0]? || Adjutant::Value.nil_value
         actual = args[1]? || Adjutant::Value.nil_value
@@ -70,33 +85,43 @@ module Testing
         record("assert_not_equal", ok, ok ? nil : "both are #{actual.inspect}", ncc)
         Adjutant::Value.bool(true)
       end
+    end
 
+    private def define_assert_nil(interp)
       interp.define_native("assert_nil") do |args, _blk, ncc|
         val = args.first? || Adjutant::Value.nil_value
         record("assert_nil", val.null?, val.null? ? nil : "got #{val.inspect}", ncc)
         Adjutant::Value.bool(true)
       end
+    end
 
+    private def define_assert_not_nil(interp)
       interp.define_native("assert_not_nil") do |args, _blk, ncc|
         val = args.first? || Adjutant::Value.nil_value
         record("assert_not_nil", !val.null?, val.null? ? "got nil" : nil, ncc)
         Adjutant::Value.bool(true)
       end
+    end
 
+    private def define_assert_true(interp)
       interp.define_native("assert_true") do |args, _blk, ncc|
         val = args.first? || Adjutant::Value.nil_value
         record("assert_true", val.truthy?, val.truthy? ? nil : "got #{val.inspect}", ncc)
         Adjutant::Value.bool(true)
       end
+    end
 
+    private def define_assert_false(interp)
       interp.define_native("assert_false") do |args, _blk, ncc|
         val = args.first? || Adjutant::Value.nil_value
         record("assert_false", val.falsy?, val.falsy? ? nil : "got #{val.inspect}", ncc)
         Adjutant::Value.bool(true)
       end
+    end
 
+    private def define_assert_raise(interp)
       # assert_raise { block } — type matching not yet supported.
-      interp.define_native("assert_raise") do |args, blk, ncc|
+      interp.define_native("assert_raise") do |_, blk, ncc|
         if blk
           raised = false
           begin
@@ -116,6 +141,7 @@ module Testing
       @results << AssertResult.new(description, passed, message, ncc.filename, ncc.line, cause)
     end
 
+    # ameba:disable Metrics/CyclomaticComplexity - It is what it is
     private def values_equal?(a : Adjutant::Value, b : Adjutant::Value) : Bool
       case
       when a.null? && b.null?     then true

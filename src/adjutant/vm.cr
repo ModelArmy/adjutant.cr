@@ -467,17 +467,18 @@ module Adjutant
 
     # --- Dispatch -----------------------------------------------------------
 
+    # ameba:disable Metrics/CyclomaticComplexity - Clear steps, better together
     private def dispatch_call(name : String,
                               args : Array(Value),
                               safe : Bool,
                               filename : String, line : Int32,
                               blk : ScriptProc? = nil) : Value
-      # Safe navigation: skip call if receiver (first arg) is nil
+      # 1) Safe navigation: skip call if receiver (first arg) is nil
       if safe && !args.empty? && args.first.null?
         return Value.nil_value
       end
 
-      # Check native functions registered via interpreter
+      # 2) Check native functions registered via interpreter
       if interp = @interpreter
         sym_id = (@symbols.lookup(name).try(&.value)) || -1
         if native = interp.native_func(sym_id)
@@ -492,7 +493,7 @@ module Adjutant
         end
       end
 
-      # Check globals for a ScriptProc
+      # 3) Check globals for a ScriptProc
       sym = @symbols.lookup(name)
       if sym
         gval = @globals[sym.value]?
@@ -502,7 +503,7 @@ module Adjutant
         end
       end
 
-      # Built-in fallback operations
+      # 4) Built-in fallback operations
       exec_builtin(name, args, filename, line, blk)
     end
 
