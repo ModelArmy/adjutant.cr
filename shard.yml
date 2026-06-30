@@ -13,3 +13,7 @@ authors:
 development_dependencies:
   ameba:
     github: crystal-ameba/ameba
+
+targets:
+  test_runner:
+    main: src/test_runner.cr
