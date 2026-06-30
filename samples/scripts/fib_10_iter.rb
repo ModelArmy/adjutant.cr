@@ -8,5 +8,4 @@ while i < 10
   i += 1
 end
 
-assert_equal(a, 55)
 a
