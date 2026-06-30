@@ -22,6 +22,7 @@ module Adjutant
     getter proc : ScriptProc
     getter chunk : Chunk
     property ip : Int32
+    property line : Int32
     property stack_base : Int32
     getter filename : String
     property block : ScriptProc?
@@ -37,6 +38,7 @@ module Adjutant
 
     def initialize(@proc, @chunk, @stack_base, @filename, @block = nil, outer : Array(Value)? = nil)
       @ip = 0
+      @line = 0
       @rescue_ip = 0
       @ensure_ip = 0
       @locals = Array(Value).new(@proc.local_count, Value.nil_value)
@@ -61,8 +63,14 @@ module Adjutant
     getter line : Int32
     getter filename : String
 
-    def initialize(message : String, @filename = "<script>", @line = 0)
-      super(message)
+    def initialize(message : String, @filename = "<script>", @line = 0, cause = nil)
+      super(message, cause)
+    end
+
+    def initialize(message : String, frame : Frame, cause = nil)
+      @filename = frame.filename
+      @line = frame.line
+      super(message, cause)
     end
   end
 
@@ -92,7 +100,7 @@ module Adjutant
 
     # Execute a compiled chunk and return the result.
     def run(chunk : Chunk, filename : String = "<script>") : Value
-      raise RuntimeError.new("Must be fresh VM to run a compiled chunk.") unless @frames.empty?
+      raise RuntimeError.new("Must be fresh VM to run a compiled chunk.", filename) unless @frames.empty?
       main_proc = ScriptProc.new(chunk, "<main>")
       push_frame(main_proc, filename)
       execute
@@ -130,7 +138,7 @@ module Adjutant
 
     private def push_frame(proc : ScriptProc, filename : String, block : ScriptProc? = nil, stack_base : Int32 = @stack.size, outer : Array(Value)? = nil) : Frame
       if @limits.call_depth_limit > 0 && @frames.size >= @limits.call_depth_limit
-        raise RuntimeError.new("call stack too deep (limit: #{@limits.call_depth_limit})", filename, 0)
+        raise runtime_error("call stack too deep (limit: #{@limits.call_depth_limit})")
       end
       frame = Frame.new(proc, proc.chunk, stack_base, filename, block, outer)
       @frames.push(frame)
@@ -146,12 +154,12 @@ module Adjutant
     end
 
     private def push(v : Value) : Nil
-      raise RuntimeError.new("stack overflow") if @stack.size >= MAX_STACK
+      raise runtime_error("stack overflow") if @stack.size >= MAX_STACK
       @stack.push(v)
     end
 
     private def pop : Value
-      raise RuntimeError.new("stack underflow") if @stack.size <= current_frame.stack_base
+      raise runtime_error("stack underflow") if @stack.size <= current_frame.stack_base
       @stack.pop
     end
 
@@ -162,7 +170,7 @@ module Adjutant
     private def tick : Nil
       @instruction_count += 1
       if @limits.instruction_limit > 0 && @instruction_count > @limits.instruction_limit
-        raise RuntimeError.new("instruction limit exceeded (#{@limits.instruction_limit})")
+        raise runtime_error("instruction limit exceeded (#{@limits.instruction_limit})")
       end
     end
 
@@ -179,6 +187,7 @@ module Adjutant
 
         inst = chunk.code[f.ip]
         f.ip += 1
+        f.line = inst.line
         tick
 
         case inst.op
@@ -429,7 +438,7 @@ module Adjutant
         when Op::Throw
           val = pop
           msg = val.string? ? val.as_string : val.to_s
-          raise RuntimeError.new(msg, f.filename, inst.line)
+          raise runtime_error(msg, f)
         when Op::PushError
           # Push the last error as a string value — stub until typed exceptions land
           push(Value.string("RuntimeError"))
@@ -472,7 +481,14 @@ module Adjutant
       if interp = @interpreter
         sym_id = (@symbols.lookup(name).try(&.value)) || -1
         if native = interp.native_func(sym_id)
-          return NativeFunctionCall.new(self, native).call(args, blk)
+          result = Value.nil_value
+          begin
+            result = NativeFunctionCall.new(self, native, filename, line).call(args, blk)
+          rescue ex
+            # Wrap any exception
+            raise runtime_error("Native call error: #{ex.message}", current_frame, cause: ex)
+          end
+          return result
         end
       end
 
@@ -554,7 +570,7 @@ module Adjutant
         if interp = @interpreter
           interp.require_module(path, filename)
         else
-          raise RuntimeError.new("cannot load -- #{path} (no interpreter)", filename, line)
+          raise RuntimeError.new("'require' cannot load -- #{path} (no interpreter)", filename, line)
         end
       when "nil?"
         # Called as a method: args[0] is receiver
@@ -615,7 +631,7 @@ module Adjutant
       when a.float? && b.int?     then Value.float(a.as_float + b.as_int.to_f64)
       when a.string? && b.string? then Value.string(a.as_string + b.as_string)
       else
-        raise RuntimeError.new("cannot add #{a} and #{b}")
+        raise runtime_error("cannot add #{a} and #{b}")
       end
     end
 
@@ -639,28 +655,28 @@ module Adjutant
             end
         Value.float(n)
       else
-        raise RuntimeError.new("type error in arithmetic")
+        raise runtime_error("type error in arithmetic")
       end
     end
 
     private def arith_div(a : Value, b : Value) : Value
       case
       when a.int? && b.int?
-        raise RuntimeError.new("divided by 0") if b.as_int == 0
+        raise runtime_error("divided by 0") if b.as_int == 0
         Value.int(a.as_int // b.as_int)
       when a.float? || b.float?
         fa = a.int? ? a.as_int.to_f64 : a.as_float
         fb = b.int? ? b.as_int.to_f64 : b.as_float
-        raise RuntimeError.new("divided by 0") if fb == 0.0
+        raise runtime_error("divided by 0") if fb == 0.0
         Value.float(fa / fb)
       else
-        raise RuntimeError.new("type error in division")
+        raise runtime_error("type error in division")
       end
     end
 
     # ameba:disable Metrics/CyclomaticComplexity
     private def arith_mod(a : Value, b : Value) : Value
-      raise RuntimeError.new("divided by 0") if (b.int? && b.as_int == 0) || (b.float? && b.as_float == 0.0)
+      raise runtime_error("divided by 0") if (b.int? && b.as_int == 0) || (b.float? && b.as_float == 0.0)
       case
       when a.int? && b.int? then Value.int(a.as_int % b.as_int)
       when a.float? || b.float?
@@ -668,12 +684,12 @@ module Adjutant
         fb = b.int? ? b.as_int.to_f64 : b.as_float
         Value.float(fa % fb)
       else
-        raise RuntimeError.new("type error in modulo")
+        raise runtime_error("type error in modulo")
       end
     end
 
     private def int_op(a : Value, b : Value, op : Symbol) : Value
-      raise RuntimeError.new("bitwise op requires Integer") unless a.int? && b.int?
+      raise runtime_error("bitwise op requires Integer") unless a.int? && b.int?
       n = case op
           when :&  then a.as_int & b.as_int
           when :|  then a.as_int | b.as_int
@@ -776,8 +792,8 @@ module Adjutant
       push(block.call(a, b))
     end
 
-    private def runtime_error(msg : String, frame : Frame) : RuntimeError
-      RuntimeError.new(msg, frame.filename, 0)
+    private def runtime_error(msg : String, frame : Frame = current_frame, cause = nil) : RuntimeError
+      RuntimeError.new(msg, frame, cause)
     end
   end
 end

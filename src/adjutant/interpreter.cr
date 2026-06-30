@@ -10,6 +10,9 @@ require "./effect_handler"
 module Adjutant
   # Available to native functions when they are called.
   module NativeCallContext
+    getter filename : String
+    getter line : Int32
+
     # Use this method to yield / call a block from a native
     # function
     abstract def invoke(proc : ScriptProc, args : Array(Value)) : Value
@@ -21,7 +24,7 @@ module Adjutant
     @vm : VM
     @func : NativeFunc
 
-    protected def initialize(@vm, @func); end
+    protected def initialize(@vm, @func, @filename, @line); end
 
     protected def call(args : Array(Value), blk : ScriptProc?) : Value
       @func.call(args, blk, self)
@@ -104,7 +107,7 @@ module Adjutant
         end
       end
 
-      raise RuntimeError.new("cannot load -- #{path}", filename, 0)
+      raise RuntimeError.new("'require' cannot load -- #{path}", filename, 0)
     end
 
     # Install a native function as a global callable from scripts with arguments array, block if any, and
