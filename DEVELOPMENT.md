@@ -19,6 +19,20 @@ This document explains how `adjutant` works internally. It is written for contri
 |`ops lint`                     |Run `ameba` on the source code                                                    |
 |`ops clean`                    |Remove debug and release build files                                              |
 |`ops wipe`                     |In addition to cleaning, remove all compiler caches                               |
+|`ops test`                     |Run Crystal test specs.                                                           |
+
+### Run test scripts
+
+> `ops test` does not run test scripts, only Crystal test specs
+
+Test scripts are Ruby files that test the Adjutant language features.
+
+```
+ops build
+bin/debug/test_runner
+```
+
+This will run all the test scripts in `spec/scripts` folder.
 
 ### Run samples
 
