@@ -98,6 +98,17 @@ module Adjutant
 
     # Misc
     GetMethodName # push current method name as symbol
+
+    # Local variables (per-frame slots)
+    GetLocal # push frame.locals[c]
+    SetLocal # pop → frame.locals[c]; push value
+
+    # Closure capture (block reading/writing enclosing frame's locals)
+    GetOuter # push frame.outer_locals[c]
+    SetOuter # pop → frame.outer_locals[c]; push value
+
+    # Proc construction
+    MakeProc # push consts[c] (a ScriptProc Value) — used for def and lambda
   end
 
   # A single encoded instruction.

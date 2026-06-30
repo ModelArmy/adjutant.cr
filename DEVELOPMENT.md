@@ -25,7 +25,7 @@ This document explains how `adjutant` works internally. It is written for contri
 Run the following command to see `adjutant` in action with a sample runner (based on the example in the README) and sample Ruby script.
 
 ```
-ops -q run samples/run_script -- samples/scripts/fib.rb
+ops -q run samples/run_script -- samples/scripts/fib_10.rb
 ```
 
 You should receive the following output:
@@ -111,13 +111,21 @@ Bare calls without parentheses (`puts x`) are only supported when the argument i
 
 A `Chunk` contains an instruction array and a constant pool (`Array(Value)`). Instructions are fixed-size structs with an opcode and three immediates (`a : UInt8`, `b : UInt16`, `c : UInt32`). Jump targets are patched after the fact using `emit_jump` / `patch_jump`.
 
-Nested scopes (method bodies, blocks, lambdas) compile into child `Chunk` instances stored as constants in the parent chunk. This is a placeholder arrangement — a full proc/closure model will link chunks to `ScriptProc` values in a later phase.
+**Scopes and locals.** Each method body and block body compiles in a fresh child `Compiler` instance with a `CompilerScope`. The scope maps local variable names to integer slot indices. Parameters are defined as the first slots; subsequent assignments in the body add more slots. `GetLocal`/`SetLocal` opcodes index into the frame's locals array by slot number rather than name.
+
+Blocks carry a `parent` reference to the enclosing `CompilerScope` for single-level closure capture. When a block references a name not in its own scope, it checks the parent — if found, it emits `GetOuter`/`SetOuter` which read and write the enclosing frame's locals array at runtime. Names unresolvable in any scope fall through to `GetGlobal`/`SetGlobal`. Blocks do not auto-define new locals for unresolved names; only method bodies do.
+
+Each method or block body compiles into a `ScriptProc` value stored directly in the parent chunk's constant pool. `MakeProc` pushes it onto the stack; `SetGlobal` (for top-level defs) or `DefMethod` (inside a class) stores it.
 
 ### The VM
 
-`VM` is a stack-based bytecode interpreter. It maintains a value stack (`Array(Value)`), a frame stack (`Array(Frame)`), and a shared globals hash. Each `Frame` holds a `ScriptProc`, an instruction pointer, a stack base offset, and optional rescue/ensure handler positions.
+`VM` is a stack-based bytecode interpreter. It maintains a value stack (`Array(Value)`), a frame stack (`Array(Frame)`), and a shared globals hash. Each `Frame` holds a `ScriptProc`, an instruction pointer, a stack base offset, a `locals` array sized from the proc's `local_count`, and an optional `outer_locals` reference for block closures.
 
 The dispatch loop is a `case` on `Op` enum values, which LLVM compiles to a jump table. Each opcode handler is a short inline block — no method dispatch overhead on the hot path. Instrumentation hooks (for IFC or tracing) can be added as a single conditional before the dispatch without affecting the jump table.
+
+**Non-recursive dispatch.** Script method calls do not recurse into `execute` — `call_script_proc` simply pushes a new `Frame` and returns a sentinel. The single `execute` loop picks up the new frame on its next iteration, and `Op::Ret` restores the caller frame. This means arbitrarily deep script recursion uses only one Crystal call frame, bounded only by the VM's configurable `call_depth_limit`.
+
+**Closure model.** When `Op::Yield` fires, the yielding frame's `locals` array is passed as `outer_locals` to the block frame. `GetOuter`/`SetOuter` read and write slots in that array directly — since blocks execute synchronously while the outer frame is still alive, no upvalue hoisting is needed. Blocks defined outside a method (at the top level) resolve unrecognised names through globals rather than outer locals.
 
 Execution limits (instruction count, call depth) are checked on every frame push and tick respectively.
 
@@ -156,7 +164,8 @@ All runtime values are represented as `Value`, a Crystal struct:
 
 ```crystal
 struct Value
-  getter raw   : Nil | Bool | Int64 | Float64 | String | Sym | Array(Value) | Hash(Value, Value)
+  getter raw   : Nil | Bool | Int64 | Float64 | String | Sym | ScriptProc |
+                 Array(Value) | Hash(Value, Value)
   getter label : SecurityLabel?
 end
 ```

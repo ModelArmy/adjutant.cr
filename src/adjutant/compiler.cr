@@ -27,6 +27,40 @@ module Adjutant
   # One Compiler instance per scope (script, method, block).
   # Nested scopes (method bodies, blocks) create child Compiler instances
   # that produce independent Chunks, stored as constants in the parent.
+  # Tracks local variable names and their frame slot indices for one scope.
+  # A scope corresponds to one method body or block body.
+  # Blocks carry a parent reference for single-level closure capture.
+  class CompilerScope
+    getter vars : Hash(String, Int32)
+    property next_slot : Int32
+    getter? is_block : Bool
+    getter parent : CompilerScope?
+
+    def initialize(@is_block = false, @parent = nil)
+      @vars = {} of String => Int32
+      @next_slot = 0
+    end
+
+    # Define a new local variable, returning its slot index.
+    def define(name : String) : Int32
+      slot = @next_slot
+      @vars[name] = slot
+      @next_slot += 1
+      slot
+    end
+
+    # Resolve a name in this scope's own vars.
+    def resolve_local(name : String) : Int32?
+      @vars[name]?
+    end
+
+    # Resolve a name in the parent scope (block closure capture, one level).
+    def resolve_outer(name : String) : Int32?
+      return nil unless @is_block
+      @parent.try(&.vars[name]?)
+    end
+  end
+
   class Compiler
     MAX_LOOP_DEPTH =         16
     NO_SUPER       = 0xFFFF_u16
@@ -37,6 +71,7 @@ module Adjutant
       @loop_stack = [] of LoopScope
       @class_depth = 0
       @in_block = false
+      @scope = nil.as(CompilerScope?)
     end
 
     # Compile a full program body and return the resulting Chunk.
@@ -46,18 +81,30 @@ module Adjutant
       c.chunk
     end
 
-    # Compile a method/block body, returning the Chunk.
-    # Used by child compilers for def and block nodes.
-    def self.compile_proc(body : Body, symbols : SymbolTable, in_block : Bool = false) : Chunk
+    # Compile a method/block body.
+    # Returns {chunk, local_count} — local_count is the number of frame
+    # slots the body needs (params + locals defined in the body).
+    def self.compile_proc(
+      body : Body,
+      symbols : SymbolTable,
+      params : Array(String) = [] of String,
+      in_block : Bool = false,
+      parent_scope : CompilerScope? = nil,
+    ) : {Chunk, Int32}
       c = new(symbols)
-      c.in_block = in_block
+      scope = CompilerScope.new(in_block, parent_scope)
+      c.scope = scope
+      params.each { |param| scope.define(param) }
       c.compile_body(body)
-      c.emit_ret(0) # implicit return nil if body doesn't return
-      c.chunk
+      c.emit_ret(0)
+      local_count = scope.next_slot
+      c.scope = nil
+      {c.chunk, local_count}
     end
 
     protected getter chunk
     protected getter symbols
+    protected property scope : CompilerScope?
     protected setter in_block
 
     # -----------------------------------------------------------------------
@@ -202,7 +249,18 @@ module Adjutant
     # --- Variables ----------------------------------------------------------
 
     private def compile_identifier(node : Identifier) : Nil
-      sym_idx = intern(node.name)
+      name = node.name
+      if scope = @scope
+        if slot = scope.resolve_local(name)
+          @chunk.emit(Op::GetLocal, node.line, c: slot.to_u32)
+          return
+        end
+        if slot = scope.resolve_outer(name)
+          @chunk.emit(Op::GetOuter, node.line, c: slot.to_u32)
+          return
+        end
+      end
+      sym_idx = intern(name)
       @chunk.emit(Op::GetGlobal, node.line, c: sym_idx)
     end
 
@@ -279,7 +337,8 @@ module Adjutant
       compile_node(node.right)
       sym_idx = intern("<=>")
       nil_idx = @chunk.add_const(Value.nil_value)
-      @chunk.emit(Op::SetBlock, node.line, c: nil_idx)
+      @chunk.emit(Op::Const, node.line, c: nil_idx)
+      @chunk.emit(Op::SetBlock, node.line)
       @chunk.emit(Op::Call, node.line, a: 2_u8, c: sym_idx)
     end
 
@@ -381,11 +440,38 @@ module Adjutant
     end
 
     # Store the top-of-stack value into the appropriate variable slot.
+    # Inside a method/block scope, bare identifiers are locals.
+    # At the top level (no scope), they are globals.
+    # Constants are always globals regardless of scope.
     private def emit_store(target : Node, line : Int32) : Nil
       case target
-      when Identifier, Constant
+      when Identifier
+        name = target.name
+        if scope = @scope
+          if slot = scope.resolve_local(name)
+            @chunk.emit(Op::SetLocal, line, c: slot.to_u32)
+            return
+          end
+          if slot = scope.resolve_outer(name)
+            @chunk.emit(Op::SetOuter, line, c: slot.to_u32)
+            return
+          end
+          # In a block, an unresolved name falls through to global —
+          # blocks don't introduce new locals for names they can't see.
+          # In a method body, first assignment defines a new local.
+          unless scope.is_block?
+            slot = scope.define(name)
+            @chunk.emit(Op::SetLocal, line, c: slot.to_u32)
+            return
+          end
+        end
+        sym_idx = intern(name)
+        @chunk.emit(Op::SetGlobal, line, c: sym_idx)
+        return
+      when Constant
         sym_idx = intern(target.name)
         @chunk.emit(Op::SetGlobal, line, c: sym_idx)
+        return
       when IVar
         sym_idx = intern(target.name)
         @chunk.emit(Op::SetIvar, line, c: sym_idx)
@@ -408,16 +494,23 @@ module Adjutant
         compile_node(recv)
       end
       node.args.each { |arg| compile_node(arg) }
-      # Register block if present
+      # Register block if present — MakeProc pushes it, SetBlock pops it
       if blk = node.block
-        _blk_chunk = Compiler.compile_proc(blk.body, @symbols, in_block: true)
-        blk_val = Value.string("__block__") # placeholder; VM will wrap as Proc
-        blk_idx = @chunk.add_const(blk_val)
-        @chunk.emit(Op::SetBlock, node.line, c: blk_idx)
+        blk_params = blk.params.map(&.name)
+        blk_chunk, blk_locals = Compiler.compile_proc(
+          blk.body, @symbols,
+          params: blk_params,
+          in_block: true,
+          parent_scope: @scope
+        )
+        sproc = ScriptProc.new(blk_chunk, "<block>", blk_params, blk_locals, true)
+        proc_idx = @chunk.add_const(Value.proc(sproc))
+        @chunk.emit(Op::MakeProc, node.line, c: proc_idx)
       else
         nil_idx = @chunk.add_const(Value.nil_value)
-        @chunk.emit(Op::SetBlock, node.line, c: nil_idx)
+        @chunk.emit(Op::Const, node.line, c: nil_idx)
       end
+      @chunk.emit(Op::SetBlock, node.line)
       sym_idx = intern(node.method)
       safe = node.safe? ? 1_u16 : 0_u16
       recv = node.receiver ? 1_u8 : 0_u8
@@ -443,10 +536,15 @@ module Adjutant
     # --- Definitions --------------------------------------------------------
 
     private def compile_def(node : DefNode) : Nil
-      _proc_chunk = Compiler.compile_proc(node.body, @symbols)
-      proc_val = Value.string("__proc__:#{node.name}") # placeholder; VM wraps as Proc
-      proc_idx = @chunk.add_const(proc_val)
-      @chunk.emit(Op::Const, node.line, c: proc_idx)
+      params = node.params.map(&.name)
+      body_chunk, local_count = Compiler.compile_proc(
+        node.body, @symbols,
+        params: params,
+        in_block: false
+      )
+      sproc = ScriptProc.new(body_chunk, node.name, params, local_count, false)
+      proc_idx = @chunk.add_const(Value.proc(sproc))
+      @chunk.emit(Op::MakeProc, node.line, c: proc_idx)
       sym_idx = intern(node.name)
       if recv = node.receiver
         compile_node(recv)
@@ -498,10 +596,16 @@ module Adjutant
     end
 
     private def compile_lambda(node : Lambda) : Nil
-      _lam_chunk = Compiler.compile_proc(node.body, @symbols, in_block: true)
-      lam_val = Value.string("__lambda__")
-      lam_idx = @chunk.add_const(lam_val)
-      @chunk.emit(Op::Const, node.line, c: lam_idx)
+      params = node.params.map(&.name)
+      lam_chunk, local_count = Compiler.compile_proc(
+        node.body, @symbols,
+        params: params,
+        in_block: true,
+        parent_scope: @scope
+      )
+      sproc = ScriptProc.new(lam_chunk, "<lambda>", params, local_count, true)
+      proc_idx = @chunk.add_const(Value.proc(sproc))
+      @chunk.emit(Op::MakeProc, node.line, c: proc_idx)
     end
 
     # --- Control flow -------------------------------------------------------
@@ -593,7 +697,8 @@ module Adjutant
       # Build a synthetic block
       sym_idx = intern("each")
       nil_idx = @chunk.add_const(Value.nil_value)
-      @chunk.emit(Op::SetBlock, node.line, c: nil_idx)
+      @chunk.emit(Op::Const, node.line, c: nil_idx)
+      @chunk.emit(Op::SetBlock, node.line)
       @chunk.emit(Op::Call, node.line, a: 1_u8, c: sym_idx)
     end
 
@@ -612,7 +717,8 @@ module Adjutant
             compile_node(pat)
             sym_idx = intern("===")
             nil_idx = @chunk.add_const(Value.nil_value)
-            @chunk.emit(Op::SetBlock, node.line, c: nil_idx)
+            @chunk.emit(Op::Const, node.line, c: nil_idx)
+            @chunk.emit(Op::SetBlock, node.line)
             @chunk.emit(Op::Call, node.line, a: 2_u8, c: sym_idx)
           else
             compile_node(pat)
@@ -690,7 +796,8 @@ module Adjutant
       node.args.each { |arg| compile_node(arg) }
       sym_idx = intern("super")
       nil_idx = @chunk.add_const(Value.nil_value)
-      @chunk.emit(Op::SetBlock, node.line, c: nil_idx)
+      @chunk.emit(Op::Const, node.line, c: nil_idx)
+      @chunk.emit(Op::SetBlock, node.line)
       @chunk.emit(Op::Call, node.line, a: node.args.size.to_u8, c: sym_idx)
     end
 
@@ -742,7 +849,8 @@ module Adjutant
       compile_node(node.path)
       sym_idx = intern("require")
       nil_idx = @chunk.add_const(Value.nil_value)
-      @chunk.emit(Op::SetBlock, node.line, c: nil_idx)
+      @chunk.emit(Op::Const, node.line, c: nil_idx)
+      @chunk.emit(Op::SetBlock, node.line)
       @chunk.emit(Op::Call, node.line, a: 1_u8, c: sym_idx)
     end
 
@@ -754,7 +862,8 @@ module Adjutant
       @chunk.emit(Op::Const, node.line, c: old_idx)
       sym_idx = intern("__alias__")
       nil_idx = @chunk.add_const(Value.nil_value)
-      @chunk.emit(Op::SetBlock, node.line, c: nil_idx)
+      @chunk.emit(Op::Const, node.line, c: nil_idx)
+      @chunk.emit(Op::SetBlock, node.line)
       @chunk.emit(Op::Call, node.line, a: 2_u8, c: sym_idx)
     end
 

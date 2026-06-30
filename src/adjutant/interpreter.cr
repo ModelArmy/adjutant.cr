@@ -8,6 +8,31 @@ require "./vm"
 require "./effect_handler"
 
 module Adjutant
+  # Available to native functions when they are called.
+  module NativeCallContext
+    # Use this method to yield / call a block from a native
+    # function
+    abstract def invoke(proc : ScriptProc, args : Array(Value)) : Value
+  end
+
+  struct NativeFunctionCall
+    include NativeCallContext
+
+    @vm : VM
+    @func : NativeFunc
+
+    protected def initialize(@vm, @func); end
+
+    protected def call(args : Array(Value), blk : ScriptProc?) : Value
+      @func.call(args, blk, self)
+    end
+
+    # ---- CallContext
+    def invoke(proc : ScriptProc, args : Array(Value)) : Value
+      @vm.invoke(proc, args)
+    end
+  end
+
   # Top-level entry point for the Adjutant interpreter.
   #
   # Owns the SymbolTable (shared across all compilations), the
@@ -82,10 +107,13 @@ module Adjutant
       raise RuntimeError.new("cannot load -- #{path}", filename, 0)
     end
 
-    # Install a native function as a global callable from scripts.
-    def define_native(name : String, &block : Array(Value) -> Value) : Nil
+    # Install a native function as a global callable from scripts with arguments array, block if any, and
+    # a `NativeCallContext` that can be used to invoke the block.
+    def define_native(name : String, &block : Array(Value), ScriptProc?, NativeCallContext -> Value) : Nil
       sym = @symbols.intern(name)
-      native_funcs[sym.value] = NativeFunc.new { |args| block.call(args) }
+      native_funcs[sym.value] = NativeFunc.new do |args, blk, ncc|
+        block.call(args, blk, ncc)
+      end
     end
 
     # Look up a native function by symbol ID — called by VM dispatch.

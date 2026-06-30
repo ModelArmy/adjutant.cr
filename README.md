@@ -40,6 +40,14 @@ interp = Adjutant::Interpreter.new(effect: effect, limits: limits)
 # Scripts access these exclusively via `require`.
 interp.modules.register("agent/io") do |i|
   i.define_native("read_input") { |_args| Adjutant::Value.string(gets || "") }
+  i.define_native("times") do |args, blk, ncc|
+    if (count = args.first?.try(&.as_int?)) && blk
+      count.times { |i| ncc.invoke(blk, [Adjutant::Value.int(i)]) }
+      Adjutant::Value.int(count)
+    else
+      Adjutant::Value.nil_value
+    end
+  end
 end
 
 # Run a script from a file.
