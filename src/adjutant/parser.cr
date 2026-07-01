@@ -375,6 +375,14 @@ module Adjutant
         parse_hash_or_block_brace(l, c)
       when TokenKind::Arrow
         parse_lambda(l, c)
+      when TokenKind::KwIf
+        parse_if
+      when TokenKind::KwUnless
+        parse_unless
+      when TokenKind::KwCase
+        parse_case
+      when TokenKind::KwBegin
+        parse_begin
       else
         raise ParseError.new("unexpected token #{current_kind} (#{@current.lexeme.inspect})", l, c)
       end

@@ -364,6 +364,54 @@ module Adjutant
       end
     end
 
+    describe "expression-position control flow" do
+      it "parses if as assignment rhs" do
+        node = parse_expr("x = if a\n1\nelse\n2\nend")
+        assign = node.as(Assign)
+        assign.value.should be_a(IfNode)
+      end
+
+      it "parses if/elsif/else as assignment rhs" do
+        node = parse_expr("x = if a\n1\nelsif b\n2\nelse\n3\nend")
+        n = node.as(Assign).value.as(IfNode)
+        n.elsif_branches.size.should eq 1
+      end
+
+      it "parses if result compared in a binary expression" do
+        node = parse_expr("(if a\n1\nelse\n2\nend) == x")
+        bin = node.as(Binary)
+        bin.left.should be_a(IfNode)
+      end
+
+      it "parses unless as assignment rhs" do
+        node = parse_expr("x = unless a\n1\nelse\n2\nend")
+        node.as(Assign).value.should be_a(UnlessNode)
+      end
+
+      it "parses case as assignment rhs" do
+        node = parse_expr("x = case y\nwhen 1\n:one\nelse\n:other\nend")
+        n = node.as(Assign).value.as(CaseNode)
+        n.whens.size.should eq 1
+      end
+
+      it "parses begin/rescue as assignment rhs" do
+        node = parse_expr("x = begin\nfoo\nrescue e\nbar\nend")
+        n = node.as(Assign).value.as(BeginNode)
+        n.rescue_var.should eq "e"
+      end
+
+      it "parses if as a call argument" do
+        node = parse_expr("puts(if a\n1\nelse\n2\nend)")
+        call = node.as(Call)
+        call.args.first.should be_a(IfNode)
+      end
+
+      it "statement-position if is unaffected" do
+        node = parse_expr("if x\ny\nend")
+        node.should be_a(IfNode)
+      end
+    end
+
     describe "blocks" do
       it "parses a do...end block" do
         node = parse_expr("[1,2].each do |x|\nputs(x)\nend")
