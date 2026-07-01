@@ -1,13 +1,6 @@
 require "../spec_helper"
 
 module Adjutant
-  # Helper: create an interpreter with a capturing effect handler.
-  private def self.make_interp : {Interpreter, TestEffectHandler}
-    ef = TestEffectHandler.new
-    interp = Interpreter.new(effect: ef)
-    {interp, ef}
-  end
-
   # Helper: eval source and return the result value.
   private def self.eval(source : String) : Value
     interp, _ = make_interp
