@@ -1,7 +1,3 @@
-#
-# TODO
-# - [ ] Support `if...` as expressions, not statements. See commented-out section below
-#
 require "assert"
 
 assert("ternary") {
@@ -75,38 +71,100 @@ assert("unless (stmt)") {
   result == :yes
 }
 
-# ------ if... expressions NOT SUPPORTED
+# ------ if... expressions
 
-# assert("if-then") {
-#   if true
-#     1
-#   end == 1
-# }
+assert("if-then (expr)") {
+  (if true
+    1
+  end) == 1
+}
 
-# assert("if-else") {
-#   result = if false
-#     1
-#   else
-#     2
+assert("if-then with no match yields nil (expr)") {
+  result = if false
+    1
+  end
+  result == nil
+}
+
+assert("if-else (expr)") {
+  result = if false
+    1
+  else
+    2
+  end
+  result == 2
+}
+
+assert("elsif chain (expr)") {
+  x = 2
+  result = if x == 1
+    :one
+  elsif x == 2
+    :two
+  else
+    :other
+  end
+  result == :two
+}
+
+assert("unless (expr)") {
+  result = unless false
+    :yes
+  end
+  result == :yes
+}
+
+assert("if as call argument") {
+  (if true
+    2
+  else
+    3
+  end) == 2
+}
+
+# ------ case... expressions
+
+assert("case (expr)") {
+  x = 2
+  result = case x
+  when 1
+    :one
+  when 2
+    :two
+  else
+    :other
+  end
+  result == :two
+}
+
+assert("case with no match yields nil (expr)") {
+  result = case 99
+  when 1
+    :one
+  end
+  result == nil
+}
+
+# ------ begin/rescue expressions
+
+assert("begin-rescue yields body value on success (expr)") {
+  result = begin
+    1 + 1
+  rescue e
+    :failed
+  end
+  result == 2
+}
+
+# NOTE: rescue does not yet catch runtime errors (Op::Try sets rescue_ip,
+# but execute() never consults it on error) — deferred with typed exceptions,
+# see DEVELOPMENT.md object model plan.
+#
+# assert("begin-rescue yields rescue value on error (expr)") {
+#   result = begin
+#     1 / 0
+#   rescue e
+#     :failed
 #   end
-#   result == 2
-# }
-
-# assert("elsif chain (expr)") {
-#   x = 2
-#   result = if x == 1
-#     :one
-#   elsif x == 2
-#     :two
-#   else
-#     :other
-#   end
-#   result == :two
-# }
-
-# assert("unless") {
-#   result = unless false
-#     :yes
-#   end
-#   result == :yes
+#   result == :failed
 # }

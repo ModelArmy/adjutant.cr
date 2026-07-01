@@ -566,6 +566,10 @@ module Adjutant
       when "raise"
         msg = args.first? ? args.first.to_s : "RuntimeError"
         raise RuntimeError.new(msg, filename, line)
+      when "==="
+        a = args[0]? || Value.nil_value
+        b = args[1]? || Value.nil_value
+        Value.bool(values_equal?(a, b))
       when "require"
         path = args.first? ? args.first.as_string : ""
         if interp = @interpreter
