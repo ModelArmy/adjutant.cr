@@ -207,9 +207,31 @@ flowchart LR
     RubyObject -->|ivars: Sym id → Value| Value
 ```
 
-`RubyClass` holds a method table keyed by interned symbol ID (same keying scheme as globals and ivars), a superclass reference, and an `is_module` flag. `MakeClass` resolves the superclass by looking it up as an existing global `RubyClass` and raises `uninitialized constant` if it isn't one. `DefMethod` writes into the current class's method table — `@current_self` holds the enclosing `RubyClass` while a class body executes, via `GetClass`/`SetClass`, so nested class bodies save and restore the outer context.
+`RubyClass` holds a method table keyed by interned symbol ID (same keying scheme as globals and ivars), a superclass reference, and an `is_module?` flag. `MakeClass` resolves the superclass by looking it up as an existing global `RubyClass` and raises `uninitialized constant` if it isn't one.
 
-This is the first phase of the object model. Method dispatch through the class hierarchy (`obj.method`), `self` binding per frame, `.new`/instance construction, and ivar storage on `RubyObject` rather than globals are follow-on work — see the handoff notes for the full sequence.
+**`self` lives on `Frame`**, not the VM — each call frame carries its own `self_val`, isolated automatically when a frame is pushed/popped. `GetClass`/`SetClass` read and write the *current* frame's `self`; a class body runs in the same frame as its surrounding code, so entering/leaving one is a save-and-restore of that single value rather than a frame push. `DefMethod` writes into `self`'s method table, so it only succeeds when `self` is a `RubyClass` — i.e. inside a class or module body.
+
+**Method dispatch.** `.` calls carry a receiver bit in the bytecode (distinguishing `obj.method()` from `method(obj)`, where a plain argument that happens to be an object must not be mistaken for a receiver). When present, `dispatch_call` checks the receiver's class — walking the superclass chain — before falling through to native functions, global procs, and builtins. A matched method runs in a new frame with `self` bound to the receiver.
+
+**`.new`** allocates a `RubyObject` and, if `initialize` is defined (on the class or an ancestor), runs it via `VM#invoke` — the same synchronous nested-execution path already used to call blocks from native functions — so its return value can be discarded and `.new` always returns the object itself.
+
+```mermaid
+---
+displayMode: compact
+config:
+  layout: elk
+  themeVariables:
+    fontSize: 12px
+---
+flowchart LR
+    A[obj.method] --> B{has receiver bit?}
+    B -->|no| C[native / global / builtin]
+    B -->|yes| D[walk receiver's class + superclasses]
+    D -->|found| E[call_script_proc, self = receiver]
+    D -->|not found| C
+```
+
+Not yet implemented: ivar storage on `RubyObject` (`GetIvar`/`SetIvar` still alias globals), class variables, `include`, and class-side (singleton) methods.
 
 ### Information flow control
 

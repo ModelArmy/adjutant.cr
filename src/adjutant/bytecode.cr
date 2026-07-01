@@ -29,16 +29,16 @@ module Adjutant
 
     # Calls
     SetBlock # register block proc from constants[c] before a call
-    Call     # call method constants[c], argc=a, safe=(b!=0)
+    Call     # call method constants[c], argc=a, b bit0=safe(&.), bit1=has_receiver
     SafeCall # &. nil-safe call
     Ret      # return top of stack from current frame
 
     # Classes and methods
-    GetClass     # push current class context
-    SetClass     # pop → set current class context
+    GetClass     # push current frame's self
+    SetClass     # pop → set current frame's self
     MakeClass    # make class: name=constants[c], super=constants[b] (0xFFFF=none)
     MakeModule   # make module: name=constants[c]
-    DefMethod    # define method on current class: proc on stack, name=constants[c]
+    DefMethod    # define method on self (must be a class/module): proc on stack, name=constants[c]
     DefSingleton # define singleton method: proc on stack, recv on stack, name=constants[c]
 
     # Control flow

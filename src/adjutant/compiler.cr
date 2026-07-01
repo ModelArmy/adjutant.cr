@@ -280,8 +280,7 @@ module Adjutant
     end
 
     private def compile_self(node : SelfNode) : Nil
-      sym_idx = intern("self")
-      @chunk.emit(Op::GetGlobal, node.line, c: sym_idx)
+      @chunk.emit(Op::GetClass, node.line)
     end
 
     private def compile_method_name(node : MethodName) : Nil
@@ -512,11 +511,12 @@ module Adjutant
       end
       @chunk.emit(Op::SetBlock, node.line)
       sym_idx = intern(node.method)
-      safe = node.safe? ? 1_u16 : 0_u16
+      safe_bit = node.safe? ? 0b01_u16 : 0_u16
+      recv_bit = node.receiver ? 0b10_u16 : 0_u16
       recv = node.receiver ? 1_u8 : 0_u8
       argc = (node.args.size + recv).to_u8
       op = node.safe? ? Op::SafeCall : Op::Call
-      @chunk.emit(op, node.line, a: argc, b: safe, c: sym_idx)
+      @chunk.emit(op, node.line, a: argc, b: safe_bit | recv_bit, c: sym_idx)
     end
 
     private def compile_index(node : Index) : Nil
@@ -563,36 +563,32 @@ module Adjutant
                   else
                     NO_SUPER
                   end
-      self_sym = intern("self")
 
-      @chunk.emit(Op::GetClass, node.line)
-      @chunk.emit(Op::MakeClass, node.line, b: super_idx, c: name_idx)
-      @chunk.emit(Op::SetGlobal, node.line, c: name_idx)
-      @chunk.emit(Op::Pop, node.line)
-      @chunk.emit(Op::GetGlobal, node.line, c: name_idx)
-      @chunk.emit(Op::SetClass, node.line)
-      @chunk.emit(Op::GetGlobal, node.line, c: name_idx)
-      @chunk.emit(Op::SetGlobal, node.line, c: self_sym)
-      @chunk.emit(Op::Pop, node.line)
+      @chunk.emit(Op::GetClass, node.line)                             # [old_self]
+      @chunk.emit(Op::MakeClass, node.line, b: super_idx, c: name_idx) # [old_self, new_class]
+      @chunk.emit(Op::SetGlobal, node.line, c: name_idx)               # [old_self, new_class]
+      @chunk.emit(Op::SetClass, node.line)                             # [old_self]  self := new_class
       @class_depth += 1
-      compile_body(node.body)
+      compile_body(node.body) # [old_self, body_val]
       @class_depth -= 1
-      @chunk.emit(Op::SetClass, node.line)
+      @chunk.emit(Op::Pop, node.line)      # [old_self]  discard body value
+      @chunk.emit(Op::SetClass, node.line) # []  self := old_self (restored)
+      emit_nil(node.line)                  # [nil]  class-def statement's own value
     end
 
     private def compile_module(node : ModuleNode) : Nil
       name_idx = intern(node.name)
 
-      @chunk.emit(Op::GetClass, node.line)
-      @chunk.emit(Op::MakeModule, node.line, c: name_idx)
-      @chunk.emit(Op::SetGlobal, node.line, c: name_idx)
-      @chunk.emit(Op::Pop, node.line)
-      @chunk.emit(Op::GetGlobal, node.line, c: name_idx)
-      @chunk.emit(Op::SetClass, node.line)
+      @chunk.emit(Op::GetClass, node.line)                # [old_self]
+      @chunk.emit(Op::MakeModule, node.line, c: name_idx) # [old_self, new_module]
+      @chunk.emit(Op::SetGlobal, node.line, c: name_idx)  # [old_self, new_module]
+      @chunk.emit(Op::SetClass, node.line)                # [old_self]  self := new_module
       @class_depth += 1
-      compile_body(node.body)
+      compile_body(node.body) # [old_self, body_val]
       @class_depth -= 1
-      @chunk.emit(Op::SetClass, node.line)
+      @chunk.emit(Op::Pop, node.line)      # [old_self]
+      @chunk.emit(Op::SetClass, node.line) # []  self := old_self (restored)
+      emit_nil(node.line)                  # [nil]
     end
 
     private def compile_lambda(node : Lambda) : Nil

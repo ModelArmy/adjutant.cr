@@ -10,7 +10,7 @@ module Adjutant
     getter name : String
     property superclass : RubyClass?
     getter methods : Hash(Int32, ScriptProc)
-    getter is_module : Bool
+    getter? is_module : Bool
 
     def initialize(@name : String, @superclass : RubyClass? = nil, @is_module : Bool = false)
       @methods = {} of Int32 => ScriptProc
