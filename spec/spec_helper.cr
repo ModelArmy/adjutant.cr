@@ -15,4 +15,10 @@ module Adjutant
     interp.modules.register(name) { |i| block.call(i) }
     {interp, ef}
   end
+
+  # Helper: eval source and return the result value.
+  private def self.eval(source : String) : Value
+    interp, _ = make_interp
+    interp.eval(source)
+  end
 end

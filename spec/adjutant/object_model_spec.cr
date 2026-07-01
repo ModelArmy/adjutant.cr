@@ -1,12 +1,6 @@
 require "../spec_helper"
 
 module Adjutant
-  # Helper: eval source and return the result value.
-  private def self.eval(source : String) : Value
-    interp, _ = make_interp
-    interp.eval(source)
-  end
-
   describe "Object model" do
     describe "class creation" do
       it "class becomes a real RubyClass, not a stub" do
