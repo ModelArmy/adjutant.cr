@@ -179,7 +179,7 @@ All runtime values are represented as `Value`, a Crystal struct:
 ```crystal
 struct Value
   getter raw   : Nil | Bool | Int64 | Float64 | String | Sym | ScriptProc |
-                 Array(Value) | Hash(Value, Value)
+                 Array(Value) | Hash(Value, Value) | RubyClass | RubyObject
   getter label : SecurityLabel?
 end
 ```
@@ -187,6 +187,29 @@ end
 Using a struct means values are stack-allocated and copied on assignment — no per-value heap allocation for scalars. Crystal's union type carries its own discriminant, eliminating the need for a separate tag. Type predicates (`null?`, `bool?`, `int?`, etc.) use `is_a?` on the union.
 
 Symbols are represented as `Sym` — a struct carrying an integer ID and an interned name string. The `SymbolTable` assigns stable IDs so symbol comparison is an integer equality check rather than a string comparison. A `SymbolTable` is owned by the `Interpreter` and shared across all compilations, so `:foo` always has the same ID regardless of which script introduced it.
+
+### The Object model
+
+`RubyClass` and `RubyObject` are plain Crystal classes, not `Value` variants wrapping something else — they sit directly in the `ValueRaw` union like any other type.
+
+```mermaid
+---
+displayMode: compact
+config:
+  layout: elk
+  themeVariables:
+    fontSize: 12px
+---
+flowchart LR
+    RubyClass -->|superclass ref| RubyClass
+    RubyClass -->|methods: Sym id → ScriptProc| ScriptProc
+    RubyObject -->|rclass| RubyClass
+    RubyObject -->|ivars: Sym id → Value| Value
+```
+
+`RubyClass` holds a method table keyed by interned symbol ID (same keying scheme as globals and ivars), a superclass reference, and an `is_module` flag. `MakeClass` resolves the superclass by looking it up as an existing global `RubyClass` and raises `uninitialized constant` if it isn't one. `DefMethod` writes into the current class's method table — `@current_self` holds the enclosing `RubyClass` while a class body executes, via `GetClass`/`SetClass`, so nested class bodies save and restore the outer context.
+
+This is the first phase of the object model. Method dispatch through the class hierarchy (`obj.method`), `self` binding per frame, `.new`/instance construction, and ivar storage on `RubyObject` rather than globals are follow-on work — see the handoff notes for the full sequence.
 
 ### Information flow control
 

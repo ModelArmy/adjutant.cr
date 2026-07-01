@@ -382,19 +382,33 @@ module Adjutant
           push(val)
         when Op::MakeProc
           push(chunk.consts[inst.c])
-          # --- Class / module (stubs) ----------------------------------------
+          # --- Class / module ---------------------------------------------
         when Op::GetClass
-          push(@current_self) # simplified until object model lands
-
+          push(@current_self)
         when Op::SetClass
           @current_self = pop
-        when Op::MakeClass, Op::MakeModule
+        when Op::MakeClass
           name_sym = chunk.consts[inst.c].as_sym
-          push(Value.string("__class__:#{name_sym.name}"))
+          superclass = nil
+          if inst.b != Compiler::NO_SUPER
+            super_sym = chunk.consts[inst.b].as_sym
+            super_val = @globals[super_sym.value]?
+            unless super_val && super_val.rclass?
+              raise runtime_error("uninitialized constant #{super_sym.name}", f)
+            end
+            superclass = super_val.as_rclass
+          end
+          push(Value.rclass(RubyClass.new(name_sym.name, superclass, is_module: false)))
+        when Op::MakeModule
+          name_sym = chunk.consts[inst.c].as_sym
+          push(Value.rclass(RubyClass.new(name_sym.name, nil, is_module: true)))
         when Op::DefMethod
           proc_val = pop
           name_sym = chunk.consts[inst.c].as_sym
-          @globals[@symbols.intern(name_sym.name).value] = proc_val
+          unless (owner = @current_self.as_rclass?)
+            raise runtime_error("def outside of a class/module body", f)
+          end
+          owner.define_method(name_sym.value, proc_val.as_proc)
           push(Value.nil_value)
         when Op::DefSingleton
           _recv = pop
