@@ -140,6 +140,20 @@ module Adjutant
       @globals[sym.value] = value
     end
 
+    # Resolve the class to use for class-variable access from the given
+    # frame's self: the object's class if self is an instance, self
+    # itself if self is a class/module body. Raises outside a class
+    # context — Ruby doesn't support cvars there either.
+    private def cvar_class(f : Frame) : RubyClass
+      if obj = f.self_val.as_robject?
+        return obj.rclass
+      end
+      if cls = f.self_val.as_rclass?
+        return cls
+      end
+      raise runtime_error("class variable access outside of a class/module body", f)
+    end
+
     private def push_frame(proc : ScriptProc, filename : String, block : ScriptProc? = nil, stack_base : Int32 = @stack.size, outer : Array(Value)? = nil, self_val : Value = Value.nil_value) : Frame
       if @limits.call_depth_limit > 0 && @frames.size >= @limits.call_depth_limit
         raise runtime_error("call stack too deep (limit: #{@limits.call_depth_limit})")
@@ -216,24 +230,31 @@ module Adjutant
           push(val)
 
           # --- Instance / class variables ------------------------------------
-          # For now stored in globals with mangled names; a full object model
-          # will route these through the current self in a later phase.
+          # Ivars live on self (a RubyObject); reading/writing outside an
+          # object silently no-ops to nil, matching Ruby's forgiving ivar
+          # semantics. Cvars live on self's class, walking the superclass
+          # chain (see RubyClass#get_cvar/#set_cvar); outside a class
+          # context this is unsupported, so it raises.
 
         when Op::GetIvar
           sym = chunk.consts[inst.c].as_sym
-          push(@globals[sym.value]? || Value.nil_value)
+          obj = f.self_val.as_robject?
+          push(obj ? (obj.ivars[sym.value]? || Value.nil_value) : Value.nil_value)
         when Op::SetIvar
           sym = chunk.consts[inst.c].as_sym
           val = pop
-          @globals[sym.value] = val
+          if obj = f.self_val.as_robject?
+            obj.ivars[sym.value] = val
+          end
           push(val)
         when Op::GetCvar
           sym = chunk.consts[inst.c].as_sym
-          push(@globals[sym.value]? || Value.nil_value)
+          cls = cvar_class(f)
+          push(cls.get_cvar(sym.value) || Value.nil_value)
         when Op::SetCvar
           sym = chunk.consts[inst.c].as_sym
           val = pop
-          @globals[sym.value] = val
+          cvar_class(f).set_cvar(sym.value, val)
           push(val)
 
           # --- Stack ops ------------------------------------------------------
@@ -542,7 +563,12 @@ module Adjutant
       end
 
       # 4) Built-in fallback operations
-      exec_builtin(name, args, filename, line, blk)
+      if result = exec_builtin(name, args, filename, line, blk)
+        return result
+      end
+
+      # Fail with exception until proper exception raising lands
+      raise RuntimeError.new("unknown method: #{name}", filename, line)
     end
 
     # `Foo.new(args)` — allocates a RubyObject and, if the class (or an
@@ -586,7 +612,10 @@ module Adjutant
 
     # Minimal built-ins needed for specs to pass before stdlib lands.
     # ameba:disable Metrics/CyclomaticComplexity
-    private def exec_builtin(name : String, args : Array(Value), filename : String, line : Int32, blk : ScriptProc? = nil) : Value
+    private def exec_builtin(name : String,
+                             args : Array(Value),
+                             filename : String, line : Int32,
+                             blk : ScriptProc? = nil) : Value?
       case name
       when "puts"
         str = args.map { |arg|
@@ -680,7 +709,7 @@ module Adjutant
       when "%"
         arith_mod(args[0], args[1])
       else
-        Value.nil_value
+        nil
       end
     end
 

@@ -193,5 +193,153 @@ module Adjutant
         val.robject?.should be_true
       end
     end
+
+    describe "instance variables" do
+      it "sets and reads an ivar on self via a method" do
+        val = eval(<<-RB)
+          class Foo
+            def set
+              @x = 5
+            end
+            def get
+              @x
+            end
+          end
+          f = Foo.new
+          f.set
+          f.get
+          RB
+        val.as_int.should eq 5_i64
+      end
+
+      it "ivars are set via initialize" do
+        val = eval(<<-RB)
+          class Foo
+            def initialize(v)
+              @x = v
+            end
+            def get
+              @x
+            end
+          end
+          Foo.new(9).get
+          RB
+        val.as_int.should eq 9_i64
+      end
+
+      it "ivars are isolated per instance" do
+        val = eval(<<-RB)
+          class Foo
+            def set(v)
+              @x = v
+            end
+            def get
+              @x
+            end
+          end
+          a = Foo.new
+          b = Foo.new
+          a.set(1)
+          b.set(2)
+          a.get
+          RB
+        val.as_int.should eq 1_i64
+      end
+
+      it "unset ivar reads as nil" do
+        val = eval(<<-RB)
+          class Foo
+            def get
+              @unset
+            end
+          end
+          Foo.new.get
+          RB
+        val.null?.should be_true
+      end
+
+      it "ivar outside an object silently reads as nil" do
+        eval("@x").null?.should be_true
+      end
+    end
+
+    describe "class variables" do
+      it "sets and reads a cvar from an instance method" do
+        val = eval(<<-RB)
+          class Foo
+            def set
+              @@count = 1
+            end
+            def get
+              @@count
+            end
+          end
+          f = Foo.new
+          f.set
+          f.get
+          RB
+        val.as_int.should eq 1_i64
+      end
+
+      it "cvars are shared across instances" do
+        val = eval(<<-RB)
+          class Foo
+            def bump
+              @@count = (@@count || 0) + 1
+            end
+            def get
+              @@count
+            end
+          end
+          a = Foo.new
+          b = Foo.new
+          a.bump
+          b.bump
+          a.get
+          RB
+        val.as_int.should eq 2_i64
+      end
+
+      it "a subclass reads the superclass's cvar" do
+        val = eval(<<-RB)
+          class Animal
+            @@kind = 1
+            def kind
+              @@kind
+            end
+          end
+          class Dog < Animal
+          end
+          Dog.new.kind
+          RB
+        val.as_int.should eq 1_i64
+      end
+
+      it "a subclass write updates the shared superclass cvar" do
+        val = eval(<<-RB)
+          class Animal
+            @@kind = 1
+            def get
+              @@kind
+            end
+          end
+          class Dog < Animal
+            def set
+              @@kind = 2
+            end
+          end
+          d = Dog.new
+          d.set
+          Animal.new.get
+          RB
+        val.as_int.should eq 2_i64
+      end
+
+      it "raises for cvar access outside a class context" do
+        expect_raises(RuntimeError, /class variable access outside/) do
+          eval("@@x")
+        end
+      end
+    end
   end
 end

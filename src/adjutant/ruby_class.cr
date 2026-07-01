@@ -10,10 +10,12 @@ module Adjutant
     getter name : String
     property superclass : RubyClass?
     getter methods : Hash(Int32, ScriptProc)
+    getter cvars : Hash(Int32, Value)
     getter? is_module : Bool
 
     def initialize(@name : String, @superclass : RubyClass? = nil, @is_module : Bool = false)
       @methods = {} of Int32 => ScriptProc
+      @cvars = {} of Int32 => Value
     end
 
     def define_method(sym_id : Int32, proc : ScriptProc) : Nil
@@ -30,6 +32,34 @@ module Adjutant
         cls = cls.superclass
       end
       nil
+    end
+
+    # Class variables are shared across the hierarchy: a read walks up to
+    # the nearest ancestor that has the variable.
+    def get_cvar(sym_id : Int32) : Value?
+      cls = self
+      while cls
+        if v = cls.cvars[sym_id]?
+          return v
+        end
+        cls = cls.superclass
+      end
+      nil
+    end
+
+    # A write goes to the nearest ancestor that already defines the
+    # variable (matching Ruby's shared-cvar semantics); if no ancestor
+    # defines it yet, it's created on this class.
+    def set_cvar(sym_id : Int32, val : Value) : Nil
+      cls = self
+      while cls
+        if cls.cvars.has_key?(sym_id)
+          cls.cvars[sym_id] = val
+          return
+        end
+        cls = cls.superclass
+      end
+      @cvars[sym_id] = val
     end
 
     def to_s(io : IO) : Nil
