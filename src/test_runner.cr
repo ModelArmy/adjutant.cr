@@ -73,7 +73,9 @@ module Testing
           next if test.passed
           puts "FAIL #{result.path}:#{test.line} #{test.description}".colorize(:light_red)
           puts "  #{test.message}" if test.message
-          puts "  cause: #{test.cause}" if test.cause
+          if exc = test.cause
+            puts "  cause: #{exc.inspect_with_backtrace}"
+          end
           puts
         end
       end
