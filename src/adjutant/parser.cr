@@ -296,7 +296,11 @@ module Adjutant
           advance
           name_tok = @current
           advance
-          node = Call.new(node, name_tok.lexeme, [] of Node, nil, false, l, c)
+          if name_tok.kind == TokenKind::Constant
+            node = ConstPath.new(node, name_tok.lexeme, l, c)
+          else
+            node = Call.new(node, name_tok.lexeme, [] of Node, nil, false, l, c)
+          end
         when TokenKind::LBracket
           advance
           idx = parse_expression(0)

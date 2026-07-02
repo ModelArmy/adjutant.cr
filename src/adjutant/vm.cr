@@ -13,6 +13,11 @@ module Adjutant
     getter local_count : Int32
     getter? is_block : Bool
 
+    # The class/module this proc was lexically defined inside, captured
+    # once when DefMethod registers it. nil for top-level functions and
+    # for blocks (which are lexically transparent — see Frame#lexical_scope).
+    property lexical_scope : RubyClass?
+
     def initialize(@chunk, @name, @params = [] of String, @local_count = 0, @is_block = false)
     end
   end
@@ -36,7 +41,20 @@ module Adjutant
     # nil for method frames; set to the enclosing frame's locals for blocks.
     property outer_locals : Array(Value)?
 
-    def initialize(@proc, @chunk, @stack_base, @filename, @block = nil, outer : Array(Value)? = nil)
+    # `self` for this frame — the receiver during an instance method call,
+    # the class/module during a class body, or Value.nil_value at the
+    # top level. Lives on the frame (not the VM) so it is automatically
+    # isolated per call and restored on Op::Ret, with no manual save/restore.
+    property self_val : Value
+
+    # The lexical class/module scope for constant lookup when self isn't
+    # a class/module directly (i.e. inside a method body or a block).
+    # Methods get this from their ScriptProc (fixed at def-time, opaque
+    # to the caller); blocks inherit it from the calling frame
+    # (transparent) — see `call_script_proc`.
+    property lexical_scope : RubyClass?
+
+    def initialize(@proc, @chunk, @stack_base, @filename, @block = nil, outer : Array(Value)? = nil, @self_val : Value = Value.nil_value, @lexical_scope : RubyClass? = nil)
       @ip = 0
       @line = 0
       @rescue_ip = 0
@@ -95,7 +113,6 @@ module Adjutant
       @frames = [] of Frame
       @instruction_count = 0_u64
       @current_block = nil.as(ScriptProc?)
-      @current_self = Value.nil_value
     end
 
     # Execute a compiled chunk and return the result.
@@ -108,24 +125,25 @@ module Adjutant
 
     # Execute a compiled script proc and return the result.
     # Can be called from within an execution via a native function.
-    protected def invoke(proc : ScriptProc, args : Array(Value)) : Value
+    protected def invoke(proc : ScriptProc, args : Array(Value), self_val : Value? = nil) : Value
       saved_frames = @frames
       saved_ins_count = @instruction_count
       saved_cur_block = @current_block
-      saved_cur_self = @current_self
       result = Value.nil_value
       begin
         f = current_frame # before replacing @frames
+        inherited_self = self_val || f.self_val
+        inherited_lexical = proc.lexical_scope || f.lexical_scope
         @frames = [] of Frame
         # Setup the proc call, and ...
-        call_script_proc(proc, args, f.filename, nil, f.locals)
+        call_script_proc(proc, args, f.filename, nil, f.locals, self_val: inherited_self,
+          lexical_scope: inherited_lexical, lexical_override: true)
         # Let the VM execute the chunk
         result = execute
       ensure
         @frames = saved_frames
         @instruction_count = saved_ins_count
         @current_block = saved_cur_block
-        @current_self = saved_cur_self
       end
       result
     end
@@ -136,11 +154,25 @@ module Adjutant
       @globals[sym.value] = value
     end
 
-    private def push_frame(proc : ScriptProc, filename : String, block : ScriptProc? = nil, stack_base : Int32 = @stack.size, outer : Array(Value)? = nil) : Frame
+    # Resolve the class to use for class-variable access from the given
+    # frame's self: the object's class if self is an instance, self
+    # itself if self is a class/module body. Raises outside a class
+    # context — Ruby doesn't support cvars there either.
+    private def cvar_class(f : Frame) : RubyClass
+      if obj = f.self_val.as_robject?
+        return obj.rclass
+      end
+      if cls = f.self_val.as_rclass?
+        return cls
+      end
+      raise runtime_error("class variable access outside of a class/module body", f)
+    end
+
+    private def push_frame(proc : ScriptProc, filename : String, block : ScriptProc? = nil, stack_base : Int32 = @stack.size, outer : Array(Value)? = nil, self_val : Value = Value.nil_value, lexical_scope : RubyClass? = nil) : Frame
       if @limits.call_depth_limit > 0 && @frames.size >= @limits.call_depth_limit
         raise runtime_error("call stack too deep (limit: #{@limits.call_depth_limit})")
       end
-      frame = Frame.new(proc, proc.chunk, stack_base, filename, block, outer)
+      frame = Frame.new(proc, proc.chunk, stack_base, filename, block, outer, self_val, lexical_scope)
       @frames.push(frame)
       frame
     end
@@ -212,24 +244,67 @@ module Adjutant
           push(val)
 
           # --- Instance / class variables ------------------------------------
-          # For now stored in globals with mangled names; a full object model
-          # will route these through the current self in a later phase.
+          # Ivars live on self (a RubyObject); reading/writing outside an
+          # object silently no-ops to nil, matching Ruby's forgiving ivar
+          # semantics. Cvars live on self's class, walking the superclass
+          # chain (see RubyClass#get_cvar/#set_cvar); outside a class
+          # context this is unsupported, so it raises.
 
         when Op::GetIvar
           sym = chunk.consts[inst.c].as_sym
-          push(@globals[sym.value]? || Value.nil_value)
+          obj = f.self_val.as_robject?
+          push(obj ? (obj.ivars[sym.value]? || Value.nil_value) : Value.nil_value)
         when Op::SetIvar
           sym = chunk.consts[inst.c].as_sym
           val = pop
-          @globals[sym.value] = val
+          if obj = f.self_val.as_robject?
+            obj.ivars[sym.value] = val
+          end
           push(val)
         when Op::GetCvar
           sym = chunk.consts[inst.c].as_sym
-          push(@globals[sym.value]? || Value.nil_value)
+          cls = cvar_class(f)
+          push(cls.get_cvar(sym.value) || Value.nil_value)
         when Op::SetCvar
           sym = chunk.consts[inst.c].as_sym
           val = pop
-          @globals[sym.value] = val
+          cvar_class(f).set_cvar(sym.value, val)
+          push(val)
+
+          # --- Constants -------------------------------------------------------
+          # Lexically scoped: walk the innermost enclosing class/module
+          # (self if we're directly in a class/module body, else the
+          # defining proc's lexical_scope), then fall back to top-level
+          # globals.
+
+        when Op::GetConstant
+          sym = chunk.consts[inst.c].as_sym
+          start = f.self_val.as_rclass? || f.lexical_scope
+          val = start.try(&.find_constant(sym.value)) || @globals[sym.value]?
+          unless val
+            raise runtime_error("uninitialized constant #{sym.name}", f)
+          end
+          push(val)
+        when Op::SetConstant
+          sym = chunk.consts[inst.c].as_sym
+          val = pop
+          target = f.self_val.as_rclass? || f.lexical_scope
+          if target
+            target.constants[sym.value] = val
+          else
+            @globals[sym.value] = val
+          end
+          push(val)
+        when Op::GetConstantFrom
+          sym = chunk.consts[inst.c].as_sym
+          ns_val = pop
+          unless ns = ns_val.as_rclass?
+            raise runtime_error("#{ns_val} is not a class/module", f)
+          end
+          val = ns.constants[sym.value]?
+          unless val
+            raise runtime_error("uninitialized constant #{ns.name}::#{sym.name}", f)
+          end
           push(val)
 
           # --- Stack ops ------------------------------------------------------
@@ -255,13 +330,14 @@ module Adjutant
         when Op::Call, Op::SafeCall
           sym = chunk.consts[inst.c].as_sym
           argc = inst.a.to_i
-          safe = inst.b != 0
+          safe = inst.b & 0b01_u16 != 0
+          has_receiver = inst.b & 0b10_u16 != 0
 
           args = @stack.last(argc)
           @stack.pop(argc) if argc > 0
 
           depth_before = @frames.size
-          result = dispatch_call(sym.name, args, safe, f.filename, inst.line, @current_block)
+          result = dispatch_call(sym.name, args, safe, f.filename, inst.line, @current_block, has_receiver)
           @current_block = nil
           # If dispatch pushed a new ScriptProc frame, do NOT push the
           # sentinel return value — Op::Ret will push the real result.
@@ -382,19 +458,39 @@ module Adjutant
           push(val)
         when Op::MakeProc
           push(chunk.consts[inst.c])
-          # --- Class / module (stubs) ----------------------------------------
+          # --- Class / module ---------------------------------------------
         when Op::GetClass
-          push(@current_self) # simplified until object model lands
-
+          push(f.self_val)
         when Op::SetClass
-          @current_self = pop
-        when Op::MakeClass, Op::MakeModule
+          f.self_val = pop
+        when Op::MakeClass
           name_sym = chunk.consts[inst.c].as_sym
-          push(Value.string("__class__:#{name_sym.name}"))
+          superclass = nil
+          if inst.b != Compiler::NO_SUPER
+            super_sym = chunk.consts[inst.b].as_sym
+            super_val = @globals[super_sym.value]?
+            unless super_val && super_val.rclass?
+              raise runtime_error("uninitialized constant #{super_sym.name}", f)
+            end
+            superclass = super_val.as_rclass
+          end
+          new_cls = RubyClass.new(name_sym.name, superclass, is_module: false)
+          new_cls.lexical_parent = f.self_val.as_rclass?
+          push(Value.rclass(new_cls))
+        when Op::MakeModule
+          name_sym = chunk.consts[inst.c].as_sym
+          new_mod = RubyClass.new(name_sym.name, nil, is_module: true)
+          new_mod.lexical_parent = f.self_val.as_rclass?
+          push(Value.rclass(new_mod))
         when Op::DefMethod
           proc_val = pop
           name_sym = chunk.consts[inst.c].as_sym
-          @globals[@symbols.intern(name_sym.name).value] = proc_val
+          unless owner = f.self_val.as_rclass?
+            raise runtime_error("def outside of a class/module body", f)
+          end
+          proc = proc_val.as_proc
+          proc.lexical_scope = owner
+          owner.define_method(name_sym.value, proc)
           push(Value.nil_value)
         when Op::DefSingleton
           _recv = pop
@@ -472,10 +568,29 @@ module Adjutant
                               args : Array(Value),
                               safe : Bool,
                               filename : String, line : Int32,
-                              blk : ScriptProc? = nil) : Value
+                              blk : ScriptProc? = nil,
+                              has_receiver : Bool = false) : Value
       # 1) Safe navigation: skip call if receiver (first arg) is nil
       if safe && !args.empty? && args.first.null?
         return Value.nil_value
+      end
+
+      # 1.5) Receiver-based dispatch: instance methods and `.new`, checked
+      # ahead of native/global/builtin so a class's own methods win over
+      # any same-named global function.
+      if has_receiver && !args.empty?
+        recv = args.first
+        if recv.rclass? && name == "new"
+          return construct_object(recv.as_rclass, args[1..], filename, line)
+        end
+        if recv.robject? || recv.rclass?
+          cls = recv.robject? ? recv.as_robject.rclass : recv.as_rclass
+          if sym_id = @symbols.lookup(name).try(&.value)
+            if method = cls.find_method(sym_id)
+              return call_script_proc(method, args[1..], filename, blk, nil, self_val: recv)
+            end
+          end
+        end
       end
 
       # 2) Check native functions registered via interpreter
@@ -504,7 +619,27 @@ module Adjutant
       end
 
       # 4) Built-in fallback operations
-      exec_builtin(name, args, filename, line, blk)
+      if result = exec_builtin(name, args, filename, line, blk)
+        return result
+      end
+
+      # Fail with exception until proper exception raising lands
+      raise RuntimeError.new("unknown method: #{name}", filename, line)
+    end
+
+    # `Foo.new(args)` — allocates a RubyObject and, if the class (or an
+    # ancestor) defines `initialize`, runs it synchronously via `invoke`
+    # so its return value can be discarded and the object returned
+    # regardless of what `initialize` itself returns.
+    private def construct_object(cls : RubyClass, args : Array(Value), filename : String, line : Int32) : Value
+      raise runtime_error("can't instantiate module #{cls.name}") if cls.is_module?
+      obj_val = Value.robject(RubyObject.new(cls))
+      if sym_id = @symbols.lookup("initialize").try(&.value)
+        if init = cls.find_method(sym_id)
+          invoke(init, args, self_val: obj_val)
+        end
+      end
+      obj_val
     end
 
     # Call a ScriptProc, binding arguments to param slots and optionally
@@ -512,13 +647,32 @@ module Adjutant
     # Does NOT call execute recursively — pushes the frame and returns a
     # sentinel. The outer execute loop continues with the new frame, and
     # Op::Ret restores the caller frame automatically.
+    #
+    # `self_val` binds the new frame's `self`. If omitted, self is
+    # inherited from the calling frame — correct for plain nested calls
+    # and for blocks, which keep the enclosing method's self.
+    #
+    # `lexical_scope` normally comes from the proc itself (methods get a
+    # fixed scope at def-time, opaque to the caller). `lexical_override`
+    # forces `lexical_scope` regardless of `proc.lexical_scope` — used
+    # only by `invoke`, which has already computed the correct value
+    # before resetting the frame stack.
     private def call_script_proc(proc : ScriptProc,
                                  args : Array(Value),
                                  filename : String,
                                  blk : ScriptProc? = nil,
-                                 outer : Array(Value)? = nil) : Value
+                                 outer : Array(Value)? = nil,
+                                 self_val : Value? = nil,
+                                 lexical_scope : RubyClass? = nil,
+                                 lexical_override : Bool = false) : Value
       base = @stack.size
-      frame = push_frame(proc, filename, block: blk, stack_base: base, outer: outer)
+      inherited_self = self_val || (@frames.empty? ? Value.nil_value : current_frame.self_val)
+      effective_lexical = if lexical_override
+                            lexical_scope
+                          else
+                            proc.lexical_scope || (@frames.empty? ? nil : current_frame.lexical_scope)
+                          end
+      frame = push_frame(proc, filename, block: blk, stack_base: base, outer: outer, self_val: inherited_self, lexical_scope: effective_lexical)
       args.each_with_index do |arg, i|
         frame.locals[i] = arg if i < frame.locals.size
       end
@@ -527,7 +681,10 @@ module Adjutant
 
     # Minimal built-ins needed for specs to pass before stdlib lands.
     # ameba:disable Metrics/CyclomaticComplexity
-    private def exec_builtin(name : String, args : Array(Value), filename : String, line : Int32, blk : ScriptProc? = nil) : Value
+    private def exec_builtin(name : String,
+                             args : Array(Value),
+                             filename : String, line : Int32,
+                             blk : ScriptProc? = nil) : Value?
       case name
       when "puts"
         str = args.map { |arg|
@@ -621,7 +778,7 @@ module Adjutant
       when "%"
         arith_mod(args[0], args[1])
       else
-        Value.nil_value
+        nil
       end
     end
 

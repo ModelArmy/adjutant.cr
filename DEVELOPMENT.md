@@ -179,7 +179,7 @@ All runtime values are represented as `Value`, a Crystal struct:
 ```crystal
 struct Value
   getter raw   : Nil | Bool | Int64 | Float64 | String | Sym | ScriptProc |
-                 Array(Value) | Hash(Value, Value)
+                 Array(Value) | Hash(Value, Value) | RubyClass | RubyObject
   getter label : SecurityLabel?
 end
 ```
@@ -187,6 +187,75 @@ end
 Using a struct means values are stack-allocated and copied on assignment — no per-value heap allocation for scalars. Crystal's union type carries its own discriminant, eliminating the need for a separate tag. Type predicates (`null?`, `bool?`, `int?`, etc.) use `is_a?` on the union.
 
 Symbols are represented as `Sym` — a struct carrying an integer ID and an interned name string. The `SymbolTable` assigns stable IDs so symbol comparison is an integer equality check rather than a string comparison. A `SymbolTable` is owned by the `Interpreter` and shared across all compilations, so `:foo` always has the same ID regardless of which script introduced it.
+
+### The Object model
+
+`RubyClass` and `RubyObject` are plain Crystal classes, not `Value` variants wrapping something else — they sit directly in the `ValueRaw` union like any other type.
+
+```mermaid
+---
+displayMode: compact
+config:
+  layout: elk
+  themeVariables:
+    fontSize: 12px
+---
+flowchart LR
+    RubyClass -->|superclass ref| RubyClass
+    RubyClass -->|methods: Sym id → ScriptProc| ScriptProc
+    RubyObject -->|rclass| RubyClass
+    RubyObject -->|ivars: Sym id → Value| Value
+```
+
+`RubyClass` holds a method table keyed by interned symbol ID (same keying scheme as globals and ivars), a superclass reference, and an `is_module?` flag. `MakeClass` resolves the superclass by looking it up as an existing global `RubyClass` and raises `uninitialized constant` if it isn't one.
+
+**`self` lives on `Frame`**, not the VM — each call frame carries its own `self_val`, isolated automatically when a frame is pushed/popped. `GetClass`/`SetClass` read and write the *current* frame's `self`; a class body runs in the same frame as its surrounding code, so entering/leaving one is a save-and-restore of that single value rather than a frame push. `DefMethod` writes into `self`'s method table, so it only succeeds when `self` is a `RubyClass` — i.e. inside a class or module body.
+
+**Method dispatch.** `.` calls carry a receiver bit in the bytecode (distinguishing `obj.method()` from `method(obj)`, where a plain argument that happens to be an object must not be mistaken for a receiver). When present, `dispatch_call` checks the receiver's class — walking the superclass chain — before falling through to native functions, global procs, and builtins. A matched method runs in a new frame with `self` bound to the receiver.
+
+**`.new`** allocates a `RubyObject` and, if `initialize` is defined (on the class or an ancestor), runs it via `VM#invoke` — the same synchronous nested-execution path already used to call blocks from native functions — so its return value can be discarded and `.new` always returns the object itself.
+
+```mermaid
+---
+displayMode: compact
+config:
+  layout: elk
+  themeVariables:
+    fontSize: 12px
+---
+flowchart LR
+    A[obj.method] --> B{has receiver bit?}
+    B -->|no| C[native / global / builtin]
+    B -->|yes| D[walk receiver's class + superclasses]
+    D -->|found| E[call_script_proc, self = receiver]
+    D -->|not found| C
+```
+
+**Ivars and cvars** route through `self`, not globals. `GetIvar`/`SetIvar` read/write `self.ivars` when `self` is a `RubyObject`; outside an object they're a silent no-op/`nil`, matching Ruby's forgiving ivar semantics. `GetCvar`/`SetCvar` resolve via `self`'s class (the receiver's class for an instance, `self` itself inside a class body), walking `superclass` — a write lands on the nearest ancestor that already defines the variable, or the current class if none does. Cvar access outside a class context raises, since Ruby has no cvar scope there either.
+
+**Constants are lexically scoped**, not flat globals — `class A; class B; X = 1; end; end` puts `X` on `B`, not in a shared namespace. This needs two links distinct from the ones above: `RubyClass#lexical_parent` (source nesting, set at `MakeClass` time from `self` — *not* `superclass`, which tracks inheritance) and `ScriptProc#lexical_scope` (the class a method was `def`'d in, captured once at `DefMethod` time, since a method's `self` at call time is its receiver, not its lexical home).
+
+```mermaid
+---
+displayMode: compact
+config:
+  layout: elk
+  themeVariables:
+    fontSize: 12px
+---
+flowchart TD
+    A[Constant reference] --> B{{self is a RubyClass?}}
+    B -->|yes, in a class body| C[start = self]
+    B -->|no, in a method/block| D[start = proc.lexical_scope]
+    C --> E[walk lexical_parent chain]
+    D --> E
+    E -->|miss everywhere| F[top-level globals]
+    F -->|still miss| G[raise uninitialized constant]
+```
+
+A plain `Constant` reference (`X`) walks that lexical chain. An explicit path (`A::B::X`, parsed as `ConstPath`) instead does a direct, non-walking lookup in each resolved namespace's own table — closer to Ruby, where `::` doesn't re-trigger lexical search. Blocks are lexically *transparent* (inherit the enclosing frame's `lexical_scope`, same mechanism as `self` inheritance); methods are opaque (fixed at `def` time, ignores the caller).
+
+Not yet implemented: `include`, and class-side (singleton) methods.
 
 ### Information flow control
 
