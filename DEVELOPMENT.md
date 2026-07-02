@@ -231,7 +231,31 @@ flowchart LR
     D -->|not found| C
 ```
 
-Not yet implemented: ivar storage on `RubyObject` (`GetIvar`/`SetIvar` still alias globals), class variables, `include`, and class-side (singleton) methods.
+**Ivars and cvars** route through `self`, not globals. `GetIvar`/`SetIvar` read/write `self.ivars` when `self` is a `RubyObject`; outside an object they're a silent no-op/`nil`, matching Ruby's forgiving ivar semantics. `GetCvar`/`SetCvar` resolve via `self`'s class (the receiver's class for an instance, `self` itself inside a class body), walking `superclass` — a write lands on the nearest ancestor that already defines the variable, or the current class if none does. Cvar access outside a class context raises, since Ruby has no cvar scope there either.
+
+**Constants are lexically scoped**, not flat globals — `class A; class B; X = 1; end; end` puts `X` on `B`, not in a shared namespace. This needs two links distinct from the ones above: `RubyClass#lexical_parent` (source nesting, set at `MakeClass` time from `self` — *not* `superclass`, which tracks inheritance) and `ScriptProc#lexical_scope` (the class a method was `def`'d in, captured once at `DefMethod` time, since a method's `self` at call time is its receiver, not its lexical home).
+
+```mermaid
+---
+displayMode: compact
+config:
+  layout: elk
+  themeVariables:
+    fontSize: 12px
+---
+flowchart TD
+    A[Constant reference] --> B{{self is a RubyClass?}}
+    B -->|yes, in a class body| C[start = self]
+    B -->|no, in a method/block| D[start = proc.lexical_scope]
+    C --> E[walk lexical_parent chain]
+    D --> E
+    E -->|miss everywhere| F[top-level globals]
+    F -->|still miss| G[raise uninitialized constant]
+```
+
+A plain `Constant` reference (`X`) walks that lexical chain. An explicit path (`A::B::X`, parsed as `ConstPath`) instead does a direct, non-walking lookup in each resolved namespace's own table — closer to Ruby, where `::` doesn't re-trigger lexical search. Blocks are lexically *transparent* (inherit the enclosing frame's `lexical_scope`, same mechanism as `self` inheritance); methods are opaque (fixed at `def` time, ignores the caller).
+
+Not yet implemented: `include`, and class-side (singleton) methods.
 
 ### Information flow control
 

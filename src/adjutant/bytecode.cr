@@ -22,6 +22,11 @@ module Adjutant
     GetCvar   # push class.cvars[constants[c].as_sym.name]
     SetCvar   # pop → class.cvars[constants[c].as_sym.name]
 
+    # Constants — lexically scoped, distinct from plain globals.
+    GetConstant     # push constants[c].as_sym.name, walking the lexical scope chain, then globals; raises if not found
+    SetConstant     # pop → set in the innermost lexical scope (self if a class/module, else lexical_scope, else globals)
+    GetConstantFrom # pop a class/module → push its OWN constants[c].as_sym.name (no chain walk); raises if not a class or not found
+
     # Indexing
     GetIndex  # pop index, pop target → push target[index]
     SafeIndex # like GetIndex but nil-safe

@@ -11,11 +11,19 @@ module Adjutant
     property superclass : RubyClass?
     getter methods : Hash(Int32, ScriptProc)
     getter cvars : Hash(Int32, Value)
+    getter constants : Hash(Int32, Value)
     getter? is_module : Bool
+
+    # The class/module this one was lexically nested inside at the point
+    # it was defined (e.g. `class A; class B; end; end` → B.lexical_parent
+    # == A). Distinct from `superclass` — this tracks source nesting, not
+    # inheritance, and is what constant lookup walks.
+    property lexical_parent : RubyClass?
 
     def initialize(@name : String, @superclass : RubyClass? = nil, @is_module : Bool = false)
       @methods = {} of Int32 => ScriptProc
       @cvars = {} of Int32 => Value
+      @constants = {} of Int32 => Value
     end
 
     def define_method(sym_id : Int32, proc : ScriptProc) : Nil
@@ -60,6 +68,19 @@ module Adjutant
         cls = cls.superclass
       end
       @cvars[sym_id] = val
+    end
+
+    # Constant lookup walks lexical nesting (source structure), not the
+    # superclass chain — distinct from method/cvar resolution.
+    def find_constant(sym_id : Int32) : Value?
+      cls = self
+      while cls
+        if v = cls.constants[sym_id]?
+          return v
+        end
+        cls = cls.lexical_parent
+      end
+      nil
     end
 
     def to_s(io : IO) : Nil

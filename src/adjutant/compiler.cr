@@ -141,6 +141,7 @@ module Adjutant
       when RangeLiteral   then compile_range(node)
       when Identifier     then compile_identifier(node)
       when Constant       then compile_constant(node)
+      when ConstPath      then compile_const_path(node)
       when IVar           then compile_ivar(node)
       when CVar           then compile_cvar(node)
       when SelfNode       then compile_self(node)
@@ -266,7 +267,13 @@ module Adjutant
 
     private def compile_constant(node : Constant) : Nil
       sym_idx = intern(node.name)
-      @chunk.emit(Op::GetGlobal, node.line, c: sym_idx)
+      @chunk.emit(Op::GetConstant, node.line, c: sym_idx)
+    end
+
+    private def compile_const_path(node : ConstPath) : Nil
+      compile_node(node.namespace)
+      sym_idx = intern(node.name)
+      @chunk.emit(Op::GetConstantFrom, node.line, c: sym_idx)
     end
 
     private def compile_ivar(node : IVar) : Nil
@@ -441,7 +448,7 @@ module Adjutant
     # Store the top-of-stack value into the appropriate variable slot.
     # Inside a method/block scope, bare identifiers are locals.
     # At the top level (no scope), they are globals.
-    # Constants are always globals regardless of scope.
+    # Constants are lexically scoped — see SetConstant.
     private def emit_store(target : Node, line : Int32) : Nil
       case target
       when Identifier
@@ -469,7 +476,7 @@ module Adjutant
         return
       when Constant
         sym_idx = intern(target.name)
-        @chunk.emit(Op::SetGlobal, line, c: sym_idx)
+        @chunk.emit(Op::SetConstant, line, c: sym_idx)
         return
       when IVar
         sym_idx = intern(target.name)
@@ -566,7 +573,7 @@ module Adjutant
 
       @chunk.emit(Op::GetClass, node.line)                             # [old_self]
       @chunk.emit(Op::MakeClass, node.line, b: super_idx, c: name_idx) # [old_self, new_class]
-      @chunk.emit(Op::SetGlobal, node.line, c: name_idx)               # [old_self, new_class]
+      @chunk.emit(Op::SetConstant, node.line, c: name_idx)             # [old_self, new_class]  registers in old_self's scope (or globals at top level)
       @chunk.emit(Op::SetClass, node.line)                             # [old_self]  self := new_class
       @class_depth += 1
       compile_body(node.body) # [old_self, body_val]
@@ -579,10 +586,10 @@ module Adjutant
     private def compile_module(node : ModuleNode) : Nil
       name_idx = intern(node.name)
 
-      @chunk.emit(Op::GetClass, node.line)                # [old_self]
-      @chunk.emit(Op::MakeModule, node.line, c: name_idx) # [old_self, new_module]
-      @chunk.emit(Op::SetGlobal, node.line, c: name_idx)  # [old_self, new_module]
-      @chunk.emit(Op::SetClass, node.line)                # [old_self]  self := new_module
+      @chunk.emit(Op::GetClass, node.line)                 # [old_self]
+      @chunk.emit(Op::MakeModule, node.line, c: name_idx)  # [old_self, new_module]
+      @chunk.emit(Op::SetConstant, node.line, c: name_idx) # [old_self, new_module]
+      @chunk.emit(Op::SetClass, node.line)                 # [old_self]  self := new_module
       @class_depth += 1
       compile_body(node.body) # [old_self, body_val]
       @class_depth -= 1

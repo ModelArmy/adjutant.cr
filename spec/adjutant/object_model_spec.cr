@@ -62,7 +62,7 @@ module Adjutant
 
     describe "self inside a class body" do
       it "self is the class being defined" do
-        val = eval("class Foo\n SELF_STR = self.to_s\nend\nSELF_STR")
+        val = eval("class Foo\n SELF_STR = self.to_s\nend\nFoo::SELF_STR")
         val.as_string.should eq "class Foo"
       end
 
@@ -78,7 +78,7 @@ module Adjutant
             end
             OUTER_SELF_STR = self.to_s
           end
-          OUTER_SELF_STR
+          Outer::OUTER_SELF_STR
           RB
         val.as_string.should eq "class Outer"
       end
@@ -103,7 +103,7 @@ module Adjutant
             end
           end
           Foo.new
-          INIT_RAN
+          Foo::INIT_RAN
           RB
         val.as_bool.should be_true
       end
@@ -338,6 +338,93 @@ module Adjutant
       it "raises for cvar access outside a class context" do
         expect_raises(RuntimeError, /class variable access outside/) do
           eval("@@x")
+        end
+      end
+    end
+
+    describe "constants" do
+      it "a top-level constant is globally visible" do
+        eval("MYCONST = 5\nMYCONST").as_int.should eq 5_i64
+      end
+
+      it "a constant defined inside a class is scoped to that class" do
+        val = eval(<<-RB)
+          class A
+            MYCONST = 3
+          end
+          A::MYCONST
+          RB
+        val.as_int.should eq 3_i64
+      end
+
+      it "a class-scoped constant does not leak to the top level" do
+        expect_raises(RuntimeError, /uninitialized constant/) do
+          eval("class A\nMYCONST = 3\nend\nMYCONST")
+        end
+      end
+
+      it "resolves a doubly-nested constant via an explicit path" do
+        val = eval(<<-RB)
+          class A
+            class B
+              MYCONST = 7
+            end
+          end
+          A::B::MYCONST
+          RB
+        val.as_int.should eq 7_i64
+      end
+
+      it "a method sees the constant lexically nested at its own def site, not an outer shadowed one" do
+        val = eval(<<-RB)
+          class A
+            MYCONST = 3
+            class B
+              MYCONST = 4
+              def x
+                MYCONST
+              end
+            end
+          end
+          A::B.new.x
+          RB
+        val.as_int.should eq 4_i64
+      end
+
+      it "a method falls back to an outer lexical constant when its own scope doesn't define one" do
+        val = eval(<<-RB)
+          class A
+            MYCONST = 3
+            class B
+              def x
+                MYCONST
+              end
+            end
+          end
+          A::B.new.x
+          RB
+        val.as_int.should eq 3_i64
+      end
+
+      it "constant lookup is lexical, not based on the superclass chain" do
+        expect_raises(RuntimeError, /uninitialized constant/) do
+          eval(<<-RB)
+            class Animal
+              MYCONST = 1
+            end
+            class Dog < Animal
+              def get
+                MYCONST
+              end
+            end
+            Dog.new.get
+            RB
+        end
+      end
+
+      it "raises for a totally undefined constant" do
+        expect_raises(RuntimeError, /uninitialized constant/) do
+          eval("NOPE")
         end
       end
     end

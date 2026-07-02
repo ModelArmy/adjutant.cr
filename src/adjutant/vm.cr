@@ -13,6 +13,11 @@ module Adjutant
     getter local_count : Int32
     getter? is_block : Bool
 
+    # The class/module this proc was lexically defined inside, captured
+    # once when DefMethod registers it. nil for top-level functions and
+    # for blocks (which are lexically transparent — see Frame#lexical_scope).
+    property lexical_scope : RubyClass?
+
     def initialize(@chunk, @name, @params = [] of String, @local_count = 0, @is_block = false)
     end
   end
@@ -42,7 +47,14 @@ module Adjutant
     # isolated per call and restored on Op::Ret, with no manual save/restore.
     property self_val : Value
 
-    def initialize(@proc, @chunk, @stack_base, @filename, @block = nil, outer : Array(Value)? = nil, @self_val : Value = Value.nil_value)
+    # The lexical class/module scope for constant lookup when self isn't
+    # a class/module directly (i.e. inside a method body or a block).
+    # Methods get this from their ScriptProc (fixed at def-time, opaque
+    # to the caller); blocks inherit it from the calling frame
+    # (transparent) — see `call_script_proc`.
+    property lexical_scope : RubyClass?
+
+    def initialize(@proc, @chunk, @stack_base, @filename, @block = nil, outer : Array(Value)? = nil, @self_val : Value = Value.nil_value, @lexical_scope : RubyClass? = nil)
       @ip = 0
       @line = 0
       @rescue_ip = 0
@@ -121,9 +133,11 @@ module Adjutant
       begin
         f = current_frame # before replacing @frames
         inherited_self = self_val || f.self_val
+        inherited_lexical = proc.lexical_scope || f.lexical_scope
         @frames = [] of Frame
         # Setup the proc call, and ...
-        call_script_proc(proc, args, f.filename, nil, f.locals, self_val: inherited_self)
+        call_script_proc(proc, args, f.filename, nil, f.locals, self_val: inherited_self,
+          lexical_scope: inherited_lexical, lexical_override: true)
         # Let the VM execute the chunk
         result = execute
       ensure
@@ -154,11 +168,11 @@ module Adjutant
       raise runtime_error("class variable access outside of a class/module body", f)
     end
 
-    private def push_frame(proc : ScriptProc, filename : String, block : ScriptProc? = nil, stack_base : Int32 = @stack.size, outer : Array(Value)? = nil, self_val : Value = Value.nil_value) : Frame
+    private def push_frame(proc : ScriptProc, filename : String, block : ScriptProc? = nil, stack_base : Int32 = @stack.size, outer : Array(Value)? = nil, self_val : Value = Value.nil_value, lexical_scope : RubyClass? = nil) : Frame
       if @limits.call_depth_limit > 0 && @frames.size >= @limits.call_depth_limit
         raise runtime_error("call stack too deep (limit: #{@limits.call_depth_limit})")
       end
-      frame = Frame.new(proc, proc.chunk, stack_base, filename, block, outer, self_val)
+      frame = Frame.new(proc, proc.chunk, stack_base, filename, block, outer, self_val, lexical_scope)
       @frames.push(frame)
       frame
     end
@@ -255,6 +269,42 @@ module Adjutant
           sym = chunk.consts[inst.c].as_sym
           val = pop
           cvar_class(f).set_cvar(sym.value, val)
+          push(val)
+
+          # --- Constants -------------------------------------------------------
+          # Lexically scoped: walk the innermost enclosing class/module
+          # (self if we're directly in a class/module body, else the
+          # defining proc's lexical_scope), then fall back to top-level
+          # globals.
+
+        when Op::GetConstant
+          sym = chunk.consts[inst.c].as_sym
+          start = f.self_val.as_rclass? || f.lexical_scope
+          val = start.try(&.find_constant(sym.value)) || @globals[sym.value]?
+          unless val
+            raise runtime_error("uninitialized constant #{sym.name}", f)
+          end
+          push(val)
+        when Op::SetConstant
+          sym = chunk.consts[inst.c].as_sym
+          val = pop
+          target = f.self_val.as_rclass? || f.lexical_scope
+          if target
+            target.constants[sym.value] = val
+          else
+            @globals[sym.value] = val
+          end
+          push(val)
+        when Op::GetConstantFrom
+          sym = chunk.consts[inst.c].as_sym
+          ns_val = pop
+          unless ns = ns_val.as_rclass?
+            raise runtime_error("#{ns_val} is not a class/module", f)
+          end
+          val = ns.constants[sym.value]?
+          unless val
+            raise runtime_error("uninitialized constant #{ns.name}::#{sym.name}", f)
+          end
           push(val)
 
           # --- Stack ops ------------------------------------------------------
@@ -424,17 +474,23 @@ module Adjutant
             end
             superclass = super_val.as_rclass
           end
-          push(Value.rclass(RubyClass.new(name_sym.name, superclass, is_module: false)))
+          new_cls = RubyClass.new(name_sym.name, superclass, is_module: false)
+          new_cls.lexical_parent = f.self_val.as_rclass?
+          push(Value.rclass(new_cls))
         when Op::MakeModule
           name_sym = chunk.consts[inst.c].as_sym
-          push(Value.rclass(RubyClass.new(name_sym.name, nil, is_module: true)))
+          new_mod = RubyClass.new(name_sym.name, nil, is_module: true)
+          new_mod.lexical_parent = f.self_val.as_rclass?
+          push(Value.rclass(new_mod))
         when Op::DefMethod
           proc_val = pop
           name_sym = chunk.consts[inst.c].as_sym
           unless owner = f.self_val.as_rclass?
             raise runtime_error("def outside of a class/module body", f)
           end
-          owner.define_method(name_sym.value, proc_val.as_proc)
+          proc = proc_val.as_proc
+          proc.lexical_scope = owner
+          owner.define_method(name_sym.value, proc)
           push(Value.nil_value)
         when Op::DefSingleton
           _recv = pop
@@ -595,15 +651,28 @@ module Adjutant
     # `self_val` binds the new frame's `self`. If omitted, self is
     # inherited from the calling frame — correct for plain nested calls
     # and for blocks, which keep the enclosing method's self.
+    #
+    # `lexical_scope` normally comes from the proc itself (methods get a
+    # fixed scope at def-time, opaque to the caller). `lexical_override`
+    # forces `lexical_scope` regardless of `proc.lexical_scope` — used
+    # only by `invoke`, which has already computed the correct value
+    # before resetting the frame stack.
     private def call_script_proc(proc : ScriptProc,
                                  args : Array(Value),
                                  filename : String,
                                  blk : ScriptProc? = nil,
                                  outer : Array(Value)? = nil,
-                                 self_val : Value? = nil) : Value
+                                 self_val : Value? = nil,
+                                 lexical_scope : RubyClass? = nil,
+                                 lexical_override : Bool = false) : Value
       base = @stack.size
       inherited_self = self_val || (@frames.empty? ? Value.nil_value : current_frame.self_val)
-      frame = push_frame(proc, filename, block: blk, stack_base: base, outer: outer, self_val: inherited_self)
+      effective_lexical = if lexical_override
+                            lexical_scope
+                          else
+                            proc.lexical_scope || (@frames.empty? ? nil : current_frame.lexical_scope)
+                          end
+      frame = push_frame(proc, filename, block: blk, stack_base: base, outer: outer, self_val: inherited_self, lexical_scope: effective_lexical)
       args.each_with_index do |arg, i|
         frame.locals[i] = arg if i < frame.locals.size
       end

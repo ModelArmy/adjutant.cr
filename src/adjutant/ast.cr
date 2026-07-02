@@ -120,6 +120,20 @@ module Adjutant
     end
   end
 
+  # Explicit constant-path access: `A::B` or `A::B::C`. `namespace` is the
+  # left side (itself a Constant or nested ConstPath); `name` is the
+  # rightmost segment. Distinct from Constant, which does lexical-scope
+  # lookup — ConstPath does a direct lookup in the resolved namespace's
+  # own constants table only.
+  class ConstPath < Node
+    getter namespace : Node
+    getter name : String
+
+    def initialize(@namespace, @name, line, column)
+      super(line, column)
+    end
+  end
+
   class IVar < Node
     getter name : String
 
