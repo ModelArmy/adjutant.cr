@@ -141,7 +141,17 @@ The dispatch loop is a `case` on `Op` enum values, which LLVM compiles to a jump
 
 **Closure model.** When `Op::Yield` fires, the yielding frame's `locals` array is passed as `outer_locals` to the block frame. `GetOuter`/`SetOuter` read and write slots in that array directly — since blocks execute synchronously while the outer frame is still alive, no upvalue hoisting is needed. Blocks defined outside a method (at the top level) resolve unrecognised names through globals rather than outer locals.
 
+**Globals and bare calls.** `@globals` is a single namespace shared by top-level `def`s and top-level variable assignments — unlike Ruby, which keeps methods and variables separate. `Op::GetGlobal` resolves this: if the fetched value is a `ScriptProc`, it must have come from `def`, so a bare reference (`foo`, no parens) calls it with zero args, matching Ruby's implicit-method-call semantics for non-local identifiers; otherwise the value is pushed as-is. Known limitation: a top-level variable holding a lambda is also auto-invoked on bare reference, since there's no separate namespace to distinguish it from a `def`.
+
 Execution limits (instruction count, call depth) are checked on every frame push and tick respectively.
+
+### Exception handling
+
+`begin`/`rescue` is bytecode, not a VM-level try/catch. `Op::Try` records a `rescue_ip` on the current `Frame`; `Op::EndTry` clears it after a successful body. The dispatch loop wraps each instruction in a Crystal `begin/rescue RuntimeError`: on error, it unwinds `@frames` — popping frames and truncating the stack to each one's `stack_base` — until it finds one with `rescue_ip > 0`, then jumps there. If no frame has an active handler, the error re-raises past the VM as an uncaught Crystal exception. A rescue several calls deep from where `begin` was written still works, since the handler frame is found by walking up rather than by lexical nesting.
+
+`Op::PushError` pushes the caught error for the rescue variable — currently just the error's string message (`VM#@last_error`). Typed exception objects (a real `RubyClass` hierarchy — `StandardError`, `TypeError`, etc. — and `rescue ClassName => e` filtering) are not yet implemented.
+
+`ensure` is parsed (`Op::SetEnsure` sets `Frame#ensure_ip`) but not yet consulted anywhere — `ensure` bodies do not currently run.
 
 ### The effect boundary
 
