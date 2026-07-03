@@ -7,9 +7,10 @@ module Adjutant
   # error (division by zero, explicit raise, native errors) unwound
   # straight past the VM regardless of an enclosing rescue.
   #
-  # Error values are string messages for now (Op::PushError stub) —
-  # typed exception objects land in a later chunk once base RubyClass
-  # hierarchy (StandardError, TypeError, etc.) exists.
+  # Chunk 2 (see "typed error objects" describe block below): the
+  # rescue variable is now a RubyObject of a real error class
+  # (StandardError, RuntimeError, etc.), not a raw string — read its
+  # message via `.message`.
   describe "begin/rescue error catching" do
     it "catches a runtime error (division by zero)" do
       result = eval(<<-RUBY)
@@ -38,7 +39,7 @@ module Adjutant
         begin
           1 / 0
         rescue e
-          e
+          e.message
         end
       RUBY
     end
@@ -48,7 +49,7 @@ module Adjutant
         begin
           raise "boom"
         rescue e
-          e
+          e.message
         end
       RUBY
     end
@@ -130,6 +131,83 @@ module Adjutant
           1 / 0
         RUBY
       end
+    end
+  end
+
+  describe "typed error objects" do
+    it "resolves the builtin error hierarchy as real classes" do
+      interp, _ = make_interp
+      %w[Exception StandardError RuntimeError TypeError ArgumentError
+        ZeroDivisionError NameError NoMethodError IndexError KeyError].each do |name|
+        val = interp.get_global(name)
+        val.rclass?.should be_true
+        val.as_rclass.name.should eq name
+      end
+    end
+
+    it "gives RuntimeError a StandardError superclass" do
+      interp, _ = make_interp
+      re = interp.get_global("RuntimeError").as_rclass
+      re.superclass.try(&.name).should eq "StandardError"
+    end
+
+    it "constructs a real error object for an unqualified raise" do
+      interp, _ = make_interp
+      result = interp.eval(<<-RUBY)
+        begin
+          raise "boom"
+        rescue e
+          e
+        end
+      RUBY
+      result.robject?.should be_true
+      result.as_robject.rclass.name.should eq "RuntimeError"
+    end
+
+    it "raises a specific builtin error class" do
+      interp, _ = make_interp
+      result = interp.eval(<<-RUBY)
+        begin
+          raise TypeError, "expected a String"
+        rescue e
+          e
+        end
+      RUBY
+      result.robject?.should be_true
+      result.as_robject.rclass.name.should eq "TypeError"
+    end
+
+    it "defaults the message to the class name when raise ClassName has no message" do
+      eval(<<-RUBY).should eq Value.string("ArgumentError")
+        begin
+          raise ArgumentError
+        rescue e
+          e.message
+        end
+      RUBY
+    end
+
+    it "types internal VM errors (division by zero) as RuntimeError objects too" do
+      interp, _ = make_interp
+      result = interp.eval(<<-RUBY)
+        begin
+          1 / 0
+        rescue e
+          e
+        end
+      RUBY
+      result.robject?.should be_true
+      result.as_robject.rclass.name.should eq "RuntimeError"
+    end
+
+    it "supports .message on an internal error the same as an explicit raise" do
+      eval(<<-RUBY).should eq Value.string("divided by 0")
+        begin
+          1 / 0
+        rescue e
+          e.message
+        end
+      RUBY
     end
   end
 end

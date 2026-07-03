@@ -877,7 +877,7 @@ module Adjutant
       args = [] of Node
       if at_kind?(TokenKind::LParen)
         args, _blk = parse_call_args_and_block
-      elsif arg_follows_no_paren?
+      elsif arg_follows_no_paren? || at_kind?(TokenKind::Constant) || at_kind?(TokenKind::Identifier)
         args << parse_expression(0)
         while match(TokenKind::Comma)
           args << parse_expression(0)

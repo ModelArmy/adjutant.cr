@@ -80,12 +80,17 @@ module Adjutant
   class RuntimeError < Exception
     getter line : Int32
     getter filename : String
+    # The script-visible error object (a RubyObject of a builtin or
+    # user error class), when one was constructed. Falls back to a
+    # plain string of `message` if nil — e.g. internal VM errors that
+    # predate the typed-error hierarchy bootstrap.
+    getter error_value : Value?
 
-    def initialize(message : String, @filename = "<script>", @line = 0, cause = nil)
+    def initialize(message : String, @filename = "<script>", @line = 0, cause = nil, @error_value = nil)
       super(message, cause)
     end
 
-    def initialize(message : String, frame : Frame, cause = nil)
+    def initialize(message : String, frame : Frame, cause = nil, @error_value = nil)
       @filename = frame.filename
       @line = frame.line
       super(message, cause)
@@ -114,8 +119,9 @@ module Adjutant
       @instruction_count = 0_u64
       @current_block = nil.as(ScriptProc?)
       # Value of the most recently caught error, for Op::PushError.
-      # Stub: currently always a string (the error message). Once typed
-      # exceptions land, this becomes a RubyObject.
+      # A RubyObject of the raised/builtin error class when one was
+      # constructed (see RuntimeError#error_value); a plain string for
+      # internal errors that don't yet go through the typed hierarchy.
       @last_error = Value.nil_value
     end
 
@@ -561,8 +567,9 @@ module Adjutant
             msg = val.string? ? val.as_string : val.to_s
             raise runtime_error(msg, f)
           when Op::PushError
-            # Push the error caught by the nearest enclosing rescue.
-            # Stub: string message until typed exceptions land (chunk 2/3).
+            # Push the error caught by the nearest enclosing rescue —
+            # a typed RubyObject when available (see RuntimeError#error_value),
+            # else a plain string. rescue ClassName filtering is chunk 3.
             push(@last_error)
           when Op::Retry
             # Jump back to start of begin body — stub
@@ -605,7 +612,7 @@ module Adjutant
             while @stack.size > handler_frame.stack_base
               @stack.pop
             end
-            @last_error = Value.string(ex.message || "RuntimeError")
+            @last_error = ex.error_value || Value.string(ex.message || "RuntimeError")
             handler_frame.ip = handler_frame.rescue_ip
             handler_frame.rescue_ip = 0
           else
@@ -777,8 +784,16 @@ module Adjutant
         end
         args.size == 1 ? args.first : Value.new(args.dup, nil)
       when "raise"
-        msg = args.first? ? args.first.to_s : "RuntimeError"
-        raise RuntimeError.new(msg, filename, line)
+        cls, msg = if args.empty?
+                     {builtin_error_class("RuntimeError"), "unhandled exception"}
+                   elsif args.first.rclass?
+                     raised_cls = args.first.as_rclass
+                     {raised_cls, args[1]?.try(&.to_s) || raised_cls.name}
+                   else
+                     {builtin_error_class("RuntimeError"), args.first.to_s}
+                   end
+        err_val = cls ? make_error_object(cls, msg) : Value.string(msg)
+        raise RuntimeError.new(msg, filename, line, error_value: err_val)
       when "==="
         a = args[0]? || Value.nil_value
         b = args[1]? || Value.nil_value
@@ -794,6 +809,17 @@ module Adjutant
         # Called as a method: args[0] is receiver
         recv = args.first? || Value.nil_value
         Value.bool(recv.null?)
+      when "message"
+        # Called as a method on an error object (or any RubyObject with
+        # a message ivar). Falls back to the class name if unset, or
+        # to_s for non-RubyObject receivers.
+        recv = args.first? || Value.nil_value
+        if obj = recv.as_robject?
+          msg_sym = @symbols.intern("message")
+          obj.ivars[msg_sym.value]? || Value.string(obj.rclass.name)
+        else
+          Value.string(recv.to_s)
+        end
       when "is_a?"
         Value.bool(false) # stub
       when "to_s"
@@ -1011,7 +1037,29 @@ module Adjutant
     end
 
     private def runtime_error(msg : String, frame : Frame = current_frame, cause = nil) : RuntimeError
-      RuntimeError.new(msg, frame, cause)
+      cls = builtin_error_class("RuntimeError")
+      err_val = cls ? make_error_object(cls, msg) : nil
+      RuntimeError.new(msg, frame, cause, error_value: err_val)
+    end
+
+    # Look up a bootstrapped builtin error class (Exception, StandardError,
+    # RuntimeError, etc. — see Interpreter#bootstrap_error_classes) by name.
+    # Returns nil if the interpreter hasn't registered it (shouldn't happen
+    # in practice, but VM shouldn't hard-fail if it does).
+    private def builtin_error_class(name : String) : RubyClass?
+      sym = @symbols.lookup(name)
+      return nil unless sym
+      @globals[sym.value]?.try(&.as_rclass?)
+    end
+
+    # Build a RubyObject of `cls` with its `message` ivar set — the
+    # shape both explicit `raise` and internal VM errors use so a
+    # rescue variable can call `.message` on either uniformly.
+    private def make_error_object(cls : RubyClass, message : String) : Value
+      obj = RubyObject.new(cls)
+      msg_sym = @symbols.intern("message")
+      obj.ivars[msg_sym.value] = Value.string(message)
+      Value.robject(obj)
     end
   end
 end

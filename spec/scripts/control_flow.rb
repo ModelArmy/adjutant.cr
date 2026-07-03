@@ -169,7 +169,7 @@ assert("begin-rescue binds the error message to the rescue var") {
   result = begin
     1 / 0
   rescue e
-    e
+    e.message
   end
   result == "divided by 0"
 }
@@ -191,7 +191,7 @@ assert("begin-rescue catches an explicit raise") {
   result = begin
     raise "boom"
   rescue e
-    e
+    e.message
   end
   result == "boom"
 }
