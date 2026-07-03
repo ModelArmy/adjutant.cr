@@ -2,7 +2,7 @@ module Adjutant
   # The raw storage union for a Value.
   # Crystal's union type carries its own discriminant — no separate tag needed.
   alias ValueRaw = Nil | Bool | Int64 | Float64 | String | Sym | ScriptProc |
-                   Array(Value) | Hash(Value, Value)
+                   Array(Value) | Hash(Value, Value) | RubyClass | RubyObject
 
   # The core runtime value type for the Adjutant interpreter.
   #
@@ -52,6 +52,14 @@ module Adjutant
       new(values.to_a, label)
     end
 
+    def self.rclass(c : RubyClass, label : SecurityLabel? = nil) : Value
+      new(c, label)
+    end
+
+    def self.robject(o : RubyObject, label : SecurityLabel? = nil) : Value
+      new(o, label)
+    end
+
     # --- Type predicates ------------------------------------------------
 
     def null? : Bool
@@ -90,6 +98,14 @@ module Adjutant
       @raw.is_a?(ScriptProc)
     end
 
+    def rclass? : Bool
+      @raw.is_a?(RubyClass)
+    end
+
+    def robject? : Bool
+      @raw.is_a?(RubyObject)
+    end
+
     # --- Extractors -----------------------------------------------------
 
     def as_bool : Bool
@@ -124,6 +140,14 @@ module Adjutant
       @raw.as(ScriptProc)
     end
 
+    def as_rclass : RubyClass
+      @raw.as(RubyClass)
+    end
+
+    def as_robject : RubyObject
+      @raw.as(RubyObject)
+    end
+
     # --- Testing extractors -----------------------------------------------------
 
     def as_bool? : Bool?
@@ -156,6 +180,14 @@ module Adjutant
 
     def as_proc? : ScriptProc?
       @raw.as?(ScriptProc)
+    end
+
+    def as_rclass? : RubyClass?
+      @raw.as?(RubyClass)
+    end
+
+    def as_robject? : RubyObject?
+      @raw.as?(RubyObject)
     end
 
     # --- Truthiness -----------------------------------------------------
@@ -194,6 +226,8 @@ module Adjutant
       when String     then io << r
       when Sym        then io << r
       when ScriptProc then io << "#<Proc>"
+      when RubyClass  then io << r
+      when RubyObject then io << r
       else                 io << "#<" << @raw.class << ">"
       end
     end

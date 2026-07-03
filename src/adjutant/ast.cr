@@ -120,6 +120,27 @@ module Adjutant
     end
   end
 
+  # Marker for a leading `::` — the explicit top-level namespace, e.g.
+  # `::A` or `::A::B`. Used only as ConstPath#namespace; never compiled
+  # as a value on its own.
+  class TopLevel < Node
+  end
+
+  # Explicit constant-path access: `A::B`, `A::B::C`, or `::A` (rooted at
+  # the top level via TopLevel). `namespace` is the left side (a
+  # Constant, nested ConstPath, or TopLevel); `name` is the rightmost
+  # segment. Distinct from Constant, which does lexical-scope lookup —
+  # ConstPath does a direct lookup in the resolved namespace's own
+  # constants table only.
+  class ConstPath < Node
+    getter namespace : Node
+    getter name : String
+
+    def initialize(@namespace, @name, line, column)
+      super(line, column)
+    end
+  end
+
   class IVar < Node
     getter name : String
 

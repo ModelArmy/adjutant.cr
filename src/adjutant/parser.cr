@@ -296,7 +296,11 @@ module Adjutant
           advance
           name_tok = @current
           advance
-          node = Call.new(node, name_tok.lexeme, [] of Node, nil, false, l, c)
+          if name_tok.kind == TokenKind::Constant
+            node = ConstPath.new(node, name_tok.lexeme, l, c)
+          else
+            node = Call.new(node, name_tok.lexeme, [] of Node, nil, false, l, c)
+          end
         when TokenKind::LBracket
           advance
           idx = parse_expression(0)
@@ -322,6 +326,11 @@ module Adjutant
     private def parse_primary : Node
       l, c = line, col
       case current_kind
+      when TokenKind::ColonColon
+        advance
+        name_tok = @current
+        advance
+        ConstPath.new(TopLevel.new(l, c), name_tok.lexeme, l, c)
       when TokenKind::KwNil
         advance
         NilLiteral.new(l, c)
