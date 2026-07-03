@@ -271,9 +271,13 @@ module Adjutant
     end
 
     private def compile_const_path(node : ConstPath) : Nil
-      compile_node(node.namespace)
       sym_idx = intern(node.name)
-      @chunk.emit(Op::GetConstantFrom, node.line, c: sym_idx)
+      if node.namespace.is_a?(TopLevel)
+        @chunk.emit(Op::GetGlobalConstant, node.line, c: sym_idx)
+      else
+        compile_node(node.namespace)
+        @chunk.emit(Op::GetConstantFrom, node.line, c: sym_idx)
+      end
     end
 
     private def compile_ivar(node : IVar) : Nil

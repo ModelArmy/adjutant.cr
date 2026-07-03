@@ -326,6 +326,11 @@ module Adjutant
     private def parse_primary : Node
       l, c = line, col
       case current_kind
+      when TokenKind::ColonColon
+        advance
+        name_tok = @current
+        advance
+        ConstPath.new(TopLevel.new(l, c), name_tok.lexeme, l, c)
       when TokenKind::KwNil
         advance
         NilLiteral.new(l, c)

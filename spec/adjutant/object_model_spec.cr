@@ -427,6 +427,59 @@ module Adjutant
           eval("NOPE")
         end
       end
+
+      it "leading :: bypasses lexical scope and goes straight to the top level" do
+        val = eval(<<-RB)
+          module A
+          end
+          class B
+            class A
+            end
+            def x
+              ::A
+            end
+          end
+          B.new.x
+          RB
+        val.rclass?.should be_true
+        val.as_rclass.name.should eq "A"
+        val.as_rclass.is_module?.should be_true
+      end
+
+      it "bare reference inside the nested scope finds the shadowing inner constant" do
+        val = eval(<<-RB)
+          module A
+          end
+          class B
+            class A
+            end
+            def y
+              A
+            end
+          end
+          B.new.y
+          RB
+        val.rclass?.should be_true
+        val.as_rclass.is_module?.should be_false
+      end
+
+      it "raises for an undefined leading :: constant" do
+        expect_raises(RuntimeError, /uninitialized constant NOPE/) do
+          eval("::NOPE")
+        end
+      end
+
+      it "chains a leading :: path" do
+        val = eval(<<-RB)
+          module A
+            module B
+              X = 1
+            end
+          end
+          ::A::B::X
+          RB
+        val.as_int.should eq 1_i64
+      end
     end
   end
 end

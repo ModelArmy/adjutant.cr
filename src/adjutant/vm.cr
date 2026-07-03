@@ -306,6 +306,13 @@ module Adjutant
             raise runtime_error("uninitialized constant #{ns.name}::#{sym.name}", f)
           end
           push(val)
+        when Op::GetGlobalConstant
+          sym = chunk.consts[inst.c].as_sym
+          val = @globals[sym.value]?
+          unless val
+            raise runtime_error("uninitialized constant #{sym.name}", f)
+          end
+          push(val)
 
           # --- Stack ops ------------------------------------------------------
         when Op::GetIndex
