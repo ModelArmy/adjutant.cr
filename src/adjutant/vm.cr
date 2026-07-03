@@ -241,7 +241,20 @@ module Adjutant
 
           when Op::GetGlobal
             sym = chunk.consts[inst.c].as_sym
-            push(@globals[sym.value]? || Value.nil_value)
+            gval = @globals[sym.value]?
+            if gval && gval.proc?
+              # A global holding a ScriptProc was defined via top-level
+              # `def`, so a bare reference (no parens) is an implicit
+              # zero-arg method call — Ruby semantics for identifiers
+              # that aren't local variables. Without this, `def`s called
+              # bare would silently return the uncalled proc instead of
+              # running.
+              depth_before = @frames.size
+              result = call_script_proc(gval.as_proc.as(ScriptProc), [] of Value, f.filename)
+              push(result) if @frames.size == depth_before
+            else
+              push(gval || Value.nil_value)
+            end
           when Op::SetGlobal
             sym = chunk.consts[inst.c].as_sym
             val = pop
