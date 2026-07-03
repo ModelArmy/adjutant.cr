@@ -392,6 +392,8 @@ module Adjutant
         parse_case
       when TokenKind::KwBegin
         parse_begin
+      when TokenKind::KwRaise
+        parse_raise(l, c)
       else
         raise ParseError.new("unexpected token #{current_kind} (#{@current.lexeme.inspect})", l, c)
       end
@@ -863,6 +865,25 @@ module Adjutant
         end
         SuperNode.new(args, false, l, c)
       end
+    end
+
+    # `raise` is a keyword token (KwRaise), so it never reaches
+    # parse_identifier_or_call's bare-call handling. Desugar to the same
+    # Call shape (receiver nil, method "raise") so the existing native
+    # "raise" builtin handles it unchanged. Supports `raise`, `raise "msg"`,
+    # and `raise("msg")`.
+    private def parse_raise(l : Int32, c : Int32) : Node
+      advance # consume 'raise'
+      args = [] of Node
+      if at_kind?(TokenKind::LParen)
+        args, _blk = parse_call_args_and_block
+      elsif arg_follows_no_paren?
+        args << parse_expression(0)
+        while match(TokenKind::Comma)
+          args << parse_expression(0)
+        end
+      end
+      Call.new(nil, "raise", args, nil, false, l, c)
     end
 
     private def parse_begin : BeginNode

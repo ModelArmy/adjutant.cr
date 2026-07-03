@@ -113,6 +113,10 @@ module Adjutant
       @frames = [] of Frame
       @instruction_count = 0_u64
       @current_block = nil.as(ScriptProc?)
+      # Value of the most recently caught error, for Op::PushError.
+      # Stub: currently always a string (the error message). Once typed
+      # exceptions land, this becomes a RubyObject.
+      @last_error = Value.nil_value
     end
 
     # Execute a compiled chunk and return the result.
@@ -222,346 +226,378 @@ module Adjutant
         f.line = inst.line
         tick
 
-        case inst.op
-        when Op::Noop
-          # nothing
+        begin
+          case inst.op
+          when Op::Noop
+            # nothing
 
-        when Op::Const
-          push(chunk.consts[inst.c])
-        when Op::Pop
-          @stack.pop if @stack.size > f.stack_base
-        when Op::Dup
-          push(peek)
-          # --- Globals --------------------------------------------------------
+          when Op::Const
+            push(chunk.consts[inst.c])
+          when Op::Pop
+            @stack.pop if @stack.size > f.stack_base
+          when Op::Dup
+            push(peek)
+            # --- Globals --------------------------------------------------------
 
-        when Op::GetGlobal
-          sym = chunk.consts[inst.c].as_sym
-          push(@globals[sym.value]? || Value.nil_value)
-        when Op::SetGlobal
-          sym = chunk.consts[inst.c].as_sym
-          val = pop
-          @globals[sym.value] = val
-          push(val)
-
-          # --- Instance / class variables ------------------------------------
-          # Ivars live on self (a RubyObject); reading/writing outside an
-          # object silently no-ops to nil, matching Ruby's forgiving ivar
-          # semantics. Cvars live on self's class, walking the superclass
-          # chain (see RubyClass#get_cvar/#set_cvar); outside a class
-          # context this is unsupported, so it raises.
-
-        when Op::GetIvar
-          sym = chunk.consts[inst.c].as_sym
-          obj = f.self_val.as_robject?
-          push(obj ? (obj.ivars[sym.value]? || Value.nil_value) : Value.nil_value)
-        when Op::SetIvar
-          sym = chunk.consts[inst.c].as_sym
-          val = pop
-          if obj = f.self_val.as_robject?
-            obj.ivars[sym.value] = val
-          end
-          push(val)
-        when Op::GetCvar
-          sym = chunk.consts[inst.c].as_sym
-          cls = cvar_class(f)
-          push(cls.get_cvar(sym.value) || Value.nil_value)
-        when Op::SetCvar
-          sym = chunk.consts[inst.c].as_sym
-          val = pop
-          cvar_class(f).set_cvar(sym.value, val)
-          push(val)
-
-          # --- Constants -------------------------------------------------------
-          # Lexically scoped: walk the innermost enclosing class/module
-          # (self if we're directly in a class/module body, else the
-          # defining proc's lexical_scope), then fall back to top-level
-          # globals.
-
-        when Op::GetConstant
-          sym = chunk.consts[inst.c].as_sym
-          start = f.self_val.as_rclass? || f.lexical_scope
-          val = start.try(&.find_constant(sym.value)) || @globals[sym.value]?
-          unless val
-            raise runtime_error("uninitialized constant #{sym.name}", f)
-          end
-          push(val)
-        when Op::SetConstant
-          sym = chunk.consts[inst.c].as_sym
-          val = pop
-          target = f.self_val.as_rclass? || f.lexical_scope
-          if target
-            target.constants[sym.value] = val
-          else
+          when Op::GetGlobal
+            sym = chunk.consts[inst.c].as_sym
+            push(@globals[sym.value]? || Value.nil_value)
+          when Op::SetGlobal
+            sym = chunk.consts[inst.c].as_sym
+            val = pop
             @globals[sym.value] = val
-          end
-          push(val)
-        when Op::GetConstantFrom
-          sym = chunk.consts[inst.c].as_sym
-          ns_val = pop
-          unless ns = ns_val.as_rclass?
-            raise runtime_error("#{ns_val} is not a class/module", f)
-          end
-          val = ns.constants[sym.value]?
-          unless val
-            raise runtime_error("uninitialized constant #{ns.name}::#{sym.name}", f)
-          end
-          push(val)
-        when Op::GetGlobalConstant
-          sym = chunk.consts[inst.c].as_sym
-          val = @globals[sym.value]?
-          unless val
-            raise runtime_error("uninitialized constant #{sym.name}", f)
-          end
-          push(val)
+            push(val)
 
-          # --- Stack ops ------------------------------------------------------
-        when Op::GetIndex
-          idx = pop
-          target = pop
-          push(exec_get_index(target, idx, safe: false))
-        when Op::SafeIndex
-          idx = pop
-          target = pop
-          push(exec_get_index(target, idx, safe: true))
-        when Op::SetIndex
-          val = pop
-          idx = pop
-          target = pop
-          exec_set_index(target, idx, val)
-          push(val)
+            # --- Instance / class variables ------------------------------------
+            # Ivars live on self (a RubyObject); reading/writing outside an
+            # object silently no-ops to nil, matching Ruby's forgiving ivar
+            # semantics. Cvars live on self's class, walking the superclass
+            # chain (see RubyClass#get_cvar/#set_cvar); outside a class
+            # context this is unsupported, so it raises.
 
-          # --- Calls ----------------------------------------------------------
-        when Op::SetBlock
-          v = pop
-          @current_block = v.proc? ? v.as_proc.as(ScriptProc) : nil
-        when Op::Call, Op::SafeCall
-          sym = chunk.consts[inst.c].as_sym
-          argc = inst.a.to_i
-          safe = inst.b & 0b01_u16 != 0
-          has_receiver = inst.b & 0b10_u16 != 0
-
-          args = @stack.last(argc)
-          @stack.pop(argc) if argc > 0
-
-          depth_before = @frames.size
-          result = dispatch_call(sym.name, args, safe, f.filename, inst.line, @current_block, has_receiver)
-          @current_block = nil
-          # If dispatch pushed a new ScriptProc frame, do NOT push the
-          # sentinel return value — Op::Ret will push the real result.
-          push(result) if @frames.size == depth_before
-        when Op::Ret
-          result = pop
-          # Drain locals back to stack_base
-          f.stack_base.upto(@stack.size - 1) { @stack.pop } if @stack.size > f.stack_base
-          pop_frame
-          push(result) unless @frames.empty?
-
-          # --- Arithmetic -----------------------------------------------------
-        when Op::Add    then exec_binary(inst) { |lhs, rhs| arith_add(lhs, rhs) }
-        when Op::Sub    then exec_binary(inst) { |lhs, rhs| arith_op(lhs, rhs, :-) }
-        when Op::Mul    then exec_binary(inst) { |lhs, rhs| arith_op(lhs, rhs, :*) }
-        when Op::Div    then exec_binary(inst) { |lhs, rhs| arith_div(lhs, rhs) }
-        when Op::Mod    then exec_binary(inst) { |lhs, rhs| arith_mod(lhs, rhs) }
-        when Op::BitAnd then exec_binary(inst) { |lhs, rhs| int_op(lhs, rhs, :&) }
-        when Op::BitOr  then exec_binary(inst) { |lhs, rhs| int_op(lhs, rhs, :|) }
-        when Op::Xor    then exec_binary(inst) { |lhs, rhs| int_op(lhs, rhs, :^) }
-        when Op::Shl    then exec_binary(inst) { |lhs, rhs| int_op(lhs, rhs, :<<) }
-        when Op::Shr    then exec_binary(inst) { |lhs, rhs| int_op(lhs, rhs, :>>) }
-          # --- Comparison -----------------------------------------------------
-
-        when Op::Eq
-          b, a = pop, pop
-          push(Value.bool(values_equal?(a, b)))
-        when Op::Lt  then exec_binary(inst) { |lhs, rhs| compare_op(lhs, rhs, :<) }
-        when Op::Lte then exec_binary(inst) { |lhs, rhs| compare_op(lhs, rhs, :<=) }
-        when Op::Gt  then exec_binary(inst) { |lhs, rhs| compare_op(lhs, rhs, :>) }
-        when Op::Gte then exec_binary(inst) { |lhs, rhs| compare_op(lhs, rhs, :>=) }
-          # --- Unary ----------------------------------------------------------
-
-        when Op::Not
-          push(Value.bool(pop.falsy?))
-        when Op::Neg
-          v = pop
-          case
-          when v.int?   then push(Value.int(-v.as_int))
-          when v.float? then push(Value.float(-v.as_float))
-          else               raise runtime_error("cannot negate #{v}", f)
-          end
-        when Op::BitNot
-          v = pop
-          raise runtime_error("~ requires Integer", f) unless v.int?
-          push(Value.int(~v.as_int))
-
-          # --- Jumps ----------------------------------------------------------
-        when Op::Jump
-          f.ip = inst.c.to_i
-        when Op::JumpIfFalse
-          v = pop
-          f.ip = inst.c.to_i if v.falsy?
-        when Op::JumpIfTrue
-          v = pop
-          f.ip = inst.c.to_i if v.truthy?
-
-          # --- Collections ----------------------------------------------------
-        when Op::MakeArray
-          n = inst.a.to_i
-          elements = @stack.last(n).dup
-          @stack.pop(n) if n > 0
-          push(Value.new(elements, nil))
-        when Op::MakeHash
-          n = inst.a.to_i * 2
-          pairs = @stack.last(n)
-          @stack.pop(n) if n > 0
-          h = {} of Value => Value
-          pairs.each_slice(2) { |pair| h[pair[0]] = pair[1] }
-          push(Value.new(h, nil))
-        when Op::MakeRange
-          rend = pop
-          rstart = pop
-          # Store as array [start, end, exclusive_flag] for now;
-          # a Range object type will be added with the object model.
-          exclusive = inst.a == 1_u8
-          elems = [rstart, rend, Value.bool(exclusive)]
-          push(Value.new(elems, nil))
-        when Op::Concat
-          n = inst.a.to_i
-          parts = @stack.last(n)
-          @stack.pop(n) if n > 0
-          str = parts.map { |part|
-            case
-            when part.string? then part.as_string
-            when part.int?    then part.as_int.to_s
-            when part.float?  then part.as_float.to_s
-            when part.bool?   then part.as_bool.to_s
-            when part.null?   then "nil"
-            when part.symbol? then part.as_sym.name
-            else                   part.to_s
+          when Op::GetIvar
+            sym = chunk.consts[inst.c].as_sym
+            obj = f.self_val.as_robject?
+            push(obj ? (obj.ivars[sym.value]? || Value.nil_value) : Value.nil_value)
+          when Op::SetIvar
+            sym = chunk.consts[inst.c].as_sym
+            val = pop
+            if obj = f.self_val.as_robject?
+              obj.ivars[sym.value] = val
             end
-          }.join
-          push(Value.string(str))
+            push(val)
+          when Op::GetCvar
+            sym = chunk.consts[inst.c].as_sym
+            cls = cvar_class(f)
+            push(cls.get_cvar(sym.value) || Value.nil_value)
+          when Op::SetCvar
+            sym = chunk.consts[inst.c].as_sym
+            val = pop
+            cvar_class(f).set_cvar(sym.value, val)
+            push(val)
 
-          # --- Local variables ------------------------------------------------
-        when Op::GetLocal
-          slot = inst.c.to_i
-          push(slot < f.locals.size ? f.locals[slot] : Value.nil_value)
-        when Op::SetLocal
-          val = pop
-          slot = inst.c.to_i
-          if slot < f.locals.size
-            f.locals[slot] = val
-          else
-            f.locals << val
-          end
-          push(val)
-        when Op::GetOuter
-          slot = inst.c.to_i
-          outer = f.outer_locals
-          push(outer && slot < outer.size ? outer[slot] : Value.nil_value)
-        when Op::SetOuter
-          val = pop
-          slot = inst.c.to_i
-          outer = f.outer_locals
-          outer[slot] = val if outer && slot < outer.size
-          push(val)
-        when Op::MakeProc
-          push(chunk.consts[inst.c])
-          # --- Class / module ---------------------------------------------
-        when Op::GetClass
-          push(f.self_val)
-        when Op::SetClass
-          f.self_val = pop
-        when Op::MakeClass
-          name_sym = chunk.consts[inst.c].as_sym
-          superclass = nil
-          if inst.b != Compiler::NO_SUPER
-            super_sym = chunk.consts[inst.b].as_sym
-            super_val = @globals[super_sym.value]?
-            unless super_val && super_val.rclass?
-              raise runtime_error("uninitialized constant #{super_sym.name}", f)
+            # --- Constants -------------------------------------------------------
+            # Lexically scoped: walk the innermost enclosing class/module
+            # (self if we're directly in a class/module body, else the
+            # defining proc's lexical_scope), then fall back to top-level
+            # globals.
+
+          when Op::GetConstant
+            sym = chunk.consts[inst.c].as_sym
+            start = f.self_val.as_rclass? || f.lexical_scope
+            val = start.try(&.find_constant(sym.value)) || @globals[sym.value]?
+            unless val
+              raise runtime_error("uninitialized constant #{sym.name}", f)
             end
-            superclass = super_val.as_rclass
-          end
-          new_cls = RubyClass.new(name_sym.name, superclass, is_module: false)
-          new_cls.lexical_parent = f.self_val.as_rclass?
-          push(Value.rclass(new_cls))
-        when Op::MakeModule
-          name_sym = chunk.consts[inst.c].as_sym
-          new_mod = RubyClass.new(name_sym.name, nil, is_module: true)
-          new_mod.lexical_parent = f.self_val.as_rclass?
-          push(Value.rclass(new_mod))
-        when Op::DefMethod
-          proc_val = pop
-          name_sym = chunk.consts[inst.c].as_sym
-          unless owner = f.self_val.as_rclass?
-            raise runtime_error("def outside of a class/module body", f)
-          end
-          proc = proc_val.as_proc
-          proc.lexical_scope = owner
-          owner.define_method(name_sym.value, proc)
-          push(Value.nil_value)
-        when Op::DefSingleton
-          _recv = pop
-          proc_val = pop
-          name_sym = chunk.consts[inst.c].as_sym
-          @globals[@symbols.intern(name_sym.name).value] = proc_val
-          push(Value.nil_value)
+            push(val)
+          when Op::SetConstant
+            sym = chunk.consts[inst.c].as_sym
+            val = pop
+            target = f.self_val.as_rclass? || f.lexical_scope
+            if target
+              target.constants[sym.value] = val
+            else
+              @globals[sym.value] = val
+            end
+            push(val)
+          when Op::GetConstantFrom
+            sym = chunk.consts[inst.c].as_sym
+            ns_val = pop
+            unless ns = ns_val.as_rclass?
+              raise runtime_error("#{ns_val} is not a class/module", f)
+            end
+            val = ns.constants[sym.value]?
+            unless val
+              raise runtime_error("uninitialized constant #{ns.name}::#{sym.name}", f)
+            end
+            push(val)
+          when Op::GetGlobalConstant
+            sym = chunk.consts[inst.c].as_sym
+            val = @globals[sym.value]?
+            unless val
+              raise runtime_error("uninitialized constant #{sym.name}", f)
+            end
+            push(val)
 
-          # --- Block / yield --------------------------------------------------
-        when Op::Yield
-          argc = inst.a.to_i
-          args = @stack.last(argc)
-          @stack.pop(argc) if argc > 0
-          blk = f.block
-          if blk
+            # --- Stack ops ------------------------------------------------------
+          when Op::GetIndex
+            idx = pop
+            target = pop
+            push(exec_get_index(target, idx, safe: false))
+          when Op::SafeIndex
+            idx = pop
+            target = pop
+            push(exec_get_index(target, idx, safe: true))
+          when Op::SetIndex
+            val = pop
+            idx = pop
+            target = pop
+            exec_set_index(target, idx, val)
+            push(val)
+
+            # --- Calls ----------------------------------------------------------
+          when Op::SetBlock
+            v = pop
+            @current_block = v.proc? ? v.as_proc.as(ScriptProc) : nil
+          when Op::Call, Op::SafeCall
+            sym = chunk.consts[inst.c].as_sym
+            argc = inst.a.to_i
+            safe = inst.b & 0b01_u16 != 0
+            has_receiver = inst.b & 0b10_u16 != 0
+
+            args = @stack.last(argc)
+            @stack.pop(argc) if argc > 0
+
             depth_before = @frames.size
-            result = call_script_proc(blk, args, f.filename, nil, f.locals)
+            result = dispatch_call(sym.name, args, safe, f.filename, inst.line, @current_block, has_receiver)
+            @current_block = nil
+            # If dispatch pushed a new ScriptProc frame, do NOT push the
+            # sentinel return value — Op::Ret will push the real result.
             push(result) if @frames.size == depth_before
+          when Op::Ret
+            result = pop
+            # Drain locals back to stack_base
+            f.stack_base.upto(@stack.size - 1) { @stack.pop } if @stack.size > f.stack_base
+            pop_frame
+            push(result) unless @frames.empty?
+
+            # --- Arithmetic -----------------------------------------------------
+          when Op::Add    then exec_binary(inst) { |lhs, rhs| arith_add(lhs, rhs) }
+          when Op::Sub    then exec_binary(inst) { |lhs, rhs| arith_op(lhs, rhs, :-) }
+          when Op::Mul    then exec_binary(inst) { |lhs, rhs| arith_op(lhs, rhs, :*) }
+          when Op::Div    then exec_binary(inst) { |lhs, rhs| arith_div(lhs, rhs) }
+          when Op::Mod    then exec_binary(inst) { |lhs, rhs| arith_mod(lhs, rhs) }
+          when Op::BitAnd then exec_binary(inst) { |lhs, rhs| int_op(lhs, rhs, :&) }
+          when Op::BitOr  then exec_binary(inst) { |lhs, rhs| int_op(lhs, rhs, :|) }
+          when Op::Xor    then exec_binary(inst) { |lhs, rhs| int_op(lhs, rhs, :^) }
+          when Op::Shl    then exec_binary(inst) { |lhs, rhs| int_op(lhs, rhs, :<<) }
+          when Op::Shr    then exec_binary(inst) { |lhs, rhs| int_op(lhs, rhs, :>>) }
+            # --- Comparison -----------------------------------------------------
+
+          when Op::Eq
+            b, a = pop, pop
+            push(Value.bool(values_equal?(a, b)))
+          when Op::Lt  then exec_binary(inst) { |lhs, rhs| compare_op(lhs, rhs, :<) }
+          when Op::Lte then exec_binary(inst) { |lhs, rhs| compare_op(lhs, rhs, :<=) }
+          when Op::Gt  then exec_binary(inst) { |lhs, rhs| compare_op(lhs, rhs, :>) }
+          when Op::Gte then exec_binary(inst) { |lhs, rhs| compare_op(lhs, rhs, :>=) }
+            # --- Unary ----------------------------------------------------------
+
+          when Op::Not
+            push(Value.bool(pop.falsy?))
+          when Op::Neg
+            v = pop
+            case
+            when v.int?   then push(Value.int(-v.as_int))
+            when v.float? then push(Value.float(-v.as_float))
+            else               raise runtime_error("cannot negate #{v}", f)
+            end
+          when Op::BitNot
+            v = pop
+            raise runtime_error("~ requires Integer", f) unless v.int?
+            push(Value.int(~v.as_int))
+
+            # --- Jumps ----------------------------------------------------------
+          when Op::Jump
+            f.ip = inst.c.to_i
+          when Op::JumpIfFalse
+            v = pop
+            f.ip = inst.c.to_i if v.falsy?
+          when Op::JumpIfTrue
+            v = pop
+            f.ip = inst.c.to_i if v.truthy?
+
+            # --- Collections ----------------------------------------------------
+          when Op::MakeArray
+            n = inst.a.to_i
+            elements = @stack.last(n).dup
+            @stack.pop(n) if n > 0
+            push(Value.new(elements, nil))
+          when Op::MakeHash
+            n = inst.a.to_i * 2
+            pairs = @stack.last(n)
+            @stack.pop(n) if n > 0
+            h = {} of Value => Value
+            pairs.each_slice(2) { |pair| h[pair[0]] = pair[1] }
+            push(Value.new(h, nil))
+          when Op::MakeRange
+            rend = pop
+            rstart = pop
+            # Store as array [start, end, exclusive_flag] for now;
+            # a Range object type will be added with the object model.
+            exclusive = inst.a == 1_u8
+            elems = [rstart, rend, Value.bool(exclusive)]
+            push(Value.new(elems, nil))
+          when Op::Concat
+            n = inst.a.to_i
+            parts = @stack.last(n)
+            @stack.pop(n) if n > 0
+            str = parts.map { |part|
+              case
+              when part.string? then part.as_string
+              when part.int?    then part.as_int.to_s
+              when part.float?  then part.as_float.to_s
+              when part.bool?   then part.as_bool.to_s
+              when part.null?   then "nil"
+              when part.symbol? then part.as_sym.name
+              else                   part.to_s
+              end
+            }.join
+            push(Value.string(str))
+
+            # --- Local variables ------------------------------------------------
+          when Op::GetLocal
+            slot = inst.c.to_i
+            push(slot < f.locals.size ? f.locals[slot] : Value.nil_value)
+          when Op::SetLocal
+            val = pop
+            slot = inst.c.to_i
+            if slot < f.locals.size
+              f.locals[slot] = val
+            else
+              f.locals << val
+            end
+            push(val)
+          when Op::GetOuter
+            slot = inst.c.to_i
+            outer = f.outer_locals
+            push(outer && slot < outer.size ? outer[slot] : Value.nil_value)
+          when Op::SetOuter
+            val = pop
+            slot = inst.c.to_i
+            outer = f.outer_locals
+            outer[slot] = val if outer && slot < outer.size
+            push(val)
+          when Op::MakeProc
+            push(chunk.consts[inst.c])
+            # --- Class / module ---------------------------------------------
+          when Op::GetClass
+            push(f.self_val)
+          when Op::SetClass
+            f.self_val = pop
+          when Op::MakeClass
+            name_sym = chunk.consts[inst.c].as_sym
+            superclass = nil
+            if inst.b != Compiler::NO_SUPER
+              super_sym = chunk.consts[inst.b].as_sym
+              super_val = @globals[super_sym.value]?
+              unless super_val && super_val.rclass?
+                raise runtime_error("uninitialized constant #{super_sym.name}", f)
+              end
+              superclass = super_val.as_rclass
+            end
+            new_cls = RubyClass.new(name_sym.name, superclass, is_module: false)
+            new_cls.lexical_parent = f.self_val.as_rclass?
+            push(Value.rclass(new_cls))
+          when Op::MakeModule
+            name_sym = chunk.consts[inst.c].as_sym
+            new_mod = RubyClass.new(name_sym.name, nil, is_module: true)
+            new_mod.lexical_parent = f.self_val.as_rclass?
+            push(Value.rclass(new_mod))
+          when Op::DefMethod
+            proc_val = pop
+            name_sym = chunk.consts[inst.c].as_sym
+            unless owner = f.self_val.as_rclass?
+              raise runtime_error("def outside of a class/module body", f)
+            end
+            proc = proc_val.as_proc
+            proc.lexical_scope = owner
+            owner.define_method(name_sym.value, proc)
+            push(Value.nil_value)
+          when Op::DefSingleton
+            _recv = pop
+            proc_val = pop
+            name_sym = chunk.consts[inst.c].as_sym
+            @globals[@symbols.intern(name_sym.name).value] = proc_val
+            push(Value.nil_value)
+
+            # --- Block / yield --------------------------------------------------
+          when Op::Yield
+            argc = inst.a.to_i
+            args = @stack.last(argc)
+            @stack.pop(argc) if argc > 0
+            blk = f.block
+            if blk
+              depth_before = @frames.size
+              result = call_script_proc(blk, args, f.filename, nil, f.locals)
+              push(result) if @frames.size == depth_before
+            else
+              raise runtime_error("no block given", f)
+            end
+          when Op::BlockBreak
+            val = pop
+            # Unwind to the nearest non-block frame
+            while !@frames.empty? && @frames.last.proc.is_block?
+              sb = @frames.last.stack_base; (@stack.size - sb).times { @stack.pop } if @stack.size > sb
+              pop_frame
+            end
+            push(val)
+
+            # --- Exception handling (stubs) ------------------------------------
+          when Op::Try
+            f.rescue_ip = inst.c.to_i
+          when Op::SetEnsure
+            f.ensure_ip = inst.c.to_i
+          when Op::EndTry
+            f.rescue_ip = 0
+          when Op::EnterEnsure
+            # ensure body follows inline
+
+          when Op::Throw
+            val = pop
+            msg = val.string? ? val.as_string : val.to_s
+            raise runtime_error(msg, f)
+          when Op::PushError
+            # Push the error caught by the nearest enclosing rescue.
+            # Stub: string message until typed exceptions land (chunk 2/3).
+            push(@last_error)
+          when Op::Retry
+            # Jump back to start of begin body — stub
+            f.ip = 0
+            # --- Misc -----------------------------------------------------------
+
+          when Op::MultiUnpack
+            tc = inst.a.to_i
+            vc = inst.b.to_i
+            values = @stack.last(vc)
+            @stack.pop(vc) if vc > 0
+            # Pad or truncate to target count
+            padded = Array(Value).new(tc) { |i| i < values.size ? values[i] : Value.nil_value }
+            padded.each { |value| push(value) }
+          when Op::GetMethodName
+            push(Value.string(f.proc.name))
           else
-            raise runtime_error("no block given", f)
+            raise runtime_error("unknown opcode: #{inst.op}", f)
           end
-        when Op::BlockBreak
-          val = pop
-          # Unwind to the nearest non-block frame
-          while !@frames.empty? && @frames.last.proc.is_block?
-            sb = @frames.last.stack_base; (@stack.size - sb).times { @stack.pop } if @stack.size > sb
+        rescue ex : RuntimeError
+          # Unwind frames looking for one with an active rescue handler
+          # (the error may originate several calls deep inside the
+          # begin body, not just in the frame that was executing).
+          # This is what makes begin/rescue actually catch errors —
+          # previously Op::Try set rescue_ip but nothing consulted it.
+          handler_frame = nil.as(Frame?)
+          while !@frames.empty?
+            candidate = current_frame
+            if candidate.rescue_ip > 0
+              handler_frame = candidate
+              break
+            end
+            break if @frames.size == 1 # never pop the outermost frame here
+            sb = candidate.stack_base
+            (@stack.size - sb).times { @stack.pop } if @stack.size > sb
             pop_frame
           end
-          push(val)
 
-          # --- Exception handling (stubs) ------------------------------------
-        when Op::Try
-          f.rescue_ip = inst.c.to_i
-        when Op::SetEnsure
-          f.ensure_ip = inst.c.to_i
-        when Op::EndTry
-          f.rescue_ip = 0
-        when Op::EnterEnsure
-          # ensure body follows inline
-
-        when Op::Throw
-          val = pop
-          msg = val.string? ? val.as_string : val.to_s
-          raise runtime_error(msg, f)
-        when Op::PushError
-          # Push the last error as a string value — stub until typed exceptions land
-          push(Value.string("RuntimeError"))
-        when Op::Retry
-          # Jump back to start of begin body — stub
-          f.ip = 0
-          # --- Misc -----------------------------------------------------------
-
-        when Op::MultiUnpack
-          tc = inst.a.to_i
-          vc = inst.b.to_i
-          values = @stack.last(vc)
-          @stack.pop(vc) if vc > 0
-          # Pad or truncate to target count
-          padded = Array(Value).new(tc) { |i| i < values.size ? values[i] : Value.nil_value }
-          padded.each { |value| push(value) }
-        when Op::GetMethodName
-          push(Value.string(f.proc.name))
-        else
-          raise runtime_error("unknown opcode: #{inst.op}", f)
+          if handler_frame
+            while @stack.size > handler_frame.stack_base
+              @stack.pop
+            end
+            @last_error = Value.string(ex.message || "RuntimeError")
+            handler_frame.ip = handler_frame.rescue_ip
+            handler_frame.rescue_ip = 0
+          else
+            raise ex
+          end
         end
       end
 
