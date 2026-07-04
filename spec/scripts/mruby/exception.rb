@@ -241,19 +241,18 @@ end
 # end
 # -------
 
-# ---- TODO: FIX nested begin blocks and raised exceptions
-# assert('Exception 11') do
-#   a = :ok
-#   begin
-#     begin
-#       raise Exception
-#     rescue
-#       a = :ng
-#     end
-#   rescue Exception
-#   end
-#   assert_equal :ok, a
-# end
+assert('Exception 11') do
+  a = :ok
+  begin
+    begin
+      raise Exception
+    rescue
+      a = :ng
+    end
+  rescue Exception
+  end
+  assert_equal :ok, a
+end
 # ----
 
 # ---- DON'T DO: Weird inline rescue syntax
@@ -386,7 +385,8 @@ end
 # end
 # ----
 
-# ---- TODO: Rescue without type MUST only catch StandardError
+# ---- TODO: Missing stdlib Exception#backtrace (StandardError-only
+# bare rescue is now fixed — this is blocked on something else)
 # assert('Exception#backtrace') do
 #   assert_nothing_raised do
 #     begin
@@ -398,15 +398,18 @@ end
 # end
 # ----
 
-# ---- TODO: FIX arith overflow dealing with rescue_ip
+# ---- TODO: ensure does not yet run when an error propagates past
+# this frame uncaught (only runs on the success path). Also tests
+# Ruby's real semantics: an error raised inside ensure supersedes the
+# one already propagating from the body.
 # assert('Raise in ensure') do
-#   assert_raise(ArgumentError) do
-#     begin
-#       raise "" # RuntimeError
-#     ensure
-#       raise ArgumentError
-#     end
+# assert_raise(ArgumentError) do
+#   begin
+#     raise "" # RuntimeError
+#   ensure
+#     raise ArgumentError
 #   end
+# end
 # end
 # ----
 

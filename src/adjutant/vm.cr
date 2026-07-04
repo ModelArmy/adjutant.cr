@@ -31,7 +31,14 @@ module Adjutant
     property stack_base : Int32
     getter filename : String
     property block : ScriptProc?
-    property rescue_ip : Int32
+    # Stack of pending rescue-handler jump targets for begin/rescue
+    # blocks active in THIS frame, most-recently-entered last. A stack
+    # (not a single slot) so nested begin/rescue within the same frame
+    # don't clobber each other: Try pushes, EndTry pops on the success
+    # path, and the unwind loop pops-and-jumps on error — so a
+    # re-raise from a mismatched inner handler correctly falls back to
+    # an outer one on the same frame.
+    getter rescue_handlers : Array(Int32)
     property ensure_ip : Int32
 
     # Local variable slots — sized from ScriptProc#local_count at frame creation.
@@ -57,7 +64,7 @@ module Adjutant
     def initialize(@proc, @chunk, @stack_base, @filename, @block = nil, outer : Array(Value)? = nil, @self_val : Value = Value.nil_value, @lexical_scope : RubyClass? = nil)
       @ip = 0
       @line = 0
-      @rescue_ip = 0
+      @rescue_handlers = [] of Int32
       @ensure_ip = 0
       @locals = Array(Value).new(@proc.local_count, Value.nil_value)
       @outer_locals = outer
@@ -555,12 +562,12 @@ module Adjutant
             # --- Exception handling (stubs) ------------------------------------
           when Op::Try
             raise runtime_error("internal error: unpatched Try target", f) if inst.c == Chunk::NO_TARGET
-            f.rescue_ip = inst.c.to_i
+            f.rescue_handlers.push(inst.c.to_i)
           when Op::SetEnsure
             raise runtime_error("internal error: unpatched SetEnsure target", f) if inst.c == Chunk::NO_TARGET
             f.ensure_ip = inst.c.to_i
           when Op::EndTry
-            f.rescue_ip = 0
+            f.rescue_handlers.pop?
           when Op::EnterEnsure
             # ensure body follows inline
 
@@ -607,13 +614,18 @@ module Adjutant
           # Unwind frames looking for one with an active rescue handler
           # (the error may originate several calls deep inside the
           # begin body, not just in the frame that was executing).
-          # This is what makes begin/rescue actually catch errors —
-          # previously Op::Try set rescue_ip but nothing consulted it.
+          # Popping the handler as soon as we find it means a mismatch
+          # Reraise from inside it triggers a fresh unwind pass that
+          # correctly falls back to the next entry on the same frame
+          # (an outer, lexically-enclosing begin/rescue) rather than
+          # re-finding the same one or skipping past the frame entirely.
           handler_frame = nil.as(Frame?)
+          handler_ip = 0
           while !@frames.empty?
             candidate = current_frame
-            if candidate.rescue_ip > 0
+            if ip = candidate.rescue_handlers.pop?
               handler_frame = candidate
+              handler_ip = ip
               break
             end
             break if @frames.size == 1 # never pop the outermost frame here
@@ -627,8 +639,7 @@ module Adjutant
               @stack.pop
             end
             @last_error = ex.error_value || Value.string(ex.message || "RuntimeError")
-            handler_frame.ip = handler_frame.rescue_ip
-            handler_frame.rescue_ip = 0
+            handler_frame.ip = handler_ip
           else
             raise ex
           end

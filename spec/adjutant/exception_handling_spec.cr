@@ -326,42 +326,41 @@ module Adjutant
       RUBY
     end
 
-    # Known limitation: Frame carries a single rescue_ip slot, not a
-    # handler stack (present since chunk 1). Two begin/rescue blocks
-    # nested in the *same* frame (no call boundary between them) means
-    # the inner Op::Try clobbers the outer's rescue_ip, so a mismatch
-    # in the inner rescue can't fall back to the outer one. This is
-    # distinct from the cross-call-boundary case above (separate
-    # Frame objects, no clobbering), which works correctly.
-    it "(known limitation) same-frame nested rescue can't fall back to an outer handler" do
-      expect_raises(RuntimeError, /nope/) do
-        eval(<<-RUBY)
+    it "same-frame nested rescue falls back to an outer handler on mismatch (regression: single rescue_ip slot)" do
+      # Frame used to carry a single rescue_ip slot, not a handler
+      # stack. Two begin/rescue blocks nested in the *same* frame (no
+      # call boundary between them) meant the inner Op::Try clobbered
+      # the outer's rescue_ip, so a mismatch in the inner rescue
+      # couldn't fall back to an enclosing one. Frame#rescue_handlers
+      # is now a stack — Try pushes, EndTry/the unwind loop pop LIFO —
+      # so a mismatch reraise correctly finds the next entry up.
+      result = eval(<<-RUBY)
+        begin
           begin
             begin
-              begin
-                raise TypeError, "nope"
-              rescue ArgumentError => e
-                "innermost caught"
-              end
-            rescue TypeError => e
-              "middle caught"
+              raise TypeError, "nope"
+            rescue ArgumentError => e
+              "innermost caught"
             end
-          rescue StandardError => e
-            "outer caught"
+          rescue NameError => e
+            "middle caught"
           end
-        RUBY
-      end
+        rescue StandardError => e
+          "outer caught: " + e.message
+        end
+      RUBY
+      result.should eq Value.string("outer caught: nope")
     end
   end
 
   describe "begin/ensure without rescue" do
     # Op::Try's jump target was only ever patched inside the
     # rescue_body branch. An ensure-only begin (no rescue clause) had
-    # no such patch site, so Try left rescue_ip pointing at the
-    # unpatched NO_TARGET sentinel (0xFFFFFFFF) — reading it via
+    # no such patch site, so Try pushed the unpatched NO_TARGET
+    # sentinel (0xFFFFFFFF) onto Frame#rescue_handlers — reading it via
     # UInt32#to_i (a checked conversion) raised a Crystal OverflowError
     # the instant Try executed, before any error-catching logic ran.
-    it "runs an ensure body without a rescue clause (regression: rescue_ip overflow)" do
+    it "runs an ensure body without a rescue clause (regression: rescue_handlers overflow)" do
       eval(<<-RUBY).should eq Value.int(2_i64)
         begin
           1 + 1
@@ -397,6 +396,56 @@ module Adjutant
           99
         end
       RUBY
+    end
+  end
+
+  describe "bare rescue only catches StandardError and below" do
+    it "still catches a plain raise (defaults to RuntimeError, a StandardError)" do
+      result = eval(<<-RUBY)
+        begin
+          raise "boom"
+        rescue e
+          :caught
+        end
+      RUBY
+      result.symbol?.should be_true
+      result.as_sym.name.should eq "caught"
+    end
+
+    it "still catches an internal VM error (division by zero)" do
+      result = eval(<<-RUBY)
+        begin
+          1 / 0
+        rescue
+          :caught
+        end
+      RUBY
+      result.symbol?.should be_true
+      result.as_sym.name.should eq "caught"
+    end
+
+    it "does not catch a bare Exception (not a StandardError descendant)" do
+      expect_raises(RuntimeError, /fatal/) do
+        eval(<<-RUBY)
+          begin
+            raise Exception, "fatal"
+          rescue => e
+            :caught
+          end
+        RUBY
+      end
+    end
+
+    it "an explicit rescue Exception still catches a bare Exception" do
+      result = eval(<<-RUBY)
+        begin
+          raise Exception, "fatal"
+        rescue Exception => e
+          :caught
+        end
+      RUBY
+      result.symbol?.should be_true
+      result.as_sym.name.should eq "caught"
     end
   end
 end
