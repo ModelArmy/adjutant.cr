@@ -554,8 +554,10 @@ module Adjutant
 
             # --- Exception handling (stubs) ------------------------------------
           when Op::Try
+            raise runtime_error("internal error: unpatched Try target", f) if inst.c == Chunk::NO_TARGET
             f.rescue_ip = inst.c.to_i
           when Op::SetEnsure
+            raise runtime_error("internal error: unpatched SetEnsure target", f) if inst.c == Chunk::NO_TARGET
             f.ensure_ip = inst.c.to_i
           when Op::EndTry
             f.rescue_ip = 0

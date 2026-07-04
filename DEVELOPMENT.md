@@ -153,7 +153,7 @@ Execution limits (instruction count, call depth) are checked on every frame push
 
 `Op::PushError` pushes the caught error for the rescue variable — a `RubyObject` of a real error class when one was constructed (`RuntimeError#error_value`), else a plain string for internal errors that haven't been retrofitted yet. `Interpreter#bootstrap_error_classes` registers `Exception → StandardError → {RuntimeError, TypeError, ArgumentError, ZeroDivisionError, NameError → NoMethodError, IndexError → KeyError}` into `@globals` once per interpreter. `raise "msg"`, `raise ClassName`, and `raise ClassName, "msg"` all build a `RubyObject` with a `message` ivar (readable via `.message`); internal VM errors (division by zero, etc.) go through the same path via the `runtime_error` helper. **Not yet implemented:** `rescue ClassName => e` filtering — any `rescue` currently catches everything regardless of class.
 
-`ensure` is parsed (`Op::SetEnsure` sets `Frame#ensure_ip`) but not yet consulted anywhere — `ensure` bodies do not currently run.
+`ensure` bodies run on the success path (inline, after the body/rescue value is computed; the ensure block's own trailing value is discarded so it doesn't clobber the `begin` expression's result). `Op::Try` is only emitted when a `rescue` clause exists — an ensure-only `begin` has no jump target to patch, so emitting it unconditionally left `rescue_ip` pointing at the unpatched sentinel, which crashed (`OverflowError`) the instant `Try` ran. **Not yet implemented:** `ensure` does not run when an error propagates past this frame uncaught — `ensure_ip` is set but only consulted on the normal fall-through path.
 
 ### The effect boundary
 

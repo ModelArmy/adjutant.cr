@@ -353,4 +353,50 @@ module Adjutant
       end
     end
   end
+
+  describe "begin/ensure without rescue" do
+    # Op::Try's jump target was only ever patched inside the
+    # rescue_body branch. An ensure-only begin (no rescue clause) had
+    # no such patch site, so Try left rescue_ip pointing at the
+    # unpatched NO_TARGET sentinel (0xFFFFFFFF) — reading it via
+    # UInt32#to_i (a checked conversion) raised a Crystal OverflowError
+    # the instant Try executed, before any error-catching logic ran.
+    it "runs an ensure body without a rescue clause (regression: rescue_ip overflow)" do
+      eval(<<-RUBY).should eq Value.int(2_i64)
+        begin
+          1 + 1
+        ensure
+          2 + 2
+        end
+      RUBY
+    end
+
+    it "still allows a rescue clause alongside ensure" do
+      result = eval(<<-RUBY)
+        begin
+          raise "boom"
+        rescue e
+          :caught
+        ensure
+          1
+        end
+      RUBY
+      result.symbol?.should be_true
+      result.as_sym.name.should eq "caught"
+    end
+
+    it "yields the body's value, not the ensure block's (regression: ensure clobbered the result)" do
+      # A second, independent bug found on this path: compile_body(ensure_body)
+      # left its own trailing value on top of the body's, so the overall
+      # begin/ensure expression incorrectly evaluated to the ensure
+      # block's value. Ruby's ensure runs for side effects only.
+      eval(<<-RUBY).should eq Value.int(2_i64)
+        begin
+          1 + 1
+        ensure
+          99
+        end
+      RUBY
+    end
+  end
 end

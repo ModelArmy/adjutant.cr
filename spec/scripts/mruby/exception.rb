@@ -72,48 +72,47 @@ require "assert"
 
 # Not ISO specified
 
-# ---- TODO: FIX rescue_ip arith overflow
-# assert('Exception 1') do
-# r=begin
-#     1+1
-#   ensure
-#     2+2
-#   end
-#   assert_equal 2, r
-# end
+assert('Exception 1') do
+  r = begin
+        1 + 1
+      ensure
+        2 + 2
+      end
+  assert_equal 2, r
+end
 
-# assert('Exception 2') do
-# r=begin
-#     1+1
-#     begin
-#       2+2
-#     ensure
-#       3+3
-#     end
-#   ensure
-#     4+4
-#   end
-#   assert_equal 4, r
-# end
+assert('Exception 2') do
+  r = begin
+        1 + 1
+        begin
+          2 + 2
+        ensure
+          3 + 3
+        end
+      ensure
+        4 + 4
+      end
+  assert_equal 4, r
+end
 
-# assert('Exception 3') do
-# r=begin
-#     1+1
-#     begin
-#       2+2
-#     ensure
-#       3+3
-#     end
-#   ensure
-#     4+4
-#     begin
-#       5+5
-#     ensure
-#       6+6
-#     end
-#   end
-#   assert_equal 4, r
-# end
+assert('Exception 3') do
+  r = begin
+        1 + 1
+        begin
+          2 + 2
+        ensure
+          3 + 3
+        end
+      ensure
+        4 + 4
+        begin
+          5 + 5
+        ensure
+          6 + 6
+        end
+      end
+  assert_equal 4, r
+end
 # ----
 
 # ---- TODO: stdlib missing Numeric#times

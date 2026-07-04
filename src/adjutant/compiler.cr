@@ -816,58 +816,25 @@ module Adjutant
         return
       end
 
-      try_at = @chunk.emit_jump(Op::Try, node.line)
+      # Op::Try's jump target only ever gets patched inside
+      # compile_rescue_clause. An ensure-only begin (no rescue) has no
+      # such patch site, so emitting Try here would leave rescue_ip
+      # pointing at the unpatched NO_TARGET sentinel — Frame#rescue_ip
+      # reads it via UInt32#to_i, a checked conversion that raises
+      # OverflowError the moment Try executes, since NO_TARGET doesn't
+      # fit in Int32. An ensure-only block doesn't catch anything
+      # anyway, so it has no need for Try/EndTry at all.
+      has_rescue = !node.rescue_body.nil?
+      try_at = @chunk.emit_jump(Op::Try, node.line) if has_rescue
       ensure_at = if node.ensure_body
                     @chunk.emit_jump(Op::SetEnsure, node.line)
                   end
 
       compile_body(node.body)
-      @chunk.emit(Op::EndTry, node.line)
+      @chunk.emit(Op::EndTry, node.line) if has_rescue
 
-      if rescue_body = node.rescue_body
-        jmp_past_rescue = @chunk.emit_jump(Op::Jump, node.line)
-        @chunk.patch_jump(try_at, @chunk.pos)
-
-        if rcls = node.rescue_class
-          @chunk.emit(Op::PushError, node.line)
-          compile_node(rcls)
-          # Call is_a?(error, rescue_class) using the same calling
-          # convention as `error.is_a?(rescue_class)`.
-          nil_idx = @chunk.add_const(Value.nil_value)
-          @chunk.emit(Op::Const, node.line, c: nil_idx)
-          @chunk.emit(Op::SetBlock, node.line)
-          is_a_sym = intern("is_a?")
-          @chunk.emit(Op::Call, node.line, a: 2_u8, b: 0b10_u16, c: is_a_sym)
-          no_match_jump = @chunk.emit_jump(Op::JumpIfFalse, node.line)
-
-          if rvar = node.rescue_var
-            @chunk.emit(Op::PushError, node.line)
-            sym_idx = intern(rvar)
-            @chunk.emit(Op::SetGlobal, node.line, c: sym_idx)
-            @chunk.emit(Op::Pop, node.line)
-          end
-          compile_body(rescue_body)
-          match_done_jump = @chunk.emit_jump(Op::Jump, node.line)
-
-          @chunk.patch_jump(no_match_jump, @chunk.pos)
-          # Class didn't match — keep the error's original identity
-          # (class, message) alive as it propagates further out,
-          # rather than rebuilding a generic one via Op::Throw.
-          @chunk.emit(Op::PushError, node.line)
-          @chunk.emit(Op::Reraise, node.line)
-
-          @chunk.patch_jump(match_done_jump, @chunk.pos)
-        else
-          if rvar = node.rescue_var
-            @chunk.emit(Op::PushError, node.line)
-            sym_idx = intern(rvar)
-            @chunk.emit(Op::SetGlobal, node.line, c: sym_idx)
-            @chunk.emit(Op::Pop, node.line)
-          end
-          compile_body(rescue_body)
-        end
-
-        @chunk.patch_jump(jmp_past_rescue, @chunk.pos)
+      if (rescue_body = node.rescue_body) && (try_pos = try_at)
+        compile_rescue_clause(node, rescue_body, try_pos)
       end
 
       if ensure_body = node.ensure_body
@@ -876,7 +843,56 @@ module Adjutant
         end
         @chunk.emit(Op::EnterEnsure, node.line)
         compile_body(ensure_body)
+        # Discard the ensure block's own trailing value — the overall
+        # begin/ensure expression's value is the body's (or rescue's),
+        # not the ensure block's. compile_body always leaves exactly
+        # one value on the stack, so this Pop is always safe.
+        @chunk.emit(Op::Pop, node.line)
       end
+    end
+
+    private def compile_rescue_clause(node : BeginNode, rescue_body : Body, try_at : Int32) : Nil
+      jmp_past_rescue = @chunk.emit_jump(Op::Jump, node.line)
+      @chunk.patch_jump(try_at, @chunk.pos)
+
+      if rcls = node.rescue_class
+        @chunk.emit(Op::PushError, node.line)
+        compile_node(rcls)
+        # Call is_a?(error, rescue_class) using the same calling
+        # convention as `error.is_a?(rescue_class)`.
+        nil_idx = @chunk.add_const(Value.nil_value)
+        @chunk.emit(Op::Const, node.line, c: nil_idx)
+        @chunk.emit(Op::SetBlock, node.line)
+        is_a_sym = intern("is_a?")
+        @chunk.emit(Op::Call, node.line, a: 2_u8, b: 0b10_u16, c: is_a_sym)
+        no_match_jump = @chunk.emit_jump(Op::JumpIfFalse, node.line)
+
+        compile_rescue_bind_and_body(node, rescue_body)
+        match_done_jump = @chunk.emit_jump(Op::Jump, node.line)
+
+        @chunk.patch_jump(no_match_jump, @chunk.pos)
+        # Class didn't match — keep the error's original identity
+        # (class, message) alive as it propagates further out,
+        # rather than rebuilding a generic one via Op::Throw.
+        @chunk.emit(Op::PushError, node.line)
+        @chunk.emit(Op::Reraise, node.line)
+
+        @chunk.patch_jump(match_done_jump, @chunk.pos)
+      else
+        compile_rescue_bind_and_body(node, rescue_body)
+      end
+
+      @chunk.patch_jump(jmp_past_rescue, @chunk.pos)
+    end
+
+    private def compile_rescue_bind_and_body(node : BeginNode, rescue_body : Body) : Nil
+      if rvar = node.rescue_var
+        @chunk.emit(Op::PushError, node.line)
+        sym_idx = intern(rvar)
+        @chunk.emit(Op::SetGlobal, node.line, c: sym_idx)
+        @chunk.emit(Op::Pop, node.line)
+      end
+      compile_body(rescue_body)
     end
 
     private def compile_retry(node : RetryNode) : Nil
