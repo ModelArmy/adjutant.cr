@@ -566,6 +566,18 @@ module Adjutant
             val = pop
             msg = val.string? ? val.as_string : val.to_s
             raise runtime_error(msg, f)
+          when Op::Reraise
+            val = pop
+            msg = if obj = val.as_robject?
+                    msg_sym = @symbols.intern("message")
+                    m = obj.ivars[msg_sym.value]?
+                    m ? (m.string? ? m.as_string : m.to_s) : obj.rclass.name
+                  elsif val.string?
+                    val.as_string
+                  else
+                    val.to_s
+                  end
+            raise RuntimeError.new(msg, f, error_value: val)
           when Op::PushError
             # Push the error caught by the nearest enclosing rescue —
             # a typed RubyObject when available (see RuntimeError#error_value),
@@ -821,7 +833,25 @@ module Adjutant
           Value.string(recv.to_s)
         end
       when "is_a?"
-        Value.bool(false) # stub
+        # RubyObject receiver only — Integer/String/etc. have no
+        # corresponding RubyClass yet (base types are separate,
+        # planned work), so is_a? can't check those and returns false.
+        recv = args.first? || Value.nil_value
+        target = args[1]?.try(&.as_rclass?)
+        if (obj = recv.as_robject?) && target
+          cls = obj.rclass.as(RubyClass?)
+          matched = false
+          while cls
+            if cls == target
+              matched = true
+              break
+            end
+            cls = cls.superclass
+          end
+          Value.bool(matched)
+        else
+          Value.bool(false)
+        end
       when "to_s"
         recv = args.first? || Value.nil_value
         Value.string(recv.to_s)

@@ -16,7 +16,8 @@ module Testing
   record FileResult,
     path : String,
     mod : AssertModule,
-    error : String?
+    error : String?,
+    cause : Exception? = nil
 
   class Runner
     @scripts_dir : String
@@ -47,12 +48,18 @@ module Testing
       interp.modules.register(mod)
 
       error = nil
+      cause = nil
       begin
         File.open(path) { |io| interp.eval(io, path) }
       rescue e : Adjutant::ParseError
         error = "parse error: #{e.line}:#{e.column}: #{e.message}"
+        cause = e
+      rescue e : Adjutant::CompileError
+        error = "compile error: #{e.line}:#{e.column}: #{e.message}"
+        cause = e
       rescue e : Adjutant::RuntimeError
         error = "runtime error: #{e.line}: #{e.message}"
+        cause = e
       end
 
       mod.results.each do |result|
@@ -60,14 +67,24 @@ module Testing
       end
       print "E".colorize(:yellow) if error
 
-      FileResult.new(short, mod, error)
+      FileResult.new(short, mod, error, cause)
     end
 
     def print_summary(results : Array(FileResult))
       puts
       results.each do |result|
+        line = case cause = result.cause
+               when Adjutant::CompileError, Adjutant::ParseError, Adjutant::RuntimeError
+                 cause.line
+               else
+                 "??"
+               end
         if err = result.error
-          puts "ERROR #{result.path}".colorize(:yellow), "  #{err}"
+          puts "ERROR #{result.path}:#{line}".colorize(:yellow), "  #{err}"
+        end
+        if cause = result.cause
+          puts "  cause: #{cause.inspect_with_backtrace}"
+          puts
         end
         result.mod.results.each do |test|
           next if test.passed

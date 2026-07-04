@@ -59,7 +59,11 @@ module Adjutant
     EndTry      # clear rescue handler
     Throw       # raise: pop value and throw
     PushError   # push current rescue exception onto stack
-    Retry       # retry the begin body
+    Reraise     # pop an error value and re-raise it as-is (preserves its
+    # class/identity, unlike Throw which rebuilds a generic
+    # RuntimeError from a string) — used when `rescue ClassName`
+    # doesn't match and the error must keep propagating
+    Retry # retry the begin body
 
     # Collections
     MakeArray # pop a elements → push Array

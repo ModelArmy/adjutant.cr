@@ -210,4 +210,147 @@ module Adjutant
       RUBY
     end
   end
+
+  describe "rescue ClassName filtering" do
+    it "runs the rescue body when the raised class matches exactly" do
+      eval(<<-RUBY).should eq Value.string("caught")
+        begin
+          raise TypeError, "nope"
+        rescue TypeError => e
+          "caught"
+        end
+      RUBY
+    end
+
+    it "runs the rescue body when the raised class is a subclass of the filter" do
+      eval(<<-RUBY).should eq Value.string("caught")
+        begin
+          raise TypeError, "nope"
+        rescue StandardError => e
+          "caught"
+        end
+      RUBY
+    end
+
+    it "does not run the rescue body when the raised class does not match" do
+      expect_raises(RuntimeError, /nope/) do
+        eval(<<-RUBY)
+          begin
+            raise TypeError, "nope"
+          rescue ArgumentError => e
+            "caught"
+          end
+        RUBY
+      end
+    end
+
+    it "preserves the original class through a mismatch re-raise across a call boundary" do
+      # A class filter that doesn't match must not launder the error
+      # into a generic RuntimeError — an outer handler filtering on
+      # the *original* class should still be able to catch it. This
+      # crosses a real call boundary (separate Frame objects) rather
+      # than nesting begin/rescue in one frame — see the known
+      # limitation test below for why that distinction matters.
+      result = eval(<<-RUBY)
+        def inner
+          begin
+            raise TypeError, "nope"
+          rescue ArgumentError => e
+            "inner caught"
+          end
+        end
+
+        begin
+          inner()
+        rescue TypeError => e
+          "outer caught: " + e.message
+        end
+      RUBY
+      result.should eq Value.string("outer caught: nope")
+    end
+
+    it "supports a class filter with no bound variable" do
+      eval(<<-RUBY).should eq Value.string("caught")
+        begin
+          raise TypeError, "nope"
+        rescue TypeError
+          "caught"
+        end
+      RUBY
+    end
+
+    it "matches an internal VM error (division by zero) against RuntimeError" do
+      eval(<<-RUBY).should eq Value.string("caught")
+        begin
+          1 / 0
+        rescue RuntimeError => e
+          "caught"
+        end
+      RUBY
+    end
+
+    it "does not match an internal VM error against an unrelated class" do
+      expect_raises(RuntimeError, /divided by 0/) do
+        eval(<<-RUBY)
+          begin
+            1 / 0
+          rescue TypeError => e
+            "caught"
+          end
+        RUBY
+      end
+    end
+
+    it "is_a? correctly reports class and ancestor membership" do
+      interp, _ = make_interp
+      interp.eval(<<-RUBY).as_bool.should be_true
+        begin
+          raise TypeError, "x"
+        rescue TypeError => e
+          e.is_a?(TypeError)
+        end
+      RUBY
+      interp.eval(<<-RUBY).as_bool.should be_true
+        begin
+          raise TypeError, "x"
+        rescue TypeError => e
+          e.is_a?(StandardError)
+        end
+      RUBY
+      interp.eval(<<-RUBY).as_bool.should be_false
+        begin
+          raise TypeError, "x"
+        rescue TypeError => e
+          e.is_a?(ArgumentError)
+        end
+      RUBY
+    end
+
+    # Known limitation: Frame carries a single rescue_ip slot, not a
+    # handler stack (present since chunk 1). Two begin/rescue blocks
+    # nested in the *same* frame (no call boundary between them) means
+    # the inner Op::Try clobbers the outer's rescue_ip, so a mismatch
+    # in the inner rescue can't fall back to the outer one. This is
+    # distinct from the cross-call-boundary case above (separate
+    # Frame objects, no clobbering), which works correctly.
+    it "(known limitation) same-frame nested rescue can't fall back to an outer handler" do
+      expect_raises(RuntimeError, /nope/) do
+        eval(<<-RUBY)
+          begin
+            begin
+              begin
+                raise TypeError, "nope"
+              rescue ArgumentError => e
+                "innermost caught"
+              end
+            rescue TypeError => e
+              "middle caught"
+            end
+          rescue StandardError => e
+            "outer caught"
+          end
+        RUBY
+      end
+    end
+  end
 end

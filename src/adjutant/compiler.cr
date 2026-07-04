@@ -827,13 +827,46 @@ module Adjutant
       if rescue_body = node.rescue_body
         jmp_past_rescue = @chunk.emit_jump(Op::Jump, node.line)
         @chunk.patch_jump(try_at, @chunk.pos)
-        if rvar = node.rescue_var
+
+        if rcls = node.rescue_class
           @chunk.emit(Op::PushError, node.line)
-          sym_idx = intern(rvar)
-          @chunk.emit(Op::SetGlobal, node.line, c: sym_idx)
-          @chunk.emit(Op::Pop, node.line)
+          compile_node(rcls)
+          # Call is_a?(error, rescue_class) using the same calling
+          # convention as `error.is_a?(rescue_class)`.
+          nil_idx = @chunk.add_const(Value.nil_value)
+          @chunk.emit(Op::Const, node.line, c: nil_idx)
+          @chunk.emit(Op::SetBlock, node.line)
+          is_a_sym = intern("is_a?")
+          @chunk.emit(Op::Call, node.line, a: 2_u8, b: 0b10_u16, c: is_a_sym)
+          no_match_jump = @chunk.emit_jump(Op::JumpIfFalse, node.line)
+
+          if rvar = node.rescue_var
+            @chunk.emit(Op::PushError, node.line)
+            sym_idx = intern(rvar)
+            @chunk.emit(Op::SetGlobal, node.line, c: sym_idx)
+            @chunk.emit(Op::Pop, node.line)
+          end
+          compile_body(rescue_body)
+          match_done_jump = @chunk.emit_jump(Op::Jump, node.line)
+
+          @chunk.patch_jump(no_match_jump, @chunk.pos)
+          # Class didn't match — keep the error's original identity
+          # (class, message) alive as it propagates further out,
+          # rather than rebuilding a generic one via Op::Throw.
+          @chunk.emit(Op::PushError, node.line)
+          @chunk.emit(Op::Reraise, node.line)
+
+          @chunk.patch_jump(match_done_jump, @chunk.pos)
+        else
+          if rvar = node.rescue_var
+            @chunk.emit(Op::PushError, node.line)
+            sym_idx = intern(rvar)
+            @chunk.emit(Op::SetGlobal, node.line, c: sym_idx)
+            @chunk.emit(Op::Pop, node.line)
+          end
+          compile_body(rescue_body)
         end
-        compile_body(rescue_body)
+
         @chunk.patch_jump(jmp_past_rescue, @chunk.pos)
       end
 
