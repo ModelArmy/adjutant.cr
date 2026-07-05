@@ -816,19 +816,8 @@ module Adjutant
         return
       end
 
-      # Op::Try's jump target only ever gets patched inside
-      # compile_rescue_clause. An ensure-only begin (no rescue) has no
-      # such patch site, so emitting Try here would push an unpatched
-      # NO_TARGET sentinel onto Frame#rescue_handlers — reading it via
-      # UInt32#to_i is a checked conversion that raises OverflowError
-      # the moment Try executes, since NO_TARGET doesn't fit in Int32.
-      # An ensure-only block doesn't catch anything
-      # anyway, so it has no need for Try/EndTry at all.
       has_rescue = !node.rescue_body.nil?
-      try_at = @chunk.emit_jump(Op::Try, node.line) if has_rescue
-      ensure_at = if node.ensure_body
-                    @chunk.emit_jump(Op::SetEnsure, node.line)
-                  end
+      try_at, ensure_at = emit_try_and_ensure_setup(node, has_rescue)
 
       compile_body(node.body)
       @chunk.emit(Op::EndTry, node.line) if has_rescue
@@ -848,7 +837,35 @@ module Adjutant
         # not the ensure block's. compile_body always leaves exactly
         # one value on the stack, so this Pop is always safe.
         @chunk.emit(Op::Pop, node.line)
+        # If this ensure was entered while an error was propagating
+        # (not the normal success path), resume propagating it now
+        # that the ensure body has finished. No-op otherwise.
+        @chunk.emit(Op::EndEnsure, node.line)
       end
+    end
+
+    # Emits Op::Try (if has_rescue) and Op::SetEnsure (if an ensure
+    # body exists), returning their patchable indices. Split out of
+    # compile_begin purely to keep its cyclomatic complexity down.
+    #
+    # Op::Try's jump target only ever gets patched inside
+    # compile_rescue_clause. An ensure-only begin (no rescue) has no
+    # such patch site, so emitting Try here would push an unpatched
+    # NO_TARGET sentinel onto Frame#handlers — reading it via
+    # UInt32#to_i is a checked conversion that raises OverflowError
+    # the moment Try executes, since NO_TARGET doesn't fit in Int32.
+    # An ensure-only block doesn't catch anything anyway, so it has
+    # no need for Try/EndTry at all.
+    private def emit_try_and_ensure_setup(node : BeginNode, has_rescue : Bool) : {Int32?, Int32?}
+      try_at = @chunk.emit_jump(Op::Try, node.line) if has_rescue
+      ensure_at = if node.ensure_body
+                    # b: 1 tells the VM to add this target to the
+                    # entry the preceding Try just pushed (same
+                    # construct), rather than pushing a second entry.
+                    b = has_rescue ? 1_u16 : 0_u16
+                    @chunk.emit(Op::SetEnsure, node.line, b: b, c: Chunk::NO_TARGET)
+                  end
+      {try_at, ensure_at}
     end
 
     private def compile_rescue_clause(node : BeginNode, rescue_body : Body, try_at : Int32) : Nil

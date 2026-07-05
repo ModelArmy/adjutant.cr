@@ -15,7 +15,7 @@ require "assert"
 # end
 # ----
 
-# ---- TODO: support multiple assignments in a statement
+# ---- TODO: support chained assignments in a statement
 # assert "Multiple assignments" do
 #   c = b = 5
 #   c == 5

@@ -345,7 +345,7 @@ end
 #   assert_equal 3, r
 # end
 
-# ---- BLOCKED: Pending multi-assign statement
+# ---- BLOCKED: Pending chained-assign statement
 # assert('Exception 19') do
 #   class Class4Exception19
 #     def a
@@ -398,19 +398,18 @@ end
 # end
 # ----
 
-# ---- TODO: ensure does not yet run when an error propagates past
-# this frame uncaught (only runs on the success path). Also tests
-# Ruby's real semantics: an error raised inside ensure supersedes the
-# one already propagating from the body.
-# assert('Raise in ensure') do
-# assert_raise(ArgumentError) do
-#   begin
-#     raise "" # RuntimeError
-#   ensure
-#     raise ArgumentError
-#   end
-# end
-# end
+# Tests that ensure runs when an error propagates past this frame
+# uncaught, and Ruby's real semantics: a new error raised inside
+# ensure supersedes the one already propagating from the body.
+assert('Raise in ensure') do
+  assert_raise(ArgumentError) do
+    begin
+      raise "" # RuntimeError
+    ensure
+      raise ArgumentError
+    end
+  end
+end
 # ----
 
 

@@ -22,6 +22,24 @@ module Adjutant
     end
   end
 
+  # A single begin/rescue/ensure construct's pending handler info,
+  # while its body (or a nested one within it) is still running.
+  # One entry per construct — not two independent entries in two
+  # separate stacks — because a single `begin...rescue...ensure...end`
+  # is one region with up to two jump targets, and the relative order
+  # in which DIFFERENT constructs' entries were pushed must be
+  # preserved to unwind correctly (checking "any pending rescue on
+  # this frame" before "any pending ensure on this frame", regardless
+  # of which was actually pushed more recently, can skip a more-nested
+  # ensure that Ruby requires to run first).
+  class HandlerEntry
+    property rescue_ip : Int32?
+    property ensure_ip : Int32?
+
+    def initialize(@rescue_ip = nil, @ensure_ip = nil)
+    end
+  end
+
   # A single call frame on the VM stack.
   class Frame
     getter proc : ScriptProc
@@ -31,15 +49,17 @@ module Adjutant
     property stack_base : Int32
     getter filename : String
     property block : ScriptProc?
-    # Stack of pending rescue-handler jump targets for begin/rescue
-    # blocks active in THIS frame, most-recently-entered last. A stack
-    # (not a single slot) so nested begin/rescue within the same frame
-    # don't clobber each other: Try pushes, EndTry pops on the success
-    # path, and the unwind loop pops-and-jumps on error — so a
-    # re-raise from a mismatched inner handler correctly falls back to
-    # an outer one on the same frame.
-    getter rescue_handlers : Array(Int32)
-    property ensure_ip : Int32
+    # Stack of pending begin/rescue/ensure handler entries active in
+    # this frame, most-recently-entered last. Op::Try pushes a new
+    # entry (or Op::SetEnsure does, for an ensure-only construct);
+    # Op::SetEnsure adds its target to the entry Op::Try just pushed
+    # when both exist on the same construct. Op::EndTry clears the
+    # rescue portion in place (leaving the ensure portion, if any, for
+    # later) on the success path; Op::EnterEnsure pops the whole entry
+    # once its ensure body is about to run — the single place an entry
+    # is fully removed, whether reached via normal fallthrough or via
+    # the unwind loop jumping in on error.
+    getter handlers : Array(HandlerEntry)
 
     # Local variable slots — sized from ScriptProc#local_count at frame creation.
     getter locals : Array(Value)
@@ -64,8 +84,7 @@ module Adjutant
     def initialize(@proc, @chunk, @stack_base, @filename, @block = nil, outer : Array(Value)? = nil, @self_val : Value = Value.nil_value, @lexical_scope : RubyClass? = nil)
       @ip = 0
       @line = 0
-      @rescue_handlers = [] of Int32
-      @ensure_ip = 0
+      @handlers = [] of HandlerEntry
       @locals = Array(Value).new(@proc.local_count, Value.nil_value)
       @outer_locals = outer
     end
@@ -130,6 +149,14 @@ module Adjutant
       # constructed (see RuntimeError#error_value); a plain string for
       # internal errors that don't yet go through the typed hierarchy.
       @last_error = Value.nil_value
+      # Set by the unwind loop when it jumps into an ensure body while
+      # an error is propagating (not on the normal success path).
+      # Op::EndEnsure re-raises it once the ensure body finishes,
+      # unless the ensure body itself raised a new error first — in
+      # which case that error supersedes it (Ruby semantics) and this
+      # never gets read; it's cleared at the top of every fresh catch
+      # so it can't leak into an unrelated later error.
+      @pending_reraise = nil.as(Value?)
     end
 
     # Execute a compiled chunk and return the result.
@@ -559,38 +586,48 @@ module Adjutant
             end
             push(val)
 
-            # --- Exception handling (stubs) ------------------------------------
+            # --- Exception handling ---------------------------------------
           when Op::Try
             raise runtime_error("internal error: unpatched Try target", f) if inst.c == Chunk::NO_TARGET
-            f.rescue_handlers.push(inst.c.to_i)
+            f.handlers.push(HandlerEntry.new(rescue_ip: inst.c.to_i))
           when Op::SetEnsure
             raise runtime_error("internal error: unpatched SetEnsure target", f) if inst.c == Chunk::NO_TARGET
-            f.ensure_ip = inst.c.to_i
+            if inst.b == 1_u16
+              # Same construct as the immediately-preceding Try — add
+              # the ensure target to the entry it just pushed, rather
+              # than pushing a second entry for one construct.
+              if top = f.handlers.last?
+                top.ensure_ip = inst.c.to_i
+              end
+            else
+              f.handlers.push(HandlerEntry.new(ensure_ip: inst.c.to_i))
+            end
           when Op::EndTry
-            f.rescue_handlers.pop?
+            clear_rescue_portion(f)
           when Op::EnterEnsure
-            # ensure body follows inline
-
+            # Consumes this frame's pending handler entry entirely,
+            # whether reached via normal fallthrough (rescue matched,
+            # mismatched-then-rethrown-and-refound, or no error at
+            # all) or via the unwind loop jumping in on error — the
+            # single place an entry is fully removed, so it can't go
+            # stale for a later, unrelated error.
+            f.handlers.pop?
+          when Op::EndEnsure
+            if pending = @pending_reraise
+              @pending_reraise = nil
+              raise RuntimeError.new(error_message(pending), f, error_value: pending)
+            end
           when Op::Throw
             val = pop
             msg = val.string? ? val.as_string : val.to_s
             raise runtime_error(msg, f)
           when Op::Reraise
             val = pop
-            msg = if obj = val.as_robject?
-                    msg_sym = @symbols.intern("message")
-                    m = obj.ivars[msg_sym.value]?
-                    m ? (m.string? ? m.as_string : m.to_s) : obj.rclass.name
-                  elsif val.string?
-                    val.as_string
-                  else
-                    val.to_s
-                  end
-            raise RuntimeError.new(msg, f, error_value: val)
+            raise RuntimeError.new(error_message(val), f, error_value: val)
           when Op::PushError
             # Push the error caught by the nearest enclosing rescue —
             # a typed RubyObject when available (see RuntimeError#error_value),
-            # else a plain string. rescue ClassName filtering is chunk 3.
+            # else a plain string.
             push(@last_error)
           when Op::Retry
             # Jump back to start of begin body — stub
@@ -611,23 +648,49 @@ module Adjutant
             raise runtime_error("unknown opcode: #{inst.op}", f)
           end
         rescue ex : RuntimeError
-          # Unwind frames looking for one with an active rescue handler
-          # (the error may originate several calls deep inside the
-          # begin body, not just in the frame that was executing).
-          # Popping the handler as soon as we find it means a mismatch
-          # Reraise from inside it triggers a fresh unwind pass that
-          # correctly falls back to the next entry on the same frame
-          # (an outer, lexically-enclosing begin/rescue) rather than
-          # re-finding the same one or skipping past the frame entirely.
+          # Clear any stale pending re-raise up front: a genuinely new
+          # error is starting its own unwind, so whatever was pending
+          # from a previous episode (e.g. an ensure body that itself
+          # raised, superseding what it was about to re-raise) must
+          # not leak forward into this one.
+          @pending_reraise = nil
+
+          # Unwind frames looking for an active rescue or ensure
+          # handler (the error may originate several calls deep inside
+          # the begin body, not just in the frame that was executing).
+          # Each frame's handlers stack holds one entry per begin
+          # construct, most-recently-entered last — checking rescue_ip
+          # before ensure_ip *within the same entry* (not across
+          # separate stacks) is what keeps a more-nested construct's
+          # handler in front of an outer one's, regardless of which
+          # kind either happens to be.
           handler_frame = nil.as(Frame?)
           handler_ip = 0
+          entering_ensure = false
           while !@frames.empty?
             candidate = current_frame
-            if ip = candidate.rescue_handlers.pop?
-              handler_frame = candidate
-              handler_ip = ip
-              break
+            found_on_this_frame = false
+            while top = candidate.handlers.last?
+              if rip = top.rescue_ip
+                handler_frame = candidate
+                handler_ip = rip
+                # Mirrors Op::EndTry: pops the entry too if it has no
+                # linked ensure, since nothing else would.
+                clear_rescue_portion(candidate)
+                found_on_this_frame = true
+                break
+              elsif eip = top.ensure_ip
+                handler_frame = candidate
+                handler_ip = eip
+                entering_ensure = true
+                # Left as-is — Op::EnterEnsure pops it once reached.
+                found_on_this_frame = true
+                break
+              else
+                candidate.handlers.pop # shouldn't happen; defensive
+              end
             end
+            break if found_on_this_frame
             break if @frames.size == 1 # never pop the outermost frame here
             sb = candidate.stack_base
             (@stack.size - sb).times { @stack.pop } if @stack.size > sb
@@ -638,7 +701,16 @@ module Adjutant
             while @stack.size > handler_frame.stack_base
               @stack.pop
             end
-            @last_error = ex.error_value || Value.string(ex.message || "RuntimeError")
+            if entering_ensure
+              # Stash the original error for Op::EndEnsure to resume
+              # once the ensure body finishes normally. If the ensure
+              # body raises a new error instead, that propagates via
+              # the ordinary Crystal-exception path before EndEnsure
+              # is ever reached, correctly superseding this one.
+              @pending_reraise = ex.error_value || Value.string(ex.message || "RuntimeError")
+            else
+              @last_error = ex.error_value || Value.string(ex.message || "RuntimeError")
+            end
             handler_frame.ip = handler_ip
           else
             raise ex
@@ -1103,6 +1175,38 @@ module Adjutant
       msg_sym = @symbols.intern("message")
       obj.ivars[msg_sym.value] = Value.string(message)
       Value.robject(obj)
+    end
+
+    # Extract a plain string message from an error Value — the
+    # message ivar for a RubyObject, the string itself for a plain
+    # string, else its to_s. Shared by Op::Reraise and Op::EndEnsure,
+    # which both need to reconstruct a Crystal exception from a
+    # Value without losing the original class/identity.
+    private def error_message(val : Value) : String
+      if obj = val.as_robject?
+        msg_sym = @symbols.intern("message")
+        m = obj.ivars[msg_sym.value]?
+        m ? (m.string? ? m.as_string : m.to_s) : obj.rclass.name
+      elsif val.string?
+        val.as_string
+      else
+        val.to_s
+      end
+    end
+
+    # Clears the rescue portion of the frame's top handler entry —
+    # we're past the point where a matching rescue applies for this
+    # construct, whether because its body succeeded (Op::EndTry) or
+    # because the error unwind loop just matched and is jumping in.
+    # If the entry has no linked ensure_ip, nothing else will ever
+    # pop it (Op::EnterEnsure only fires when there's an ensure body),
+    # so pop it now — otherwise leave it for EnterEnsure to remove
+    # once the ensure body it's still holding onto actually runs.
+    private def clear_rescue_portion(frame : Frame) : Nil
+      if top = frame.handlers.last?
+        top.rescue_ip = nil
+        frame.handlers.pop? if top.ensure_ip.nil?
+      end
     end
   end
 end

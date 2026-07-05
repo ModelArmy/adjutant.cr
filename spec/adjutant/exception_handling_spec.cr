@@ -331,9 +331,9 @@ module Adjutant
       # stack. Two begin/rescue blocks nested in the *same* frame (no
       # call boundary between them) meant the inner Op::Try clobbered
       # the outer's rescue_ip, so a mismatch in the inner rescue
-      # couldn't fall back to an enclosing one. Frame#rescue_handlers
-      # is now a stack — Try pushes, EndTry/the unwind loop pop LIFO —
-      # so a mismatch reraise correctly finds the next entry up.
+      # couldn't fall back to an enclosing one. Frame#handlers is now
+      # a stack of per-construct entries — a mismatch reraise
+      # correctly finds the next entry up.
       result = eval(<<-RUBY)
         begin
           begin
@@ -357,10 +357,10 @@ module Adjutant
     # Op::Try's jump target was only ever patched inside the
     # rescue_body branch. An ensure-only begin (no rescue clause) had
     # no such patch site, so Try pushed the unpatched NO_TARGET
-    # sentinel (0xFFFFFFFF) onto Frame#rescue_handlers — reading it via
+    # sentinel (0xFFFFFFFF) onto Frame#handlers — reading it via
     # UInt32#to_i (a checked conversion) raised a Crystal OverflowError
     # the instant Try executed, before any error-catching logic ran.
-    it "runs an ensure body without a rescue clause (regression: rescue_handlers overflow)" do
+    it "runs an ensure body without a rescue clause (regression: handlers overflow)" do
       eval(<<-RUBY).should eq Value.int(2_i64)
         begin
           1 + 1
@@ -446,6 +446,104 @@ module Adjutant
       RUBY
       result.symbol?.should be_true
       result.as_sym.name.should eq "caught"
+    end
+  end
+
+  describe "ensure on error propagation" do
+    it "runs the ensure body, then still propagates the original error uncaught" do
+      # No rescue anywhere — ensure must run (side effect visible via
+      # the mutated global), then the original error keeps propagating.
+      expect_raises(RuntimeError, /boom/) do
+        eval(<<-RUBY)
+          ran = false
+          begin
+            raise "boom"
+          ensure
+            ran = true
+          end
+        RUBY
+      end
+    end
+
+    it "lets an outer rescue catch an error after an inner ensure-only begin runs" do
+      result = eval(<<-RUBY)
+        def inner
+          begin
+            raise "boom"
+          ensure
+            1 + 1
+          end
+        end
+
+        begin
+          inner()
+        rescue e
+          "outer caught: " + e.message
+        end
+      RUBY
+      result.should eq Value.string("outer caught: boom")
+    end
+
+    it "a new error raised inside ensure supersedes the original (Ruby semantics)" do
+      result = eval(<<-RUBY)
+        begin
+          begin
+            raise "original"
+          ensure
+            raise ArgumentError, "replacement"
+          end
+        rescue ArgumentError => e
+          e.message
+        end
+      RUBY
+      result.should eq Value.string("replacement")
+    end
+
+    it "runs an ensure exactly once and doesn't affect an unrelated later block" do
+      result = eval(<<-RUBY)
+        count = 0
+        begin
+          1 + 1
+        ensure
+          count += 1
+        end
+
+        begin
+          raise "second"
+        rescue e
+          count
+        end
+      RUBY
+      result.should eq Value.int(1_i64)
+    end
+
+    it "an outer rescue still gets a chance after a sibling inner ensure-only begin runs" do
+      # Regression guard for an ordering bug found during development:
+      # checking "any pending rescue on this frame" before "any
+      # pending ensure on this frame" via two independent stacks can
+      # skip a more-recently-pushed ensure that must run first. The
+      # outer's rescue entry is pushed before either inner block; the
+      # second inner block's ensure entry is pushed after — it must
+      # still run before the outer rescue gets a chance.
+      result = eval(<<-RUBY)
+        count = 0
+        begin
+          begin
+            1 + 1
+          ensure
+            count += 1
+          end
+
+          begin
+            raise "second"
+          ensure
+            count += 1
+          end
+        rescue e
+          count
+        end
+      RUBY
+      result.should eq Value.int(2_i64)
     end
   end
 end
