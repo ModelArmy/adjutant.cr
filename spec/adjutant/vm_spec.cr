@@ -492,5 +492,49 @@ module Adjutant
         eval(src).as_int.should eq 15_i64
       end
     end
+
+    describe "bare global identifier resolution" do
+      # @globals holds both top-level `def`s and top-level variable
+      # assignments in one namespace (unlike Ruby, which keeps methods
+      # and variables separate). A bare identifier that isn't a local
+      # resolves through @globals; if what's found there is a
+      # ScriptProc, it must have come from `def`, so it's called with
+      # zero args — otherwise `def foo; ...; end; foo` would silently
+      # push the uncalled proc instead of running the method.
+      it "calls a top-level def when referenced bare (no parens)" do
+        src = <<-RUBY
+        def answer
+          42
+        end
+        answer
+        RUBY
+        eval(src).as_int.should eq 42_i64
+      end
+
+      it "still returns a plain value for a non-callable global" do
+        src = <<-RUBY
+        x = 7
+        def set_x_elsewhere
+          x = 1
+        end
+        x
+        RUBY
+        eval(src).as_int.should eq 7_i64
+      end
+
+      # Known limitation: because methods and variables share one
+      # namespace, a top-level variable holding a lambda is also
+      # auto-invoked on bare reference, diverging from real Ruby
+      # (where you'd need `.call`). Documented here rather than
+      # silently regressed; revisit if/when methods and variables
+      # get separate namespaces.
+      it "(known limitation) auto-invokes a top-level variable holding a lambda" do
+        src = <<-RUBY
+        greet = ->() { "hi" }
+        greet
+        RUBY
+        eval(src).as_string.should eq "hi"
+      end
+    end
   end
 end

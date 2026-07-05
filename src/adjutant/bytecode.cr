@@ -54,12 +54,22 @@ module Adjutant
 
     # Exception handling
     Try         # set rescue handler at c
-    SetEnsure   # register ensure block at c
-    EnterEnsure # enter ensure block
     EndTry      # clear rescue handler
+    Retry       # retry the begin body
     Throw       # raise: pop value and throw
     PushError   # push current rescue exception onto stack
-    Retry       # retry the begin body
+    SetEnsure   # register ensure block at c
+    EnterEnsure # enter ensure block
+
+    # end of ensure body — resumes VM#@pending_reraise if the
+    # ensure was entered via error unwinding, else no-op
+    EndEnsure
+
+    # pop an error value and re-raise it as-is (preserves its
+    # class/identity, unlike Throw which rebuilds a generic
+    # RuntimeError from a string) — used when `rescue ClassName`
+    # doesn't match and the error must keep propagating
+    Reraise
 
     # Collections
     MakeArray # pop a elements → push Array

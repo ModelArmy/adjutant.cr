@@ -61,6 +61,7 @@ module Adjutant
       @symbols = SymbolTable.new
       @modules = ModuleRegistry.new
       @globals = {} of Int32 => Value
+      bootstrap_error_classes
     end
 
     # Read a global variable by name — reflects current interpreter state.
@@ -126,6 +127,37 @@ module Adjutant
 
     private def make_vm : VM
       VM.new(@symbols, @limits, @effect, self, @globals)
+    end
+
+    # Registers the builtin exception class hierarchy directly into
+    # @globals — the same namespace a top-level `class Foo` writes to
+    # via Op::SetConstant — so `raise SomeError` and a bare reference
+    # to `SomeError` both resolve correctly. Called once per
+    # Interpreter; @globals is shared with every VM it creates, and
+    # persists across eval calls on the same interpreter.
+    #
+    # rescue ClassName filtering (matching a raised object's class,
+    # or an ancestor, against the rescue clause) is not yet
+    # implemented — this hierarchy exists so `raise`/`.message` work
+    # and so that filtering has real classes to check against later.
+    private def bootstrap_error_classes : Nil
+      exception = define_builtin_class("Exception", nil)
+      standard_error = define_builtin_class("StandardError", exception)
+      define_builtin_class("RuntimeError", standard_error)
+      define_builtin_class("TypeError", standard_error)
+      define_builtin_class("ArgumentError", standard_error)
+      define_builtin_class("ZeroDivisionError", standard_error)
+      name_error = define_builtin_class("NameError", standard_error)
+      define_builtin_class("NoMethodError", name_error)
+      index_error = define_builtin_class("IndexError", standard_error)
+      define_builtin_class("KeyError", index_error)
+    end
+
+    private def define_builtin_class(name : String, superclass : RubyClass?) : RubyClass
+      cls = RubyClass.new(name, superclass, is_module: false)
+      sym = @symbols.intern(name)
+      @globals[sym.value] = Value.rclass(cls)
+      cls
     end
 
     @globals : Hash(Int32, Value) = {} of Int32 => Value

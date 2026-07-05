@@ -461,11 +461,12 @@ module Adjutant
 
   class BeginNode < Node
     getter body : Body
+    getter rescue_class : Node?
     getter rescue_var : String?
     getter rescue_body : Body?
     getter ensure_body : Body?
 
-    def initialize(@body, @rescue_var, @rescue_body, @ensure_body, line, column)
+    def initialize(@body, @rescue_class, @rescue_var, @rescue_body, @ensure_body, line, column)
       super(line, column)
     end
   end

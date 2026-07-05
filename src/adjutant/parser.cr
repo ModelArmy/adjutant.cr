@@ -392,6 +392,8 @@ module Adjutant
         parse_case
       when TokenKind::KwBegin
         parse_begin
+      when TokenKind::KwRaise
+        parse_raise(l, c)
       else
         raise ParseError.new("unexpected token #{current_kind} (#{@current.lexeme.inspect})", l, c)
       end
@@ -439,7 +441,8 @@ module Adjutant
            TokenKind::Symbol,
            TokenKind::KwNil, TokenKind::KwTrue, TokenKind::KwFalse,
            TokenKind::Bang, TokenKind::Tilde,
-           TokenKind::LParen
+           TokenKind::LParen,
+           TokenKind::Identifier, TokenKind::Constant
         true
       when TokenKind::Minus
         false # REVISIT, can minus ever be valid token after method call name?
@@ -865,16 +868,49 @@ module Adjutant
       end
     end
 
+    # `raise` is a keyword token (KwRaise), so it never reaches
+    # parse_identifier_or_call's bare-call handling. Desugar to the same
+    # Call shape (receiver nil, method "raise") so the existing native
+    # "raise" builtin handles it unchanged. Supports `raise`, `raise "msg"`,
+    # and `raise("msg")`.
+    private def parse_raise(l : Int32, c : Int32) : Node
+      advance # consume 'raise'
+      args = [] of Node
+      if at_kind?(TokenKind::LParen)
+        args, _blk = parse_call_args_and_block
+      elsif arg_follows_no_paren?
+        args << parse_expression(0)
+        while match(TokenKind::Comma)
+          args << parse_expression(0)
+        end
+      end
+      Call.new(nil, "raise", args, nil, false, l, c)
+    end
+
     private def parse_begin : BeginNode
       l, c = line, col
       expect(TokenKind::KwBegin)
       skip_terminators
       body = parse_body_until_any(TokenKind::KwRescue, TokenKind::KwEnsure, TokenKind::KwEnd)
+      rescue_class = nil
       rescue_var = nil
       rescue_body = nil
       ensure_body = nil
       if match(TokenKind::KwRescue)
-        if at_kind?(TokenKind::Identifier)
+        if at_kind?(TokenKind::Constant)
+          # Reuses the normal expression parser so `rescue Foo::Bar`
+          # gets full constant-path support for free.
+          rescue_class = parse_expression(0)
+          if match(TokenKind::HashRocket)
+            rescue_var = @current.lexeme
+            advance
+          end
+        elsif match(TokenKind::HashRocket)
+          rescue_var = @current.lexeme
+          advance
+        elsif at_kind?(TokenKind::Identifier)
+          # Legacy/bare form: `rescue e` binds a variable with no class
+          # filter (catches everything) — kept for backward compat.
           rescue_var = @current.lexeme
           advance
         end
@@ -886,7 +922,7 @@ module Adjutant
         ensure_body = parse_body_until(TokenKind::KwEnd)
       end
       expect(TokenKind::KwEnd)
-      BeginNode.new(body, rescue_var, rescue_body, ensure_body, l, c)
+      BeginNode.new(body, rescue_class, rescue_var, rescue_body, ensure_body, l, c)
     end
 
     private def parse_require : RequireNode

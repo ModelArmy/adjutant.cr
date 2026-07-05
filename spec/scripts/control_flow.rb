@@ -156,15 +156,53 @@ assert("begin-rescue yields body value on success (expr)") {
   result == 2
 }
 
-# NOTE: rescue does not yet catch runtime errors (Op::Try sets rescue_ip,
-# but execute() never consults it on error) — deferred with typed exceptions,
-# see DEVELOPMENT.md object model plan.
-#
-# assert("begin-rescue yields rescue value on error (expr)") {
-#   result = begin
-#     1 / 0
-#   rescue e
-#     :failed
-#   end
-#   result == :failed
-# }
+assert("begin-rescue yields rescue value on error (expr)") {
+  result = begin
+    1 / 0
+  rescue e
+    :failed
+  end
+  result == :failed
+}
+
+assert("begin-rescue binds the error message to the rescue var") {
+  result = begin
+    1 / 0
+  rescue e
+    e.message
+  end
+  result == "divided by 0"
+}
+
+assert("begin-rescue catches an error raised several calls deep") {
+  def blow_up
+    1 / 0
+  end
+
+  result = begin
+    blow_up()
+  rescue e
+    :caught
+  end
+  result == :caught
+}
+
+assert("begin-rescue catches an explicit raise") {
+  result = begin
+    raise "boom"
+  rescue e
+    e.message
+  end
+  result == "boom"
+}
+
+assert("code after a caught error in the same begin body does not run") {
+  ran_after = false
+  begin
+    1 / 0
+    ran_after = true
+  rescue e
+    nil
+  end
+  ran_after == false
+}

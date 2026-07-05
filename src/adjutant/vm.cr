@@ -22,6 +22,24 @@ module Adjutant
     end
   end
 
+  # A single begin/rescue/ensure construct's pending handler info,
+  # while its body (or a nested one within it) is still running.
+  # One entry per construct — not two independent entries in two
+  # separate stacks — because a single `begin...rescue...ensure...end`
+  # is one region with up to two jump targets, and the relative order
+  # in which DIFFERENT constructs' entries were pushed must be
+  # preserved to unwind correctly (checking "any pending rescue on
+  # this frame" before "any pending ensure on this frame", regardless
+  # of which was actually pushed more recently, can skip a more-nested
+  # ensure that Ruby requires to run first).
+  class HandlerEntry
+    property rescue_ip : Int32?
+    property ensure_ip : Int32?
+
+    def initialize(@rescue_ip = nil, @ensure_ip = nil)
+    end
+  end
+
   # A single call frame on the VM stack.
   class Frame
     getter proc : ScriptProc
@@ -31,8 +49,17 @@ module Adjutant
     property stack_base : Int32
     getter filename : String
     property block : ScriptProc?
-    property rescue_ip : Int32
-    property ensure_ip : Int32
+    # Stack of pending begin/rescue/ensure handler entries active in
+    # this frame, most-recently-entered last. Op::Try pushes a new
+    # entry (or Op::SetEnsure does, for an ensure-only construct);
+    # Op::SetEnsure adds its target to the entry Op::Try just pushed
+    # when both exist on the same construct. Op::EndTry clears the
+    # rescue portion in place (leaving the ensure portion, if any, for
+    # later) on the success path; Op::EnterEnsure pops the whole entry
+    # once its ensure body is about to run — the single place an entry
+    # is fully removed, whether reached via normal fallthrough or via
+    # the unwind loop jumping in on error.
+    getter handlers : Array(HandlerEntry)
 
     # Local variable slots — sized from ScriptProc#local_count at frame creation.
     getter locals : Array(Value)
@@ -57,8 +84,7 @@ module Adjutant
     def initialize(@proc, @chunk, @stack_base, @filename, @block = nil, outer : Array(Value)? = nil, @self_val : Value = Value.nil_value, @lexical_scope : RubyClass? = nil)
       @ip = 0
       @line = 0
-      @rescue_ip = 0
-      @ensure_ip = 0
+      @handlers = [] of HandlerEntry
       @locals = Array(Value).new(@proc.local_count, Value.nil_value)
       @outer_locals = outer
     end
@@ -80,12 +106,17 @@ module Adjutant
   class RuntimeError < Exception
     getter line : Int32
     getter filename : String
+    # The script-visible error object (a RubyObject of a builtin or
+    # user error class), when one was constructed. Falls back to a
+    # plain string of `message` if nil — e.g. internal VM errors that
+    # predate the typed-error hierarchy bootstrap.
+    getter error_value : Value?
 
-    def initialize(message : String, @filename = "<script>", @line = 0, cause = nil)
+    def initialize(message : String, @filename = "<script>", @line = 0, cause = nil, @error_value = nil)
       super(message, cause)
     end
 
-    def initialize(message : String, frame : Frame, cause = nil)
+    def initialize(message : String, frame : Frame, cause = nil, @error_value = nil)
       @filename = frame.filename
       @line = frame.line
       super(message, cause)
@@ -113,6 +144,19 @@ module Adjutant
       @frames = [] of Frame
       @instruction_count = 0_u64
       @current_block = nil.as(ScriptProc?)
+      # Value of the most recently caught error, for Op::PushError.
+      # A RubyObject of the raised/builtin error class when one was
+      # constructed (see RuntimeError#error_value); a plain string for
+      # internal errors that don't yet go through the typed hierarchy.
+      @last_error = Value.nil_value
+      # Set by the unwind loop when it jumps into an ensure body while
+      # an error is propagating (not on the normal success path).
+      # Op::EndEnsure re-raises it once the ensure body finishes,
+      # unless the ensure body itself raised a new error first — in
+      # which case that error supersedes it (Ruby semantics) and this
+      # never gets read; it's cleared at the top of every fresh catch
+      # so it can't leak into an unrelated later error.
+      @pending_reraise = nil.as(Value?)
     end
 
     # Execute a compiled chunk and return the result.
@@ -222,346 +266,455 @@ module Adjutant
         f.line = inst.line
         tick
 
-        case inst.op
-        when Op::Noop
-          # nothing
+        begin
+          case inst.op
+          when Op::Noop
+            # nothing
 
-        when Op::Const
-          push(chunk.consts[inst.c])
-        when Op::Pop
-          @stack.pop if @stack.size > f.stack_base
-        when Op::Dup
-          push(peek)
-          # --- Globals --------------------------------------------------------
+          when Op::Const
+            push(chunk.consts[inst.c])
+          when Op::Pop
+            @stack.pop if @stack.size > f.stack_base
+          when Op::Dup
+            push(peek)
+            # --- Globals --------------------------------------------------------
 
-        when Op::GetGlobal
-          sym = chunk.consts[inst.c].as_sym
-          push(@globals[sym.value]? || Value.nil_value)
-        when Op::SetGlobal
-          sym = chunk.consts[inst.c].as_sym
-          val = pop
-          @globals[sym.value] = val
-          push(val)
-
-          # --- Instance / class variables ------------------------------------
-          # Ivars live on self (a RubyObject); reading/writing outside an
-          # object silently no-ops to nil, matching Ruby's forgiving ivar
-          # semantics. Cvars live on self's class, walking the superclass
-          # chain (see RubyClass#get_cvar/#set_cvar); outside a class
-          # context this is unsupported, so it raises.
-
-        when Op::GetIvar
-          sym = chunk.consts[inst.c].as_sym
-          obj = f.self_val.as_robject?
-          push(obj ? (obj.ivars[sym.value]? || Value.nil_value) : Value.nil_value)
-        when Op::SetIvar
-          sym = chunk.consts[inst.c].as_sym
-          val = pop
-          if obj = f.self_val.as_robject?
-            obj.ivars[sym.value] = val
-          end
-          push(val)
-        when Op::GetCvar
-          sym = chunk.consts[inst.c].as_sym
-          cls = cvar_class(f)
-          push(cls.get_cvar(sym.value) || Value.nil_value)
-        when Op::SetCvar
-          sym = chunk.consts[inst.c].as_sym
-          val = pop
-          cvar_class(f).set_cvar(sym.value, val)
-          push(val)
-
-          # --- Constants -------------------------------------------------------
-          # Lexically scoped: walk the innermost enclosing class/module
-          # (self if we're directly in a class/module body, else the
-          # defining proc's lexical_scope), then fall back to top-level
-          # globals.
-
-        when Op::GetConstant
-          sym = chunk.consts[inst.c].as_sym
-          start = f.self_val.as_rclass? || f.lexical_scope
-          val = start.try(&.find_constant(sym.value)) || @globals[sym.value]?
-          unless val
-            raise runtime_error("uninitialized constant #{sym.name}", f)
-          end
-          push(val)
-        when Op::SetConstant
-          sym = chunk.consts[inst.c].as_sym
-          val = pop
-          target = f.self_val.as_rclass? || f.lexical_scope
-          if target
-            target.constants[sym.value] = val
-          else
+          when Op::GetGlobal
+            sym = chunk.consts[inst.c].as_sym
+            gval = @globals[sym.value]?
+            if gval && gval.proc?
+              # A global holding a ScriptProc was defined via top-level
+              # `def`, so a bare reference (no parens) is an implicit
+              # zero-arg method call — Ruby semantics for identifiers
+              # that aren't local variables. Without this, `def`s called
+              # bare would silently return the uncalled proc instead of
+              # running.
+              depth_before = @frames.size
+              result = call_script_proc(gval.as_proc.as(ScriptProc), [] of Value, f.filename)
+              push(result) if @frames.size == depth_before
+            else
+              push(gval || Value.nil_value)
+            end
+          when Op::SetGlobal
+            sym = chunk.consts[inst.c].as_sym
+            val = pop
             @globals[sym.value] = val
-          end
-          push(val)
-        when Op::GetConstantFrom
-          sym = chunk.consts[inst.c].as_sym
-          ns_val = pop
-          unless ns = ns_val.as_rclass?
-            raise runtime_error("#{ns_val} is not a class/module", f)
-          end
-          val = ns.constants[sym.value]?
-          unless val
-            raise runtime_error("uninitialized constant #{ns.name}::#{sym.name}", f)
-          end
-          push(val)
-        when Op::GetGlobalConstant
-          sym = chunk.consts[inst.c].as_sym
-          val = @globals[sym.value]?
-          unless val
-            raise runtime_error("uninitialized constant #{sym.name}", f)
-          end
-          push(val)
+            push(val)
 
-          # --- Stack ops ------------------------------------------------------
-        when Op::GetIndex
-          idx = pop
-          target = pop
-          push(exec_get_index(target, idx, safe: false))
-        when Op::SafeIndex
-          idx = pop
-          target = pop
-          push(exec_get_index(target, idx, safe: true))
-        when Op::SetIndex
-          val = pop
-          idx = pop
-          target = pop
-          exec_set_index(target, idx, val)
-          push(val)
+            # --- Instance / class variables ------------------------------------
+            # Ivars live on self (a RubyObject); reading/writing outside an
+            # object silently no-ops to nil, matching Ruby's forgiving ivar
+            # semantics. Cvars live on self's class, walking the superclass
+            # chain (see RubyClass#get_cvar/#set_cvar); outside a class
+            # context this is unsupported, so it raises.
 
-          # --- Calls ----------------------------------------------------------
-        when Op::SetBlock
-          v = pop
-          @current_block = v.proc? ? v.as_proc.as(ScriptProc) : nil
-        when Op::Call, Op::SafeCall
-          sym = chunk.consts[inst.c].as_sym
-          argc = inst.a.to_i
-          safe = inst.b & 0b01_u16 != 0
-          has_receiver = inst.b & 0b10_u16 != 0
-
-          args = @stack.last(argc)
-          @stack.pop(argc) if argc > 0
-
-          depth_before = @frames.size
-          result = dispatch_call(sym.name, args, safe, f.filename, inst.line, @current_block, has_receiver)
-          @current_block = nil
-          # If dispatch pushed a new ScriptProc frame, do NOT push the
-          # sentinel return value — Op::Ret will push the real result.
-          push(result) if @frames.size == depth_before
-        when Op::Ret
-          result = pop
-          # Drain locals back to stack_base
-          f.stack_base.upto(@stack.size - 1) { @stack.pop } if @stack.size > f.stack_base
-          pop_frame
-          push(result) unless @frames.empty?
-
-          # --- Arithmetic -----------------------------------------------------
-        when Op::Add    then exec_binary(inst) { |lhs, rhs| arith_add(lhs, rhs) }
-        when Op::Sub    then exec_binary(inst) { |lhs, rhs| arith_op(lhs, rhs, :-) }
-        when Op::Mul    then exec_binary(inst) { |lhs, rhs| arith_op(lhs, rhs, :*) }
-        when Op::Div    then exec_binary(inst) { |lhs, rhs| arith_div(lhs, rhs) }
-        when Op::Mod    then exec_binary(inst) { |lhs, rhs| arith_mod(lhs, rhs) }
-        when Op::BitAnd then exec_binary(inst) { |lhs, rhs| int_op(lhs, rhs, :&) }
-        when Op::BitOr  then exec_binary(inst) { |lhs, rhs| int_op(lhs, rhs, :|) }
-        when Op::Xor    then exec_binary(inst) { |lhs, rhs| int_op(lhs, rhs, :^) }
-        when Op::Shl    then exec_binary(inst) { |lhs, rhs| int_op(lhs, rhs, :<<) }
-        when Op::Shr    then exec_binary(inst) { |lhs, rhs| int_op(lhs, rhs, :>>) }
-          # --- Comparison -----------------------------------------------------
-
-        when Op::Eq
-          b, a = pop, pop
-          push(Value.bool(values_equal?(a, b)))
-        when Op::Lt  then exec_binary(inst) { |lhs, rhs| compare_op(lhs, rhs, :<) }
-        when Op::Lte then exec_binary(inst) { |lhs, rhs| compare_op(lhs, rhs, :<=) }
-        when Op::Gt  then exec_binary(inst) { |lhs, rhs| compare_op(lhs, rhs, :>) }
-        when Op::Gte then exec_binary(inst) { |lhs, rhs| compare_op(lhs, rhs, :>=) }
-          # --- Unary ----------------------------------------------------------
-
-        when Op::Not
-          push(Value.bool(pop.falsy?))
-        when Op::Neg
-          v = pop
-          case
-          when v.int?   then push(Value.int(-v.as_int))
-          when v.float? then push(Value.float(-v.as_float))
-          else               raise runtime_error("cannot negate #{v}", f)
-          end
-        when Op::BitNot
-          v = pop
-          raise runtime_error("~ requires Integer", f) unless v.int?
-          push(Value.int(~v.as_int))
-
-          # --- Jumps ----------------------------------------------------------
-        when Op::Jump
-          f.ip = inst.c.to_i
-        when Op::JumpIfFalse
-          v = pop
-          f.ip = inst.c.to_i if v.falsy?
-        when Op::JumpIfTrue
-          v = pop
-          f.ip = inst.c.to_i if v.truthy?
-
-          # --- Collections ----------------------------------------------------
-        when Op::MakeArray
-          n = inst.a.to_i
-          elements = @stack.last(n).dup
-          @stack.pop(n) if n > 0
-          push(Value.new(elements, nil))
-        when Op::MakeHash
-          n = inst.a.to_i * 2
-          pairs = @stack.last(n)
-          @stack.pop(n) if n > 0
-          h = {} of Value => Value
-          pairs.each_slice(2) { |pair| h[pair[0]] = pair[1] }
-          push(Value.new(h, nil))
-        when Op::MakeRange
-          rend = pop
-          rstart = pop
-          # Store as array [start, end, exclusive_flag] for now;
-          # a Range object type will be added with the object model.
-          exclusive = inst.a == 1_u8
-          elems = [rstart, rend, Value.bool(exclusive)]
-          push(Value.new(elems, nil))
-        when Op::Concat
-          n = inst.a.to_i
-          parts = @stack.last(n)
-          @stack.pop(n) if n > 0
-          str = parts.map { |part|
-            case
-            when part.string? then part.as_string
-            when part.int?    then part.as_int.to_s
-            when part.float?  then part.as_float.to_s
-            when part.bool?   then part.as_bool.to_s
-            when part.null?   then "nil"
-            when part.symbol? then part.as_sym.name
-            else                   part.to_s
+          when Op::GetIvar
+            sym = chunk.consts[inst.c].as_sym
+            obj = f.self_val.as_robject?
+            push(obj ? (obj.ivars[sym.value]? || Value.nil_value) : Value.nil_value)
+          when Op::SetIvar
+            sym = chunk.consts[inst.c].as_sym
+            val = pop
+            if obj = f.self_val.as_robject?
+              obj.ivars[sym.value] = val
             end
-          }.join
-          push(Value.string(str))
+            push(val)
+          when Op::GetCvar
+            sym = chunk.consts[inst.c].as_sym
+            cls = cvar_class(f)
+            push(cls.get_cvar(sym.value) || Value.nil_value)
+          when Op::SetCvar
+            sym = chunk.consts[inst.c].as_sym
+            val = pop
+            cvar_class(f).set_cvar(sym.value, val)
+            push(val)
 
-          # --- Local variables ------------------------------------------------
-        when Op::GetLocal
-          slot = inst.c.to_i
-          push(slot < f.locals.size ? f.locals[slot] : Value.nil_value)
-        when Op::SetLocal
-          val = pop
-          slot = inst.c.to_i
-          if slot < f.locals.size
-            f.locals[slot] = val
-          else
-            f.locals << val
-          end
-          push(val)
-        when Op::GetOuter
-          slot = inst.c.to_i
-          outer = f.outer_locals
-          push(outer && slot < outer.size ? outer[slot] : Value.nil_value)
-        when Op::SetOuter
-          val = pop
-          slot = inst.c.to_i
-          outer = f.outer_locals
-          outer[slot] = val if outer && slot < outer.size
-          push(val)
-        when Op::MakeProc
-          push(chunk.consts[inst.c])
-          # --- Class / module ---------------------------------------------
-        when Op::GetClass
-          push(f.self_val)
-        when Op::SetClass
-          f.self_val = pop
-        when Op::MakeClass
-          name_sym = chunk.consts[inst.c].as_sym
-          superclass = nil
-          if inst.b != Compiler::NO_SUPER
-            super_sym = chunk.consts[inst.b].as_sym
-            super_val = @globals[super_sym.value]?
-            unless super_val && super_val.rclass?
-              raise runtime_error("uninitialized constant #{super_sym.name}", f)
+            # --- Constants -------------------------------------------------------
+            # Lexically scoped: walk the innermost enclosing class/module
+            # (self if we're directly in a class/module body, else the
+            # defining proc's lexical_scope), then fall back to top-level
+            # globals.
+
+          when Op::GetConstant
+            sym = chunk.consts[inst.c].as_sym
+            start = f.self_val.as_rclass? || f.lexical_scope
+            val = start.try(&.find_constant(sym.value)) || @globals[sym.value]?
+            unless val
+              raise runtime_error("uninitialized constant #{sym.name}", f)
             end
-            superclass = super_val.as_rclass
-          end
-          new_cls = RubyClass.new(name_sym.name, superclass, is_module: false)
-          new_cls.lexical_parent = f.self_val.as_rclass?
-          push(Value.rclass(new_cls))
-        when Op::MakeModule
-          name_sym = chunk.consts[inst.c].as_sym
-          new_mod = RubyClass.new(name_sym.name, nil, is_module: true)
-          new_mod.lexical_parent = f.self_val.as_rclass?
-          push(Value.rclass(new_mod))
-        when Op::DefMethod
-          proc_val = pop
-          name_sym = chunk.consts[inst.c].as_sym
-          unless owner = f.self_val.as_rclass?
-            raise runtime_error("def outside of a class/module body", f)
-          end
-          proc = proc_val.as_proc
-          proc.lexical_scope = owner
-          owner.define_method(name_sym.value, proc)
-          push(Value.nil_value)
-        when Op::DefSingleton
-          _recv = pop
-          proc_val = pop
-          name_sym = chunk.consts[inst.c].as_sym
-          @globals[@symbols.intern(name_sym.name).value] = proc_val
-          push(Value.nil_value)
+            push(val)
+          when Op::SetConstant
+            sym = chunk.consts[inst.c].as_sym
+            val = pop
+            target = f.self_val.as_rclass? || f.lexical_scope
+            if target
+              target.constants[sym.value] = val
+            else
+              @globals[sym.value] = val
+            end
+            push(val)
+          when Op::GetConstantFrom
+            sym = chunk.consts[inst.c].as_sym
+            ns_val = pop
+            unless ns = ns_val.as_rclass?
+              raise runtime_error("#{ns_val} is not a class/module", f)
+            end
+            val = ns.constants[sym.value]?
+            unless val
+              raise runtime_error("uninitialized constant #{ns.name}::#{sym.name}", f)
+            end
+            push(val)
+          when Op::GetGlobalConstant
+            sym = chunk.consts[inst.c].as_sym
+            val = @globals[sym.value]?
+            unless val
+              raise runtime_error("uninitialized constant #{sym.name}", f)
+            end
+            push(val)
 
-          # --- Block / yield --------------------------------------------------
-        when Op::Yield
-          argc = inst.a.to_i
-          args = @stack.last(argc)
-          @stack.pop(argc) if argc > 0
-          blk = f.block
-          if blk
+            # --- Stack ops ------------------------------------------------------
+          when Op::GetIndex
+            idx = pop
+            target = pop
+            push(exec_get_index(target, idx, safe: false))
+          when Op::SafeIndex
+            idx = pop
+            target = pop
+            push(exec_get_index(target, idx, safe: true))
+          when Op::SetIndex
+            val = pop
+            idx = pop
+            target = pop
+            exec_set_index(target, idx, val)
+            push(val)
+
+            # --- Calls ----------------------------------------------------------
+          when Op::SetBlock
+            v = pop
+            @current_block = v.proc? ? v.as_proc.as(ScriptProc) : nil
+          when Op::Call, Op::SafeCall
+            sym = chunk.consts[inst.c].as_sym
+            argc = inst.a.to_i
+            safe = inst.b & 0b01_u16 != 0
+            has_receiver = inst.b & 0b10_u16 != 0
+
+            args = @stack.last(argc)
+            @stack.pop(argc) if argc > 0
+
             depth_before = @frames.size
-            result = call_script_proc(blk, args, f.filename, nil, f.locals)
+            result = dispatch_call(sym.name, args, safe, f.filename, inst.line, @current_block, has_receiver)
+            @current_block = nil
+            # If dispatch pushed a new ScriptProc frame, do NOT push the
+            # sentinel return value — Op::Ret will push the real result.
             push(result) if @frames.size == depth_before
+          when Op::Ret
+            result = pop
+            # Drain locals back to stack_base
+            f.stack_base.upto(@stack.size - 1) { @stack.pop } if @stack.size > f.stack_base
+            pop_frame
+            push(result) unless @frames.empty?
+
+            # --- Arithmetic -----------------------------------------------------
+          when Op::Add    then exec_binary(inst) { |lhs, rhs| arith_add(lhs, rhs) }
+          when Op::Sub    then exec_binary(inst) { |lhs, rhs| arith_op(lhs, rhs, :-) }
+          when Op::Mul    then exec_binary(inst) { |lhs, rhs| arith_op(lhs, rhs, :*) }
+          when Op::Div    then exec_binary(inst) { |lhs, rhs| arith_div(lhs, rhs) }
+          when Op::Mod    then exec_binary(inst) { |lhs, rhs| arith_mod(lhs, rhs) }
+          when Op::BitAnd then exec_binary(inst) { |lhs, rhs| int_op(lhs, rhs, :&) }
+          when Op::BitOr  then exec_binary(inst) { |lhs, rhs| int_op(lhs, rhs, :|) }
+          when Op::Xor    then exec_binary(inst) { |lhs, rhs| int_op(lhs, rhs, :^) }
+          when Op::Shl    then exec_binary(inst) { |lhs, rhs| int_op(lhs, rhs, :<<) }
+          when Op::Shr    then exec_binary(inst) { |lhs, rhs| int_op(lhs, rhs, :>>) }
+            # --- Comparison -----------------------------------------------------
+
+          when Op::Eq
+            b, a = pop, pop
+            push(Value.bool(values_equal?(a, b)))
+          when Op::Lt  then exec_binary(inst) { |lhs, rhs| compare_op(lhs, rhs, :<) }
+          when Op::Lte then exec_binary(inst) { |lhs, rhs| compare_op(lhs, rhs, :<=) }
+          when Op::Gt  then exec_binary(inst) { |lhs, rhs| compare_op(lhs, rhs, :>) }
+          when Op::Gte then exec_binary(inst) { |lhs, rhs| compare_op(lhs, rhs, :>=) }
+            # --- Unary ----------------------------------------------------------
+
+          when Op::Not
+            push(Value.bool(pop.falsy?))
+          when Op::Neg
+            v = pop
+            case
+            when v.int?   then push(Value.int(-v.as_int))
+            when v.float? then push(Value.float(-v.as_float))
+            else               raise runtime_error("cannot negate #{v}", f)
+            end
+          when Op::BitNot
+            v = pop
+            raise runtime_error("~ requires Integer", f) unless v.int?
+            push(Value.int(~v.as_int))
+
+            # --- Jumps ----------------------------------------------------------
+          when Op::Jump
+            f.ip = inst.c.to_i
+          when Op::JumpIfFalse
+            v = pop
+            f.ip = inst.c.to_i if v.falsy?
+          when Op::JumpIfTrue
+            v = pop
+            f.ip = inst.c.to_i if v.truthy?
+
+            # --- Collections ----------------------------------------------------
+          when Op::MakeArray
+            n = inst.a.to_i
+            elements = @stack.last(n).dup
+            @stack.pop(n) if n > 0
+            push(Value.new(elements, nil))
+          when Op::MakeHash
+            n = inst.a.to_i * 2
+            pairs = @stack.last(n)
+            @stack.pop(n) if n > 0
+            h = {} of Value => Value
+            pairs.each_slice(2) { |pair| h[pair[0]] = pair[1] }
+            push(Value.new(h, nil))
+          when Op::MakeRange
+            rend = pop
+            rstart = pop
+            # Store as array [start, end, exclusive_flag] for now;
+            # a Range object type will be added with the object model.
+            exclusive = inst.a == 1_u8
+            elems = [rstart, rend, Value.bool(exclusive)]
+            push(Value.new(elems, nil))
+          when Op::Concat
+            n = inst.a.to_i
+            parts = @stack.last(n)
+            @stack.pop(n) if n > 0
+            str = parts.map { |part|
+              case
+              when part.string? then part.as_string
+              when part.int?    then part.as_int.to_s
+              when part.float?  then part.as_float.to_s
+              when part.bool?   then part.as_bool.to_s
+              when part.null?   then "nil"
+              when part.symbol? then part.as_sym.name
+              else                   part.to_s
+              end
+            }.join
+            push(Value.string(str))
+
+            # --- Local variables ------------------------------------------------
+          when Op::GetLocal
+            slot = inst.c.to_i
+            push(slot < f.locals.size ? f.locals[slot] : Value.nil_value)
+          when Op::SetLocal
+            val = pop
+            slot = inst.c.to_i
+            if slot < f.locals.size
+              f.locals[slot] = val
+            else
+              f.locals << val
+            end
+            push(val)
+          when Op::GetOuter
+            slot = inst.c.to_i
+            outer = f.outer_locals
+            push(outer && slot < outer.size ? outer[slot] : Value.nil_value)
+          when Op::SetOuter
+            val = pop
+            slot = inst.c.to_i
+            outer = f.outer_locals
+            outer[slot] = val if outer && slot < outer.size
+            push(val)
+          when Op::MakeProc
+            push(chunk.consts[inst.c])
+            # --- Class / module ---------------------------------------------
+          when Op::GetClass
+            push(f.self_val)
+          when Op::SetClass
+            f.self_val = pop
+          when Op::MakeClass
+            name_sym = chunk.consts[inst.c].as_sym
+            superclass = nil
+            if inst.b != Compiler::NO_SUPER
+              super_sym = chunk.consts[inst.b].as_sym
+              super_val = @globals[super_sym.value]?
+              unless super_val && super_val.rclass?
+                raise runtime_error("uninitialized constant #{super_sym.name}", f)
+              end
+              superclass = super_val.as_rclass
+            end
+            new_cls = RubyClass.new(name_sym.name, superclass, is_module: false)
+            new_cls.lexical_parent = f.self_val.as_rclass?
+            push(Value.rclass(new_cls))
+          when Op::MakeModule
+            name_sym = chunk.consts[inst.c].as_sym
+            new_mod = RubyClass.new(name_sym.name, nil, is_module: true)
+            new_mod.lexical_parent = f.self_val.as_rclass?
+            push(Value.rclass(new_mod))
+          when Op::DefMethod
+            proc_val = pop
+            name_sym = chunk.consts[inst.c].as_sym
+            unless owner = f.self_val.as_rclass?
+              raise runtime_error("def outside of a class/module body", f)
+            end
+            proc = proc_val.as_proc
+            proc.lexical_scope = owner
+            owner.define_method(name_sym.value, proc)
+            push(Value.nil_value)
+          when Op::DefSingleton
+            _recv = pop
+            proc_val = pop
+            name_sym = chunk.consts[inst.c].as_sym
+            @globals[@symbols.intern(name_sym.name).value] = proc_val
+            push(Value.nil_value)
+
+            # --- Block / yield --------------------------------------------------
+          when Op::Yield
+            argc = inst.a.to_i
+            args = @stack.last(argc)
+            @stack.pop(argc) if argc > 0
+            blk = f.block
+            if blk
+              depth_before = @frames.size
+              result = call_script_proc(blk, args, f.filename, nil, f.locals)
+              push(result) if @frames.size == depth_before
+            else
+              raise runtime_error("no block given", f)
+            end
+          when Op::BlockBreak
+            val = pop
+            # Unwind to the nearest non-block frame
+            while !@frames.empty? && @frames.last.proc.is_block?
+              sb = @frames.last.stack_base; (@stack.size - sb).times { @stack.pop } if @stack.size > sb
+              pop_frame
+            end
+            push(val)
+
+            # --- Exception handling ---------------------------------------
+          when Op::Try
+            raise runtime_error("internal error: unpatched Try target", f) if inst.c == Chunk::NO_TARGET
+            f.handlers.push(HandlerEntry.new(rescue_ip: inst.c.to_i))
+          when Op::SetEnsure
+            raise runtime_error("internal error: unpatched SetEnsure target", f) if inst.c == Chunk::NO_TARGET
+            if inst.b == 1_u16
+              # Same construct as the immediately-preceding Try — add
+              # the ensure target to the entry it just pushed, rather
+              # than pushing a second entry for one construct.
+              if top = f.handlers.last?
+                top.ensure_ip = inst.c.to_i
+              end
+            else
+              f.handlers.push(HandlerEntry.new(ensure_ip: inst.c.to_i))
+            end
+          when Op::EndTry
+            clear_rescue_portion(f)
+          when Op::EnterEnsure
+            # Consumes this frame's pending handler entry entirely,
+            # whether reached via normal fallthrough (rescue matched,
+            # mismatched-then-rethrown-and-refound, or no error at
+            # all) or via the unwind loop jumping in on error — the
+            # single place an entry is fully removed, so it can't go
+            # stale for a later, unrelated error.
+            f.handlers.pop?
+          when Op::EndEnsure
+            if pending = @pending_reraise
+              @pending_reraise = nil
+              raise RuntimeError.new(error_message(pending), f, error_value: pending)
+            end
+          when Op::Throw
+            val = pop
+            msg = val.string? ? val.as_string : val.to_s
+            raise runtime_error(msg, f)
+          when Op::Reraise
+            val = pop
+            raise RuntimeError.new(error_message(val), f, error_value: val)
+          when Op::PushError
+            # Push the error caught by the nearest enclosing rescue —
+            # a typed RubyObject when available (see RuntimeError#error_value),
+            # else a plain string.
+            push(@last_error)
+          when Op::Retry
+            # Jump back to start of begin body — stub
+            f.ip = 0
+            # --- Misc -----------------------------------------------------------
+
+          when Op::MultiUnpack
+            tc = inst.a.to_i
+            vc = inst.b.to_i
+            values = @stack.last(vc)
+            @stack.pop(vc) if vc > 0
+            # Pad or truncate to target count
+            padded = Array(Value).new(tc) { |i| i < values.size ? values[i] : Value.nil_value }
+            padded.each { |value| push(value) }
+          when Op::GetMethodName
+            push(Value.string(f.proc.name))
           else
-            raise runtime_error("no block given", f)
+            raise runtime_error("unknown opcode: #{inst.op}", f)
           end
-        when Op::BlockBreak
-          val = pop
-          # Unwind to the nearest non-block frame
-          while !@frames.empty? && @frames.last.proc.is_block?
-            sb = @frames.last.stack_base; (@stack.size - sb).times { @stack.pop } if @stack.size > sb
+        rescue ex : RuntimeError
+          # Clear any stale pending re-raise up front: a genuinely new
+          # error is starting its own unwind, so whatever was pending
+          # from a previous episode (e.g. an ensure body that itself
+          # raised, superseding what it was about to re-raise) must
+          # not leak forward into this one.
+          @pending_reraise = nil
+
+          # Unwind frames looking for an active rescue or ensure
+          # handler (the error may originate several calls deep inside
+          # the begin body, not just in the frame that was executing).
+          # Each frame's handlers stack holds one entry per begin
+          # construct, most-recently-entered last — checking rescue_ip
+          # before ensure_ip *within the same entry* (not across
+          # separate stacks) is what keeps a more-nested construct's
+          # handler in front of an outer one's, regardless of which
+          # kind either happens to be.
+          handler_frame = nil.as(Frame?)
+          handler_ip = 0
+          entering_ensure = false
+          while !@frames.empty?
+            candidate = current_frame
+            found_on_this_frame = false
+            while top = candidate.handlers.last?
+              if rip = top.rescue_ip
+                handler_frame = candidate
+                handler_ip = rip
+                # Mirrors Op::EndTry: pops the entry too if it has no
+                # linked ensure, since nothing else would.
+                clear_rescue_portion(candidate)
+                found_on_this_frame = true
+                break
+              elsif eip = top.ensure_ip
+                handler_frame = candidate
+                handler_ip = eip
+                entering_ensure = true
+                # Left as-is — Op::EnterEnsure pops it once reached.
+                found_on_this_frame = true
+                break
+              else
+                candidate.handlers.pop # shouldn't happen; defensive
+              end
+            end
+            break if found_on_this_frame
+            break if @frames.size == 1 # never pop the outermost frame here
+            sb = candidate.stack_base
+            (@stack.size - sb).times { @stack.pop } if @stack.size > sb
             pop_frame
           end
-          push(val)
 
-          # --- Exception handling (stubs) ------------------------------------
-        when Op::Try
-          f.rescue_ip = inst.c.to_i
-        when Op::SetEnsure
-          f.ensure_ip = inst.c.to_i
-        when Op::EndTry
-          f.rescue_ip = 0
-        when Op::EnterEnsure
-          # ensure body follows inline
-
-        when Op::Throw
-          val = pop
-          msg = val.string? ? val.as_string : val.to_s
-          raise runtime_error(msg, f)
-        when Op::PushError
-          # Push the last error as a string value — stub until typed exceptions land
-          push(Value.string("RuntimeError"))
-        when Op::Retry
-          # Jump back to start of begin body — stub
-          f.ip = 0
-          # --- Misc -----------------------------------------------------------
-
-        when Op::MultiUnpack
-          tc = inst.a.to_i
-          vc = inst.b.to_i
-          values = @stack.last(vc)
-          @stack.pop(vc) if vc > 0
-          # Pad or truncate to target count
-          padded = Array(Value).new(tc) { |i| i < values.size ? values[i] : Value.nil_value }
-          padded.each { |value| push(value) }
-        when Op::GetMethodName
-          push(Value.string(f.proc.name))
-        else
-          raise runtime_error("unknown opcode: #{inst.op}", f)
+          if handler_frame
+            while @stack.size > handler_frame.stack_base
+              @stack.pop
+            end
+            if entering_ensure
+              # Stash the original error for Op::EndEnsure to resume
+              # once the ensure body finishes normally. If the ensure
+              # body raises a new error instead, that propagates via
+              # the ordinary Crystal-exception path before EndEnsure
+              # is ever reached, correctly superseding this one.
+              @pending_reraise = ex.error_value || Value.string(ex.message || "RuntimeError")
+            else
+              @last_error = ex.error_value || Value.string(ex.message || "RuntimeError")
+            end
+            handler_frame.ip = handler_ip
+          else
+            raise ex
+          end
         end
       end
 
@@ -728,8 +881,16 @@ module Adjutant
         end
         args.size == 1 ? args.first : Value.new(args.dup, nil)
       when "raise"
-        msg = args.first? ? args.first.to_s : "RuntimeError"
-        raise RuntimeError.new(msg, filename, line)
+        cls, msg = if args.empty?
+                     {builtin_error_class("RuntimeError"), "unhandled exception"}
+                   elsif args.first.rclass?
+                     raised_cls = args.first.as_rclass
+                     {raised_cls, args[1]?.try(&.to_s) || raised_cls.name}
+                   else
+                     {builtin_error_class("RuntimeError"), args.first.to_s}
+                   end
+        err_val = cls ? make_error_object(cls, msg) : Value.string(msg)
+        raise RuntimeError.new(msg, filename, line, error_value: err_val)
       when "==="
         a = args[0]? || Value.nil_value
         b = args[1]? || Value.nil_value
@@ -745,8 +906,37 @@ module Adjutant
         # Called as a method: args[0] is receiver
         recv = args.first? || Value.nil_value
         Value.bool(recv.null?)
+      when "message"
+        # Called as a method on an error object (or any RubyObject with
+        # a message ivar). Falls back to the class name if unset, or
+        # to_s for non-RubyObject receivers.
+        recv = args.first? || Value.nil_value
+        if obj = recv.as_robject?
+          msg_sym = @symbols.intern("message")
+          obj.ivars[msg_sym.value]? || Value.string(obj.rclass.name)
+        else
+          Value.string(recv.to_s)
+        end
       when "is_a?"
-        Value.bool(false) # stub
+        # RubyObject receiver only — Integer/String/etc. have no
+        # corresponding RubyClass yet (base types are separate,
+        # planned work), so is_a? can't check those and returns false.
+        recv = args.first? || Value.nil_value
+        target = args[1]?.try(&.as_rclass?)
+        if (obj = recv.as_robject?) && target
+          cls = obj.rclass.as(RubyClass?)
+          matched = false
+          while cls
+            if cls == target
+              matched = true
+              break
+            end
+            cls = cls.superclass
+          end
+          Value.bool(matched)
+        else
+          Value.bool(false)
+        end
       when "to_s"
         recv = args.first? || Value.nil_value
         Value.string(recv.to_s)
@@ -962,7 +1152,61 @@ module Adjutant
     end
 
     private def runtime_error(msg : String, frame : Frame = current_frame, cause = nil) : RuntimeError
-      RuntimeError.new(msg, frame, cause)
+      cls = builtin_error_class("RuntimeError")
+      err_val = cls ? make_error_object(cls, msg) : nil
+      RuntimeError.new(msg, frame, cause, error_value: err_val)
+    end
+
+    # Look up a bootstrapped builtin error class (Exception, StandardError,
+    # RuntimeError, etc. — see Interpreter#bootstrap_error_classes) by name.
+    # Returns nil if the interpreter hasn't registered it (shouldn't happen
+    # in practice, but VM shouldn't hard-fail if it does).
+    private def builtin_error_class(name : String) : RubyClass?
+      sym = @symbols.lookup(name)
+      return nil unless sym
+      @globals[sym.value]?.try(&.as_rclass?)
+    end
+
+    # Build a RubyObject of `cls` with its `message` ivar set — the
+    # shape both explicit `raise` and internal VM errors use so a
+    # rescue variable can call `.message` on either uniformly.
+    private def make_error_object(cls : RubyClass, message : String) : Value
+      obj = RubyObject.new(cls)
+      msg_sym = @symbols.intern("message")
+      obj.ivars[msg_sym.value] = Value.string(message)
+      Value.robject(obj)
+    end
+
+    # Extract a plain string message from an error Value — the
+    # message ivar for a RubyObject, the string itself for a plain
+    # string, else its to_s. Shared by Op::Reraise and Op::EndEnsure,
+    # which both need to reconstruct a Crystal exception from a
+    # Value without losing the original class/identity.
+    private def error_message(val : Value) : String
+      if obj = val.as_robject?
+        msg_sym = @symbols.intern("message")
+        m = obj.ivars[msg_sym.value]?
+        m ? (m.string? ? m.as_string : m.to_s) : obj.rclass.name
+      elsif val.string?
+        val.as_string
+      else
+        val.to_s
+      end
+    end
+
+    # Clears the rescue portion of the frame's top handler entry —
+    # we're past the point where a matching rescue applies for this
+    # construct, whether because its body succeeded (Op::EndTry) or
+    # because the error unwind loop just matched and is jumping in.
+    # If the entry has no linked ensure_ip, nothing else will ever
+    # pop it (Op::EnterEnsure only fires when there's an ensure body),
+    # so pop it now — otherwise leave it for EnterEnsure to remove
+    # once the ensure body it's still holding onto actually runs.
+    private def clear_rescue_portion(frame : Frame) : Nil
+      if top = frame.handlers.last?
+        top.rescue_ip = nil
+        frame.handlers.pop? if top.ensure_ip.nil?
+      end
     end
   end
 end

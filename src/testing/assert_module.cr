@@ -17,6 +17,9 @@ module Testing
   #   assert_true(val)
   #   assert_false(val)
   #   assert_raise { block }
+  #   assert_raise(TypeError) { block }         — filters by class (or subclass)
+  #   assert_raise(A, B) { block }               — filters by any of A, B
+  #   assert_nothing_raised { block }
   class AssertModule < Adjutant::ScriptModule
     record AssertResult, description : String, passed : Bool, message : String?, filename : String, line : Int32, cause : Adjutant::RuntimeError?
 
@@ -47,6 +50,7 @@ module Testing
       define_assert_nil(interp)
       define_assert_not_nil(interp)
       define_assert_raise(interp)
+      define_assert_nothing_raised(interp)
     end
 
     private def define_assert(interp)
@@ -120,20 +124,63 @@ module Testing
     end
 
     private def define_assert_raise(interp)
-      # assert_raise { block } — type matching not yet supported.
-      interp.define_native("assert_raise") do |_, blk, ncc|
+      # assert_raise { block }               — any error passes
+      # assert_raise(TypeError) { block }     — must match TypeError or a subclass
+      # assert_raise(A, B) { block }          — must match one of A, B (or a subclass)
+      interp.define_native("assert_raise") do |args, blk, ncc|
+        expected = args.compact_map(&.as_rclass?)
         if blk
-          raised = false
           begin
             ncc.invoke(blk, [] of Adjutant::Value)
-          rescue Adjutant::RuntimeError
-            raised = true
+            record("assert_raise", false, "no exception was raised", ncc)
+          rescue e : Adjutant::RuntimeError
+            if expected.empty?
+              record("assert_raise", true, nil, ncc, cause: e)
+            else
+              matched = expected.any? { |cls| error_is_a?(e, cls) }
+              msg = matched ? nil : "expected #{expected.map(&.name).join(" or ")}, got #{error_class_name(e)}"
+              record("assert_raise", matched, msg, ncc, cause: e)
+            end
           end
-          record("assert_raise", raised, raised ? nil : "no exception was raised", ncc)
         else
           record("assert_raise", false, "no block given", ncc)
         end
         Adjutant::Value.bool(true)
+      end
+    end
+
+    private def define_assert_nothing_raised(interp)
+      interp.define_native("assert_nothing_raised") do |_, blk, ncc|
+        if blk
+          begin
+            ncc.invoke(blk, [] of Adjutant::Value)
+            record("assert_nothing_raised", true, nil, ncc)
+          rescue e : Adjutant::RuntimeError
+            record("assert_nothing_raised", false, "raised: #{e.message}", ncc, cause: e)
+          end
+        else
+          record("assert_nothing_raised", false, "no block given", ncc)
+        end
+        Adjutant::Value.bool(true)
+      end
+    end
+
+    private def error_is_a?(e : Adjutant::RuntimeError, cls : Adjutant::RubyClass) : Bool
+      val = e.error_value
+      return false unless val && (obj = val.as_robject?)
+      c = obj.rclass.as(Adjutant::RubyClass?)
+      while c
+        return true if c == cls
+        c = c.superclass
+      end
+      false
+    end
+
+    private def error_class_name(e : Adjutant::RuntimeError) : String
+      if (val = e.error_value) && (obj = val.as_robject?)
+        obj.rclass.name
+      else
+        "RuntimeError"
       end
     end
 
