@@ -749,6 +749,9 @@ module Adjutant
             if method = cls.find_method(sym_id)
               return call_script_proc(method, args[1..], filename, blk, nil, self_val: recv)
             end
+            if native = cls.find_native_method(sym_id)
+              return call_native(native, args, filename, line, blk)
+            end
           end
         end
       end
@@ -757,14 +760,7 @@ module Adjutant
       if interp = @interpreter
         sym_id = (@symbols.lookup(name).try(&.value)) || -1
         if native = interp.native_callable(sym_id)
-          result = Value.nil_value
-          begin
-            result = NativeFunctionCall.new(self, native, filename, line).call(args, blk)
-          rescue ex
-            # Wrap any exception
-            raise runtime_error("Native call error: #{ex.message}", current_frame, cause: ex)
-          end
-          return result
+          return call_native(native, args, filename, line, blk)
         end
       end
 
@@ -785,6 +781,18 @@ module Adjutant
 
       # Fail with exception until proper exception raising lands
       raise RuntimeError.new("unknown method: #{name}", filename, line)
+    end
+
+    # Invoke a NativeCallable, wrapping any Crystal exception as a
+    # runtime error. Shared by receiver-dispatched native methods
+    # (RubyClass#find_native_method) and top-level native functions
+    # (Interpreter#native_callable) — same calling convention, same
+    # error-wrapping contract.
+    private def call_native(native : NativeCallable, args : Array(Value),
+                            filename : String, line : Int32, blk : ScriptProc?) : Value
+      NativeFunctionCall.new(self, native, filename, line).call(args, blk)
+    rescue ex
+      raise runtime_error("Native call error: #{ex.message}", current_frame, cause: ex)
     end
 
     # `Foo.new(args)` — allocates a RubyObject and, if the class (or an

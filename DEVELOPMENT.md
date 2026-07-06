@@ -271,6 +271,26 @@ A plain `Constant` reference (`X`) walks that lexical chain. An explicit path (`
 
 Not yet implemented: `include`, and class-side (singleton) methods.
 
+**Native methods.** `RubyClass` also holds a `native_methods` table (`Sym id → NativeCallable`), parallel to `methods` but for Crystal-implemented instance methods — the mechanism base types (`String`, `Array`, `Integer`, ...) will use once implemented. `find_native_method` walks the superclass chain the same way `find_method` does. Dispatch checks `find_method` first, so a script-defined method always shadows a native one of the same name.
+
+Unlike `Interpreter#define_native`, `RubyClass#define_native_method` takes `risk : RiskProfile` with **no default** — base types are registered in bulk in one place, exactly where it's easiest to wave a whole batch through as `RiskProfile.none` without thinking; the missing default forces that judgment call per method.
+
+```mermaid
+---
+displayMode: compact
+config:
+  layout: elk
+  themeVariables:
+    fontSize: 12px
+---
+flowchart LR
+    A[obj.method] --> B{{find_method?}}
+    B -->|yes| C[call_script_proc]
+    B -->|no| D{{find_native_method?}}
+    D -->|yes| E[call_native]
+    D -->|no| F[native fn / global / builtin]
+```
+
 ### Information flow control
 
 Every `Value` carries an optional `SecurityLabel` reference. Labels are heap-allocated classes so they can be shared across values without copying. When two labeled values are combined, their labels are joined via `SecurityLabel.join`, which computes the least upper bound in the label lattice.
