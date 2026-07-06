@@ -8,6 +8,7 @@ require "./vm"
 require "./effect_handler"
 require "./risk_profile"
 require "./native_callable"
+require "./builtins"
 
 module Adjutant
   # Available to native functions when they are called.
@@ -64,6 +65,18 @@ module Adjutant
       @modules = ModuleRegistry.new
       @globals = {} of Int32 => Value
       bootstrap_error_classes
+      bootstrap_builtin_classes
+    end
+
+    # Register an already-built RubyClass into @globals under its own
+    # name — the same namespace a top-level `class Foo` writes to via
+    # Op::SetConstant. Used by Builtins to install base types (Integer,
+    # String, ...); see bootstrap_error_classes for the sibling path
+    # that builds-and-registers exception classes in one step.
+    def define_global_class(cls : RubyClass) : RubyClass
+      sym = @symbols.intern(cls.name)
+      @globals[sym.value] = Value.rclass(cls)
+      cls
     end
 
     # Read a global variable by name — reflects current interpreter state.
@@ -133,6 +146,21 @@ module Adjutant
       @native_funcs[sym_id]?
     end
 
+    # Look up a builtin type's RubyClass by the runtime kind of a Value
+    # (e.g. Integer for an int Value) — used by is_a? and eventually
+    # `.class`, since builtin values aren't RubyObjects and so carry no
+    # rclass reference of their own to walk. Returns nil for a receiver
+    # kind with no builtin RubyClass yet.
+    def builtin_class_for(val : Value) : RubyClass?
+      name = case
+             when val.int? then "Integer"
+             else               return nil
+             end
+      sym = @symbols.lookup(name)
+      return nil unless sym
+      @globals[sym.value]?.try(&.as_rclass?)
+    end
+
     private def make_vm : VM
       VM.new(@symbols, @limits, @effect, self, @globals)
     end
@@ -161,11 +189,16 @@ module Adjutant
       define_builtin_class("KeyError", index_error)
     end
 
+    # Bootstraps every builtin type's RubyClass into `interp`'s globals,
+    # the same namespace `class Foo` writes to — so `5.is_a?(Integer)`
+    # and a bare `Integer` reference both resolve. Mirrors
+    # Interpreter#bootstrap_error_classes; called once per Interpreter.
+    private def bootstrap_builtin_classes : Nil
+      define_global_class(Builtins.bootstrap_integer(self))
+    end
+
     private def define_builtin_class(name : String, superclass : RubyClass?) : RubyClass
-      cls = RubyClass.new(name, superclass, is_module: false)
-      sym = @symbols.intern(name)
-      @globals[sym.value] = Value.rclass(cls)
-      cls
+      define_global_class(RubyClass.new(name, superclass, is_module: false))
     end
 
     @globals : Hash(Int32, Value) = {} of Int32 => Value

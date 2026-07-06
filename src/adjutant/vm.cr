@@ -753,6 +753,15 @@ module Adjutant
               return call_native(native, args, filename, line, blk)
             end
           end
+        elsif interp = @interpreter
+          # Builtin-typed receiver (Integer today; String/Array etc. as
+          # they land) — no rclass of its own, resolved via
+          # Interpreter#builtin_class_for instead.
+          if (cls = interp.builtin_class_for(recv)) && (sym_id = @symbols.lookup(name).try(&.value))
+            if native = cls.find_native_method(sym_id)
+              return call_native(native, args, filename, line, blk)
+            end
+          end
         end
       end
 
@@ -926,13 +935,15 @@ module Adjutant
           Value.string(recv.to_s)
         end
       when "is_a?"
-        # RubyObject receiver only — Integer/String/etc. have no
-        # corresponding RubyClass yet (base types are separate,
-        # planned work), so is_a? can't check those and returns false.
+        # RubyObject receivers walk their own rclass chain; other
+        # receivers (Integer today, more as builtins land) resolve via
+        # Interpreter#builtin_class_for, since they carry no rclass
+        # reference of their own.
         recv = args.first? || Value.nil_value
         target = args[1]?.try(&.as_rclass?)
-        if (obj = recv.as_robject?) && target
-          cls = obj.rclass.as(RubyClass?)
+        start_cls = recv.as_robject?.try(&.rclass) || @interpreter.try(&.builtin_class_for(recv))
+        if start_cls && target
+          cls = start_cls.as(RubyClass?)
           matched = false
           while cls
             if cls == target
