@@ -295,7 +295,7 @@ class MyModule < Adjutant::ScriptModule
   end
 
   def load(interp : Adjutant::Interpreter) : Nil
-    interp.define_native("my_func") do |args|
+    interp.define_native("my_func", risk: Adjutant::RiskProfile.none) do |args|
       # args is Array(Adjutant::Value)
       result = do_something(args.first.as_string)
       Adjutant::Value.string(result)
@@ -325,3 +325,37 @@ interp.define_native("fetch_data") do |args|
   Adjutant::Value.string(data, label)
 end
 ```
+
+### Side-effect risk
+
+Every native callable carries a static `RiskProfile`, declared at registration time, so the harness can warn a user about a script's effects *before* running it — independent of IFC, which only tracks data flow once a script is running.
+
+```mermaid
+flowchart LR
+    RP[RiskProfile
+tags + reversible + severity] --> NC[NativeCallable]
+    NF[NativeFunc] --> NC
+    NC --> DN["define_native(risk:)"]
+    NC -.planned.-> RC[RubyClass native methods]
+```
+
+`RiskTag` names *why* a call is risky (`ReadsFiles`, `WritesFiles`, `DeletesFiles`, `Recursive`, `ExecutesCode`, `NetworkEgress`, `ElevatedPrivilege`, `ModifiesEnvironment`). `Reversibility` (`Yes`/`No`/`Depends`) and `Severity` (`Info`/`Warning`/`Error`) are *conclusions* drawn from those tags.
+
+Tags are the reason; reversibility and severity are consequences — a `RiskProfile` with no tags must be `Reversibility::Yes` and `Severity::Info`. Setting either otherwise on an empty-tag profile raises immediately, by design: it means a `RiskTag` is missing, not that the fields should be set freely.
+
+```crystal
+# Pure — the default, no need to state it explicitly.
+interp.define_native("square") { |args| ... }
+
+# Effectful:
+interp.define_native("delete_file",
+  risk: Adjutant::RiskProfile.new(
+    tags: Set{Adjutant::RiskTag::DeletesFiles},
+    reversible: Adjutant::Reversibility::No,
+    severity: Adjutant::Severity::Error,
+  )) { |args| ... }
+```
+
+`Reversibility::Depends` requires a `note` explaining the call-site condition that determines it (e.g. a flag toggling in-place writes) — this can't be resolved statically and is treated as "escalate and ask" until argument-level analysis exists.
+
+`NativeCallable` pairs a `NativeFunc` with its `RiskProfile` and is the shared representation for any Crystal-implemented callable — currently `ScriptModule` functions via `define_native`; planned: `RubyClass` native methods for base types (`String`, `Array`, `Integer`, ...), once implemented, so a risk-manifest walker has exactly one place to look regardless of whether a call resolves to a required module or a base type's method.

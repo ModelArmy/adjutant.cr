@@ -6,6 +6,8 @@ require "./bytecode"
 require "./module_registry"
 require "./vm"
 require "./effect_handler"
+require "./risk_profile"
+require "./native_callable"
 
 module Adjutant
   # Available to native functions when they are called.
@@ -22,12 +24,12 @@ module Adjutant
     include NativeCallContext
 
     @vm : VM
-    @func : NativeFunc
+    @callable : NativeCallable
 
-    protected def initialize(@vm, @func, @filename, @line); end
+    protected def initialize(@vm, @callable, @filename, @line); end
 
     protected def call(args : Array(Value), blk : ScriptProc?) : Value
-      @func.call(args, blk, self)
+      @callable.call(args, blk, self)
     end
 
     # ---- CallContext
@@ -113,15 +115,21 @@ module Adjutant
 
     # Install a native function as a global callable from scripts with arguments array, block if any, and
     # a `NativeCallContext` that can be used to invoke the block.
-    def define_native(name : String, &block : Array(Value), ScriptProc?, NativeCallContext -> Value) : Nil
+    #
+    # `risk` declares the function's static side-effect profile — see
+    # RiskProfile. Defaults to RiskProfile.none (pure, no side effects),
+    # correct for the common case; pass an explicit profile for any
+    # function with file, network, process, or environment effects.
+    def define_native(name : String, risk : RiskProfile = RiskProfile.none,
+                      &block : Array(Value), ScriptProc?, NativeCallContext -> Value) : Nil
       sym = @symbols.intern(name)
-      native_funcs[sym.value] = NativeFunc.new do |args, blk, ncc|
-        block.call(args, blk, ncc)
-      end
+      func = NativeFunc.new { |args, blk, ncc| block.call(args, blk, ncc) }
+      native_funcs[sym.value] = NativeCallable.new(func, risk)
     end
 
-    # Look up a native function by symbol ID — called by VM dispatch.
-    def native_func(sym_id : Int32) : NativeFunc?
+    # Look up a native callable by symbol ID — called by VM dispatch.
+    # Returns both the function and its RiskProfile.
+    def native_callable(sym_id : Int32) : NativeCallable?
       @native_funcs[sym_id]?
     end
 
@@ -161,9 +169,9 @@ module Adjutant
     end
 
     @globals : Hash(Int32, Value) = {} of Int32 => Value
-    @native_funcs = {} of Int32 => NativeFunc
+    @native_funcs = {} of Int32 => NativeCallable
 
-    private def native_funcs : Hash(Int32, NativeFunc)
+    private def native_funcs : Hash(Int32, NativeCallable)
       @native_funcs
     end
   end

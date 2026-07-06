@@ -756,7 +756,7 @@ module Adjutant
       # 2) Check native functions registered via interpreter
       if interp = @interpreter
         sym_id = (@symbols.lookup(name).try(&.value)) || -1
-        if native = interp.native_func(sym_id)
+        if native = interp.native_callable(sym_id)
           result = Value.nil_value
           begin
             result = NativeFunctionCall.new(self, native, filename, line).call(args, blk)
