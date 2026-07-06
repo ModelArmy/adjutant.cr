@@ -11,7 +11,7 @@ module Adjutant
     getter reversible : Reversibility
     getter severity : Severity
     getter path : Array(String) # trail of descriptions/origins, root to leaf
-    getter iterated : Bool      # true if any Sequence on the worst path was iterated
+    getter? iterated : Bool     # true if any Sequence on the worst path was iterated
 
     def initialize(@tags, @reversible, @severity, @path, @iterated)
     end
@@ -51,16 +51,16 @@ module Adjutant
     # worse-wins, path is the concatenation of each child's worst path.
     private def self.summarize_sequence(node : RiskSequence) : RiskSummary
       return RiskSummary.none if node.children.empty?
-      child_summaries = node.children.map { |c| summarize(c) }
+      child_summaries = node.children.map { |child| summarize(child) }
       tags = Set(RiskTag).new
-      child_summaries.each { |s| tags.concat(s.tags) }
-      worst = child_summaries.max_by { |s| rank(s) }
+      child_summaries.each { |summary| tags.concat(summary.tags) }
+      worst = child_summaries.max_by { |summary| rank(summary) }
       RiskSummary.new(
         tags,
         worst.reversible,
         worst.severity,
         child_summaries.flat_map(&.path),
-        node.iterated? || child_summaries.any?(&.iterated),
+        node.iterated? || child_summaries.any?(&.iterated?),
       )
     end
 
@@ -69,14 +69,14 @@ module Adjutant
     # exclusive outcomes together.
     private def self.summarize_choice(node : RiskChoice) : RiskSummary
       return RiskSummary.none if node.children.empty?
-      child_summaries = node.children.map { |c| summarize(c) }
-      worst = child_summaries.max_by { |s| rank(s) }
+      child_summaries = node.children.map { |child| summarize(child) }
+      worst = child_summaries.max_by { |summary| rank(summary) }
       RiskSummary.new(
         worst.tags,
         worst.reversible,
         worst.severity,
         ["#{node.origin} branch"] + worst.path,
-        worst.iterated,
+        worst.iterated?,
       )
     end
 

@@ -42,7 +42,7 @@ module Adjutant
 
     it "an iterated Sequence marks the summary as iterated" do
       seq = RiskSequence.new([leaf(Set{RiskTag::WritesFiles}, Severity::Warning)] of RiskNode, 1, iterated: true)
-      RiskAggregator.summarize(seq).iterated.should be_true
+      RiskAggregator.summarize(seq).iterated?.should be_true
     end
 
     it "a Choice takes the single worst branch, not a union of both" do
