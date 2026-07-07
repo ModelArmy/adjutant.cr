@@ -12,6 +12,12 @@ require "./adjutant/effect_handler"
 require "./adjutant/module_registry"
 require "./adjutant/vm"
 require "./adjutant/interpreter"
+require "./adjutant/builtins"
+require "./adjutant/risk_node"
+require "./adjutant/risk_aggregator"
+require "./adjutant/type_hint"
+require "./adjutant/type_inference"
+require "./adjutant/risk_walker"
 
 module Adjutant
   VERSION    = {{ `shards version #{__DIR__}`.chomp.stringify }}

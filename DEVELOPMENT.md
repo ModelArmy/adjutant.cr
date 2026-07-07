@@ -36,16 +36,37 @@ This will run all the test scripts in `spec/scripts` folder.
 
 ### Run samples
 
-Run the following command to see `adjutant` in action with a sample runner (based on the example in the README) and sample Ruby script.
+#### Sample `run_script`
 
-```
-ops -q run samples/run_script -- samples/scripts/fib_10.rb
-```
+The sample `run_script.cr` shows a simple script runner with some low-risk native functions.
+- Run `ops build` and
+- then run `bin/debug/run_script samples/scripts/fib_10.rb`
 
 You should receive the following output:
 
 ```
 Result: 55
+```
+
+#### Sample `assess_script`
+
+The sample `assess_script.cr` shows an example of how to load and assess the risk of a script and present the risk assessment.
+- Run `ops build` and
+- then run `bin/debug/assess_script samples/scripts/risky_example.rb`
+
+You should receive the following output:
+
+```
+=== Risk assessment: ./samples/scripts/risky_example.rb ===
+
+Worst case: Error / reversible=No
+Tags: NetworkEgress, DeletesFiles
+Path: fetch_url -> if branch -> delete_file
+
+All findings (3):
+  line 13: fetch_url (iterated) — Warning, tags: NetworkEgress
+  line 5: delete_file [if branch] — Error, tags: DeletesFiles
+  line 7: puts_args [if branch] — Info, tags: none
 ```
 
 ## How Adjutant works
@@ -271,6 +292,26 @@ A plain `Constant` reference (`X`) walks that lexical chain. An explicit path (`
 
 Not yet implemented: `include`, and class-side (singleton) methods.
 
+**Native methods.** `RubyClass` also holds a `native_methods` table (`Sym id → NativeCallable`), parallel to `methods` but for Crystal-implemented instance methods — the mechanism base types (`String`, `Array`, `Integer`, ...) will use once implemented. `find_native_method` walks the superclass chain the same way `find_method` does. Dispatch checks `find_method` first, so a script-defined method always shadows a native one of the same name.
+
+Unlike `Interpreter#define_native`, `RubyClass#define_native_method` takes `risk : RiskProfile` with **no default** — base types are registered in bulk in one place, exactly where it's easiest to wave a whole batch through as `RiskProfile.none` without thinking; the missing default forces that judgment call per method.
+
+```mermaid
+---
+displayMode: compact
+config:
+  layout: elk
+  themeVariables:
+    fontSize: 12px
+---
+flowchart LR
+    A[obj.method] --> B{{find_method?}}
+    B -->|yes| C[call_script_proc]
+    B -->|no| D{{find_native_method?}}
+    D -->|yes| E[call_native]
+    D -->|no| F[native fn / global / builtin]
+```
+
 ### Information flow control
 
 Every `Value` carries an optional `SecurityLabel` reference. Labels are heap-allocated classes so they can be shared across values without copying. When two labeled values are combined, their labels are joined via `SecurityLabel.join`, which computes the least upper bound in the label lattice.
@@ -295,7 +336,7 @@ class MyModule < Adjutant::ScriptModule
   end
 
   def load(interp : Adjutant::Interpreter) : Nil
-    interp.define_native("my_func") do |args|
+    interp.define_native("my_func", risk: Adjutant::RiskProfile.none) do |args|
       # args is Array(Adjutant::Value)
       result = do_something(args.first.as_string)
       Adjutant::Value.string(result)
@@ -325,3 +366,152 @@ interp.define_native("fetch_data") do |args|
   Adjutant::Value.string(data, label)
 end
 ```
+
+### Side-effect risk
+
+Every native callable carries a static `RiskProfile`, declared at registration time, so the harness can warn a user about a script's effects *before* running it — independent of IFC, which only tracks data flow once a script is running.
+
+```mermaid
+---
+displayMode: compact
+config:
+  layout: elk
+  themeVariables:
+    fontSize: 12px
+---
+flowchart LR
+    RP[RiskProfile
+tags + reversible + severity] --> NC[NativeCallable]
+    NF[NativeFunc] --> NC
+    NC --> DN["define_native(risk:)"]
+    NC -.planned.-> RC[RubyClass native methods]
+```
+
+`RiskTag` names *why* a call is risky (`ReadsFiles`, `WritesFiles`, `DeletesFiles`, `Recursive`, `ExecutesCode`, `NetworkEgress`, `ElevatedPrivilege`, `ModifiesEnvironment`). `Reversibility` (`Yes`/`No`/`Depends`) and `Severity` (`Info`/`Warning`/`Error`) are *conclusions* drawn from those tags.
+
+Tags are the reason; reversibility and severity are consequences — a `RiskProfile` with no tags must be `Reversibility::Yes` and `Severity::Info`. Setting either otherwise on an empty-tag profile raises immediately, by design: it means a `RiskTag` is missing, not that the fields should be set freely.
+
+```crystal
+# Pure — the default, no need to state it explicitly.
+interp.define_native("square") { |args| ... }
+
+# Effectful:
+interp.define_native("delete_file",
+  risk: Adjutant::RiskProfile.new(
+    tags: Set{Adjutant::RiskTag::DeletesFiles},
+    reversible: Adjutant::Reversibility::No,
+    severity: Adjutant::Severity::Error,
+  )) { |args| ... }
+```
+
+`Reversibility::Depends` requires a `note` explaining the call-site condition that determines it (e.g. a flag toggling in-place writes) — this can't be resolved statically and is treated as "escalate and ask" until argument-level analysis exists.
+
+`NativeCallable` pairs a `NativeFunc` with its `RiskProfile` and is the shared representation for any Crystal-implemented callable — currently `ScriptModule` functions via `define_native`; planned: `RubyClass` native methods for base types (`String`, `Array`, `Integer`, ...), once implemented, so a risk-manifest walker has exactly one place to look regardless of whether a call resolves to a required module or a base type's method.
+
+#### Structured risk: RiskNode and RiskAggregator
+
+A flat union of `RiskProfile`s across a script loses conditionality: an `if`/`else` with a safe branch and a destructive branch would merge into one tag set, as if both could happen in one run. `RiskNode` (`risk_node.cr`) mirrors the AST's control-flow shape instead, so aggregation respects it.
+
+```mermaid
+---
+displayMode: compact
+config:
+  layout: elk
+  themeVariables:
+    fontSize: 12px
+---
+flowchart TD
+    Leaf["RiskLeaf: one call site"] --> Agg[RiskAggregator.summarize]
+    Seq["RiskSequence: all children occur"] --> Agg
+    Choice["RiskChoice: exactly one child occurs"] --> Agg
+    Unresolved["RiskUnresolved: worst-case, always"] --> Agg
+    Agg --> Sum[RiskSummary: tags + reversible + severity + path]
+```
+
+- `RiskSequence` — straight-line code and loop bodies (`iterated: true` for the latter, since a script can't generally know its own iteration count statically). Aggregates by union: all children's tags apply, severity/reversibility take the worst single child.
+- `RiskChoice` — `if`/`elsif`/`else`, `case`/`when`, rescue clauses. Aggregates by taking the **single worst-case branch**, not a union — `origin` (`"if"`, `"case"`, ...) is preserved so the summary's `path` names which branch caused it.
+- `RiskUnresolved` — a call site the walker couldn't statically resolve. Always ranks worst-case (`Severity::Error`). Should be rare, since dynamic dispatch is a forbidden language feature (see below) specifically to keep every call site staticaly resolvable; a common `RiskUnresolved` is a signal something needs fixing in the walker or the forbidden list, not a case to silently downgrade.
+
+`RiskAggregator.summarize(node) : RiskSummary` walks a tree once and returns the single worst-case path through it — not every possible path, since presentation needs one concrete story ("this script may delete files if the `--force` branch is taken"), not a combinatorial list.
+
+`RiskAggregator.all_findings(node) : Array(RiskFinding)` is the complementary entry point: every `RiskLeaf`/`RiskUnresolved` anywhere in the tree, each with its own `branch_path` (which `Choice` branches led there) and `iterated?` flag — not collapsed to one worst-case story. `RiskAggregator` takes no view on presentation; a host UX groups, filters, or sorts `RiskFinding`s itself (e.g. dedup repeated calls to the same function, or show only `Severity::Error` entries).
+
+#### TypeInference
+
+A `Call` node can only resolve to a `NativeCallable`/`ScriptProc` if its receiver's class is known. `TypeInference` (`type_inference.cr`) infers this statically, without running the script — a minimal pass, not full type inference.
+
+```mermaid
+---
+displayMode: compact
+config:
+  layout: elk
+  themeVariables:
+    fontSize: 12px
+---
+flowchart LR
+    Lit[Literal] --> Known[KnownType: Set of RubyClass]
+    New["ClassName.new(...)"] --> Known
+    Param[Param / unresolved call] --> Unknown[UnknownType]
+    Branch["reassigned across if/else"] --> Union["KnownType: union"]
+```
+
+`TypeHint` (`type_hint.cr`) mirrors `RiskNode`'s sum-type reasoning: a local var reassigned a different known type in each branch of an `if`/`case` is a real union, not an inference failure — only genuinely untraceable values (params, unresolved call returns) are `UnknownType`. Loops merge the same way, treating "ran 0 times" vs. "ran once" as a 2-way branch.
+
+#### RiskWalker
+
+`RiskWalker` (`risk_walker.cr`) builds the actual `RiskNode` tree from a parsed `Body`, using `TypeInference` to resolve each `Call`'s receiver. The walker never runs `interp.eval` — it only parses and walks, so it must discover `def`/`class`/`module` declarations itself as it goes, rather than relying on the interpreter's already-executed globals.
+
+```mermaid
+---
+displayMode: compact
+config:
+  layout: elk
+  themeVariables:
+    fontSize: 12px
+---
+flowchart TD
+    Call[Call node] --> Recv{{receiver?}}
+    Recv -->|none| GlobalLookup["native, then a def SEEN SO FAR"]
+    Recv -->|ClassName.new| Ctor[zero-risk construction]
+    Recv -->|known type| ClassLookup["find_method / find_native_method"]
+    Recv -->|unknown type| Unresolved[RiskUnresolved]
+    ClassLookup -->|ScriptProc| Memo{{cached?}}
+    Memo -->|yes| Cached[reuse RiskNode]
+    Memo -->|no| WalkBody[walk method body]
+```
+
+**Def/class discovery follows the same order rule the VM's linear execution would.** A top-level `def`/`class`/`module` is only visible to calls *after* it in the walk — a call before its definition is `RiskUnresolved`, matching the `NameError` the same script would raise at runtime. This is a deliberate design choice, not an accident of implementation: the walker never executes anything, so there's no "hoisting" pass to fall back on, and mirroring the runtime's own order sensitivity keeps the assessment honest about what would actually run.
+
+The one place order does NOT matter is **calls between a class's own methods**: a method body is only ever invoked after `.new`, by which point the whole class body has finished executing and every method is registered — so `walk_class` walks a class body's bare statements in order (registering `def`s and running any non-`def` statement immediately, same rule as top-level) while method bodies themselves (walked lazily via `walk_script_method`, on first call) always see the class's final, complete method table regardless of source order within it.
+
+`RiskWalker` keeps two of its own tables for this — `@top_level_procs` (defs seen so far) and `@known_classes` (classes built so far) — checked before falling back to `@interp`'s live state, which only reflects genuinely pre-existing things (builtins, or classes from a prior `interp.eval` in the host program). `TypeInference` gained an injectable `class_resolver : String -> RubyClass?` (defaulting to a live-global lookup) so `ClassName.new` inference can see the walker's own not-yet-executed classes too — without `TypeInference` needing to know `RiskWalker` exists.
+
+**Node coverage.** Every AST shape isomorphic to one already handled reuses the same `RiskNode` shape:
+
+|AST node                                                        |Treated as                                                                                                                                                     |
+|----------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|`IfNode`, `UnlessNode`, `CaseNode`                              |`RiskChoice` — exactly one branch runs                                                                                                                         |
+|`WhileNode`, `LoopNode`, `ForNode`, `ModifierWhile`             |`RiskSequence` with `iterated: true`                                                                                                                           |
+|`ModifierIf`                                                    |`RiskChoice` of one statement vs. nothing                                                                                                                      |
+|`BeginNode`                                                     |`RiskChoice(body, rescue)` wrapped in a `RiskSequence` with `ensure` — body/rescue are mutually exclusive, but ensure always runs afterward regardless of which|
+|`ClassNode`, `ModuleNode`                                       |Body walked immediately (bare statements), nested `def`s registered onto a `RubyClass`/module being built                                                      |
+|`Assign`, `OpAssign`, `CondAssign`, `MultiAssign`, `IndexAssign`|Value expression(s) walked for risk (not just inferred for type) — a risky call used as an initializer or right-hand side is never silently dropped            |
+
+Not yet handled: `Lambda` and block bodies passed to a `Call` (`each { ... }`, `do...end`), and `YieldNode` — these involve higher-order call semantics (a block may run 0, 1, or N times, or be stored and called later by the callee) that the walker doesn't model yet.
+
+Two things worth calling out beyond node coverage:
+
+- **Method bodies are memoized by `ScriptProc` identity**, walked once using only their own parameter scope — not the caller's inferred argument types. This is correct for memoization (a method's risk can't depend on which call site happens to invoke it) but is a real precision loss: **`def process(f); f.read; end` always sees `f` as `UnknownType` inside `process`**, regardless of what any call site passes, so `f.read` resolves as `RiskUnresolved` even when every caller passes a known `File`. Fixing this properly means adding real parameter type declarations to the language (more Crystal-like, less Ruby-like) — not a bigger inference pass, since the ambiguity is inherent to having no per-method contract at all.
+- **Recursion** gets the same treatment as loops: a `ScriptProc` already being walked (direct or mutual recursion) short-circuits to a plain `RiskLeaf` instead of re-descending, so the walker always terminates.
+
+`ScriptProc` carries an optional `ast_body`/`ast_params` (set by the compiler at `compile_def`) purely so `RiskWalker` can walk a method's real control-flow shape — the VM itself never reads these fields. `RiskWalker` also builds throwaway `ScriptProc`s (empty `Chunk`, real `ast_body`) for the `def`s it discovers itself — never executed, only walked.
+
+A worked example: `samples/assess_script.cr` parses a script file (never running it) and prints both `RiskAggregator.summarize`'s worst-case path and every `RiskAggregator.all_findings` entry; `samples/scripts/risky_example.rb` exercises the `if`/`while`/def-discovery paths together.## Forbidden features
+
+Some Ruby-like features are intentionally excluded, not merely unimplemented — they'd break static risk assessment by making a call site's target unknowable without running the script. Anyone tempted to add one of these should read this first.
+
+- **Dynamic dispatch by computed method name** (`send`, `public_send`, `method_missing`, `define_method` with a runtime-computed name). `Call#method` in the AST is always a literal `String`; keeping it that way is what makes every call site staticaly resolvable to a `NativeCallable`/`ScriptProc` for risk aggregation. If this ever changes, `RiskUnresolved` (see above) is the fallback — but the goal is for it to stay rare.
+- **`eval`/`instance_eval` on runtime strings.** Same reasoning — a script that can construct and run arbitrary code at runtime has no static risk profile at all.
+- **Reflection that exposes native/Crystal internals** (e.g. arbitrary FFI, `ObjectSpace`-style introspection). Not yet needed for anything on the roadmap, and it would let a script route around the effect boundary (`EffectHandler`/`ModuleRegistry`) entirely.
+
+This list should grow as new features are proposed — the test is always "does this let a call site's target or effect become unknowable before running the script."

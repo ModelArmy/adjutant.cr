@@ -1,6 +1,7 @@
 require "./bytecode"
 require "./symbol_table"
 require "./value"
+require "./ast"
 
 module Adjutant
   # A compiled proc (method body or block).
@@ -13,12 +14,22 @@ module Adjutant
     getter local_count : Int32
     getter? is_block : Bool
 
+    # The original AST this proc was compiled from — nil for procs that
+    # don't have one (compiled directly from a Chunk in tests, etc.).
+    # Not used by the VM at all; kept solely so RiskWalker can walk a
+    # method's actual control-flow shape (branches, loops) rather than
+    # re-deriving it from bytecode jump targets. See DEVELOPMENT.md's
+    # "Structured risk" section.
+    getter ast_body : Body?
+    getter ast_params : Array(Param)?
+
     # The class/module this proc was lexically defined inside, captured
     # once when DefMethod registers it. nil for top-level functions and
     # for blocks (which are lexically transparent — see Frame#lexical_scope).
     property lexical_scope : RubyClass?
 
-    def initialize(@chunk, @name, @params = [] of String, @local_count = 0, @is_block = false)
+    def initialize(@chunk, @name, @params = [] of String, @local_count = 0, @is_block = false,
+                   @ast_body = nil, @ast_params = nil)
     end
   end
 
@@ -749,6 +760,18 @@ module Adjutant
             if method = cls.find_method(sym_id)
               return call_script_proc(method, args[1..], filename, blk, nil, self_val: recv)
             end
+            if native = cls.find_native_method(sym_id)
+              return call_native(native, args, filename, line, blk)
+            end
+          end
+        elsif interp = @interpreter
+          # Builtin-typed receiver (Integer today; String/Array etc. as
+          # they land) — no rclass of its own, resolved via
+          # Interpreter#builtin_class_for instead.
+          if (cls = interp.builtin_class_for(recv)) && (sym_id = @symbols.lookup(name).try(&.value))
+            if native = cls.find_native_method(sym_id)
+              return call_native(native, args, filename, line, blk)
+            end
           end
         end
       end
@@ -756,15 +779,8 @@ module Adjutant
       # 2) Check native functions registered via interpreter
       if interp = @interpreter
         sym_id = (@symbols.lookup(name).try(&.value)) || -1
-        if native = interp.native_func(sym_id)
-          result = Value.nil_value
-          begin
-            result = NativeFunctionCall.new(self, native, filename, line).call(args, blk)
-          rescue ex
-            # Wrap any exception
-            raise runtime_error("Native call error: #{ex.message}", current_frame, cause: ex)
-          end
-          return result
+        if native = interp.native_callable(sym_id)
+          return call_native(native, args, filename, line, blk)
         end
       end
 
@@ -785,6 +801,18 @@ module Adjutant
 
       # Fail with exception until proper exception raising lands
       raise RuntimeError.new("unknown method: #{name}", filename, line)
+    end
+
+    # Invoke a NativeCallable, wrapping any Crystal exception as a
+    # runtime error. Shared by receiver-dispatched native methods
+    # (RubyClass#find_native_method) and top-level native functions
+    # (Interpreter#native_callable) — same calling convention, same
+    # error-wrapping contract.
+    private def call_native(native : NativeCallable, args : Array(Value),
+                            filename : String, line : Int32, blk : ScriptProc?) : Value
+      NativeFunctionCall.new(self, native, filename, line).call(args, blk)
+    rescue ex
+      raise runtime_error("Native call error: #{ex.message}", current_frame, cause: ex)
     end
 
     # `Foo.new(args)` — allocates a RubyObject and, if the class (or an
@@ -918,13 +946,15 @@ module Adjutant
           Value.string(recv.to_s)
         end
       when "is_a?"
-        # RubyObject receiver only — Integer/String/etc. have no
-        # corresponding RubyClass yet (base types are separate,
-        # planned work), so is_a? can't check those and returns false.
+        # RubyObject receivers walk their own rclass chain; other
+        # receivers (Integer today, more as builtins land) resolve via
+        # Interpreter#builtin_class_for, since they carry no rclass
+        # reference of their own.
         recv = args.first? || Value.nil_value
         target = args[1]?.try(&.as_rclass?)
-        if (obj = recv.as_robject?) && target
-          cls = obj.rclass.as(RubyClass?)
+        start_cls = recv.as_robject?.try(&.rclass) || @interpreter.try(&.builtin_class_for(recv))
+        if start_cls && target
+          cls = start_cls.as(RubyClass?)
           matched = false
           while cls
             if cls == target

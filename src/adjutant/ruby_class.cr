@@ -1,3 +1,5 @@
+require "./native_callable"
+
 module Adjutant
   # A user-defined class or module.
   #
@@ -10,6 +12,7 @@ module Adjutant
     getter name : String
     property superclass : RubyClass?
     getter methods : Hash(Int32, ScriptProc)
+    getter native_methods : Hash(Int32, NativeCallable)
     getter cvars : Hash(Int32, Value)
     getter constants : Hash(Int32, Value)
     getter? is_module : Bool
@@ -22,6 +25,7 @@ module Adjutant
 
     def initialize(@name : String, @superclass : RubyClass? = nil, @is_module : Bool = false)
       @methods = {} of Int32 => ScriptProc
+      @native_methods = {} of Int32 => NativeCallable
       @cvars = {} of Int32 => Value
       @constants = {} of Int32 => Value
     end
@@ -30,11 +34,42 @@ module Adjutant
       @methods[sym_id] = proc
     end
 
+    # Register a Crystal-implemented instance method under this class.
+    #
+    # `risk` has no default — unlike Interpreter#define_native. Base
+    # types are registered in bulk in one place, which is exactly where
+    # it's easiest to wave a whole batch through as RiskProfile.none
+    # without thinking about it; making the parameter mandatory here
+    # forces that judgment call at each method.
+    #
+    # The receiver is passed as `args.first`, matching the calling
+    # convention VM#exec_builtin already uses for receiver methods
+    # (`to_s`, `length`, `is_a?`, etc.) — native methods have no
+    # separate `self` binding the way ScriptProc methods do via Frame.
+    def define_native_method(sym_id : Int32, risk : RiskProfile,
+                             &block : Array(Value), ScriptProc?, NativeCallContext -> Value) : Nil
+      func = NativeFunc.new { |args, blk, ncc| block.call(args, blk, ncc) }
+      @native_methods[sym_id] = NativeCallable.new(func, risk)
+    end
+
     # Look up a method by symbol id, walking the superclass chain.
     def find_method(sym_id : Int32) : ScriptProc?
       cls = self
       while cls
         if m = cls.methods[sym_id]?
+          return m
+        end
+        cls = cls.superclass
+      end
+      nil
+    end
+
+    # Look up a native method by symbol id, walking the superclass
+    # chain — same shape as find_method, separate table.
+    def find_native_method(sym_id : Int32) : NativeCallable?
+      cls = self
+      while cls
+        if m = cls.native_methods[sym_id]?
           return m
         end
         cls = cls.superclass

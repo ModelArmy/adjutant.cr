@@ -1,5 +1,5 @@
 name: adjutant
-version: 0.1.0
+version: 0.2.0
 license: MPL2
 
 description: >
@@ -17,3 +17,7 @@ development_dependencies:
 targets:
   test_runner:
     main: src/test_runner.cr
+  run_script:
+    main: samples/run_script.cr
+  assess_script:
+    main: samples/assess_script.cr
