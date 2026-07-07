@@ -413,6 +413,56 @@ flowchart TD
 
 `RiskAggregator.summarize(node) : RiskSummary` walks a tree once and returns the single worst-case path through it — not every possible path, since presentation needs one concrete story ("this script may delete files if the `--force` branch is taken"), not a combinatorial list.
 
+#### TypeInference
+
+A `Call` node can only resolve to a `NativeCallable`/`ScriptProc` if its receiver's class is known. `TypeInference` (`type_inference.cr`) infers this statically, without running the script — a minimal pass, not full type inference.
+
+```mermaid
+---
+displayMode: compact
+config:
+  layout: elk
+  themeVariables:
+    fontSize: 12px
+---
+flowchart LR
+    Lit[Literal] --> Known[KnownType: Set of RubyClass]
+    New["ClassName.new(...)"] --> Known
+    Param[Param / unresolved call] --> Unknown[UnknownType]
+    Branch["reassigned across if/else"] --> Union["KnownType: union"]
+```
+
+`TypeHint` (`type_hint.cr`) mirrors `RiskNode`'s sum-type reasoning: a local var reassigned a different known type in each branch of an `if`/`case` is a real union, not an inference failure — only genuinely untraceable values (params, unresolved call returns) are `UnknownType`. Loops merge the same way, treating "ran 0 times" vs. "ran once" as a 2-way branch.
+
+#### RiskWalker
+
+`RiskWalker` (`risk_walker.cr`) builds the actual `RiskNode` tree from a parsed `Body`, using `TypeInference` to resolve each `Call`'s receiver.
+
+```mermaid
+---
+displayMode: compact
+config:
+  layout: elk
+  themeVariables:
+    fontSize: 12px
+---
+flowchart TD
+    Call[Call node] --> Recv{receiver?}
+    Recv -->|none| GlobalLookup["native_callable or top-level ScriptProc"]
+    Recv -->|known type| ClassLookup["find_method / find_native_method"]
+    Recv -->|unknown type| Unresolved[RiskUnresolved]
+    ClassLookup -->|ScriptProc| Memo{cached?}
+    Memo -->|yes| Cached[reuse RiskNode]
+    Memo -->|no| WalkBody[walk method body]
+```
+
+Two things worth calling out:
+
+- **Method bodies are memoized by `ScriptProc` identity**, walked once using only their own parameter scope — not the caller's inferred argument types. This is correct for memoization (a method's risk can't depend on which call site happens to invoke it) but is a real precision loss: **`def process(f); f.read; end` always sees `f` as `UnknownType` inside `process`**, regardless of what any call site passes, so `f.read` resolves as `RiskUnresolved` even when every caller passes a known `File`. Fixing this properly means adding real parameter type declarations to the language (more Crystal-like, less Ruby-like) — not a bigger inference pass, since the ambiguity is inherent to having no per-method contract at all.
+- **Recursion** gets the same treatment as loops: a `ScriptProc` already being walked (direct or mutual recursion) short-circuits to a plain `RiskLeaf` instead of re-descending, so the walker always terminates.
+
+`ScriptProc` carries an optional `ast_body`/`ast_params` (set by the compiler at `compile_def`) purely so `RiskWalker` can walk a method's real control-flow shape — the VM itself never reads these fields.
+
 The AST walker that builds a `RiskNode` tree from parsed source is planned but not yet implemented.
 
 ## Forbidden features

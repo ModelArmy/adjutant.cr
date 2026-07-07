@@ -553,7 +553,8 @@ module Adjutant
         params: params,
         in_block: false
       )
-      sproc = ScriptProc.new(body_chunk, node.name, params, local_count, false)
+      sproc = ScriptProc.new(body_chunk, node.name, params, local_count, false,
+        ast_body: node.body, ast_params: node.params)
       proc_idx = @chunk.add_const(Value.proc(sproc))
       @chunk.emit(Op::MakeProc, node.line, c: proc_idx)
       sym_idx = intern(node.name)

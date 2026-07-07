@@ -1,6 +1,7 @@
 require "./bytecode"
 require "./symbol_table"
 require "./value"
+require "./ast"
 
 module Adjutant
   # A compiled proc (method body or block).
@@ -13,12 +14,22 @@ module Adjutant
     getter local_count : Int32
     getter? is_block : Bool
 
+    # The original AST this proc was compiled from — nil for procs that
+    # don't have one (compiled directly from a Chunk in tests, etc.).
+    # Not used by the VM at all; kept solely so RiskWalker can walk a
+    # method's actual control-flow shape (branches, loops) rather than
+    # re-deriving it from bytecode jump targets. See DEVELOPMENT.md's
+    # "Structured risk" section.
+    getter ast_body : Body?
+    getter ast_params : Array(Param)?
+
     # The class/module this proc was lexically defined inside, captured
     # once when DefMethod registers it. nil for top-level functions and
     # for blocks (which are lexically transparent — see Frame#lexical_scope).
     property lexical_scope : RubyClass?
 
-    def initialize(@chunk, @name, @params = [] of String, @local_count = 0, @is_block = false)
+    def initialize(@chunk, @name, @params = [] of String, @local_count = 0, @is_block = false,
+                   @ast_body = nil, @ast_params = nil)
     end
   end
 

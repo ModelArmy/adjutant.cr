@@ -118,7 +118,10 @@ module Adjutant
     # keeps its pre-branch type from that branch's copy, so "only
     # touched in one arm" naturally merges with its own prior value
     # rather than spuriously degrading to Unknown.
-    private def infer_if(node : IfNode, env : Env) : TypeHint
+    # Public: RiskWalker calls these directly to keep TypeInference's
+    # env-merge semantics in sync with its own risk-node walk, rather
+    # than duplicating the branch/merge logic.
+    def infer_if(node : IfNode, env : Env) : TypeHint
       branch_envs = [] of Env
       branch_types = [] of TypeHint
 
@@ -146,7 +149,7 @@ module Adjutant
       branch_types.reduce(UnknownType.new.as(TypeHint)) { |merged, branch_type| TypeHint.merge(merged, branch_type) }
     end
 
-    private def infer_case(node : CaseNode, env : Env) : TypeHint
+    def infer_case(node : CaseNode, env : Env) : TypeHint
       branch_envs = [] of Env
       branch_types = [] of TypeHint
 

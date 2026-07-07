@@ -56,7 +56,7 @@ module Adjutant
     getter children : Array(RiskNode)
     getter? iterated : Bool
 
-    def initialize(@children, line, @iterated = false)
+    def initialize(@children : Array(RiskNode), line, @iterated = false)
       super(line)
     end
   end
@@ -65,7 +65,7 @@ module Adjutant
     getter children : Array(RiskNode)
     getter origin : String # "if", "case", "rescue", etc. — for presentation
 
-    def initialize(@children, @origin, line)
+    def initialize(@children : Array(RiskNode), @origin, line)
       super(line)
     end
   end
