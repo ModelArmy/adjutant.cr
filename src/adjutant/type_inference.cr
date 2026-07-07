@@ -39,7 +39,15 @@ module Adjutant
 
     alias Env = Hash(String, TypeHint)
 
+    # Resolves a class name to a RubyClass for `ClassName.new(...)`
+    # inference. Defaults to the interpreter's live globals (already-
+    # executed classes) — RiskWalker overrides this to ALSO see
+    # classes it has built for itself while walking a not-yet-executed
+    # script, since those don't exist in @interp's globals at all.
+    property class_resolver : String -> RubyClass?
+
     def initialize(@interp : Interpreter)
+      @class_resolver = ->(name : String) { @interp.get_global(name).as_rclass? }
     end
 
     # Infers types through a Body's statements, returning the type of
@@ -107,7 +115,7 @@ module Adjutant
     private def infer_call(node : Call, env : Env) : TypeHint
       receiver = node.receiver
       if receiver.is_a?(Constant) && node.method == "new"
-        cls = @interp.get_global(receiver.name).as_rclass?
+        cls = @class_resolver.call(receiver.name)
         return cls ? KnownType.new(cls) : UnknownType.new
       end
       UnknownType.new

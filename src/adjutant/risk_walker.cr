@@ -1,4 +1,5 @@
 require "./ast"
+require "./bytecode"
 require "./risk_node"
 require "./type_hint"
 require "./type_inference"
@@ -38,10 +39,37 @@ module Adjutant
   #     here, not a runtime one, and a proc's body risk never changes
   #     between calls.
   class RiskWalker
+    # Top-level defs seen SO FAR in the walk — mirrors the VM's own
+    # linear execution: a call before its def is genuinely unresolved
+    # here, same as the NameError it would raise at runtime. Populated
+    # as walk_body encounters DefNode statements, not by a separate
+    # pre-pass.
+    @top_level_procs : Hash(String, ScriptProc)
+
+    # Classes built SO FAR — same order-sensitivity for the class
+    # declaration itself (a class must be declared before use), but
+    # NOT for calls between its own methods (see walk_class): a method
+    # body is only ever invoked after the class body has fully
+    # finished executing, so by then every method in it is registered
+    # regardless of definition order within the class.
+    @known_classes : Hash(String, RubyClass)
+
     def initialize(@interp : Interpreter)
       @inference = TypeInference.new(@interp)
       @method_cache = {} of ScriptProc => RiskNode
       @in_progress = Set(ScriptProc).new
+      @top_level_procs = {} of String => ScriptProc
+      @known_classes = {} of String => RubyClass
+      @inference.class_resolver = ->(name : String) { resolve_class(name) }
+    end
+
+    # Classes the walker has built for itself take priority — they
+    # don't exist in @interp's globals at all, since the script hasn't
+    # run. Falls back to @interp for genuinely pre-existing classes
+    # (builtins, classes defined by a prior interp.eval in the host
+    # program) — see class docs above @known_classes.
+    private def resolve_class(name : String) : RubyClass?
+      @known_classes[name]? || @interp.get_global(name).as_rclass?
     end
 
     # Entry point for a top-level script body.
@@ -52,14 +80,15 @@ module Adjutant
 
     def walk_node(node : Node, env : TypeInference::Env) : RiskNode
       case node
-      when IfNode    then walk_if(node, env)
-      when CaseNode  then walk_case(node, env)
-      when WhileNode then walk_iterated(node.body, env, node.line)
-      when LoopNode  then walk_iterated(node.body, env, node.line)
-      when ForNode   then walk_iterated(node.body, env, node.line)
-      when Call      then walk_call(node, env)
-      when Assign    then walk_assign(node, env)
-      when Body      then walk_body(node, env)
+      when IfNode, UnlessNode, CaseNode, WhileNode, LoopNode, ForNode, ModifierIf, ModifierWhile, BeginNode
+        walk_control_flow(node, env)
+      when Assign, OpAssign, CondAssign, MultiAssign, IndexAssign
+        walk_assignment(node, env)
+      when Call       then walk_call(node, env)
+      when Body       then walk_body(node, env)
+      when DefNode    then walk_def(node)
+      when ClassNode  then walk_class(node)
+      when ModuleNode then walk_module(node)
       else
         # Any other node kind (literals, etc.) carries no risk of its
         # own, but may still affect var types (rare outside Assign) —
@@ -67,6 +96,158 @@ module Adjutant
         @inference.infer_node(node, env)
         RiskSequence.new([] of RiskNode, node.line)
       end
+    end
+
+    private def walk_control_flow(node : Node, env : TypeInference::Env) : RiskNode
+      case node
+      when IfNode        then walk_if(node, env)
+      when UnlessNode    then walk_unless(node, env)
+      when CaseNode      then walk_case(node, env)
+      when WhileNode     then walk_iterated(node.body, env, node.line)
+      when LoopNode      then walk_iterated(node.body, env, node.line)
+      when ForNode       then walk_iterated(node.body, env, node.line)
+      when ModifierIf    then walk_modifier_if(node, env)
+      when ModifierWhile then walk_modifier_while(node, env)
+      when BeginNode     then walk_begin(node, env)
+      else                    RiskSequence.new([] of RiskNode, node.line)
+      end
+    end
+
+    private def walk_assignment(node : Node, env : TypeInference::Env) : RiskNode
+      case node
+      when Assign      then walk_assign(node, env)
+      when OpAssign    then walk_op_assign(node, env)
+      when CondAssign  then walk_cond_assign(node, env)
+      when MultiAssign then walk_multi_assign(node, env)
+      when IndexAssign then walk_index_assign(node, env)
+      else                  RiskSequence.new([] of RiskNode, node.line)
+      end
+    end
+
+    # `unless cond; ...; else; ...; end` — same Choice shape as IfNode.
+    # Note: unlike walk_if, this does NOT call into TypeInference for
+    # env-merging (no infer_unless exists) — a var assigned only
+    # inside an unless-branch won't propagate as Known to later
+    # siblings. Safe direction to err (falls back to UnknownType, not
+    # a wrong guess), but a real gap if UnlessNode type-tracking
+    # becomes needed later.
+    private def walk_unless(node : UnlessNode, env : TypeInference::Env) : RiskNode
+      branches = [] of RiskNode
+      branches << walk_body(node.then_branch, env.dup)
+      if else_branch = node.else_branch
+        branches << walk_body(else_branch, env.dup)
+      else
+        branches << RiskSequence.new([] of RiskNode, node.line)
+      end
+      RiskChoice.new(branches, "unless", node.line)
+    end
+
+    # `expr if cond` / `expr unless cond` — a Choice between running
+    # expr once and not running it at all (the implicit "else" is a
+    # no-op, same treatment as IfNode's missing else_branch).
+    private def walk_modifier_if(node : ModifierIf, env : TypeInference::Env) : RiskNode
+      body_env = env.dup
+      body_risk = walk_node(node.body, body_env)
+      RiskChoice.new([body_risk, RiskSequence.new([] of RiskNode, node.line)] of RiskNode,
+        node.negated? ? "unless" : "if", node.line)
+    end
+
+    # `expr while cond` / `expr until cond` — same "unknown repeat
+    # count" treatment as WhileNode, just a single-statement body.
+    private def walk_modifier_while(node : ModifierWhile, env : TypeInference::Env) : RiskNode
+      inner_env = env.dup
+      body_risk = walk_node(node.body, inner_env)
+      RiskSequence.new([body_risk] of RiskNode, node.line, iterated: true)
+    end
+
+    # begin/rescue/ensure: body and rescue_body are mutually exclusive
+    # (Choice — exactly one runs), ensure_body always runs afterward
+    # regardless of which (Sequence wrapping the Choice). No rescue
+    # clause at all degrades to a plain Sequence(body, ensure) — there's
+    # nothing to choose between.
+    private def walk_begin(node : BeginNode, env : TypeInference::Env) : RiskNode
+      body_env = env.dup
+      body_risk = walk_body(node.body, body_env)
+
+      try_result =
+        if rescue_body = node.rescue_body
+          rescue_env = env.dup
+          rescue_risk = walk_body(rescue_body, rescue_env)
+          RiskChoice.new([body_risk, rescue_risk] of RiskNode, "rescue", node.line)
+        else
+          body_risk
+        end
+
+      if ensure_body = node.ensure_body
+        ensure_env = env.dup
+        ensure_risk = walk_body(ensure_body, ensure_env)
+        RiskSequence.new([try_result, ensure_risk] of RiskNode, node.line)
+      else
+        try_result
+      end
+    end
+
+    # A `module` statement — same treatment as ClassNode minus
+    # superclass/instantiation; modules can't be `.new`'d, but their
+    # methods can still be called (once `include`/module-function
+    # dispatch exists) and their bodies can contain bare statements
+    # that execute immediately, same as a class body.
+    private def walk_module(node : ModuleNode) : RiskNode
+      mod = RubyClass.new(node.name, nil, is_module: true)
+      @known_classes[node.name] = mod
+
+      children = node.body.stmts.map do |stmt|
+        if stmt.is_a?(DefNode) && stmt.receiver.nil?
+          register_class_method(mod, stmt)
+          RiskSequence.new([] of RiskNode, stmt.line).as(RiskNode)
+        else
+          walk_node(stmt, TypeInference::Env.new).as(RiskNode)
+        end
+      end
+      RiskSequence.new(children, node.line)
+    end
+
+    # A `def` statement itself has no risk — it registers a name,
+    # doesn't run the body. The body is walked lazily, on first call
+    # (see walk_script_method), same as today's memoization.
+    # Placeholder ScriptProc: chunk is never read by the walker (only
+    # ast_body/ast_params/params/name are), so an empty Chunk is a
+    # safe stand-in — this proc is never executed, only walked.
+    private def walk_def(node : DefNode) : RiskNode
+      proc = ScriptProc.new(Chunk.new, node.name, node.params.map(&.name),
+        ast_body: node.body, ast_params: node.params)
+      @top_level_procs[node.name] = proc
+      RiskSequence.new([] of RiskNode, node.line)
+    end
+
+    # A `class` statement walks its body immediately (bare statements
+    # in a class body execute right away, same as top-level — see
+    # DEVELOPMENT.md's RiskWalker section), registering each nested
+    # DefNode as a method on the RubyClass being built. Any bare call
+    # in the class body resolves against the ENCLOSING scope's table
+    # (@top_level_procs, @known_classes as they stand at this point in
+    # the walk) — a class body isn't its own top-level scope.
+    private def walk_class(node : ClassNode) : RiskNode
+      superclass = node.superclass.try { |name| resolve_class(name) }
+      cls = RubyClass.new(node.name, superclass)
+      @known_classes[node.name] = cls
+
+      children = node.body.stmts.map do |stmt|
+        if stmt.is_a?(DefNode) && stmt.receiver.nil?
+          register_class_method(cls, stmt)
+          RiskSequence.new([] of RiskNode, stmt.line).as(RiskNode)
+        else
+          walk_node(stmt, TypeInference::Env.new).as(RiskNode)
+        end
+      end
+      RiskSequence.new(children, node.line)
+    end
+
+    private def register_class_method(cls : RubyClass, node : DefNode) : Nil
+      proc = ScriptProc.new(Chunk.new, node.name, node.params.map(&.name),
+        ast_body: node.body, ast_params: node.params)
+      sym_id = @interp.symbols.intern(node.name).value
+      cls.define_method(sym_id, proc)
     end
 
     # The risk of an assignment's VALUE expression (e.g. a risky call
@@ -86,6 +267,55 @@ module Adjutant
         env[target.name] = value_type
       end
       value_risk
+    end
+
+    # `x += expr` — same rationale as walk_assign: expr's risk must be
+    # walked, not just inferred for type. The target's post-op type
+    # isn't tracked precisely (e.g. `x += 1` doesn't know x stays
+    # Integer) — TypeInference has no infer_op_assign, so the target
+    # degrades to whatever infer_node says about a bare read of
+    # node.value, which is imprecise but errs toward UnknownType, not
+    # a wrong guess.
+    private def walk_op_assign(node : OpAssign, env : TypeInference::Env) : RiskNode
+      value_risk = walk_node(node.value, env)
+      if (target = node.target).is_a?(Identifier)
+        env.delete(target.name)
+      end
+      value_risk
+    end
+
+    # `x ||= expr` / `x &&= expr` — same shape as OpAssign.
+    private def walk_cond_assign(node : CondAssign, env : TypeInference::Env) : RiskNode
+      value_risk = walk_node(node.value, env)
+      if (target = node.target).is_a?(Identifier)
+        env.delete(target.name)
+      end
+      value_risk
+    end
+
+    # `a, b = 1, 2` — each value expression walked for risk in order
+    # (Sequence: all run); targets aren't type-tracked here (no
+    # infer_multi_assign in TypeInference) so they degrade to
+    # UnknownType on next read, same safe-imprecise direction as
+    # OpAssign/CondAssign above.
+    private def walk_multi_assign(node : MultiAssign, env : TypeInference::Env) : RiskNode
+      children = node.values.map { |value| walk_node(value, env).as(RiskNode) }
+      node.targets.each do |target|
+        env.delete(target.name) if target.is_a?(Identifier)
+      end
+      RiskSequence.new(children, node.line)
+    end
+
+    # `arr[i] = expr` — target/index/value can each carry risk (e.g.
+    # `arr[compute_index()] = fetch_value()`); all three walked as a
+    # Sequence since all evaluate unconditionally.
+    private def walk_index_assign(node : IndexAssign, env : TypeInference::Env) : RiskNode
+      children = [
+        walk_node(node.target, env).as(RiskNode),
+        walk_node(node.index, env).as(RiskNode),
+        walk_node(node.value, env).as(RiskNode),
+      ]
+      RiskSequence.new(children, node.line)
     end
 
     private def walk_if(node : IfNode, env : TypeInference::Env) : RiskNode
@@ -156,7 +386,7 @@ module Adjutant
     # RiskProfile via singleton-method dispatch, this should resolve
     # to THAT profile instead of assuming zero risk unconditionally.
     private def walk_constructor_call(node : Call, receiver : Constant) : RiskNode
-      cls = @interp.get_global(receiver.name).as_rclass?
+      cls = resolve_class(receiver.name)
       if cls
         RiskSequence.new([] of RiskNode, node.line)
       else
@@ -164,20 +394,29 @@ module Adjutant
       end
     end
 
-    # `some_fn(args)` — resolves via Interpreter#native_callable first,
-    # then a top-level ScriptProc stored in globals — same order as
-    # VM#dispatch_call's steps 2 and 3, so resolution here matches
-    # what would actually run.
+    # `some_fn(args)` — resolves in the same order the VM would at
+    # this point in execution: native functions and any ALREADY
+    # EXECUTED top-level def (from a prior interp.eval — genuinely
+    # pre-existing, same footing as a native function), then a
+    # top-level def SEEN SO FAR in this walk itself. A call before its
+    # def within the walked script is genuinely unresolved, matching
+    # the NameError Adjutant would raise at runtime — see class docs
+    # for why this diverges from the "define once, call safely from
+    # anywhere in the class" rule that DOES apply inside method bodies
+    # (walk_class).
     private def walk_receiverless_call(node : Call) : RiskNode
       sym = @interp.symbols.lookup(node.method)
-      return RiskUnresolved.new(node.method, node.line) unless sym
-
-      if native = @interp.native_callable(sym.value)
-        return RiskLeaf.new(native.risk, node.method, node.line)
+      if sym
+        if native = @interp.native_callable(sym.value)
+          return RiskLeaf.new(native.risk, node.method, node.line)
+        end
+        gval = @interp.get_global(node.method)
+        if gval.proc?
+          return walk_script_method(gval.as_proc.as(ScriptProc), node.line)
+        end
       end
-      gval = @interp.get_global(node.method)
-      if gval.proc?
-        return walk_script_method(gval.as_proc.as(ScriptProc), node.line)
+      if proc = @top_level_procs[node.method]?
+        return walk_script_method(proc, node.line)
       end
       RiskUnresolved.new(node.method, node.line)
     end

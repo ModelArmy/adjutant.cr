@@ -84,4 +84,60 @@ module Adjutant
       summary.tags.should eq Set{RiskTag::ExecutesCode}
     end
   end
+
+  describe "RiskAggregator.all_findings" do
+    it "a single leaf yields one finding" do
+      findings = RiskAggregator.all_findings(leaf(Set{RiskTag::ReadsFiles}, Severity::Info, desc: "read_config"))
+      findings.size.should eq 1
+      findings.first.description.should eq "read_config"
+      findings.first.iterated?.should be_false
+      findings.first.branch_path.should be_empty
+    end
+
+    it "a Sequence returns findings for every child, not just the worst" do
+      a = leaf(Set{RiskTag::ReadsFiles}, Severity::Info, desc: "read_a")
+      b = leaf(Set{RiskTag::DeletesFiles}, Severity::Error, Reversibility::No, desc: "delete_b")
+      seq = RiskSequence.new([a, b] of RiskNode, 1)
+      findings = RiskAggregator.all_findings(seq)
+      findings.map(&.description).should eq ["read_a", "delete_b"]
+    end
+
+    it "a Choice returns findings for EVERY branch, not just the worst" do
+      safe = leaf(Set{RiskTag::ReadsFiles}, Severity::Info, desc: "read_a")
+      dangerous = leaf(Set{RiskTag::DeletesFiles}, Severity::Error, Reversibility::No, desc: "delete_b")
+      choice = RiskChoice.new([safe, dangerous] of RiskNode, "if", 1)
+      findings = RiskAggregator.all_findings(choice)
+      findings.map(&.description).should eq ["read_a", "delete_b"]
+    end
+
+    it "findings under a Choice carry the branch's origin in branch_path" do
+      choice = RiskChoice.new([leaf(Set{RiskTag::DeletesFiles}, Severity::Error, desc: "delete_it")] of RiskNode, "if", 1)
+      findings = RiskAggregator.all_findings(choice)
+      findings.first.branch_path.should eq ["if branch"]
+    end
+
+    it "findings under an iterated Sequence are marked iterated" do
+      seq = RiskSequence.new([leaf(Set{RiskTag::WritesFiles}, Severity::Warning, desc: "write_it")] of RiskNode, 1, iterated: true)
+      findings = RiskAggregator.all_findings(seq)
+      findings.first.iterated?.should be_true
+    end
+
+    it "an unresolved call appears as a finding with ExecutesCode/Error" do
+      seq = RiskSequence.new([RiskUnresolved.new("dynamic_call", 1)] of RiskNode, 1)
+      findings = RiskAggregator.all_findings(seq)
+      findings.first.profile.tags.should eq Set{RiskTag::ExecutesCode}
+      findings.first.profile.severity.should eq Severity::Error
+    end
+
+    it "nested Choice branch_path accumulates outer-to-inner" do
+      inner = RiskChoice.new([leaf(Set{RiskTag::NetworkEgress}, Severity::Warning, desc: "fetch")] of RiskNode, "case", 1)
+      outer = RiskChoice.new([inner] of RiskNode, "if", 1)
+      findings = RiskAggregator.all_findings(outer)
+      findings.first.branch_path.should eq ["if branch", "case branch"]
+    end
+
+    it "an empty tree yields no findings" do
+      RiskAggregator.all_findings(RiskSequence.new([] of RiskNode, 1)).should be_empty
+    end
+  end
 end

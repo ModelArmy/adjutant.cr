@@ -36,16 +36,37 @@ This will run all the test scripts in `spec/scripts` folder.
 
 ### Run samples
 
-Run the following command to see `adjutant` in action with a sample runner (based on the example in the README) and sample Ruby script.
+#### Sample `run_script`
 
-```
-ops -q run samples/run_script -- samples/scripts/fib_10.rb
-```
+The sample `run_script.cr` shows a simple script runner with some low-risk native functions.
+- Run `ops build` and
+- then run `bin/debug/run_script samples/scripts/fib_10.rb`
 
 You should receive the following output:
 
 ```
 Result: 55
+```
+
+#### Sample `assess_script`
+
+The sample `assess_script.cr` shows an example of how to load and assess the risk of a script and present the risk assessment.
+- Run `ops build` and
+- then run `bin/debug/assess_script samples/scripts/risky_example.rb`
+
+You should receive the following output:
+
+```
+=== Risk assessment: ./samples/scripts/risky_example.rb ===
+
+Worst case: Error / reversible=No
+Tags: NetworkEgress, DeletesFiles
+Path: fetch_url -> if branch -> delete_file
+
+All findings (3):
+  line 13: fetch_url (iterated) — Warning, tags: NetworkEgress
+  line 5: delete_file [if branch] — Error, tags: DeletesFiles
+  line 7: puts_args [if branch] — Info, tags: none
 ```
 
 ## How Adjutant works
@@ -413,6 +434,8 @@ flowchart TD
 
 `RiskAggregator.summarize(node) : RiskSummary` walks a tree once and returns the single worst-case path through it — not every possible path, since presentation needs one concrete story ("this script may delete files if the `--force` branch is taken"), not a combinatorial list.
 
+`RiskAggregator.all_findings(node) : Array(RiskFinding)` is the complementary entry point: every `RiskLeaf`/`RiskUnresolved` anywhere in the tree, each with its own `branch_path` (which `Choice` branches led there) and `iterated?` flag — not collapsed to one worst-case story. `RiskAggregator` takes no view on presentation; a host UX groups, filters, or sorts `RiskFinding`s itself (e.g. dedup repeated calls to the same function, or show only `Severity::Error` entries).
+
 #### TypeInference
 
 A `Call` node can only resolve to a `NativeCallable`/`ScriptProc` if its receiver's class is known. `TypeInference` (`type_inference.cr`) infers this statically, without running the script — a minimal pass, not full type inference.
@@ -436,7 +459,7 @@ flowchart LR
 
 #### RiskWalker
 
-`RiskWalker` (`risk_walker.cr`) builds the actual `RiskNode` tree from a parsed `Body`, using `TypeInference` to resolve each `Call`'s receiver.
+`RiskWalker` (`risk_walker.cr`) builds the actual `RiskNode` tree from a parsed `Body`, using `TypeInference` to resolve each `Call`'s receiver. The walker never runs `interp.eval` — it only parses and walks, so it must discover `def`/`class`/`module` declarations itself as it goes, rather than relying on the interpreter's already-executed globals.
 
 ```mermaid
 ---
@@ -447,25 +470,43 @@ config:
     fontSize: 12px
 ---
 flowchart TD
-    Call[Call node] --> Recv{receiver?}
-    Recv -->|none| GlobalLookup["native_callable or top-level ScriptProc"]
+    Call[Call node] --> Recv{{receiver?}}
+    Recv -->|none| GlobalLookup["native, then a def SEEN SO FAR"]
+    Recv -->|ClassName.new| Ctor[zero-risk construction]
     Recv -->|known type| ClassLookup["find_method / find_native_method"]
     Recv -->|unknown type| Unresolved[RiskUnresolved]
-    ClassLookup -->|ScriptProc| Memo{cached?}
+    ClassLookup -->|ScriptProc| Memo{{cached?}}
     Memo -->|yes| Cached[reuse RiskNode]
     Memo -->|no| WalkBody[walk method body]
 ```
 
-Two things worth calling out:
+**Def/class discovery follows the same order rule the VM's linear execution would.** A top-level `def`/`class`/`module` is only visible to calls *after* it in the walk — a call before its definition is `RiskUnresolved`, matching the `NameError` the same script would raise at runtime. This is a deliberate design choice, not an accident of implementation: the walker never executes anything, so there's no "hoisting" pass to fall back on, and mirroring the runtime's own order sensitivity keeps the assessment honest about what would actually run.
+
+The one place order does NOT matter is **calls between a class's own methods**: a method body is only ever invoked after `.new`, by which point the whole class body has finished executing and every method is registered — so `walk_class` walks a class body's bare statements in order (registering `def`s and running any non-`def` statement immediately, same rule as top-level) while method bodies themselves (walked lazily via `walk_script_method`, on first call) always see the class's final, complete method table regardless of source order within it.
+
+`RiskWalker` keeps two of its own tables for this — `@top_level_procs` (defs seen so far) and `@known_classes` (classes built so far) — checked before falling back to `@interp`'s live state, which only reflects genuinely pre-existing things (builtins, or classes from a prior `interp.eval` in the host program). `TypeInference` gained an injectable `class_resolver : String -> RubyClass?` (defaulting to a live-global lookup) so `ClassName.new` inference can see the walker's own not-yet-executed classes too — without `TypeInference` needing to know `RiskWalker` exists.
+
+**Node coverage.** Every AST shape isomorphic to one already handled reuses the same `RiskNode` shape:
+
+|AST node                                                        |Treated as                                                                                                                                                     |
+|----------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|`IfNode`, `UnlessNode`, `CaseNode`                              |`RiskChoice` — exactly one branch runs                                                                                                                         |
+|`WhileNode`, `LoopNode`, `ForNode`, `ModifierWhile`             |`RiskSequence` with `iterated: true`                                                                                                                           |
+|`ModifierIf`                                                    |`RiskChoice` of one statement vs. nothing                                                                                                                      |
+|`BeginNode`                                                     |`RiskChoice(body, rescue)` wrapped in a `RiskSequence` with `ensure` — body/rescue are mutually exclusive, but ensure always runs afterward regardless of which|
+|`ClassNode`, `ModuleNode`                                       |Body walked immediately (bare statements), nested `def`s registered onto a `RubyClass`/module being built                                                      |
+|`Assign`, `OpAssign`, `CondAssign`, `MultiAssign`, `IndexAssign`|Value expression(s) walked for risk (not just inferred for type) — a risky call used as an initializer or right-hand side is never silently dropped            |
+
+Not yet handled: `Lambda` and block bodies passed to a `Call` (`each { ... }`, `do...end`), and `YieldNode` — these involve higher-order call semantics (a block may run 0, 1, or N times, or be stored and called later by the callee) that the walker doesn't model yet.
+
+Two things worth calling out beyond node coverage:
 
 - **Method bodies are memoized by `ScriptProc` identity**, walked once using only their own parameter scope — not the caller's inferred argument types. This is correct for memoization (a method's risk can't depend on which call site happens to invoke it) but is a real precision loss: **`def process(f); f.read; end` always sees `f` as `UnknownType` inside `process`**, regardless of what any call site passes, so `f.read` resolves as `RiskUnresolved` even when every caller passes a known `File`. Fixing this properly means adding real parameter type declarations to the language (more Crystal-like, less Ruby-like) — not a bigger inference pass, since the ambiguity is inherent to having no per-method contract at all.
 - **Recursion** gets the same treatment as loops: a `ScriptProc` already being walked (direct or mutual recursion) short-circuits to a plain `RiskLeaf` instead of re-descending, so the walker always terminates.
 
-`ScriptProc` carries an optional `ast_body`/`ast_params` (set by the compiler at `compile_def`) purely so `RiskWalker` can walk a method's real control-flow shape — the VM itself never reads these fields.
+`ScriptProc` carries an optional `ast_body`/`ast_params` (set by the compiler at `compile_def`) purely so `RiskWalker` can walk a method's real control-flow shape — the VM itself never reads these fields. `RiskWalker` also builds throwaway `ScriptProc`s (empty `Chunk`, real `ast_body`) for the `def`s it discovers itself — never executed, only walked.
 
-The AST walker that builds a `RiskNode` tree from parsed source is planned but not yet implemented.
-
-## Forbidden features
+A worked example: `samples/assess_script.cr` parses a script file (never running it) and prints both `RiskAggregator.summarize`'s worst-case path and every `RiskAggregator.all_findings` entry; `samples/scripts/risky_example.rb` exercises the `if`/`while`/def-discovery paths together.## Forbidden features
 
 Some Ruby-like features are intentionally excluded, not merely unimplemented — they'd break static risk assessment by making a call site's target unknowable without running the script. Anyone tempted to add one of these should read this first.
 
