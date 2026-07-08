@@ -42,14 +42,14 @@ assert "Class method" do
 end
 
 # ---- TODO: class ivar init
-# assert "Class ivar initialization" do
-#   class A
-#     @x = 6
-#     def self.x; @x; end
-#   end
+assert "Class ivar initialization" do
+  class A
+    @x = 6
+    def self.x; @x; end
+  end
 
-#   A.x == 6
-# end
+  A.x == 6
+end
 # ----
 
 # ---- TODO: class method on objects

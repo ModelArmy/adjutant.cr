@@ -378,19 +378,21 @@ module Adjutant
     end
 
     # `ClassName.new(...)` — mirrors TypeInference#infer_call's special
-    # case. `.new` itself isn't a registered native/script method
-    # today (no singleton-method support yet — see DEVELOPMENT.md), so
-    # it carries no RiskProfile of its own; treating it as an ordinary
-    # unresolved Call would wrongly flag every object construction.
-    # Once native `.new` (e.g. a future File.new) gets a real
-    # RiskProfile via singleton-method dispatch, this should resolve
-    # to THAT profile instead of assuming zero risk unconditionally.
+    # case. If the class (or an ancestor) registered a native
+    # singleton `new` (see RubyClass#define_native_singleton_method —
+    # a builtin like File allocating real state), resolve to THAT
+    # method's real RiskProfile. Otherwise `.new` is the generic
+    # script-`initialize` path, which carries no RiskProfile of its
+    # own — treated as zero risk, same as before native singletons
+    # existed.
     private def walk_constructor_call(node : Call, receiver : Constant) : RiskNode
       cls = resolve_class(receiver.name)
-      if cls
-        RiskSequence.new([] of RiskNode, node.line)
+      return RiskUnresolved.new("#{receiver.name}.new", node.line) unless cls
+
+      if (sym = @interp.symbols.lookup("new")) && (native_new = cls.find_native_singleton_method(sym.value))
+        RiskLeaf.new(native_new.risk, "#{cls.name}.new", node.line)
       else
-        RiskUnresolved.new("#{receiver.name}.new", node.line)
+        RiskSequence.new([] of RiskNode, node.line)
       end
     end
 

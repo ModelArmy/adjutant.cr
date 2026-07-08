@@ -248,7 +248,7 @@ flowchart LR
 
 **Method dispatch.** `.` calls carry a receiver bit in the bytecode (distinguishing `obj.method()` from `method(obj)`, where a plain argument that happens to be an object must not be mistaken for a receiver). When present, `dispatch_call` checks the receiver's class — walking the superclass chain — before falling through to native functions, global procs, and builtins. A matched method runs in a new frame with `self` bound to the receiver.
 
-**`.new`** allocates a `RubyObject` and, if `initialize` is defined (on the class or an ancestor), runs it via `VM#invoke` — the same synchronous nested-execution path already used to call blocks from native functions — so its return value can be discarded and `.new` always returns the object itself.
+**`.new`** checks the class (or an ancestor) for a registered native singleton method first — see "Native singleton methods" below — and only falls back to the generic path if none exists. The generic path allocates a `RubyObject` and, if `initialize` is defined (on the class or an ancestor), runs it via `VM#invoke` — the same synchronous nested-execution path already used to call blocks from native functions — so its return value can be discarded and `.new` always returns the object itself.
 
 ```mermaid
 ---
@@ -290,7 +290,7 @@ flowchart TD
 
 A plain `Constant` reference (`X`) walks that lexical chain. An explicit path (`A::B::X`, parsed as `ConstPath`) instead does a direct, non-walking lookup in each resolved namespace's own table — closer to Ruby, where `::` doesn't re-trigger lexical search. Blocks are lexically *transparent* (inherit the enclosing frame's `lexical_scope`, same mechanism as `self` inheritance); methods are opaque (fixed at `def` time, ignores the caller).
 
-Not yet implemented: `include`, and class-side (singleton) methods.
+Not yet implemented: `include`, and script-defined class-side (singleton) methods (`def self.foo`) — see "Native singleton methods" below for the native-only case that IS implemented.
 
 **Native methods.** `RubyClass` also holds a `native_methods` table (`Sym id → NativeCallable`), parallel to `methods` but for Crystal-implemented instance methods — the mechanism base types (`String`, `Array`, `Integer`, ...) will use once implemented. `find_native_method` walks the superclass chain the same way `find_method` does. Dispatch checks `find_method` first, so a script-defined method always shadows a native one of the same name.
 
@@ -310,6 +310,26 @@ flowchart LR
     B -->|no| D{{find_native_method?}}
     D -->|yes| E[call_native]
     D -->|no| F[native fn / global / builtin]
+```
+
+**Native singleton methods.** `RubyClass` also holds a separate `native_singleton_methods` table (`Sym id → NativeCallable`), for Crystal-implemented *class-level* methods — today used exclusively for a native `new`. This is how a stateful builtin (e.g. a future `File`) gets constructed: `RubyObject` is open to subclassing (`FileObject < RubyObject` with real typed ivars, e.g. an open handle, instead of the shared `ivars : Hash(Int32, Value)` table), and a native `new` allocates that subclass directly and returns it — the generic path can't express this, since it always allocates a bare `RubyObject`.
+
+`.new` dispatch checks `find_native_singleton_method` first (walking the superclass chain, same shape as `find_native_method`) and only falls through to the generic `initialize`-driven path if the class has none. A native singleton method receives the `RubyClass` itself as `args.first` (there's no receiver instance yet — that's the point of `new`), followed by the constructor arguments, and is responsible for its own allocation.
+
+This is deliberately narrow: it's a mechanism for *native* `new` only, not a general `def self.foo` facility for script-defined classes — that stays an unimplemented gap (see above).
+
+```mermaid
+---
+displayMode: compact
+config:
+  layout: elk
+  themeVariables:
+    fontSize: 12px
+---
+flowchart LR
+    A[ClassName.new] --> B{{find_native_singleton_method?}}
+    B -->|yes| C["call_native — allocates + returns its own RubyObject subclass"]
+    B -->|no| D["construct_object — allocate bare RubyObject, run initialize"]
 ```
 
 ### Information flow control
@@ -472,7 +492,9 @@ config:
 flowchart TD
     Call[Call node] --> Recv{{receiver?}}
     Recv -->|none| GlobalLookup["native, then a def SEEN SO FAR"]
-    Recv -->|ClassName.new| Ctor[zero-risk construction]
+    Recv -->|ClassName.new| Ctor{{native singleton new?}}
+    Ctor -->|yes| CtorRisk[real RiskProfile]
+    Ctor -->|no| CtorZero[zero-risk construction]
     Recv -->|known type| ClassLookup["find_method / find_native_method"]
     Recv -->|unknown type| Unresolved[RiskUnresolved]
     ClassLookup -->|ScriptProc| Memo{{cached?}}
@@ -483,6 +505,8 @@ flowchart TD
 **Def/class discovery follows the same order rule the VM's linear execution would.** A top-level `def`/`class`/`module` is only visible to calls *after* it in the walk — a call before its definition is `RiskUnresolved`, matching the `NameError` the same script would raise at runtime. This is a deliberate design choice, not an accident of implementation: the walker never executes anything, so there's no "hoisting" pass to fall back on, and mirroring the runtime's own order sensitivity keeps the assessment honest about what would actually run.
 
 The one place order does NOT matter is **calls between a class's own methods**: a method body is only ever invoked after `.new`, by which point the whole class body has finished executing and every method is registered — so `walk_class` walks a class body's bare statements in order (registering `def`s and running any non-`def` statement immediately, same rule as top-level) while method bodies themselves (walked lazily via `walk_script_method`, on first call) always see the class's final, complete method table regardless of source order within it.
+
+**`ClassName.new` resolves to a real `RiskLeaf`, not unconditional zero risk, when the class registered a native singleton `new`** (see "Native singleton methods" above) — `walk_constructor_call` checks `find_native_singleton_method` the same way `resolve_on_class` checks `find_native_method` for an ordinary receiver call. A class with no native `new` still resolves construction as zero risk, matching prior behavior for the common (script-`initialize`-only) case.
 
 `RiskWalker` keeps two of its own tables for this — `@top_level_procs` (defs seen so far) and `@known_classes` (classes built so far) — checked before falling back to `@interp`'s live state, which only reflects genuinely pre-existing things (builtins, or classes from a prior `interp.eval` in the host program). `TypeInference` gained an injectable `class_resolver : String -> RubyClass?` (defaulting to a live-global lookup) so `ClassName.new` inference can see the walker's own not-yet-executed classes too — without `TypeInference` needing to know `RiskWalker` exists.
 

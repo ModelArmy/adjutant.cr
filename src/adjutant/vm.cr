@@ -752,7 +752,7 @@ module Adjutant
       if has_receiver && !args.empty?
         recv = args.first
         if recv.rclass? && name == "new"
-          return construct_object(recv.as_rclass, args[1..], filename, line)
+          return construct(recv.as_rclass, args[1..], filename, line, blk)
         end
         if recv.robject? || recv.rclass?
           cls = recv.robject? ? recv.as_robject.rclass : recv.as_rclass
@@ -815,12 +815,30 @@ module Adjutant
       raise runtime_error("Native call error: #{ex.message}", current_frame, cause: ex)
     end
 
-    # `Foo.new(args)` — allocates a RubyObject and, if the class (or an
-    # ancestor) defines `initialize`, runs it synchronously via `invoke`
-    # so its return value can be discarded and the object returned
-    # regardless of what `initialize` itself returns.
-    private def construct_object(cls : RubyClass, args : Array(Value), filename : String, line : Int32) : Value
+    # `Foo.new(args)` — dispatches to a native singleton `new` if the
+    # class (or an ancestor) registered one via
+    # RubyClass#define_native_singleton_method, otherwise falls back
+    # to the generic script-`initialize` path. A native `new` is
+    # responsible for its own allocation (typically a RubyObject
+    # subclass carrying real state) and return value; the generic path
+    # cannot express that, since it always allocates a bare
+    # RubyObject.
+    private def construct(cls : RubyClass, args : Array(Value), filename : String, line : Int32, blk : ScriptProc?) : Value
       raise runtime_error("can't instantiate module #{cls.name}") if cls.is_module?
+      if sym_id = @symbols.lookup("new").try(&.value)
+        if native_new = cls.find_native_singleton_method(sym_id)
+          return call_native(native_new, [Value.rclass(cls)] + args, filename, line, blk)
+        end
+      end
+      construct_object(cls, args)
+    end
+
+    # The generic construction path: allocates a bare RubyObject and,
+    # if the class (or an ancestor) defines `initialize`, runs it
+    # synchronously via `invoke` so its return value can be discarded
+    # and the object returned regardless of what `initialize` itself
+    # returns.
+    private def construct_object(cls : RubyClass, args : Array(Value)) : Value
       obj_val = Value.robject(RubyObject.new(cls))
       if sym_id = @symbols.lookup("initialize").try(&.value)
         if init = cls.find_method(sym_id)

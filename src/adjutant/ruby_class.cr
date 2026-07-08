@@ -13,6 +13,7 @@ module Adjutant
     property superclass : RubyClass?
     getter methods : Hash(Int32, ScriptProc)
     getter native_methods : Hash(Int32, NativeCallable)
+    getter native_singleton_methods : Hash(Int32, NativeCallable)
     getter cvars : Hash(Int32, Value)
     getter constants : Hash(Int32, Value)
     getter? is_module : Bool
@@ -26,6 +27,7 @@ module Adjutant
     def initialize(@name : String, @superclass : RubyClass? = nil, @is_module : Bool = false)
       @methods = {} of Int32 => ScriptProc
       @native_methods = {} of Int32 => NativeCallable
+      @native_singleton_methods = {} of Int32 => NativeCallable
       @cvars = {} of Int32 => Value
       @constants = {} of Int32 => Value
     end
@@ -50,6 +52,44 @@ module Adjutant
                              &block : Array(Value), ScriptProc?, NativeCallContext -> Value) : Nil
       func = NativeFunc.new { |args, blk, ncc| block.call(args, blk, ncc) }
       @native_methods[sym_id] = NativeCallable.new(func, risk)
+    end
+
+    # Register a Crystal-implemented singleton (class-level) method
+    # under this class — currently the only route in is `new`, for a
+    # builtin that needs to allocate a RubyObject subclass with real
+    # native state instead of the generic construct_object path (e.g.
+    # File.new opening a handle). Not a general `def self.foo`
+    # mechanism for script-defined classes — that stays unscoped, see
+    # DEVELOPMENT.md.
+    #
+    # `risk` has no default for the same reason as
+    # define_native_method: forces a judgment call at each
+    # registration rather than a batch rubber-stamp.
+    #
+    # Unlike an instance native method, the singleton method receives
+    # the RubyClass itself as args.first (not a receiver instance —
+    # there isn't one yet, that's the point of `new`), followed by the
+    # constructor arguments. It is responsible for its own allocation
+    # and must return a Value.robject.
+    def define_native_singleton_method(sym_id : Int32, risk : RiskProfile,
+                                       &block : Array(Value), ScriptProc?, NativeCallContext -> Value) : Nil
+      func = NativeFunc.new { |args, blk, ncc| block.call(args, blk, ncc) }
+      @native_singleton_methods[sym_id] = NativeCallable.new(func, risk)
+    end
+
+    # Look up a native singleton method by symbol id, walking the
+    # superclass chain — same shape as find_native_method, separate
+    # table. A subclass with no native `new` of its own inherits its
+    # ancestor's (e.g. a File subclass reusing File.new).
+    def find_native_singleton_method(sym_id : Int32) : NativeCallable?
+      cls = self
+      while cls
+        if m = cls.native_singleton_methods[sym_id]?
+          return m
+        end
+        cls = cls.superclass
+      end
+      nil
     end
 
     # Look up a method by symbol id, walking the superclass chain.
@@ -127,6 +167,13 @@ module Adjutant
   #
   # Ivars are keyed by interned symbol id, mirroring RubyClass's
   # method table and the existing GetIvar/SetIvar opcode contract.
+  #
+  # Open to subclassing: a native builtin with real internal state
+  # (e.g. an open file handle) defines a RubyObject subclass with its
+  # own typed ivars, allocated by a native singleton `new` method
+  # instead of the generic `construct_object` path — see
+  # RubyClass#native_singleton_methods. A subclass calls `super(rclass)`
+  # from its own initializer to set up the base rclass/ivars.
   class RubyObject
     getter rclass : RubyClass
     getter ivars : Hash(Int32, Value)
