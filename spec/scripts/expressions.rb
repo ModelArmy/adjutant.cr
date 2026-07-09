@@ -16,7 +16,7 @@ require "assert"
 # ----
 
 # ---- TODO: support chained assignments in a statement
-# assert "Multiple assignments" do
+# assert "Chained assignments" do
 #   c = b = 5
 #   c == 5
 # end
@@ -41,7 +41,6 @@ assert "Class method" do
   A.x == 6
 end
 
-# ---- TODO: class ivar init
 assert "Class ivar initialization" do
   class A
     @x = 6
@@ -50,7 +49,19 @@ assert "Class ivar initialization" do
 
   A.x == 6
 end
-# ----
+
+assert "Class ivar and cvars" do
+  class A
+    @x = 6
+    def self.x; @x; end
+    def initialize; @x=2; @@x=7; end
+    def x; @x; end
+    def aax; @@x; end
+    def self.aax; @@x; end
+  end
+
+  (A.x == 6) && (A.new.x == 2) && (A.aax == 7) && (A.aax == A.new.aax)
+end
 
 # ---- TODO: class method on objects
 # assert "Object built-in methods" do

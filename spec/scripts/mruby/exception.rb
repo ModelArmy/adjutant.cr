@@ -282,7 +282,8 @@ end
 # end
 # -----
 
-# ----- TODO: def X.method...
+# ----- WONTFIX: dynamic object method def
+#       WONTFIX: dynamic method dispatch via send() or __send__()
 # assert('Exception 14') do
 #   def (o = Object.new).exception_test14; UnknownConstant end
 #   a = :ng
@@ -295,6 +296,21 @@ end
 #   assert_equal :ok, a
 # end
 # -----
+
+assert('Exception 14 (MODIFIED)') do
+  class A
+    def exception_test14; UnknownConstant end
+  end
+
+  a = :ng
+  begin
+    A.new.exception_test14
+  rescue
+    a = :ok
+  end
+
+  assert_equal :ok, a
+end
 
 assert('Exception 15') do
   a = begin
