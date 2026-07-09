@@ -46,8 +46,35 @@ module Adjutant
     # script, since those don't exist in @interp's globals at all.
     property class_resolver : String -> RubyClass?
 
+    # Resolves a ConstPath (`M::A`) to a RubyClass for `M::A.new(...)`
+    # inference — same rationale and override relationship as
+    # class_resolver, just for the namespaced-path shape rather than a
+    # bare name. Default walks the namespace via @interp's live
+    # globals/constants tables (mirrors the VM's Op::GetConstantFrom);
+    # RiskWalker overrides this to also see its own not-yet-executed
+    # nested classes/modules.
+    property const_path_resolver : ConstPath -> RubyClass?
+
     def initialize(@interp : Interpreter)
       @class_resolver = ->(name : String) { @interp.get_global(name).as_rclass? }
+      @const_path_resolver = ->(node : ConstPath) { default_resolve_const_path(node) }
+    end
+
+    # Default const_path_resolver body, pulled out of the initializer's
+    # closure — a Proc literal in `initialize` that calls itself via
+    # `@const_path_resolver.call` doesn't compile: the ivar is still
+    # `Nil` at the point the closure body is type-checked, since
+    # assignment hasn't completed yet. A named method has no such
+    # ordering problem; the closure just delegates to it.
+    private def default_resolve_const_path(node : ConstPath) : RubyClass?
+      ns = node.namespace
+      owner = case ns
+              when Constant  then @interp.get_global(ns.name).as_rclass?
+              when ConstPath then default_resolve_const_path(ns)
+              else                nil
+              end
+      sym = owner ? @interp.symbols.lookup(node.name) : nil
+      (owner && sym) ? owner.constants[sym.value]?.try(&.as_rclass?) : nil
     end
 
     # Infers types through a Body's statements, returning the type of
@@ -111,14 +138,17 @@ module Adjutant
     end
 
     # `ClassName.new(...)` — the one call shape resolvable without any
-    # return-type system: a literal Constant receiver calling `new`.
+    # return-type system: a literal Constant OR ConstPath (`M::A.new`)
+    # receiver calling `new`.
     private def infer_call(node : Call, env : Env) : TypeHint
       receiver = node.receiver
-      if receiver.is_a?(Constant) && node.method == "new"
-        cls = @class_resolver.call(receiver.name)
-        return cls ? KnownType.new(cls) : UnknownType.new
-      end
-      UnknownType.new
+      return UnknownType.new unless node.method == "new"
+      cls = case receiver
+            when Constant  then @class_resolver.call(receiver.name)
+            when ConstPath then @const_path_resolver.call(receiver)
+            else                nil
+            end
+      cls ? KnownType.new(cls) : UnknownType.new
     end
 
     # Each branch gets its own env copy; per-variable results are

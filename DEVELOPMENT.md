@@ -51,13 +51,13 @@ Result: 55
 #### Sample `assess_script`
 
 The sample `assess_script.cr` shows an example of how to load and assess the risk of a script and present the risk assessment.
-- Run `ops build` and
-- then run `bin/debug/assess_script samples/scripts/risky_example.rb`
+- Run `ops build`, then
+- run `bin/debug/assess_script samples/scripts/risky_example_01.rb`
 
 You should receive the following output:
 
 ```
-=== Risk assessment: ./samples/scripts/risky_example.rb ===
+=== Risk assessment: samples/scripts/risky_example_01.rb ===
 
 Worst case: Error / reversible=No
 Tags: NetworkEgress, DeletesFiles
@@ -499,10 +499,10 @@ config:
 flowchart TD
     Call[Call node] --> Recv{{receiver?}}
     Recv -->|none| GlobalLookup["native, then a def SEEN SO FAR"]
-    Recv -->|ClassName, method = new| Ctor{{native singleton new?}}
+    Recv -->|Constant or ConstPath, method = new| Ctor{{native singleton new?}}
     Ctor -->|yes| CtorRisk[real RiskProfile]
     Ctor -->|no| CtorZero[zero-risk construction]
-    Recv -->|ClassName, other method| SingLookup{{find_singleton_method / find_native_singleton_method}}
+    Recv -->|Constant or ConstPath, other method| SingLookup{{find_singleton_method / find_native_singleton_method}}
     SingLookup -->|found| SingRisk[method's own RiskNode / RiskProfile]
     SingLookup -->|not found| Unresolved
     Recv -->|known instance type| ClassLookup["find_method / find_native_method"]
@@ -516,11 +516,13 @@ flowchart TD
 
 The one place order does NOT matter is **calls between a class's own methods**: a method body is only ever invoked after `.new`, by which point the whole class body has finished executing and every method is registered — so `walk_class` walks a class body's bare statements in order (registering `def`s and running any non-`def` statement immediately, same rule as top-level) while method bodies themselves (walked lazily via `walk_script_method`, on first call) always see the class's final, complete method table regardless of source order within it.
 
-**`ClassName.new` resolves to a real `RiskLeaf`, not unconditional zero risk, when the class registered a native singleton `new`** (see "Native singleton methods" above) — `walk_constructor_call` checks `find_native_singleton_method` the same way `resolve_on_class` checks `find_native_method` for an ordinary receiver call. A class with no native `new` still resolves construction as zero risk, matching prior behavior for the common (script-`initialize`-only) case.
+`walk_class`/`walk_module` register three different statement shapes into three different places, mirroring how the VM itself would: a plain `def` into `methods`, `def self.foo` (a `SelfNode` receiver — see "Script-defined singleton methods" above) into `singleton_methods`, and a nested `class`/`module` statement into the ENCLOSING class's own `constants` table via `walk_nested` — this last one is what makes `M::A` resolvable as a `ConstPath` afterward; without it, `A` would only be reachable in the walker's flat `@known_classes` map by its bare name, not through `M` specifically, which is not how Ruby scoping actually works.
 
-**Any other `ClassName.method` call resolves against the class's own singleton tables**, not its instance tables — `walk_class_receiver_call` checks `find_singleton_method` then `find_native_singleton_method`, mirroring the VM's dispatch fix for the same distinction (a `RubyClass` receiver is never looked up in `find_method`, which is for instances of that class). `.new` keeps its own dedicated sub-path above rather than going through this generic one, since it alone has an always-available fallback when nothing is registered.
+**`ClassName.new` (or `M::A.new`) resolves to a real `RiskLeaf`, not unconditional zero risk, when the class registered a native singleton `new`** (see "Native singleton methods" above) — `walk_constructor_call` checks `find_native_singleton_method` the same way `resolve_on_class` checks `find_native_method` for an ordinary receiver call. A class with no native `new` still resolves construction as zero risk, matching prior behavior for the common (script-`initialize`-only) case.
 
-`RiskWalker` keeps two of its own tables for this — `@top_level_procs` (defs seen so far) and `@known_classes` (classes built so far) — checked before falling back to `@interp`'s live state, which only reflects genuinely pre-existing things (builtins, or classes from a prior `interp.eval` in the host program). `TypeInference` gained an injectable `class_resolver : String -> RubyClass?` (defaulting to a live-global lookup) so `ClassName.new` inference can see the walker's own not-yet-executed classes too — without `TypeInference` needing to know `RiskWalker` exists.
+**Any other `ClassName.method` or `M::A.method` call resolves against the class's own singleton tables**, not its instance tables — `walk_class_receiver_call` checks `find_singleton_method` then `find_native_singleton_method`, mirroring the VM's dispatch fix for the same distinction (a `RubyClass` receiver is never looked up in `find_method`, which is for instances of that class). `.new` keeps its own dedicated sub-path above rather than going through this generic one, since it alone has an always-available fallback when nothing is registered. A bare `Constant` receiver resolves directly via `resolve_class`; a `ConstPath` receiver (`M::A`, or deeper nesting) resolves via `resolve_const_path`, which walks the namespace chain through each resolved class's own `constants` table — the same non-lexical, direct-lookup semantics as the VM's `Op::GetConstantFrom` (see "Constants are lexically scoped" above), NOT the lexical-parent walk a bare `Constant` reference would use.
+
+`RiskWalker` keeps two of its own tables for this — `@top_level_procs` (defs seen so far) and `@known_classes` (classes built so far) — checked before falling back to `@interp`'s live state, which only reflects genuinely pre-existing things (builtins, or classes from a prior `interp.eval` in the host program). `TypeInference` gained two injectable resolvers so its own `ClassName.new`/`M::A.new` inference can see the walker's own not-yet-executed classes too, without `TypeInference` needing to know `RiskWalker` exists: `class_resolver : String -> RubyClass?` (bare names, defaulting to a live-global lookup) and `const_path_resolver : ConstPath -> RubyClass?` (namespaced paths, defaulting to the same namespace-chain walk `resolve_const_path` does, against `@interp`'s live state instead of the walker's own tables).
 
 **Node coverage.** Every AST shape isomorphic to one already handled reuses the same `RiskNode` shape:
 
