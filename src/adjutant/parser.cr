@@ -569,10 +569,14 @@ module Adjutant
       recv = nil
       name_tok = @current
       advance
-      # Check for def obj.method
+      # Check for def obj.method / def self.method
       if at_kind?(TokenKind::Dot)
         advance
-        recv = Identifier.new(name_tok.lexeme, name_tok.line, name_tok.column)
+        recv = if name_tok.kind == TokenKind::KwSelf
+                 SelfNode.new(name_tok.line, name_tok.column)
+               else
+                 Identifier.new(name_tok.lexeme, name_tok.line, name_tok.column)
+               end
         name_tok = @current
         advance
       end

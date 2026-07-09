@@ -14,7 +14,9 @@ module Adjutant
     getter methods : Hash(Int32, ScriptProc)
     getter native_methods : Hash(Int32, NativeCallable)
     getter native_singleton_methods : Hash(Int32, NativeCallable)
+    getter singleton_methods : Hash(Int32, ScriptProc)
     getter cvars : Hash(Int32, Value)
+    getter ivars : Hash(Int32, Value)
     getter constants : Hash(Int32, Value)
     getter? is_module : Bool
 
@@ -28,12 +30,37 @@ module Adjutant
       @methods = {} of Int32 => ScriptProc
       @native_methods = {} of Int32 => NativeCallable
       @native_singleton_methods = {} of Int32 => NativeCallable
+      @singleton_methods = {} of Int32 => ScriptProc
       @cvars = {} of Int32 => Value
+      @ivars = {} of Int32 => Value
       @constants = {} of Int32 => Value
     end
 
     def define_method(sym_id : Int32, proc : ScriptProc) : Nil
       @methods[sym_id] = proc
+    end
+
+    # Register a script-defined singleton (class-level) method —
+    # `def self.foo` inside a class body. Separate table from
+    # `methods`, mirroring the native_methods/native_singleton_methods
+    # split: an instance never sees these, and a singleton call never
+    # sees `methods`.
+    def define_singleton_method(sym_id : Int32, proc : ScriptProc) : Nil
+      @singleton_methods[sym_id] = proc
+    end
+
+    # Look up a script-defined singleton method by symbol id, walking
+    # the superclass chain — same shape as find_method, separate
+    # table.
+    def find_singleton_method(sym_id : Int32) : ScriptProc?
+      cls = self
+      while cls
+        if m = cls.singleton_methods[sym_id]?
+          return m
+        end
+        cls = cls.superclass
+      end
+      nil
     end
 
     # Register a Crystal-implemented instance method under this class.
@@ -143,6 +170,21 @@ module Adjutant
         cls = cls.superclass
       end
       @cvars[sym_id] = val
+    end
+
+    # Class ivars (`@x` read/written directly in a class body or a
+    # `def self.foo` singleton method) live in their OWN slot, entirely
+    # separate from cvars (`@@x`) even when the name collides — this is
+    # real Ruby semantics, not a simplification: `A.x` and `A.new.x` can
+    # both be named `@x` and still hold independent values. Unlike
+    # cvars, class ivars are NOT inherited — no superclass walk, same
+    # as an instance's own ivars never leak to other instances.
+    def get_ivar(sym_id : Int32) : Value?
+      @ivars[sym_id]?
+    end
+
+    def set_ivar(sym_id : Int32, val : Value) : Nil
+      @ivars[sym_id] = val
     end
 
     # Constant lookup walks lexical nesting (source structure), not the

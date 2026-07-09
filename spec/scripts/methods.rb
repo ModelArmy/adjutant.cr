@@ -44,14 +44,12 @@ assert("call yielding method") do
   result == 20
 end
 
-# ---- TODO: Class method (static methods) definitions and invocations
-# assert("dynamically defined method") do
-#   class X
-#     def self.add(a,b); a+b; end
-#   end
-#   7 == X.add(3,4)
-# end
-# ----
+assert("dynamically defined class method") do
+  class X
+    def self.add(a,b); a+b; end
+  end
+  7 == X.add(3,4)
+end
 
 assert("call without parents") do
   sum = add 3, 5
@@ -64,3 +62,37 @@ assert_equal(add(3, 5), 8)
 # Native method calls without parens
 assert_equal add(3, 5), 8
 assert_equal 3+5, 8
+
+# --- TODO: global access should raise.
+# Ruby raises:
+# ```
+# tmp.rb:5:in '<main>': undefined local variable or method 'greet' for main (NameError)
+#
+# greet
+# ^^^^^
+# ```
+# assert_raise do
+#   class A
+#     def self.greet; "hi"; end
+#   end
+#   greet
+# end
+# ---
+
+# --- TODO: unknown method or local should raise
+# Ruby raises:
+# ```
+# tmp.rb:3:in 'A.check': undefined local variable or method 'boom' for class A (NameError)
+#
+#   def self.check; boom; end
+#                   ^^^^
+# 	from tmp.rb:6:in '<main>'
+# ```
+# assert_raise do
+#   class A
+#     def self.check; boom; end
+#   end
+
+#   A.check
+# end
+# ---

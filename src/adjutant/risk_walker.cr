@@ -369,11 +369,38 @@ module Adjutant
       receiver = node.receiver
       if receiver.nil?
         walk_receiverless_call(node)
-      elsif receiver.is_a?(Constant) && node.method == "new"
-        walk_constructor_call(node, receiver)
+      elsif receiver.is_a?(Constant)
+        walk_class_receiver_call(node, receiver)
       else
         receiver_type = @inference.infer_node(receiver, env)
         walk_receiver_call(node, receiver_type)
+      end
+    end
+
+    # `ClassName.method(...)` for any method, not just `new` — the
+    # receiver IS the class itself, so this resolves against the
+    # class's own singleton tables (RubyClass#find_singleton_method /
+    # #find_native_singleton_method), never the instance method table.
+    # `.new` keeps its own dedicated path (walk_constructor_call)
+    # since unlike an ordinary singleton method it's also the one case
+    # with a generic, always-available fallback (script `initialize`)
+    # when no native `new` is registered.
+    private def walk_class_receiver_call(node : Call, receiver : Constant) : RiskNode
+      if node.method == "new"
+        return walk_constructor_call(node, receiver)
+      end
+      cls = resolve_class(receiver.name)
+      return RiskUnresolved.new("#{receiver.name}.#{node.method}", node.line) unless cls
+
+      sym = @interp.symbols.lookup(node.method)
+      return RiskUnresolved.new("#{cls.name}.#{node.method}", node.line) unless sym
+
+      if script_method = cls.find_singleton_method(sym.value)
+        walk_script_method(script_method, node.line)
+      elsif native = cls.find_native_singleton_method(sym.value)
+        RiskLeaf.new(native.risk, "#{cls.name}.#{node.method}", node.line)
+      else
+        RiskUnresolved.new("#{cls.name}.#{node.method}", node.line)
       end
     end
 
