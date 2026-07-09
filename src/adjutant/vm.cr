@@ -223,6 +223,34 @@ module Adjutant
       raise runtime_error("class variable access outside of a class/module body", f)
     end
 
+    # Reads @name off `self` — a RubyObject's own ivars for an
+    # instance, or a RubyClass's separate class-ivar table when self
+    # IS the class (class body / `def self.foo`). Anything else
+    # (self is nil, a plain value, ...) silently reads nil, matching
+    # Ruby's forgiving ivar semantics outside an object context.
+    private def read_ivar(self_val : Value, sym_id : Int32) : Value
+      if obj = self_val.as_robject?
+        return obj.ivars[sym_id]? || Value.nil_value
+      end
+      if cls = self_val.as_rclass?
+        return cls.get_ivar(sym_id) || Value.nil_value
+      end
+      Value.nil_value
+    end
+
+    # Writes @name onto `self`, same branching as read_ivar. A write
+    # with no valid self (nil, a plain value, ...) silently no-ops,
+    # same forgiving semantics as the read side.
+    private def write_ivar(self_val : Value, sym_id : Int32, val : Value) : Nil
+      if obj = self_val.as_robject?
+        obj.ivars[sym_id] = val
+        return
+      end
+      if cls = self_val.as_rclass?
+        cls.set_ivar(sym_id, val)
+      end
+    end
+
     private def push_frame(proc : ScriptProc, filename : String, block : ScriptProc? = nil, stack_base : Int32 = @stack.size, outer : Array(Value)? = nil, self_val : Value = Value.nil_value, lexical_scope : RubyClass? = nil) : Frame
       if @limits.call_depth_limit > 0 && @frames.size >= @limits.call_depth_limit
         raise runtime_error("call stack too deep (limit: #{@limits.call_depth_limit})")
@@ -313,22 +341,25 @@ module Adjutant
             push(val)
 
             # --- Instance / class variables ------------------------------------
-            # Ivars live on self (a RubyObject); reading/writing outside an
-            # object silently no-ops to nil, matching Ruby's forgiving ivar
-            # semantics. Cvars live on self's class, walking the superclass
-            # chain (see RubyClass#get_cvar/#set_cvar); outside a class
-            # context this is unsupported, so it raises.
+            # Ivars live on self — a RubyObject's own ivars table for an
+            # instance, or a RubyClass's separate class-ivar table when
+            # self is the class itself (class body statements, and
+            # `def self.foo` singleton methods). These are genuinely
+            # different slots even for the same @name (see
+            # RubyClass#get_ivar/#set_ivar) — not a fallback or a
+            # simplification. Reading/writing outside either context
+            # silently no-ops to nil, matching Ruby's forgiving ivar
+            # semantics. Cvars live on self's class, walking the
+            # superclass chain (see RubyClass#get_cvar/#set_cvar); outside
+            # a class context this is unsupported, so it raises.
 
           when Op::GetIvar
             sym = chunk.consts[inst.c].as_sym
-            obj = f.self_val.as_robject?
-            push(obj ? (obj.ivars[sym.value]? || Value.nil_value) : Value.nil_value)
+            push(read_ivar(f.self_val, sym.value))
           when Op::SetIvar
             sym = chunk.consts[inst.c].as_sym
             val = pop
-            if obj = f.self_val.as_robject?
-              obj.ivars[sym.value] = val
-            end
+            write_ivar(f.self_val, sym.value, val)
             push(val)
           when Op::GetCvar
             sym = chunk.consts[inst.c].as_sym
@@ -569,10 +600,15 @@ module Adjutant
             owner.define_method(name_sym.value, proc)
             push(Value.nil_value)
           when Op::DefSingleton
-            _recv = pop
+            recv = pop
             proc_val = pop
             name_sym = chunk.consts[inst.c].as_sym
-            @globals[@symbols.intern(name_sym.name).value] = proc_val
+            unless owner = recv.as_rclass?
+              raise runtime_error("def self.#{name_sym.name} outside of a class/module body", f)
+            end
+            proc = proc_val.as_proc
+            proc.lexical_scope = owner
+            owner.define_singleton_method(name_sym.value, proc)
             push(Value.nil_value)
 
             # --- Block / yield --------------------------------------------------
@@ -752,15 +788,30 @@ module Adjutant
       if has_receiver && !args.empty?
         recv = args.first
         if recv.rclass? && name == "new"
-          return construct_object(recv.as_rclass, args[1..], filename, line)
+          return construct(recv.as_rclass, args[1..], filename, line, blk)
         end
-        if recv.robject? || recv.rclass?
-          cls = recv.robject? ? recv.as_robject.rclass : recv.as_rclass
+        if recv.robject?
+          cls = recv.as_robject.rclass
           if sym_id = @symbols.lookup(name).try(&.value)
             if method = cls.find_method(sym_id)
               return call_script_proc(method, args[1..], filename, blk, nil, self_val: recv)
             end
             if native = cls.find_native_method(sym_id)
+              return call_native(native, args, filename, line, blk)
+            end
+          end
+        elsif recv.rclass?
+          # A RubyClass receiver dispatches to ITS OWN singleton
+          # methods (def self.foo / a native singleton method),
+          # never to the instance method table — `A.find_method`
+          # would resolve methods meant for instances of A, which is
+          # simply the wrong table for a call on A itself.
+          cls = recv.as_rclass
+          if sym_id = @symbols.lookup(name).try(&.value)
+            if method = cls.find_singleton_method(sym_id)
+              return call_script_proc(method, args[1..], filename, blk, nil, self_val: recv)
+            end
+            if native = cls.find_native_singleton_method(sym_id)
               return call_native(native, args, filename, line, blk)
             end
           end
@@ -815,12 +866,30 @@ module Adjutant
       raise runtime_error("Native call error: #{ex.message}", current_frame, cause: ex)
     end
 
-    # `Foo.new(args)` — allocates a RubyObject and, if the class (or an
-    # ancestor) defines `initialize`, runs it synchronously via `invoke`
-    # so its return value can be discarded and the object returned
-    # regardless of what `initialize` itself returns.
-    private def construct_object(cls : RubyClass, args : Array(Value), filename : String, line : Int32) : Value
+    # `Foo.new(args)` — dispatches to a native singleton `new` if the
+    # class (or an ancestor) registered one via
+    # RubyClass#define_native_singleton_method, otherwise falls back
+    # to the generic script-`initialize` path. A native `new` is
+    # responsible for its own allocation (typically a RubyObject
+    # subclass carrying real state) and return value; the generic path
+    # cannot express that, since it always allocates a bare
+    # RubyObject.
+    private def construct(cls : RubyClass, args : Array(Value), filename : String, line : Int32, blk : ScriptProc?) : Value
       raise runtime_error("can't instantiate module #{cls.name}") if cls.is_module?
+      if sym_id = @symbols.lookup("new").try(&.value)
+        if native_new = cls.find_native_singleton_method(sym_id)
+          return call_native(native_new, [Value.rclass(cls)] + args, filename, line, blk)
+        end
+      end
+      construct_object(cls, args)
+    end
+
+    # The generic construction path: allocates a bare RubyObject and,
+    # if the class (or an ancestor) defines `initialize`, runs it
+    # synchronously via `invoke` so its return value can be discarded
+    # and the object returned regardless of what `initialize` itself
+    # returns.
+    private def construct_object(cls : RubyClass, args : Array(Value)) : Value
       obj_val = Value.robject(RubyObject.new(cls))
       if sym_id = @symbols.lookup("initialize").try(&.value)
         if init = cls.find_method(sym_id)

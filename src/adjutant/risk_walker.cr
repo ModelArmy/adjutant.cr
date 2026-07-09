@@ -61,6 +61,7 @@ module Adjutant
       @top_level_procs = {} of String => ScriptProc
       @known_classes = {} of String => RubyClass
       @inference.class_resolver = ->(name : String) { resolve_class(name) }
+      @inference.const_path_resolver = ->(node : ConstPath) { resolve_const_path(node) }
     end
 
     # Classes the walker has built for itself take priority — they
@@ -70,6 +71,26 @@ module Adjutant
     # program) — see class docs above @known_classes.
     private def resolve_class(name : String) : RubyClass?
       @known_classes[name]? || @interp.get_global(name).as_rclass?
+    end
+
+    # Resolves a ConstPath (`M::A`, or deeper: `M::N::A`) to a
+    # RubyClass by walking its namespace chain — mirrors the VM's
+    # Op::GetConstantFrom (a direct, non-lexical lookup in each
+    # resolved namespace's own `constants` table, populated by
+    # walk_nested as class/module statements are walked). The
+    # innermost namespace is itself resolved via resolve_class if it's
+    # a bare Constant, or recursively if it's another ConstPath.
+    private def resolve_const_path(node : ConstPath) : RubyClass?
+      ns = node.namespace
+      owner = case ns
+              when Constant  then resolve_class(ns.name)
+              when ConstPath then resolve_const_path(ns)
+              else                nil
+              end
+      return nil unless owner
+      sym = @interp.symbols.lookup(node.name)
+      return nil unless sym
+      owner.constants[sym.value]?.try(&.as_rclass?)
     end
 
     # Entry point for a top-level script body.
@@ -192,6 +213,12 @@ module Adjutant
     # methods can still be called (once `include`/module-function
     # dispatch exists) and their bodies can contain bare statements
     # that execute immediately, same as a class body.
+    # Mirrors walk_class's structure and bugs-fixed (see its own doc
+    # comment): singleton defs go into `singleton_methods`, not
+    # `@top_level_procs`; nested `class`/`module` statements register
+    # themselves into `mod.constants` (mirroring the VM's `SetConstant`
+    # under the enclosing self — see compile_class/compile_module),
+    # which is what makes `M::A` resolvable as a ConstPath afterward.
     private def walk_module(node : ModuleNode) : RiskNode
       mod = RubyClass.new(node.name, nil, is_module: true)
       @known_classes[node.name] = mod
@@ -200,11 +227,35 @@ module Adjutant
         if stmt.is_a?(DefNode) && stmt.receiver.nil?
           register_class_method(mod, stmt)
           RiskSequence.new([] of RiskNode, stmt.line).as(RiskNode)
+        elsif stmt.is_a?(DefNode) && stmt.receiver.is_a?(SelfNode)
+          register_class_singleton_method(mod, stmt)
+          RiskSequence.new([] of RiskNode, stmt.line).as(RiskNode)
+        elsif stmt.is_a?(ClassNode) || stmt.is_a?(ModuleNode)
+          walk_nested(stmt, mod)
         else
           walk_node(stmt, TypeInference::Env.new).as(RiskNode)
         end
       end
       RiskSequence.new(children, node.line)
+    end
+
+    # Walks a `class`/`module` statement nested directly inside another
+    # class/module body, then registers the result under the
+    # enclosing namespace's OWN constants table (RubyClass#constants) —
+    # the piece walk_class/walk_module alone don't do, since each only
+    # knows how to register itself into the flat @known_classes map.
+    # Without this, `M::A` (a ConstPath) has nothing to resolve
+    # against even though `A` alone is technically reachable via
+    # @known_classes's flat namespace — real Ruby scoping requires the
+    # lookup to go through M specifically.
+    private def walk_nested(stmt : Node, enclosing : RubyClass) : RiskNode
+      risk = walk_node(stmt, TypeInference::Env.new).as(RiskNode)
+      name = stmt.is_a?(ClassNode) ? stmt.as(ClassNode).name : stmt.as(ModuleNode).name
+      if nested = @known_classes[name]?
+        sym_id = @interp.symbols.intern(name).value
+        enclosing.constants[sym_id] = Value.rclass(nested)
+      end
+      risk
     end
 
     # A `def` statement itself has no risk — it registers a name,
@@ -223,10 +274,21 @@ module Adjutant
     # A `class` statement walks its body immediately (bare statements
     # in a class body execute right away, same as top-level — see
     # DEVELOPMENT.md's RiskWalker section), registering each nested
-    # DefNode as a method on the RubyClass being built. Any bare call
-    # in the class body resolves against the ENCLOSING scope's table
-    # (@top_level_procs, @known_classes as they stand at this point in
-    # the walk) — a class body isn't its own top-level scope.
+    # DefNode as a method on the RubyClass being built — an instance
+    # method (`stmt.receiver.nil?`) into `cls`'s own `methods` table,
+    # or a script singleton method (`def self.foo`, `stmt.receiver.
+    # is_a?(SelfNode)`) into `cls`'s SEPARATE `singleton_methods`
+    # table. Without this split, `def self.foo` would fall through to
+    # the generic `walk_node`/`walk_def` path, which registers into
+    # `@top_level_procs` — a real scope-crossing bug (silently
+    # treating a class-scoped singleton method as a top-level
+    # function), not just a missed case; `def obj.method` for any
+    # OTHER receiver besides `self` remains genuinely unsupported (see
+    # DEVELOPMENT.md) and falls through to walk_node like today. Any
+    # bare call in the class body resolves against the ENCLOSING
+    # scope's table (@top_level_procs, @known_classes as they stand at
+    # this point in the walk) — a class body isn't its own top-level
+    # scope.
     private def walk_class(node : ClassNode) : RiskNode
       superclass = node.superclass.try { |name| resolve_class(name) }
       cls = RubyClass.new(node.name, superclass)
@@ -236,6 +298,11 @@ module Adjutant
         if stmt.is_a?(DefNode) && stmt.receiver.nil?
           register_class_method(cls, stmt)
           RiskSequence.new([] of RiskNode, stmt.line).as(RiskNode)
+        elsif stmt.is_a?(DefNode) && stmt.receiver.is_a?(SelfNode)
+          register_class_singleton_method(cls, stmt)
+          RiskSequence.new([] of RiskNode, stmt.line).as(RiskNode)
+        elsif stmt.is_a?(ClassNode) || stmt.is_a?(ModuleNode)
+          walk_nested(stmt, cls)
         else
           walk_node(stmt, TypeInference::Env.new).as(RiskNode)
         end
@@ -248,6 +315,13 @@ module Adjutant
         ast_body: node.body, ast_params: node.params)
       sym_id = @interp.symbols.intern(node.name).value
       cls.define_method(sym_id, proc)
+    end
+
+    private def register_class_singleton_method(cls : RubyClass, node : DefNode) : Nil
+      proc = ScriptProc.new(Chunk.new, node.name, node.params.map(&.name),
+        ast_body: node.body, ast_params: node.params)
+      sym_id = @interp.symbols.intern(node.name).value
+      cls.define_singleton_method(sym_id, proc)
     end
 
     # The risk of an assignment's VALUE expression (e.g. a risky call
@@ -367,30 +441,75 @@ module Adjutant
 
     private def walk_call(node : Call, env : TypeInference::Env) : RiskNode
       receiver = node.receiver
-      if receiver.nil?
+      case receiver
+      when Nil
         walk_receiverless_call(node)
-      elsif receiver.is_a?(Constant) && node.method == "new"
-        walk_constructor_call(node, receiver)
+      when Constant
+        walk_class_receiver_call(node, resolve_class(receiver.name), receiver.name)
+      when ConstPath
+        walk_class_receiver_call(node, resolve_const_path(receiver), const_path_name(receiver))
       else
         receiver_type = @inference.infer_node(receiver, env)
         walk_receiver_call(node, receiver_type)
       end
     end
 
-    # `ClassName.new(...)` — mirrors TypeInference#infer_call's special
-    # case. `.new` itself isn't a registered native/script method
-    # today (no singleton-method support yet — see DEVELOPMENT.md), so
-    # it carries no RiskProfile of its own; treating it as an ordinary
-    # unresolved Call would wrongly flag every object construction.
-    # Once native `.new` (e.g. a future File.new) gets a real
-    # RiskProfile via singleton-method dispatch, this should resolve
-    # to THAT profile instead of assuming zero risk unconditionally.
-    private def walk_constructor_call(node : Call, receiver : Constant) : RiskNode
-      cls = resolve_class(receiver.name)
-      if cls
-        RiskSequence.new([] of RiskNode, node.line)
+    # Render a ConstPath back to its dotted display form (`M::A`) for
+    # RiskUnresolved/RiskLeaf labels — cosmetic only, doesn't affect
+    # resolution.
+    private def const_path_name(node : ConstPath) : String
+      prefix = case ns = node.namespace
+               when Constant  then ns.name
+               when ConstPath then const_path_name(ns)
+               else                "?"
+               end
+      "#{prefix}::#{node.name}"
+    end
+
+    # `ClassName.method(...)` for any method, not just `new` — the
+    # receiver IS the class itself (already resolved by the caller,
+    # from either a bare Constant or a ConstPath), so this resolves
+    # against the class's own singleton tables
+    # (RubyClass#find_singleton_method / #find_native_singleton_method),
+    # never the instance method table. `.new` keeps its own dedicated
+    # path (walk_constructor_call) since unlike an ordinary singleton
+    # method it's also the one case with a generic, always-available
+    # fallback (script `initialize`) when no native `new` is
+    # registered. `display_name` is purely for RiskUnresolved/RiskLeaf
+    # labels — resolution itself only depends on `cls`.
+    private def walk_class_receiver_call(node : Call, cls : RubyClass?, display_name : String) : RiskNode
+      if node.method == "new"
+        return walk_constructor_call(node, cls, display_name)
+      end
+      return RiskUnresolved.new("#{display_name}.#{node.method}", node.line) unless cls
+
+      sym = @interp.symbols.lookup(node.method)
+      return RiskUnresolved.new("#{cls.name}.#{node.method}", node.line) unless sym
+
+      if script_method = cls.find_singleton_method(sym.value)
+        walk_script_method(script_method, node.line)
+      elsif native = cls.find_native_singleton_method(sym.value)
+        RiskLeaf.new(native.risk, "#{cls.name}.#{node.method}", node.line)
       else
-        RiskUnresolved.new("#{receiver.name}.new", node.line)
+        RiskUnresolved.new("#{cls.name}.#{node.method}", node.line)
+      end
+    end
+
+    # `ClassName.new(...)` — mirrors TypeInference#infer_call's special
+    # case. If the class (or an ancestor) registered a native
+    # singleton `new` (see RubyClass#define_native_singleton_method —
+    # a builtin like File allocating real state), resolve to THAT
+    # method's real RiskProfile. Otherwise `.new` is the generic
+    # script-`initialize` path, which carries no RiskProfile of its
+    # own — treated as zero risk, same as before native singletons
+    # existed.
+    private def walk_constructor_call(node : Call, cls : RubyClass?, display_name : String) : RiskNode
+      return RiskUnresolved.new("#{display_name}.new", node.line) unless cls
+
+      if (sym = @interp.symbols.lookup("new")) && (native_new = cls.find_native_singleton_method(sym.value))
+        RiskLeaf.new(native_new.risk, "#{cls.name}.new", node.line)
+      else
+        RiskSequence.new([] of RiskNode, node.line)
       end
     end
 
