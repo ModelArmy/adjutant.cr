@@ -222,7 +222,6 @@ module Adjutant
     #     not "is Integer's SUPERCLASS Class" (a different, wrong
     #     question — Integer.superclass is Object, never Class)
     #   - any other builtin-kind Value: Interpreter#builtin_class_for
-    # ameba:disable Naming/PredicateName - Not applicable for this method
     private def is_a_target?(recv : Value, target : RubyClass?) : Bool
       start_cls = recv.as_robject?.try(&.rclass) ||
                   recv.as_rclass?.try(&.rclass) ||
@@ -580,7 +579,7 @@ module Adjutant
               when part.int?    then part.as_int.to_s
               when part.float?  then part.as_float.to_s
               when part.bool?   then part.as_bool.to_s
-              when part.null?   then "nil"
+              when part.null?   then ""
               when part.symbol? then part.as_sym.name
               else                   part.to_s
               end
@@ -1009,7 +1008,7 @@ module Adjutant
         str = args.map { |arg|
           case
           when arg.string? then arg.as_string
-          when arg.null?   then "nil"
+          when arg.null?   then ""
           when arg.bool?   then arg.as_bool.to_s
           when arg.int?    then arg.as_int.to_s
           when arg.float?  then arg.as_float.to_s

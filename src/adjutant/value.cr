@@ -219,7 +219,7 @@ module Adjutant
 
     def to_s(io : IO) : Nil
       case r = @raw
-      when Nil        then io << "nil"
+      when Nil        then nil # real Ruby: nil.to_s == "" — write nothing
       when Bool       then io << r
       when Int64      then io << r
       when Float64    then io << r
@@ -234,6 +234,7 @@ module Adjutant
 
     def inspect(io : IO) : Nil
       case r = @raw
+      when Nil        then io << "nil"
       when String     then io << '"' << r << '"'
       when Sym        then io << r
       when ScriptProc then io << "#<Proc>"
