@@ -20,6 +20,17 @@ module Adjutant
     getter constants : Hash(Int32, Value)
     getter? is_module : Bool
 
+    # The class OF this class — `Integer.rclass == Class`,
+    # `Class.rclass == Class` (the one genuinely self-referential case
+    # in the hierarchy). Nilable only to break the bootstrap
+    # chicken-and-egg: `Class` itself can't have a valid `rclass` at
+    # the moment it's allocated, since nothing exists yet to point to.
+    # See Interpreter#bootstrap_core_hierarchy — every RubyClass other
+    # than the three core ones is expected to have this set by the time
+    # a script can observe it (`.class` on a `nil` rclass is a bug, not
+    # a valid state to display to a script).
+    property rclass : RubyClass?
+
     # The class/module this one was lexically nested inside at the point
     # it was defined (e.g. `class A; class B; end; end` → B.lexical_parent
     # == A). Distinct from `superclass` — this tracks source nesting, not
@@ -209,6 +220,14 @@ module Adjutant
   #
   # Ivars are keyed by interned symbol id, mirroring RubyClass's
   # method table and the existing GetIvar/SetIvar opcode contract.
+  #
+  # `rclass` here and RubyClass#rclass are the same relationship
+  # ("what class is THIS thing an instance of") at two different
+  # levels — an instance's rclass is the class that built it; a
+  # class's own rclass is (almost always) Class itself. They share a
+  # name deliberately, matching how `obj.class` and `SomeClass.class`
+  # are genuinely the same method in real Ruby — not a coincidence to
+  # be confused by.
   #
   # Open to subclassing: a native builtin with real internal state
   # (e.g. an open file handle) defines a RubyObject subclass with its

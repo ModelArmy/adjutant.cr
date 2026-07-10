@@ -11,8 +11,10 @@ module Adjutant
         eval("class Foo\nend\nFoo").as_rclass.name.should eq "Foo"
       end
 
-      it "class has no superclass by default" do
-        eval("class Foo\nend\nFoo").as_rclass.superclass.should be_nil
+      it "class defaults to Object as its superclass, not nil" do
+        interp, _ = make_interp
+        cls = interp.eval("class Foo\nend\nFoo").as_rclass
+        cls.superclass.should eq interp.object_class
       end
 
       it "is not a module" do
