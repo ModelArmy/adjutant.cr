@@ -568,3 +568,7 @@ This list should grow as new features are proposed — the test is always "does 
 The three above are excluded because they'd break static analysis — no amount of implementation effort makes them safe to add. The following are a different kind of exclusion: real Ruby features that are simply out of scope, cut as a deliberate scoping decision rather than a static-analysis hazard. Revisiting one of these is a normal scoping conversation, not a "this breaks the model" one.
 
 - **`Class.new`/`Module.new`** — dynamically defining a class or module at runtime (optionally with a block as its body). Cut when designing the `Object`/`Class`/`Module` bootstrap: it would need a native singleton `new` on `Class` capable of executing an arbitrary block as a class body, which is materially harder than the rest of that bootstrap and wasn't needed by anything driving the base-types work. `class Foo; end` (the literal, static form) is unaffected.
+
+## Not yet implemented / known missing
+
+- **Exponential float literals** (`1e10`, `1.5e-3`). `Lexer#scan_number` has no `e`/`E` exponent handling at all — `1e10` lexes as `Integer(1)` followed by a separate identifier `e10`, not a clean parse error. Noticed while bootstrapping the `Float` builtin class (Phase 3 of base types), which is otherwise unaffected — `Float` the class/its methods work fine on any float `Value`, however it was constructed (a plain decimal literal, `to_f`, division, ...); this is purely about the lexer not accepting one particular literal spelling. Small, mechanical fix whenever it's worth doing.

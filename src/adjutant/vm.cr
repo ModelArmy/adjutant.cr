@@ -222,6 +222,7 @@ module Adjutant
     #     not "is Integer's SUPERCLASS Class" (a different, wrong
     #     question — Integer.superclass is Object, never Class)
     #   - any other builtin-kind Value: Interpreter#builtin_class_for
+    # ameba:disable Naming/PredicateName - deliberately named to echo is_a?/kind_of?, not a generic predicate
     private def is_a_target?(recv : Value, target : RubyClass?) : Bool
       start_cls = recv.as_robject?.try(&.rclass) ||
                   recv.as_rclass?.try(&.rclass) ||

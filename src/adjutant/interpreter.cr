@@ -161,6 +161,7 @@ module Adjutant
              when val.null?   then "NilClass"
              when val.bool?   then val.as_bool ? "TrueClass" : "FalseClass"
              when val.int?    then "Integer"
+             when val.float?  then "Float"
              when val.symbol? then "Symbol"
              else                  return nil
              end
@@ -257,6 +258,7 @@ module Adjutant
     # error-class hierarchy.
     private def bootstrap_builtin_classes : Nil
       register_builtin_class(Builtins.bootstrap_integer(self))
+      register_builtin_class(Builtins.bootstrap_float(self))
       register_builtin_class(Builtins.bootstrap_nil_class(self))
       register_builtin_class(Builtins.bootstrap_true_class(self))
       register_builtin_class(Builtins.bootstrap_false_class(self))
