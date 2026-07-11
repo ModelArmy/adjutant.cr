@@ -137,13 +137,6 @@ end
 - Post-hoc audit = replay/dump the `FlowLog` after the script completes.
 
 ```mermaid
----
-displayMode: compact
-config:
-  layout: elk
-  themeVariables:
-    fontSize: 12px
----
 flowchart TD
     A[Value] --> B["label : SecurityLabel — tag set, always on"]
     C[VM dispatch loop] -->|on join| D["FlowLog — append-only, optional"]
@@ -151,15 +144,71 @@ flowchart TD
     F["config: track_flow?"] -.enable/disable.-> D
 ```
 
+## Policy object (decided)
+
+A single IFC policy, loaded from JSON (not YAML — indentation errors in
+YAML are hard to catch; JSON's explicit structure avoids that class of
+bug), modeled as `JSON::Serializable` so the *agent* embedding Adjutant can
+load/construct it however it likes (parse a file at an agent-provided path,
+build it in code, etc.) and simply pass the resulting object in — Adjutant
+itself does not read policy paths off disk internally.
+
+The policy object is attached to `Interpreter` (`Interpreter#ifc_policy`)
+so any native module or sink check can query it. Two lookup shapes it needs
+to support:
+
+- **origin → sensitivity**: path/host pattern matching, consulted by a
+  native module at tag-creation time (e.g. File IO module checking whether
+  the path it just opened matches a sensitive pattern).
+- **(RiskTag, Sensitivity) → action**: the sink table, consulted at call
+  time to decide whether a risky call with tainted arguments should
+  interrupt.
+
+Exact JSON schema for both is deferred to the sink-policy phase (piece 3) —
+this section fixes the *access pattern*, not the schema.
+
+```mermaid
+flowchart LR
+    A["agent: load/build policy"] --> B["IFCPolicy — JSON::Serializable"]
+    B --> C["Interpreter#ifc_policy"]
+    C --> D["native module: policy.sensitivity_for(origin)"]
+    C --> E["sink check: policy.rule_for(risk_tag, sensitivity)"]
+```
+
+## Declassification (decided: not supported — sensitivity is monotonic)
+
+Considered and rejected for this phase. Reasoning:
+
+- Approval in Adjutant's model is naturally **per-sink-event** ("this
+  script may POST this to this host right now"), not a statement that the
+  underlying data is safe in general. Lowering a label after one approval
+  risks a script later doing something with that same (or derived) data
+  that the user never actually saw or approved — the classic laundering
+  problem declassification mechanisms (e.g. Jif's scoped `declassify`)
+  exist to guard against.
+- Concrete case that motivated this: script reads `/etc/passwd`, user
+  approves one network POST, script continues and later writes the same
+  tainted value to a log file. The concern was avoiding a second prompt for
+  data "already approved" — but the fix for that is not lowering the
+  label. Sensitivity never decreases once joined onto a value: not on
+  approval, not on use, not via any operation defined here.
+- The actual problem worth solving — avoiding repeat interrupts for the
+  *same* origin-to-sink flow within one script run — belongs in the
+  sink-policy phase as an **approval cache keyed by (tag, sink)**, separate
+  from the lattice entirely. The lattice/label design has no declassify
+  operation and does not need one.
+
+This keeps the lattice simple: join only ever holds sensitivity steady or
+escalates it, with no path for a value to become less sensitive during
+execution.
+
 ## Open questions for the next design conversation (sink policy, piece 3)
 
-- Exact `RiskTag` × `Sensitivity` policy table / rule language.
-- Where the path-pattern sensitivity policy lives (config file? in-code
-  defaults + override?) and how a `ScriptModule` author consults it when
-  creating a tag.
-- Declassification: is there ever a legitimate way to lower a label's
-  sensitivity mid-script (e.g. after an explicit user confirmation), or is
-  sensitivity strictly monotonic for now?
+- Exact `RiskTag` × `Sensitivity` policy table / rule language, and the
+  origin-pattern → sensitivity JSON schema.
+- Approval cache: keyed by (tag identity, sink) — what counts as "the same
+  flow" for suppressing repeat prompts within one script run (exact origin
+  match? origin pattern? tag kind alone?).
 
 ## References
 
