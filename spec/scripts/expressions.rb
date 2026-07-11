@@ -94,3 +94,29 @@ end
 assert_not_nil(Class)
 assert_not_nil(Object)
 assert_not_nil(Module)
+
+assert("Arrays") do
+  nums = [5, 10]
+  assert_equal nums[0], 5
+  nums.each do | n |
+    assert_equal n.class, Integer
+  end
+
+  strs = ["hello", "world"]
+  assert_equal strs[1], "world"
+
+  mixed = ["hello", 5, "world", 0.5432]
+  assert_equal mixed[2], "world"
+
+  assert_equal Array, nums.class
+end
+
+assert("Strings") do
+  str = "Hello"
+  assert_equal str[1], "e"
+  assert_equal str.upcase, "HELLO"
+  assert_equal str.downcase, "hello"
+  assert_false str.empty?
+
+  assert_equal String, str.class
+end
