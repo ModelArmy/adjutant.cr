@@ -1,8 +1,9 @@
-# IFC design — lattice, labels, flow log
+# IFC design — lattice, labels, flow log, VM propagation
 
-Status: draft, pre-code. Scope: Phase 8 (IFC / `SecurityLabel`), first of five
-pieces (lattice → VM propagation → sink policy → enforcement → agent-facing
-API). This document covers the lattice piece only.
+Status: draft, pre-code. Scope: Phase 8 (IFC / `SecurityLabel`), first two
+of five pieces (lattice → VM propagation → sink policy → enforcement →
+agent-facing API). This document covers the lattice and VM propagation
+pieces.
 
 ## Goal
 
@@ -137,6 +138,13 @@ end
 - Post-hoc audit = replay/dump the `FlowLog` after the script completes.
 
 ```mermaid
+---
+displayMode: compact
+config:
+  layout: elk
+  themeVariables:
+    fontSize: 12px
+---
 flowchart TD
     A[Value] --> B["label : SecurityLabel — tag set, always on"]
     C[VM dispatch loop] -->|on join| D["FlowLog — append-only, optional"]
@@ -144,7 +152,108 @@ flowchart TD
     F["config: track_flow?"] -.enable/disable.-> D
 ```
 
-## Policy object (decided)
+## VM propagation (piece 2, decided)
+
+Survey of `vm.cr` / `value.cr` on branch `implement-ifc` @ `f2f4f34` found:
+
+- `Value#label`, `#with_label`, `#join_label` already exist (from the
+  lattice piece's stub work). Not yet called anywhere in the VM.
+- **Free propagation**: `GetLocal`/`SetLocal`/`GetOuter`/`SetOuter`/
+  `GetGlobal`/`SetGlobal`/`Ret`/`Dup` and other pure stack moves already
+  carry the label correctly with zero code changes — `Value` is a struct,
+  copied whole, so the label field travels automatically wherever a
+  `Value` is moved without being combined with another `Value`.
+- **Missing — every combination/construction site drops the label**:
+  `exec_binary`'s arithmetic/bitwise/comparison helpers (`arith_add`,
+  `arith_op`, `arith_div`, `arith_mod`, `int_op`, `exec_shl`,
+  `compare_op`), `Op::Eq`, `Op::Concat`, `Op::MakeArray`, `Op::MakeHash`,
+  `Op::MakeRange` all construct a fresh `Value` with `label: nil` (or no
+  label argument at all), discarding whatever labels the operands carried.
+  Fix: each of these joins the labels of its inputs
+  (`lhs.join_label(rhs)`, or fold across N parts for `Concat`/
+  `MakeArray`/`MakeHash`) into the result's label instead of dropping it.
+- **Sink check hook point**: `VM#call_native` — every `NativeCallable`
+  call (the only place a `RiskProfile` lives) routes through this single
+  method, with the callable's `risk : RiskProfile` and every argument
+  `Value` (labels included) already in hand. This is the natural
+  attachment point for the live sink check in piece 3; propagation itself
+  does not need to change this method.
+
+### Containers: labels must accumulate into the container itself, not just its elements (decided)
+
+Motivating case:
+
+```ruby
+arr = []
+arr[0] = read_file("/etc/passwd")   # tainted value into a slot
+post(arr)                            # sink call
+```
+
+The sink check at `post(arr)` inspects the label of the `Value` actually
+passed to the sink — the array itself, not its elements. If `Op::SetIndex`
+only ever left the taint sitting on `arr.as_array[0]`, the array's own
+top-level label would stay `nil` and the sink check would miss it
+entirely: the exact explicit-flow-through-assignment case IFC exists to
+catch.
+
+Decided: `Op::SetIndex` joins the incoming value's label into the
+*container's* own label (`target = target.join_label(val)` conceptually —
+the underlying Crystal array/hash mutates in place, but the wrapping
+`Value`'s label must be updated too, meaning `SetIndex` needs to write the
+updated container `Value` back to wherever it came from, not just mutate
+through the reference). Same principle as `MakeArray`/`MakeHash`
+construction above — this is mutation-time accumulation, not a new rule.
+
+```mermaid
+---
+displayMode: compact
+config:
+  layout: elk
+  themeVariables:
+    fontSize: 12px
+---
+flowchart TD
+    A["read_file('/etc/passwd')"] --> B["Value: label={file:/etc/passwd, High}"]
+    B --> C["SetIndex: arr[0] = value"]
+    C --> D["arr's own label := join(arr.label, value.label)"]
+    D --> E["post(arr) — sink check sees arr's label directly"]
+```
+
+**Known consequence, accepted**: container labels are monotonic — they
+never shrink, even if the tainted element is later overwritten or removed
+(`arr[0] = "clean"`, `arr.delete_at(0)`). This is a real precision loss
+(false positives accumulate on long-lived containers, worse for deeply
+nested containers where a full re-scan to recompute "am I still tainted"
+would be the only precise alternative and is not worth the cost). Accepted
+because it's the same direction already chosen for sensitivity in the
+lattice design (monotonic, worst-wins, no declassification) — consistent,
+and fails safe rather than silently under-tainting.
+
+**Mitigations, not solved by the VM alone**:
+- *Reassignment* is the cheap, general way for a script to shed
+  accumulated container taint: labels are on values, not variable
+  bindings, so binding a fresh value to the same variable name starts
+  clean. Worth documenting as the standard recommendation for script/agent
+  authors once IFC ships.
+- *Native container-emptying methods* (`Array#clear`, `Hash#clear`, and
+  similarly a future `#replace`) are a second, deliberate mechanism: since
+  the postcondition (empty, or exactly some other container's contents)
+  is known statically at that call, no re-scan is needed — the label can
+  simply be reset (`clear`) or recomputed from the replacement's own
+  label (`replace`), rather than continuing to accumulate. This is a
+  **native-method-author convention**, not a VM-level rule: each such
+  method must explicitly reset/recompute the label itself
+  (`container_value.with_label(nil)` or equivalent) — the VM's join logic
+  has no special case for it. Partial removal (`pop`, `delete_at`) is
+  deliberately left *not* resetting the label — genuinely ambiguous
+  without a scan, so it stays conservative by default rather than
+  guessing.
+- Exact `clear`/`replace` semantics are not being spelled out now — this
+  section documents the convention and defers concrete implementation to
+  when `Array`/`Hash` native methods needing it are actually written (to
+  be reflected in `DEVELOPMENT.md` at that point, not here).
+
+
 
 A single IFC policy, loaded from JSON (not YAML — indentation errors in
 YAML are hard to catch; JSON's explicit structure avoids that class of
@@ -168,6 +277,13 @@ Exact JSON schema for both is deferred to the sink-policy phase (piece 3) —
 this section fixes the *access pattern*, not the schema.
 
 ```mermaid
+---
+displayMode: compact
+config:
+  layout: elk
+  themeVariables:
+    fontSize: 12px
+---
 flowchart LR
     A["agent: load/build policy"] --> B["IFCPolicy — JSON::Serializable"]
     B --> C["Interpreter#ifc_policy"]
@@ -209,6 +325,18 @@ execution.
 - Approval cache: keyed by (tag identity, sink) — what counts as "the same
   flow" for suppressing repeat prompts within one script run (exact origin
   match? origin pattern? tag kind alone?).
+
+## Carried forward to VM propagation implementation (piece 2)
+
+- Exact `clear`/`replace` label-reset semantics for `Array`/`Hash` native
+  methods — convention decided (reset on full-empty/full-replace, stay
+  conservative on partial removal), concrete implementation deferred to
+  when those native methods are written.
+- Whether `Op::MakeRange`'s two-or-three-element array encoding (see
+  `bytecode.cr` comment: real `Range` object type not yet implemented)
+  needs any special handling beyond the same join-across-elements rule
+  used for `MakeArray` — flagged in case the eventual real `Range` type
+  changes this.
 
 ## References
 
