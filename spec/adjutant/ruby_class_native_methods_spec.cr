@@ -121,5 +121,12 @@ module Adjutant
     def invoke(proc : ScriptProc, args : Array(Value)) : Value
       Value.nil_value
     end
+
+    # Minimal but real, not a stub — a direct-NativeCallable test that
+    # exercises a method relying on == (e.g. Array#include?) needs
+    # actual comparison semantics, not just a type-checking placeholder.
+    def values_equal?(a : Value, b : Value) : Bool
+      a == b
+    end
   end
 end

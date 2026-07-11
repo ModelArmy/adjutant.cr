@@ -19,6 +19,17 @@ module Adjutant
     # Use this method to yield / call a block from a native
     # function
     abstract def invoke(proc : ScriptProc, args : Array(Value)) : Value
+
+    # Real Ruby `==` semantics (deep/structural for Array and Hash,
+    # identity for RubyObject, value equality for scalars — see
+    # VM#values_equal?, the single source of truth this delegates to).
+    # Needed by any native method that has to compare Values for
+    # equality (Array#include?, Hash key lookup on a container-typed
+    # key, ...) — without this, such a method would either be unable
+    # to compare correctly at all, or would have to duplicate
+    # values_equal?'s logic itself and risk drifting out of sync with
+    # what Op::Eq actually does.
+    abstract def values_equal?(a : Value, b : Value) : Bool
   end
 
   struct NativeFunctionCall
@@ -36,6 +47,10 @@ module Adjutant
     # ---- CallContext
     def invoke(proc : ScriptProc, args : Array(Value)) : Value
       @vm.invoke(proc, args)
+    end
+
+    def values_equal?(a : Value, b : Value) : Bool
+      @vm.values_equal?(a, b)
     end
   end
 
@@ -163,6 +178,7 @@ module Adjutant
              when val.int?    then "Integer"
              when val.float?  then "Float"
              when val.string? then "String"
+             when val.array?  then "Array"
              when val.symbol? then "Symbol"
              else                  return nil
              end
@@ -265,6 +281,7 @@ module Adjutant
       register_builtin_class(Builtins.bootstrap_false_class(self))
       register_builtin_class(Builtins.bootstrap_symbol(self))
       register_builtin_class(Builtins.bootstrap_string(self))
+      register_builtin_class(Builtins.bootstrap_array(self))
     end
 
     # Applies the same superclass/rclass defaulting define_builtin_class

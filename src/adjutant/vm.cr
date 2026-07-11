@@ -512,7 +512,7 @@ module Adjutant
           when Op::BitAnd then exec_binary(inst) { |lhs, rhs| int_op(lhs, rhs, :&) }
           when Op::BitOr  then exec_binary(inst) { |lhs, rhs| int_op(lhs, rhs, :|) }
           when Op::Xor    then exec_binary(inst) { |lhs, rhs| int_op(lhs, rhs, :^) }
-          when Op::Shl    then exec_binary(inst) { |lhs, rhs| int_op(lhs, rhs, :<<) }
+          when Op::Shl    then exec_binary(inst) { |lhs, rhs| exec_shl(lhs, rhs) }
           when Op::Shr    then exec_binary(inst) { |lhs, rhs| int_op(lhs, rhs, :>>) }
             # --- Comparison -----------------------------------------------------
 
@@ -1197,6 +1197,12 @@ module Adjutant
       when a.int? && b.float?     then Value.float(a.as_int.to_f64 + b.as_float)
       when a.float? && b.int?     then Value.float(a.as_float + b.as_int.to_f64)
       when a.string? && b.string? then Value.string(a.as_string + b.as_string)
+      when a.array? && b.array?
+        # Real Ruby's Array#+ returns a NEW array (the two operands are
+        # untouched) — Value.new(Array(Value), nil) wraps a fresh
+        # Crystal array, same construction Op::MakeArray itself uses,
+        # not a mutation of either a's or b's underlying array.
+        Value.new(a.as_array + b.as_array, nil)
       else
         raise runtime_error("cannot add #{a} and #{b}")
       end
@@ -1268,6 +1274,25 @@ module Adjutant
       Value.int(n)
     end
 
+    # `<<` is overloaded in real Ruby between Integer's bit-shift and
+    # Array's append-and-return-self — genuinely different operations
+    # sharing one operator. Split out from int_op (which stays
+    # Integer-only, still backing `&`/`|`/`^`/`>>`) rather than adding
+    # an array branch inside it, so those other bitwise ops don't
+    # silently gain array behavior they were never meant to have.
+    private def exec_shl(a : Value, b : Value) : Value
+      if a.array?
+        # Real Ruby: mutates a in place AND returns a (so `arr << 1 <<
+        # 2` chains) — push onto the same underlying Array(Value), not
+        # a new one, matching Op::SetIndex's existing in-place
+        # mutation of the same reference.
+        a.as_array.push(b)
+        a
+      else
+        int_op(a, b, :<<)
+      end
+    end
+
     # ameba:disable Metrics/CyclomaticComplexity
     private def compare_op(a : Value, b : Value, op : Symbol) : Value
       result = case
@@ -1303,8 +1328,11 @@ module Adjutant
       Value.bool(result)
     end
 
+    # `protected`, not `private`, so NativeFunctionCall (NativeCallContext's
+    # implementation, in interpreter.cr) can delegate to it — same
+    # relationship as VM#invoke above.
     # ameba:disable Metrics/CyclomaticComplexity
-    private def values_equal?(a : Value, b : Value) : Bool
+    protected def values_equal?(a : Value, b : Value) : Bool
       case
       when a.null? && b.null?     then true
       when a.bool? && b.bool?     then a.as_bool == b.as_bool
@@ -1329,6 +1357,28 @@ module Adjutant
         # before any override, so this is the correct default, not a
         # simplification silently diverging from Ruby.
         a.as_robject == b.as_robject
+      when a.array? && b.array?
+        # Deep, element-wise equality — real Ruby's Array#== compares
+        # length then each element via ITS OWN ==, recursively (so
+        # [[1], [2]] == [[1], [2]] is true). Recursing through
+        # values_equal? itself, not Crystal's Array#== on the
+        # underlying Array(Value), is what makes that recursion use
+        # Adjutant's own equality rules at every level instead of
+        # Crystal's.
+        aa, ba = a.as_array, b.as_array
+        aa.size == ba.size && aa.zip(ba).all? { |x, y| values_equal?(x, y) }
+      when a.hash? && b.hash?
+        # Same reasoning as Array — same key set, and each value equal
+        # via values_equal? (not Crystal's own Hash#==, which would use
+        # Value's default struct == instead of this method's rules).
+        # Value has no custom hash() override, so key lookup itself
+        # still uses Crystal's structural hashing on the ValueRaw union
+        # — fine for the Nil/Bool/Int64/Float64/String/Sym keys real
+        # scripts actually use; an Array or Hash used AS a key would
+        # hash by reference instead of by content, a real but narrow
+        # gap worth knowing about rather than a silent one.
+        ah, bh = a.as_hash, b.as_hash
+        ah.size == bh.size && ah.all? { |k, v| (bv = bh[k]?) && values_equal?(v, bv) }
       else false
       end
     end
