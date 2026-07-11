@@ -520,7 +520,9 @@ module Adjutant
 
           when Op::Eq
             b, a = pop, pop
-            push(Value.bool(values_equal?(a, b)))
+            result = Value.bool(values_equal?(a, b), SecurityLabel.join(a.label, b.label))
+            @flow_log.record("Eq", [a.label, b.label], result.label, f.line)
+            push(result)
           when Op::Lt  then exec_binary(inst) { |lhs, rhs| compare_op(lhs, rhs, :<) }
           when Op::Lte then exec_binary(inst) { |lhs, rhs| compare_op(lhs, rhs, :<=) }
           when Op::Gt  then exec_binary(inst) { |lhs, rhs| compare_op(lhs, rhs, :>) }
@@ -556,14 +558,18 @@ module Adjutant
             n = inst.a.to_i
             elements = @stack.last(n).dup
             @stack.pop(n) if n > 0
-            push(Value.new(elements, nil))
+            joined_label = elements.reduce(nil.as(SecurityLabel?)) { |acc, value| SecurityLabel.join(acc, value.label) }
+            @flow_log.record("MakeArray", elements.map(&.label), joined_label, f.line)
+            push(Value.new(elements, joined_label))
           when Op::MakeHash
             n = inst.a.to_i * 2
             pairs = @stack.last(n)
             @stack.pop(n) if n > 0
             h = {} of Value => Value
             pairs.each_slice(2) { |pair| h[pair[0]] = pair[1] }
-            push(Value.new(h, nil))
+            joined_label = pairs.reduce(nil.as(SecurityLabel?)) { |acc, value| SecurityLabel.join(acc, value.label) }
+            @flow_log.record("MakeHash", pairs.map(&.label), joined_label, f.line)
+            push(Value.new(h, joined_label))
           when Op::MakeRange
             rend = pop
             rstart = pop
@@ -571,7 +577,9 @@ module Adjutant
             # a Range object type will be added with the object model.
             exclusive = inst.a == 1_u8
             elems = [rstart, rend, Value.bool(exclusive)]
-            push(Value.new(elems, nil))
+            joined_label = SecurityLabel.join(rstart.label, rend.label)
+            @flow_log.record("MakeRange", [rstart.label, rend.label], joined_label, f.line)
+            push(Value.new(elems, joined_label))
           when Op::Concat
             n = inst.a.to_i
             parts = @stack.last(n)
@@ -587,7 +595,9 @@ module Adjutant
               else                   part.to_s
               end
             }.join
-            push(Value.string(str))
+            joined_label = parts.reduce(nil.as(SecurityLabel?)) { |acc, part| SecurityLabel.join(acc, part.label) }
+            @flow_log.record("Concat", parts.map(&.label), joined_label, f.line)
+            push(Value.string(str, joined_label))
 
             # --- Local variables ------------------------------------------------
           when Op::GetLocal
@@ -1423,7 +1433,9 @@ module Adjutant
     private def exec_binary(inst : Instruction, &block : Value, Value -> Value) : Nil
       b = pop
       a = pop
-      push(block.call(a, b))
+      result = block.call(a, b).with_label(SecurityLabel.join(a.label, b.label))
+      @flow_log.record(inst.op.to_s, [a.label, b.label], result.label, current_frame.line)
+      push(result)
     end
 
     private def runtime_error(msg : String, frame : Frame = current_frame, cause = nil) : RuntimeError

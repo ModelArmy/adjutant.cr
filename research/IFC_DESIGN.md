@@ -1,14 +1,23 @@
-# IFC design — lattice, labels, flow log, VM propagation
+# IFC design — lattice, labels, flow log, VM propagation, container labeling
 
 Status: lattice types and `FlowLog` plumbing implemented (`SecurityLabel`,
 `ProvenanceTag`, `ProvenanceKind`, `Sensitivity`, `FlowLog`/`FlowEvent`,
 all `JSON::Serializable`; `Interpreter#flow_log`, `flow_tracking:` param).
-**Not yet implemented**: the VM dispatch loop does not call `.join_label`
-anywhere yet — see "VM propagation" below for the design, which is decided
-but not coded. Scope: Phase 8 (IFC / `SecurityLabel`), first two of five
-pieces (lattice → VM propagation → sink policy → enforcement →
-agent-facing API). This document covers the lattice and VM propagation
-pieces.
+VM propagation for value-construction opcodes is implemented and tested:
+`exec_binary` (Add/Sub/Mul/Div/Mod/BitAnd/BitOr/Xor/Shl/Shr/Lt/Lte/Gt/Gte),
+`Op::Eq`, `Op::Concat`, `Op::MakeArray`, `Op::MakeHash`, `Op::MakeRange` all
+join operand labels into the result and record a `FlowEvent`.
+
+**`Op::SetIndex` (container mutation) is blocked, not yet implemented** —
+see "Container labeling (Stage 3.5, decided)" below for why the original
+plan (join the incoming value's label onto the container in place) doesn't
+actually work given `Value`'s struct semantics, and the revised direction
+(`LabeledArray`/`LabeledHash` wrapper types) needed before `SetIndex` can
+be finished. Scope: Phase 8 (IFC / `SecurityLabel`), pieces of five
+(lattice → VM propagation → sink policy → enforcement → agent-facing API),
+with an added Stage 3.5 (container labeling) between VM propagation and
+finishing `SetIndex`. This document covers the lattice, VM propagation,
+and container-labeling pieces.
 
 ## Goal
 
@@ -179,15 +188,19 @@ Survey of `vm.cr` / `value.cr` on branch `implement-ifc` @ `f2f4f34` found:
   carry the label correctly with zero code changes — `Value` is a struct,
   copied whole, so the label field travels automatically wherever a
   `Value` is moved without being combined with another `Value`.
-- **Missing — every combination/construction site drops the label**:
-  `exec_binary`'s arithmetic/bitwise/comparison helpers (`arith_add`,
-  `arith_op`, `arith_div`, `arith_mod`, `int_op`, `exec_shl`,
-  `compare_op`), `Op::Eq`, `Op::Concat`, `Op::MakeArray`, `Op::MakeHash`,
-  `Op::MakeRange` all construct a fresh `Value` with `label: nil` (or no
-  label argument at all), discarding whatever labels the operands carried.
-  Fix: each of these joins the labels of its inputs
-  (`lhs.join_label(rhs)`, or fold across N parts for `Concat`/
-  `MakeArray`/`MakeHash`) into the result's label instead of dropping it.
+- **Missing — every combination/construction site drops the label**
+  (status: **implemented, Stage 3**): `exec_binary`'s arithmetic/bitwise/
+  comparison helpers (`arith_add`, `arith_op`, `arith_div`, `arith_mod`,
+  `int_op`, `exec_shl`, `compare_op`), `Op::Eq`, `Op::Concat`,
+  `Op::MakeArray`, `Op::MakeHash`, `Op::MakeRange` previously constructed a
+  fresh `Value` with `label: nil` (or no label argument at all), discarding
+  whatever labels the operands carried. Fixed: each of these now joins the
+  labels of its inputs (`SecurityLabel.join`, folded across N parts for
+  `Concat`/`MakeArray`/`MakeHash`) into the result's label, and records a
+  `FlowEvent` via `Interpreter#flow_log`. Tested in
+  `spec/adjutant/ifc_propagation_spec.cr` — both final-label assertions and
+  `FlowLog` contents, per the "verify via flow log" testing approach
+  decided alongside the staged test plan.
 - **Sink check hook point**: `VM#call_native` — every `NativeCallable`
   call (the only place a `RiskProfile` lives) routes through this single
   method, with the callable's `risk : RiskProfile` and every argument
@@ -195,7 +208,10 @@ Survey of `vm.cr` / `value.cr` on branch `implement-ifc` @ `f2f4f34` found:
   attachment point for the live sink check in piece 3; propagation itself
   does not need to change this method.
 
-### Containers: labels must accumulate into the container itself, not just its elements (decided)
+### Containers: labels must accumulate into the container itself, not just its elements (superseded — see Stage 3.5 below)
+
+**This subsection's original conclusion turned out to be incomplete; kept
+here for the record, corrected below.**
 
 Motivating case:
 
@@ -212,13 +228,22 @@ top-level label would stay `nil` and the sink check would miss it
 entirely: the exact explicit-flow-through-assignment case IFC exists to
 catch.
 
-Decided: `Op::SetIndex` joins the incoming value's label into the
-*container's* own label (`target = target.join_label(val)` conceptually —
-the underlying Crystal array/hash mutates in place, but the wrapping
-`Value`'s label must be updated too, meaning `SetIndex` needs to write the
-updated container `Value` back to wherever it came from, not just mutate
-through the reference). Same principle as `MakeArray`/`MakeHash`
-construction above — this is mutation-time accumulation, not a new rule.
+Originally decided: `Op::SetIndex` joins the incoming value's label into
+the *container's* own label, described as mutation-time accumulation,
+same principle as `MakeArray`/`MakeHash` construction.
+
+**Why this doesn't actually work as stated**: `Value` is a struct, and
+`SetIndex` as compiled only receives a *copy* of the container's `Value`
+popped off the stack — not the local/ivar/global slot it came from. The
+underlying Crystal `Array`/`Hash` object is a reference type, so *element*
+mutation is shared for free (visible from every copy), but `label` is a
+separate field on each `Value` struct copy, not stored inside the
+array/hash object — so computing a new joined label on the popped copy has
+nowhere durable to persist to. The next `GetLocal arr` reads the label
+from the original (unmodified) slot. Concretely, this "decided" design was
+never actually implementable without also solving how to write the
+relabeled container back to its origin — see Stage 3.5 below for why that
+write-back approach was rejected in favor of a different fix.
 
 ```mermaid
 ---
@@ -229,21 +254,22 @@ config:
     fontSize: 12px
 ---
 flowchart TD
-    A["read_file('/etc/passwd')"] --> B["Value: label={file:/etc/passwd, High}"]
-    B --> C["SetIndex: arr[0] = value"]
-    C --> D["arr's own label := join(arr.label, value.label)"]
-    D --> E["post(arr) — sink check sees arr's label directly"]
+    A["local slot: arr = Value{raw: SharedArray, label: nil}"] --> B["SetIndex pops a COPY of arr"]
+    B --> C["mutate SharedArray in place — visible everywhere, free"]
+    B --> D["compute new label for the copy — nowhere to store it back on SharedArray"]
+    D -.doesn't reach.-> A
 ```
 
-**Known consequence, accepted**: container labels are monotonic — they
-never shrink, even if the tainted element is later overwritten or removed
-(`arr[0] = "clean"`, `arr.delete_at(0)`). This is a real precision loss
-(false positives accumulate on long-lived containers, worse for deeply
-nested containers where a full re-scan to recompute "am I still tainted"
-would be the only precise alternative and is not worth the cost). Accepted
-because it's the same direction already chosen for sensitivity in the
-lattice design (monotonic, worst-wins, no declassification) — consistent,
-and fails safe rather than silently under-tainting.
+**Known consequence, still accepted for whatever mechanism ends up
+implementing container accumulation**: container labels are monotonic —
+they never shrink, even if the tainted element is later overwritten or
+removed (`arr[0] = "clean"`, `arr.delete_at(0)`). This is a real precision
+loss (false positives accumulate on long-lived containers, worse for
+deeply nested containers where a full re-scan to recompute "am I still
+tainted" would be the only precise alternative and is not worth the cost).
+Accepted because it's the same direction already chosen for sensitivity in
+the lattice design (monotonic, worst-wins, no declassification) —
+consistent, and fails safe rather than silently under-tainting.
 
 **Mitigations, not solved by the VM alone**:
 - *Reassignment* is the cheap, general way for a script to shed
@@ -269,9 +295,94 @@ and fails safe rather than silently under-tainting.
   when `Array`/`Hash` native methods needing it are actually written (to
   be reflected in `DEVELOPMENT.md` at that point, not here).
 
+## Container labeling (Stage 3.5, decided)
 
+Discovered while implementing `Op::SetIndex` for the container
+accumulation described above: the "join into the container's own label"
+plan has no valid implementation given `Value`'s struct semantics (see the
+superseded subsection above for the full explanation — in short, a
+`Value` copy popped by `SetIndex` has no path to write an updated label
+back to the slot the container came from).
 
-A single IFC policy, loaded from JSON (not YAML — indentation errors in
+Two fixes were considered:
+
+- **Write-back**: have `SetIndex` return the updated container, and teach
+  the compiler to re-store it to whatever addressable slot (`Local`,
+  `IVar`, `CVar`, `Global`) the target expression came from, reusing the
+  existing `SetLocal`/`SetIvar`/`SetCvar`/`SetGlobal` opcodes for the
+  store. Rejected: doesn't handle nested (`a[0][1] = x`) or computed
+  (`foo()[0] = x`) targets, since those have no simple addressable origin
+  to write back to — only a documented gap for those cases, or a second,
+  harder problem (recursive write-back to the outermost addressable
+  origin).
+- **Move the label onto the container object itself** (decided): give
+  `Array`/`Hash`-backed values their own owning wrapper type with a
+  mutable `label` field, shared by reference exactly the way the
+  underlying elements already are. This makes container labeling exactly
+  as free as element mutation already is — no write-back, no
+  addressability problem, nested/computed targets just work because the
+  label lives on the object being reached, not on a `Value` copy of it.
+
+Ruled out as part of reaching this decision:
+- Making `Value` itself a class (not a struct) — would undo the "cheap,
+  automatically-propagating on copy" property every other part of this
+  design (free propagation through `GetLocal`/`SetLocal`/etc., cheap
+  stack/frame storage) depends on. Not worth it to fix one opcode.
+- Subclassing `Array(Value)`/`Hash(Value, Value)` directly (`class
+  LabeledArray < Array(Value)`) — Crystal's stdlib collection types are
+  not designed for behavior-preserving subclassing: methods like `map`,
+  `select`, `dup`, `+`, and slicing construct a plain `Array`/`Hash`
+  internally rather than `self.class.new`, so a subclass would silently
+  lose its label the moment any such method ran. This would reintroduce
+  the exact "label quietly disappears" bug this whole piece exists to fix.
+
+**Direction (decided, implementation not yet started)**: wrap, don't
+subclass. `LabeledArray`/`LabeledHash`-style types that hold a plain
+`Array(Value)`/`Hash(Value, Value)` privately and implement
+`Indexable(Value)` (for the array case; `Enumerable` methods — `map`,
+`select`, `reduce`, etc. — come for free from `Indexable`'s
+`unsafe_fetch`/`size`) rather than inheriting from the stdlib type. This
+keeps `map`/`select`/etc. actually defined *on the wrapper type*, so label
+propagation through them is something Adjutant controls, not something
+the stdlib silently drops.
+
+```mermaid
+---
+displayMode: compact
+config:
+  layout: elk
+  themeVariables:
+    fontSize: 12px
+---
+flowchart TD
+    A[LabeledArray] --> B["includes Indexable(Value)"]
+    B --> C["gets each/map/select/reduce/... from Enumerable, for free"]
+    A --> D["holds @items : Array(Value) privately"]
+    A --> E["property label : SecurityLabel?"]
+```
+
+**Not yet decided / next steps before implementation**:
+- Full survey of every `as_array`/`as_hash` call site plus
+  `builtins/array.cr`/`builtins/hash.cr` to size the actual change —
+  flagged as likely touching most native `Array`/`Hash` methods,
+  `exec_get_index`, `values_equal?`, `arith_add`'s array case, and
+  `to_s`/`inspect`. Not yet performed as of this writing.
+- Exact API surface `LabeledArray`/`LabeledHash` need to expose so
+  existing native-method code changes minimally (ideally: change the
+  type used, not the call sites, wherever `Indexable`/`Enumerable`
+  already provide the needed method).
+- `Value#raw`'s union changes from `Array(Value) | Hash(Value, Value)` to
+  `LabeledArray | LabeledHash` — a real signature change, not additive;
+  every exhaustive `case`/`when` over `Value`'s raw kinds needs
+  re-checking.
+- Once this lands, `Op::SetIndex`'s original join logic (join incoming
+  value's label onto `target.label`, in place — no write-back needed,
+  since the label now lives on the shared container object) becomes the
+  correct, straightforward implementation. Stage 4 (originally scoped as
+  "SetIndex container accumulation") is effectively unblocked once Stage
+  3.5 lands, and should need little beyond that join call itself.
+
+## Policy object (decided)
 YAML are hard to catch; JSON's explicit structure avoids that class of
 bug), modeled as `JSON::Serializable` so the *agent* embedding Adjutant can
 load/construct it however it likes (parse a file at an agent-provided path,
