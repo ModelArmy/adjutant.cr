@@ -179,6 +179,7 @@ module Adjutant
              when val.float?  then "Float"
              when val.string? then "String"
              when val.array?  then "Array"
+             when val.hash?   then "Hash"
              when val.symbol? then "Symbol"
              else                  return nil
              end
@@ -282,6 +283,7 @@ module Adjutant
       register_builtin_class(Builtins.bootstrap_symbol(self))
       register_builtin_class(Builtins.bootstrap_string(self))
       register_builtin_class(Builtins.bootstrap_array(self))
+      register_builtin_class(Builtins.bootstrap_hash(self))
     end
 
     # Applies the same superclass/rclass defaulting define_builtin_class

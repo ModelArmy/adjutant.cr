@@ -120,3 +120,20 @@ assert("Strings") do
 
   assert_equal String, str.class
 end
+
+assert("Hashmaps") do
+  letters = {"a" => 1, "b" => 2, "z" => 26}
+  assert_equal letters.size, 3
+
+  letters.keys.each do | k |
+    assert_equal k.class, String
+  end
+
+  letters.values.each do | v |
+    assert_equal v.class, Integer
+  end
+
+  letters.each do | k, v |
+    assert_equal letters[k], v
+  end
+end
