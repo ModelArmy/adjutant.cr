@@ -137,3 +137,15 @@ assert("Hashmaps") do
     assert_equal letters[k], v
   end
 end
+
+# --- TODO: Define and implement Range value properly
+assert("Ranges") do
+  a = 0..3
+  assert_not_nil a
+#  assert_not_equal a.class, Array
+
+  b = 0...3
+  assert_not_nil b
+#  assert_not_equal b.class, Array
+end
+# ---
