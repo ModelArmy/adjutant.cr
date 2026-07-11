@@ -63,15 +63,26 @@ assert "Class ivar and cvars" do
   (A.x == 6) && (A.new.x == 2) && (A.aax == 7) && (A.aax == A.new.aax)
 end
 
-# ---- TODO: class method on objects
-# assert "Object built-in methods" do
-#   class A
-#   end
+assert "Object built-in methods" do
+  class A
+  end
 
-#   assert_not_nil(A.new.class)
-#   assert_not_nil(A.class)
-# end
-# ----
+  module M
+    class B
+    end
+  end
+
+  assert_not_nil(A.new.class)
+  assert_not_nil(A.class)
+
+  assert_not_nil(M::B.new.class)
+  assert_not_nil(M::B.class)
+
+  assert_not_nil(M.class)
+
+  x = A.new
+  x.is_a? A
+end
 
 # ---- TODO: support special constants
 # assert_not_nil(__FILE__)
@@ -80,8 +91,49 @@ end
 # assert_not_nil(__callee__)
 # ----
 
-# ---- TODO: support base classes / object constants
-# assert_not_nil(Class)
-# assert_not_nil(Object)
-# assert_not_nil(BasicObject)
-# ----
+assert_not_nil(Class)
+assert_not_nil(Object)
+assert_not_nil(Module)
+
+assert("Arrays") do
+  nums = [5, 10]
+  assert_equal nums[0], 5
+  nums.each do | n |
+    assert_equal n.class, Integer
+  end
+
+  strs = ["hello", "world"]
+  assert_equal strs[1], "world"
+
+  mixed = ["hello", 5, "world", 0.5432]
+  assert_equal mixed[2], "world"
+
+  assert_equal Array, nums.class
+end
+
+assert("Strings") do
+  str = "Hello"
+  assert_equal str[1], "e"
+  assert_equal str.upcase, "HELLO"
+  assert_equal str.downcase, "hello"
+  assert_false str.empty?
+
+  assert_equal String, str.class
+end
+
+assert("Hashmaps") do
+  letters = {"a" => 1, "b" => 2, "z" => 26}
+  assert_equal letters.size, 3
+
+  letters.keys.each do | k |
+    assert_equal k.class, String
+  end
+
+  letters.values.each do | v |
+    assert_equal v.class, Integer
+  end
+
+  letters.each do | k, v |
+    assert_equal letters[k], v
+  end
+end

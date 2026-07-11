@@ -3,10 +3,9 @@ require "assert"
 ##
 # Exception ISO Test
 
-# ---- BLOCKED: define Class, and .class method
-# assert('Exception', '15.2.22') do
-#   assert_equal Class, Exception.class
-# end
+assert('Exception', '15.2.22') do
+  assert_equal Class, Exception.class
+end
 
 # # ---- BLOCKED: define .exception methods
 # assert('Exception.exception', '15.2.22.4.1') do

@@ -18,8 +18,12 @@ module Adjutant
         Value.nil_value.truthy?.should be_false
       end
 
-      it "renders as nil" do
-        Value.nil_value.to_s.should eq "nil"
+      it "to_s is the empty string — matches real Ruby's nil.to_s" do
+        Value.nil_value.to_s.should eq ""
+      end
+
+      it "inspect still renders as \"nil\"" do
+        Value.nil_value.inspect.should eq "nil"
       end
     end
 

@@ -191,15 +191,17 @@ module Testing
     # ameba:disable Metrics/CyclomaticComplexity - It is what it is
     private def values_equal?(a : Adjutant::Value, b : Adjutant::Value) : Bool
       case
-      when a.null? && b.null?     then true
-      when a.bool? && b.bool?     then a.as_bool == b.as_bool
-      when a.int? && b.int?       then a.as_int == b.as_int
-      when a.float? && b.float?   then a.as_float == b.as_float
-      when a.int? && b.float?     then a.as_int.to_f64 == b.as_float
-      when a.float? && b.int?     then a.as_float == b.as_int.to_f64
-      when a.string? && b.string? then a.as_string == b.as_string
-      when a.symbol? && b.symbol? then a.as_sym == b.as_sym
-      else                             false
+      when a.null? && b.null?       then true
+      when a.bool? && b.bool?       then a.as_bool == b.as_bool
+      when a.int? && b.int?         then a.as_int == b.as_int
+      when a.float? && b.float?     then a.as_float == b.as_float
+      when a.int? && b.float?       then a.as_int.to_f64 == b.as_float
+      when a.float? && b.int?       then a.as_float == b.as_int.to_f64
+      when a.string? && b.string?   then a.as_string == b.as_string
+      when a.symbol? && b.symbol?   then a.as_sym == b.as_sym
+      when a.rclass? && b.rclass?   then a.as_rclass == b.as_rclass
+      when a.robject? && b.robject? then a.as_robject == b.as_robject
+      else                               false
       end
     end
   end

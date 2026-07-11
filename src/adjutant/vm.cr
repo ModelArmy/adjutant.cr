@@ -211,6 +211,53 @@ module Adjutant
 
     # Resolve the class to use for class-variable access from the given
     # frame's self: the object's class if self is an instance, self
+    # Shared by the "is_a?"/"kind_of?" exec_builtin case. Three
+    # receiver shapes, matching "class"'s own three-way split:
+    #   - a RubyObject instance: walk its own rclass's superclass chain
+    #     (e.g. `Foo.new.is_a?(Object)`)
+    #   - a RubyClass itself: walk ITS rclass's superclass chain, NOT
+    #     its own superclass chain — `Integer.is_a?(Class)` asks
+    #     "is Integer's class Class-or-an-ancestor", the same
+    #     question `5.is_a?(Integer)` asks starting from 5's class,
+    #     not "is Integer's SUPERCLASS Class" (a different, wrong
+    #     question — Integer.superclass is Object, never Class)
+    #   - any other builtin-kind Value: Interpreter#builtin_class_for
+    # ameba:disable Naming/PredicateName - deliberately named to echo is_a?/kind_of?, not a generic predicate
+    private def is_a_target?(recv : Value, target : RubyClass?) : Bool
+      start_cls = recv.as_robject?.try(&.rclass) ||
+                  recv.as_rclass?.try(&.rclass) ||
+                  @interpreter.try(&.builtin_class_for(recv))
+      return false unless start_cls && target
+      cls = start_cls.as(RubyClass?)
+      while cls
+        return true if cls == target
+        cls = cls.superclass
+      end
+      false
+    end
+
+    # Shared by the "respond_to?" exec_builtin case — mirrors
+    # dispatch_call's own receiver-based resolution order (RubyObject:
+    # find_method then find_native_method; RubyClass: find_singleton_
+    # method then find_native_singleton_method; builtin value:
+    # find_native_method via builtin_class_for) without actually
+    # invoking anything.
+    private def script_responds_to?(recv : Value, method_name : String) : Bool
+      sym = @symbols.lookup(method_name)
+      return false unless sym
+      sym_id = sym.value
+      if obj = recv.as_robject?
+        cls = obj.rclass
+        !!(cls.find_method(sym_id) || cls.find_native_method(sym_id))
+      elsif cls = recv.as_rclass?
+        !!(cls.find_singleton_method(sym_id) || cls.find_native_singleton_method(sym_id))
+      elsif interp = @interpreter
+        !!(interp.builtin_class_for(recv).try(&.find_native_method(sym_id)))
+      else
+        false
+      end
+    end
+
     # itself if self is a class/module body. Raises outside a class
     # context — Ruby doesn't support cvars there either.
     private def cvar_class(f : Frame) : RubyClass
@@ -465,7 +512,7 @@ module Adjutant
           when Op::BitAnd then exec_binary(inst) { |lhs, rhs| int_op(lhs, rhs, :&) }
           when Op::BitOr  then exec_binary(inst) { |lhs, rhs| int_op(lhs, rhs, :|) }
           when Op::Xor    then exec_binary(inst) { |lhs, rhs| int_op(lhs, rhs, :^) }
-          when Op::Shl    then exec_binary(inst) { |lhs, rhs| int_op(lhs, rhs, :<<) }
+          when Op::Shl    then exec_binary(inst) { |lhs, rhs| exec_shl(lhs, rhs) }
           when Op::Shr    then exec_binary(inst) { |lhs, rhs| int_op(lhs, rhs, :>>) }
             # --- Comparison -----------------------------------------------------
 
@@ -533,7 +580,7 @@ module Adjutant
               when part.int?    then part.as_int.to_s
               when part.float?  then part.as_float.to_s
               when part.bool?   then part.as_bool.to_s
-              when part.null?   then "nil"
+              when part.null?   then ""
               when part.symbol? then part.as_sym.name
               else                   part.to_s
               end
@@ -581,12 +628,27 @@ module Adjutant
               end
               superclass = super_val.as_rclass
             end
+            # A script-written `class Foo; end` with no explicit `<
+            # Bar` really does inherit from Object in real Ruby — see
+            # Interpreter#bootstrap_core_hierarchy. Falls back to nil
+            # only when there's no interpreter at all (a bare-VM spec
+            # bypassing Interpreter's bootstrap entirely) — a real
+            # script always has one.
+            superclass ||= @interpreter.try(&.object_class)
             new_cls = RubyClass.new(name_sym.name, superclass, is_module: false)
+            new_cls.rclass = @interpreter.try(&.class_class)
             new_cls.lexical_parent = f.self_val.as_rclass?
             push(Value.rclass(new_cls))
           when Op::MakeModule
             name_sym = chunk.consts[inst.c].as_sym
             new_mod = RubyClass.new(name_sym.name, nil, is_module: true)
+            # A module's OWN class is Class, not Module — `module M;
+            # end; M.class` is Class in real Ruby, the same as any
+            # other class/module object. Module (and Class itself) are
+            # each instances of Class; is_module? is what distinguishes
+            # "can this be instantiated with .new" from "is this the
+            # class of classes", not rclass.
+            new_mod.rclass = @interpreter.try(&.class_class)
             new_mod.lexical_parent = f.self_val.as_rclass?
             push(Value.rclass(new_mod))
           when Op::DefMethod
@@ -947,7 +1009,7 @@ module Adjutant
         str = args.map { |arg|
           case
           when arg.string? then arg.as_string
-          when arg.null?   then "nil"
+          when arg.null?   then ""
           when arg.bool?   then arg.as_bool.to_s
           when arg.int?    then arg.as_int.to_s
           when arg.float?  then arg.as_float.to_s
@@ -1014,28 +1076,75 @@ module Adjutant
         else
           Value.string(recv.to_s)
         end
-      when "is_a?"
-        # RubyObject receivers walk their own rclass chain; other
-        # receivers (Integer today, more as builtins land) resolve via
-        # Interpreter#builtin_class_for, since they carry no rclass
-        # reference of their own.
+      when "is_a?", "kind_of?"
+        # Real Ruby aliases these exactly — same helper, no separate
+        # logic. RubyObject receivers walk their own rclass chain;
+        # other receivers (Integer today, more as builtins land)
+        # resolve via Interpreter#builtin_class_for, since they carry
+        # no rclass reference of their own.
         recv = args.first? || Value.nil_value
         target = args[1]?.try(&.as_rclass?)
-        start_cls = recv.as_robject?.try(&.rclass) || @interpreter.try(&.builtin_class_for(recv))
-        if start_cls && target
-          cls = start_cls.as(RubyClass?)
-          matched = false
-          while cls
-            if cls == target
-              matched = true
-              break
-            end
-            cls = cls.superclass
-          end
-          Value.bool(matched)
-        else
-          Value.bool(false)
-        end
+        Value.bool(is_a_target?(recv, target))
+      when "class"
+        # Three receiver shapes, each resolved differently:
+        #   - a RubyObject instance: its own rclass (e.g. an `A.new`
+        #     instance's class is A)
+        #   - a RubyClass itself (e.g. `Integer.class`, `A.class`):
+        #     ITS rclass, not builtin_class_for — a class receiver
+        #     isn't a value of the kind builtin_class_for resolves,
+        #     it's the class object, whose own class is (almost
+        #     always) Class itself
+        #   - any other builtin-kind Value (5, "x", true, ...):
+        #     Interpreter#builtin_class_for, same lookup is_a? uses
+        recv = args.first? || Value.nil_value
+        cls = recv.as_robject?.try(&.rclass) ||
+              recv.as_rclass?.try(&.rclass) ||
+              @interpreter.try(&.builtin_class_for(recv))
+        cls ? Value.rclass(cls) : Value.nil_value
+      when "superclass"
+        # Only meaningful on a RubyClass receiver (`Integer.superclass`,
+        # `Foo.superclass`) — real Ruby raises NoMethodError for
+        # `5.superclass` since Integer instances don't have this
+        # method, only Class/Module objects do. Object.superclass is
+        # nil (the true root); any RubyObject or other value receiver
+        # returns nil too, rather than raising, matching Adjutant's
+        # generally forgiving-over-raising style for reflection methods.
+        recv = args.first? || Value.nil_value
+        sup = recv.as_rclass?.try(&.superclass)
+        sup ? Value.rclass(sup) : Value.nil_value
+      when "respond_to?"
+        # Whether `recv.method_name` would find a real target — checks
+        # every table dispatch_call itself would check, in the same
+        # order, for the same three receiver shapes is_a?/.class use.
+        # Real Ruby's respond_to? takes a Symbol (`respond_to?(:foo)`)
+        # but a String works too here, since Adjutant doesn't
+        # distinguish "foo" from :foo as strictly. Deliberately
+        # conservative: doesn't check exec_builtin's fallback cases
+        # (is_a?, class, to_s, ...) individually, so a method that
+        # ONLY exists as a VM-level fallback will report
+        # respond_to?(:to_s) as false even though calling it would
+        # actually work. Rare enough in practice (those are all
+        # near-universal methods scripts don't usually probe for) that
+        # getting the common case right — user-defined and native
+        # methods — matters more than exhaustive fallback coverage.
+        recv = args.first? || Value.nil_value
+        method_arg = args[1]? || Value.nil_value
+        method_name = method_arg.as_sym?.try(&.name) || method_arg.as_string?
+        Value.bool(method_name ? script_responds_to?(recv, method_name) : false)
+      when "equal?"
+        # Object identity, not value equality (that's `==`, a real
+        # opcode — see Op::Eq). Two Value-wrapped primitives (ints,
+        # bools, ...) with the same content are still "equal?" in
+        # practice today, since Adjutant doesn't yet distinguish two
+        # separately-boxed 5s from each other — this matches real
+        # Ruby's behavior for immediates (Integer, Symbol, true/false/
+        # nil) but would diverge from Ruby for two DIFFERENT String
+        # instances holding the same text, which Adjutant can't yet
+        # tell apart at the Value level either. Documented gap, not a
+        # silent one.
+        recv = args.first? || Value.nil_value
+        other = args[1]? || Value.nil_value
+        Value.bool(recv == other)
       when "to_s"
         recv = args.first? || Value.nil_value
         Value.string(recv.to_s)
@@ -1088,6 +1197,12 @@ module Adjutant
       when a.int? && b.float?     then Value.float(a.as_int.to_f64 + b.as_float)
       when a.float? && b.int?     then Value.float(a.as_float + b.as_int.to_f64)
       when a.string? && b.string? then Value.string(a.as_string + b.as_string)
+      when a.array? && b.array?
+        # Real Ruby's Array#+ returns a NEW array (the two operands are
+        # untouched) — Value.new(Array(Value), nil) wraps a fresh
+        # Crystal array, same construction Op::MakeArray itself uses,
+        # not a mutation of either a's or b's underlying array.
+        Value.new(a.as_array + b.as_array, nil)
       else
         raise runtime_error("cannot add #{a} and #{b}")
       end
@@ -1159,6 +1274,25 @@ module Adjutant
       Value.int(n)
     end
 
+    # `<<` is overloaded in real Ruby between Integer's bit-shift and
+    # Array's append-and-return-self — genuinely different operations
+    # sharing one operator. Split out from int_op (which stays
+    # Integer-only, still backing `&`/`|`/`^`/`>>`) rather than adding
+    # an array branch inside it, so those other bitwise ops don't
+    # silently gain array behavior they were never meant to have.
+    private def exec_shl(a : Value, b : Value) : Value
+      if a.array?
+        # Real Ruby: mutates a in place AND returns a (so `arr << 1 <<
+        # 2` chains) — push onto the same underlying Array(Value), not
+        # a new one, matching Op::SetIndex's existing in-place
+        # mutation of the same reference.
+        a.as_array.push(b)
+        a
+      else
+        int_op(a, b, :<<)
+      end
+    end
+
     # ameba:disable Metrics/CyclomaticComplexity
     private def compare_op(a : Value, b : Value, op : Symbol) : Value
       result = case
@@ -1194,8 +1328,11 @@ module Adjutant
       Value.bool(result)
     end
 
+    # `protected`, not `private`, so NativeFunctionCall (NativeCallContext's
+    # implementation, in interpreter.cr) can delegate to it — same
+    # relationship as VM#invoke above.
     # ameba:disable Metrics/CyclomaticComplexity
-    private def values_equal?(a : Value, b : Value) : Bool
+    protected def values_equal?(a : Value, b : Value) : Bool
       case
       when a.null? && b.null?     then true
       when a.bool? && b.bool?     then a.as_bool == b.as_bool
@@ -1205,7 +1342,44 @@ module Adjutant
       when a.float? && b.int?     then a.as_float == b.as_int.to_f64
       when a.string? && b.string? then a.as_string == b.as_string
       when a.symbol? && b.symbol? then a.as_sym == b.as_sym
-      else                             false
+      when a.rclass? && b.rclass?
+        # Reference identity — `Object.class == Class`, `Foo.superclass
+        # == Bar`, etc. RubyClass has no user-facing notion of two
+        # DIFFERENT classes comparing equal, so Crystal's default
+        # reference `==` on the underlying RubyClass is exactly right,
+        # not a placeholder pending a real override.
+        a.as_rclass == b.as_rclass
+      when a.robject? && b.robject?
+        # Reference identity too, for now — real Ruby lets a class
+        # override `==` for value-style comparison (two Points with
+        # the same x/y), but Adjutant has no user-defined `==`
+        # dispatch yet. Matches default Ruby Object#== (identity)
+        # before any override, so this is the correct default, not a
+        # simplification silently diverging from Ruby.
+        a.as_robject == b.as_robject
+      when a.array? && b.array?
+        # Deep, element-wise equality — real Ruby's Array#== compares
+        # length then each element via ITS OWN ==, recursively (so
+        # [[1], [2]] == [[1], [2]] is true). Recursing through
+        # values_equal? itself, not Crystal's Array#== on the
+        # underlying Array(Value), is what makes that recursion use
+        # Adjutant's own equality rules at every level instead of
+        # Crystal's.
+        aa, ba = a.as_array, b.as_array
+        aa.size == ba.size && aa.zip(ba).all? { |x, y| values_equal?(x, y) }
+      when a.hash? && b.hash?
+        # Same reasoning as Array — same key set, and each value equal
+        # via values_equal? (not Crystal's own Hash#==, which would use
+        # Value's default struct == instead of this method's rules).
+        # Value has no custom hash() override, so key lookup itself
+        # still uses Crystal's structural hashing on the ValueRaw union
+        # — fine for the Nil/Bool/Int64/Float64/String/Sym keys real
+        # scripts actually use; an Array or Hash used AS a key would
+        # hash by reference instead of by content, a real but narrow
+        # gap worth knowing about rather than a silent one.
+        ah, bh = a.as_hash, b.as_hash
+        ah.size == bh.size && ah.all? { |k, v| (bv = bh[k]?) && values_equal?(v, bv) }
+      else false
       end
     end
 

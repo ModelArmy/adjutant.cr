@@ -216,5 +216,9 @@ module Adjutant
     def invoke(proc : ScriptProc, args : Array(Value)) : Value
       Value.nil_value
     end
+
+    def values_equal?(a : Value, b : Value) : Bool
+      a == b
+    end
   end
 end
