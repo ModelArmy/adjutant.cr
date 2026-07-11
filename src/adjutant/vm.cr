@@ -143,6 +143,7 @@ module Adjutant
 
     getter instruction_count : UInt64
     getter globals : Hash(Int32, Value)
+    getter flow_log : FlowLog
 
     def initialize(
       @symbols : SymbolTable,
@@ -150,6 +151,7 @@ module Adjutant
       @effect : EffectHandler? = nil,
       @interpreter : Interpreter? = nil,
       @globals : Hash(Int32, Value) = {} of Int32 => Value,
+      @flow_log : FlowLog = FlowLog.new,
     )
       @stack = Array(Value).new(256)
       @frames = [] of Frame

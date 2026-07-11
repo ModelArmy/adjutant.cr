@@ -117,20 +117,20 @@ module Adjutant
       end
 
       it "carries a label when constructed with one" do
-        l = SecurityLabel.of(:network, "internal-db.corp.local")
+        l = SecurityLabel.of(ProvenanceKind::Network, "internal-db.corp.local")
         v = Value.int(1_i64, l)
         v.label.should eq l
       end
 
       it "attaches a label via with_label" do
-        l = SecurityLabel.of(:file, "/tmp/scratch")
+        l = SecurityLabel.of(ProvenanceKind::File, "/tmp/scratch")
         v = Value.int(1_i64).with_label(l)
         v.label.should eq l
         v.as_int.should eq 1_i64
       end
 
       it "label propagates on copy (struct assignment)" do
-        l = SecurityLabel.of(:user_input, "stdin")
+        l = SecurityLabel.of(ProvenanceKind::UserInput, "stdin")
         a = Value.int(42_i64, l)
         b = a # struct copy
         b.label.should eq l
@@ -138,27 +138,27 @@ module Adjutant
       end
 
       it "joins labels from two values into a union of tags" do
-        la = SecurityLabel.of(:network, "internal-db.corp.local")
-        lb = SecurityLabel.of(:file, "/etc/hosts")
+        la = SecurityLabel.of(ProvenanceKind::Network, "internal-db.corp.local")
+        lb = SecurityLabel.of(ProvenanceKind::File, "/etc/hosts")
         a = Value.int(1_i64, la)
         b = Value.int(2_i64, lb)
         result = a.join_label(b)
         joined = result.label.not_nil!
         joined.tags.size.should eq 2
-        joined.tags.should contain ProvenanceTag.new(:network, "internal-db.corp.local")
-        joined.tags.should contain ProvenanceTag.new(:file, "/etc/hosts")
+        joined.tags.should contain ProvenanceTag.new(ProvenanceKind::Network, "internal-db.corp.local")
+        joined.tags.should contain ProvenanceTag.new(ProvenanceKind::File, "/etc/hosts")
       end
 
       it "join keeps the worse sensitivity when both sides tag the same origin" do
-        la = SecurityLabel.of(:file, "/etc/passwd", Sensitivity::None)
-        lb = SecurityLabel.of(:file, "/etc/passwd", Sensitivity::High)
+        la = SecurityLabel.of(ProvenanceKind::File, "/etc/passwd", Sensitivity::None)
+        lb = SecurityLabel.of(ProvenanceKind::File, "/etc/passwd", Sensitivity::High)
         joined = SecurityLabel.join(la, lb).not_nil!
         joined.tags.size.should eq 1
         joined.sensitivity.should eq Sensitivity::High
       end
 
       it "join with nil on either side returns the other side unchanged" do
-        l = SecurityLabel.of(:network, "example.com")
+        l = SecurityLabel.of(ProvenanceKind::Network, "example.com")
         SecurityLabel.join(nil, l).should eq l
         SecurityLabel.join(l, nil).should eq l
         SecurityLabel.join(nil, nil).should be_nil
@@ -166,14 +166,14 @@ module Adjutant
 
       it "label sensitivity reflects the worst tag present" do
         l = SecurityLabel.new(Set{
-          ProvenanceTag.new(:file, "/etc/hosts", Sensitivity::None),
-          ProvenanceTag.new(:file, "/etc/passwd", Sensitivity::High),
+          ProvenanceTag.new(ProvenanceKind::File, "/etc/hosts", Sensitivity::None),
+          ProvenanceTag.new(ProvenanceKind::File, "/etc/passwd", Sensitivity::High),
         })
         l.sensitivity.should eq Sensitivity::High
       end
 
       it "shows label in inspect output" do
-        l = SecurityLabel.of(:network, "example.com")
+        l = SecurityLabel.of(ProvenanceKind::Network, "example.com")
         v = Value.string("secret", l)
         v.inspect.should eq "\"secret\" [label:{network:example.com}]"
       end

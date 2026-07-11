@@ -71,14 +71,17 @@ module Adjutant
     getter modules : ModuleRegistry
     getter effect : EffectHandler?
     getter limits : ExecutionLimits
+    getter flow_log : FlowLog
 
     def initialize(
       @effect : EffectHandler? = nil,
       @limits : ExecutionLimits = ExecutionLimits.new,
+      flow_tracking : Bool = false,
     )
       @symbols = SymbolTable.new
       @modules = ModuleRegistry.new
       @globals = {} of Int32 => Value
+      @flow_log = FlowLog.new(enabled: flow_tracking)
       bootstrap_core_hierarchy
       bootstrap_error_classes
       bootstrap_builtin_classes
@@ -202,7 +205,7 @@ module Adjutant
     end
 
     private def make_vm : VM
-      VM.new(@symbols, @limits, @effect, self, @globals)
+      VM.new(@symbols, @limits, @effect, self, @globals, @flow_log)
     end
 
     # Bootstraps the three classes at the root of the hierarchy —

@@ -354,14 +354,19 @@ flowchart LR
 
 ### Information flow control
 
-Every `Value` carries an optional `SecurityLabel` reference. Labels are heap-allocated classes so they can be shared across values without copying. When two labeled values are combined, their labels are joined via `SecurityLabel.join`, which computes the least upper bound in the label lattice.
+Every `Value` carries an optional `SecurityLabel` reference. Labels are heap-allocated classes so they can be shared across values without copying. When two labeled values are combined, their labels are joined via `SecurityLabel.join`, which computes the least upper bound in the label lattice — currently a powerset lattice over `ProvenanceTag`, ordered by set inclusion (join = tag-set union). See `research/IFC_DESIGN.md` for the full design rationale.
 
-This is currently a stub — the lattice is a simple name-concatenation join and labels must be attached manually by native code (e.g. a module returning network data labels its values `{source: :network}`). The full IFC design will:
+A `SecurityLabel` holds a `Set(ProvenanceTag)`. Each `ProvenanceTag` is `{kind, origin, sensitivity}`:
 
-- Define a proper lattice with partial order and meet/join operations
-- Track label propagation automatically through the VM dispatch loop
-- Enforce declassification policies at the effect boundary
-- Surface label information to the harness so the user can reason about data provenance
+- `kind` is a `ProvenanceKind` enum member (`File`, `Network`, `Env`, `UserInput`, ...) — a closed set, not a bare symbol, so it's typo-checked at compile time.
+- `origin` is a concrete identifier for the source (a path, host, env var name, ...) — always recorded, since it's what makes a later sink-time prompt or audit entry meaningful ("about to POST `/etc/passwd`", not "about to POST some file").
+- `sensitivity` (`Sensitivity::None`/`Elevated`/`High`) is looked up from policy at tag-creation time — not hardcoded per module, since a module has no way to know on its own that `/etc/passwd` matters differently from `/etc/hosts`. The sensitivity policy itself is not yet implemented (see below).
+
+Two same-origin tags merge to the worse (more sensitive) of the two rather than duplicating; sensitivity is monotonic — no operation lowers it once joined onto a value (declassification was considered and explicitly rejected, see `research/IFC_DESIGN.md`).
+
+Labels and tags are `JSON::Serializable` (a custom converter handles the `Set(ProvenanceTag)` field, since Crystal's `JSON::Serializable` only supports `Array` natively). `Interpreter#flow_log` exists — a `FlowLog` (also `JSON::Serializable`) that can record a `FlowEvent` per join for post-hoc audit/debugging, separate from the live label on each `Value`, enabled via `Interpreter.new(flow_tracking: true)` and defaulting to disabled. `#record` is currently a no-op with respect to actual VM behavior: **no join site in the dispatch loop calls it yet** — this is VM-propagation work, not yet done (see below).
+
+**Currently implemented**: the `SecurityLabel`/`ProvenanceTag`/`Sensitivity` types, their join semantics, and the `FlowLog` recording mechanism. **Not yet implemented**: the VM dispatch loop does not actually call `.join_label` anywhere — every binary op, `Concat`, `MakeArray`/`MakeHash`/`MakeRange`, and `SetIndex` currently constructs its result with `label: nil`, discarding operand labels rather than joining them (see `research/IFC_DESIGN.md`'s "VM propagation" section for the exact list of call sites and the container-accumulation design for `SetIndex`). Also not yet implemented: the sensitivity policy (origin → sensitivity lookup), the sink check (comparing a `RiskProfile` against a label's sensitivity to decide whether to interrupt execution), and the agent-facing API for surfacing an interrupt/audit. Labels must currently be attached manually by native code (see "Writing a ScriptModule" below), and nothing yet reads them back out.
 
 The `SecurityLabel` field adds one pointer width to every `Value` struct. When no label is present the field is `nil`, which is a predictable nil-check on the hot path — easily branch-predicted and potentially eliminated by the compiler when IFC is disabled.
 
@@ -397,12 +402,12 @@ end
 
 Scripts load the module with `require "agent/mymodule"`. Each module is loaded at most once per interpreter instance regardless of how many times the script calls `require`.
 
-For IFC, attach labels to values your module returns:
+For IFC, attach labels to values your module returns. `sensitivity` should come from policy once that exists (see "Information flow control" above); until then, pass `Sensitivity::None` or a manually-chosen level:
 
 ```crystal
 interp.define_native("fetch_data") do |args|
   data = http_get(args.first.as_string)
-  label = Adjutant::SecurityLabel.new("network")
+  label = Adjutant::SecurityLabel.of(Adjutant::ProvenanceKind::Network, args.first.as_string)
   Adjutant::Value.string(data, label)
 end
 ```

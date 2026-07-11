@@ -1,7 +1,12 @@
 # IFC design — lattice, labels, flow log, VM propagation
 
-Status: draft, pre-code. Scope: Phase 8 (IFC / `SecurityLabel`), first two
-of five pieces (lattice → VM propagation → sink policy → enforcement →
+Status: lattice types and `FlowLog` plumbing implemented (`SecurityLabel`,
+`ProvenanceTag`, `ProvenanceKind`, `Sensitivity`, `FlowLog`/`FlowEvent`,
+all `JSON::Serializable`; `Interpreter#flow_log`, `flow_tracking:` param).
+**Not yet implemented**: the VM dispatch loop does not call `.join_label`
+anywhere yet — see "VM propagation" below for the design, which is decided
+but not coded. Scope: Phase 8 (IFC / `SecurityLabel`), first two of five
+pieces (lattice → VM propagation → sink policy → enforcement →
 agent-facing API). This document covers the lattice and VM propagation
 pieces.
 
@@ -37,9 +42,16 @@ A tag is not a bare symbol. It carries identity, not just category:
 
 ```crystal
 struct ProvenanceTag
-  getter kind : Symbol        # :file, :network, :env, :user_input, ...
-  getter origin : String      # concrete identifier — path, host, var name
+  getter kind : ProvenanceKind      # File, Network, Env, UserInput, ...
+  getter origin : String            # concrete identifier — path, host, var name
   getter sensitivity : Sensitivity  # None, Elevated, High — see below
+end
+
+enum ProvenanceKind
+  File
+  Network
+  Env
+  UserInput
 end
 
 enum Sensitivity
@@ -48,6 +60,10 @@ enum Sensitivity
   High
 end
 ```
+
+(As implemented: `kind` is a closed `ProvenanceKind` enum, not a bare
+symbol as originally sketched here — decided during Stage 2, so typos are
+caught at compile time and JSON serialization has a stable representation.)
 
 Rationale:
 - `kind` + `origin` together are what makes a sink-time prompt to the user
