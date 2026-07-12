@@ -143,7 +143,7 @@ module Adjutant
 
     getter instruction_count : UInt64
     getter globals : Hash(Int32, Value)
-    getter flow_log : FlowLog
+    getter risk_flow_log : RiskFlowLog
 
     def initialize(
       @symbols : SymbolTable,
@@ -151,7 +151,7 @@ module Adjutant
       @effect : EffectHandler? = nil,
       @interpreter : Interpreter? = nil,
       @globals : Hash(Int32, Value) = {} of Int32 => Value,
-      @flow_log : FlowLog = FlowLog.new,
+      @risk_flow_log : RiskFlowLog = RiskFlowLog.new,
     )
       @stack = Array(Value).new(256)
       @frames = [] of Frame
@@ -477,7 +477,7 @@ module Adjutant
             idx = pop
             target = pop
             exec_set_index(target, idx, val)
-            @flow_log.record("SetIndex", [target.label, val.label], target.label, f.line)
+            @risk_flow_log.record("SetIndex", [target.label, val.label], target.label, f.line)
             push(val)
 
             # --- Calls ----------------------------------------------------------
@@ -521,8 +521,8 @@ module Adjutant
 
           when Op::Eq
             b, a = pop, pop
-            result = Value.bool(values_equal?(a, b), SecurityLabel.join(a.label, b.label))
-            @flow_log.record("Eq", [a.label, b.label], result.label, f.line)
+            result = Value.bool(values_equal?(a, b), RiskFlowLabel.join(a.label, b.label))
+            @risk_flow_log.record("Eq", [a.label, b.label], result.label, f.line)
             push(result)
           when Op::Lt  then exec_binary(inst) { |lhs, rhs| compare_op(lhs, rhs, :<) }
           when Op::Lte then exec_binary(inst) { |lhs, rhs| compare_op(lhs, rhs, :<=) }
@@ -559,8 +559,8 @@ module Adjutant
             n = inst.a.to_i
             elements = @stack.last(n).dup
             @stack.pop(n) if n > 0
-            joined_label = elements.reduce(nil.as(SecurityLabel?)) { |acc, value| SecurityLabel.join(acc, value.label) }
-            @flow_log.record("MakeArray", elements.map(&.label), joined_label, f.line)
+            joined_label = elements.reduce(nil.as(RiskFlowLabel?)) { |acc, value| RiskFlowLabel.join(acc, value.label) }
+            @risk_flow_log.record("MakeArray", elements.map(&.label), joined_label, f.line)
             push(Value.new(LabeledArray.new(elements, joined_label), joined_label))
           when Op::MakeHash
             n = inst.a.to_i * 2
@@ -568,8 +568,8 @@ module Adjutant
             @stack.pop(n) if n > 0
             h = {} of Value => Value
             pairs.each_slice(2) { |pair| h[pair[0]] = pair[1] }
-            joined_label = pairs.reduce(nil.as(SecurityLabel?)) { |acc, value| SecurityLabel.join(acc, value.label) }
-            @flow_log.record("MakeHash", pairs.map(&.label), joined_label, f.line)
+            joined_label = pairs.reduce(nil.as(RiskFlowLabel?)) { |acc, value| RiskFlowLabel.join(acc, value.label) }
+            @risk_flow_log.record("MakeHash", pairs.map(&.label), joined_label, f.line)
             push(Value.new(LabeledHash.new(h, joined_label), joined_label))
           when Op::MakeRange
             rend = pop
@@ -578,8 +578,8 @@ module Adjutant
             # a Range object type will be added with the object model.
             exclusive = inst.a == 1_u8
             elems = [rstart, rend, Value.bool(exclusive)]
-            joined_label = SecurityLabel.join(rstart.label, rend.label)
-            @flow_log.record("MakeRange", [rstart.label, rend.label], joined_label, f.line)
+            joined_label = RiskFlowLabel.join(rstart.label, rend.label)
+            @risk_flow_log.record("MakeRange", [rstart.label, rend.label], joined_label, f.line)
             push(Value.new(LabeledArray.new(elems, joined_label), joined_label))
           when Op::Concat
             n = inst.a.to_i
@@ -596,8 +596,8 @@ module Adjutant
               else                   part.to_s
               end
             }.join
-            joined_label = parts.reduce(nil.as(SecurityLabel?)) { |acc, part| SecurityLabel.join(acc, part.label) }
-            @flow_log.record("Concat", parts.map(&.label), joined_label, f.line)
+            joined_label = parts.reduce(nil.as(RiskFlowLabel?)) { |acc, part| RiskFlowLabel.join(acc, part.label) }
+            @risk_flow_log.record("Concat", parts.map(&.label), joined_label, f.line)
             push(Value.string(str, joined_label))
 
             # --- Local variables ------------------------------------------------
@@ -1054,7 +1054,7 @@ module Adjutant
         if args.size == 1
           args.first
         else
-          joined_label = args.reduce(nil.as(SecurityLabel?)) { |acc, value| SecurityLabel.join(acc, value.label) }
+          joined_label = args.reduce(nil.as(RiskFlowLabel?)) { |acc, value| RiskFlowLabel.join(acc, value.label) }
           Value.new(LabeledArray.new(args.dup, joined_label), nil)
         end
       when "raise"
@@ -1439,20 +1439,20 @@ module Adjutant
         i = arr.size + i if i < 0
         if i >= 0 && i < arr.size
           arr[i] = val
-          arr.label = SecurityLabel.join(arr.label, val.label)
+          arr.label = RiskFlowLabel.join(arr.label, val.label)
         end
       when target.hash?
         h = target.as_hash
         h[idx] = val
-        h.label = SecurityLabel.join(h.label, val.label)
+        h.label = RiskFlowLabel.join(h.label, val.label)
       end
     end
 
     private def exec_binary(inst : Instruction, &block : Value, Value -> Value) : Nil
       b = pop
       a = pop
-      result = block.call(a, b).with_label(SecurityLabel.join(a.label, b.label))
-      @flow_log.record(inst.op.to_s, [a.label, b.label], result.label, current_frame.line)
+      result = block.call(a, b).with_label(RiskFlowLabel.join(a.label, b.label))
+      @risk_flow_log.record(inst.op.to_s, [a.label, b.label], result.label, current_frame.line)
       push(result)
     end
 

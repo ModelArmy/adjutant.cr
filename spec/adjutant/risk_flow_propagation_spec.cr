@@ -8,14 +8,14 @@ module Adjutant
   # do once the sensitivity policy exists (see research/IFC_DESIGN.md).
   private def self.make_tainted_interp : {Interpreter, TestEffectHandler}
     ef = TestEffectHandler.new
-    interp = Interpreter.new(effect: ef, flow_tracking: true)
+    interp = Interpreter.new(effect: ef, risk_flow_tracking: true)
     interp.define_native("tainted") do |args|
       origin = args.first.as_string
-      Value.int(1_i64, SecurityLabel.of(ProvenanceKind::File, origin, Sensitivity::High))
+      Value.int(1_i64, RiskFlowLabel.of(ProvenanceKind::File, origin, Sensitivity::High))
     end
     interp.define_native("tainted_str") do |args|
       origin = args.first.as_string
-      Value.string("x", SecurityLabel.of(ProvenanceKind::File, origin, Sensitivity::High))
+      Value.string("x", RiskFlowLabel.of(ProvenanceKind::File, origin, Sensitivity::High))
     end
     {interp, ef}
   end
@@ -42,10 +42,10 @@ module Adjutant
         label.tags.size.should eq 2
       end
 
-      it "records a FlowEvent for Add" do
+      it "records a RiskFlowEvent for Add" do
         interp, _ = make_tainted_interp
         interp.eval(%(tainted("/etc/passwd") + 1))
-        events = interp.flow_log.events.select { |e| e.op == "Add" }
+        events = interp.risk_flow_log.events.select { |e| e.op == "Add" }
         events.size.should eq 1
         events.first.result.not_nil!.sensitivity.should eq Sensitivity::High
       end
@@ -64,10 +64,10 @@ module Adjutant
         result.label.not_nil!.sensitivity.should eq Sensitivity::High
       end
 
-      it "records a FlowEvent for Eq" do
+      it "records a RiskFlowEvent for Eq" do
         interp, _ = make_tainted_interp
         interp.eval(%(tainted("/etc/passwd") == 1))
-        interp.flow_log.events.map(&.op).should contain "Eq"
+        interp.risk_flow_log.events.map(&.op).should contain "Eq"
       end
     end
 
@@ -78,10 +78,10 @@ module Adjutant
         result.label.not_nil!.sensitivity.should eq Sensitivity::High
       end
 
-      it "records a FlowEvent for Concat" do
+      it "records a RiskFlowEvent for Concat" do
         interp, _ = make_tainted_interp
         interp.eval(%q("value: #{tainted_str("/etc/passwd")}"))
-        interp.flow_log.events.map(&.op).should contain "Concat"
+        interp.risk_flow_log.events.map(&.op).should contain "Concat"
       end
     end
 
@@ -98,10 +98,10 @@ module Adjutant
         interp.eval("[1, 2, 3]").label.should be_nil
       end
 
-      it "records a FlowEvent for MakeArray" do
+      it "records a RiskFlowEvent for MakeArray" do
         interp, _ = make_tainted_interp
         interp.eval(%([1, tainted("/etc/passwd"), 3]))
-        interp.flow_log.events.map(&.op).should contain "MakeArray"
+        interp.risk_flow_log.events.map(&.op).should contain "MakeArray"
       end
     end
 
@@ -113,10 +113,10 @@ module Adjutant
         result.label.not_nil!.sensitivity.should eq Sensitivity::High
       end
 
-      it "records a FlowEvent for MakeHash" do
+      it "records a RiskFlowEvent for MakeHash" do
         interp, _ = make_tainted_interp
         interp.eval(%({"k" => tainted("/etc/passwd")}))
-        interp.flow_log.events.map(&.op).should contain "MakeHash"
+        interp.risk_flow_log.events.map(&.op).should contain "MakeHash"
       end
     end
 
@@ -127,10 +127,10 @@ module Adjutant
         result.label.not_nil!.sensitivity.should eq Sensitivity::High
       end
 
-      it "records a FlowEvent for MakeRange" do
+      it "records a RiskFlowEvent for MakeRange" do
         interp, _ = make_tainted_interp
         interp.eval(%(tainted("/etc/passwd")..5))
-        interp.flow_log.events.map(&.op).should contain "MakeRange"
+        interp.risk_flow_log.events.map(&.op).should contain "MakeRange"
       end
     end
 
@@ -178,13 +178,13 @@ module Adjutant
         result.label.not_nil!.sensitivity.should eq Sensitivity::High
       end
 
-      it "records a FlowEvent for SetIndex" do
+      it "records a RiskFlowEvent for SetIndex" do
         interp, _ = make_tainted_interp
         interp.eval(<<-RUBY)
           arr = [1, 2, 3]
           arr[0] = tainted("/etc/passwd")
         RUBY
-        events = interp.flow_log.events.select { |e| e.op == "SetIndex" }
+        events = interp.risk_flow_log.events.select { |e| e.op == "SetIndex" }
         events.size.should eq 1
         events.first.result.not_nil!.sensitivity.should eq Sensitivity::High
       end
@@ -225,17 +225,17 @@ module Adjutant
       end
     end
 
-    describe "flow_log disabled by default" do
+    describe "risk_flow_log disabled by default" do
       it "records nothing when flow_tracking is not enabled" do
         ef = TestEffectHandler.new
         interp = Interpreter.new(effect: ef)
         interp.define_native("tainted") do |args|
-          Value.int(1_i64, SecurityLabel.of(ProvenanceKind::File, args.first.as_string, Sensitivity::High))
+          Value.int(1_i64, RiskFlowLabel.of(ProvenanceKind::File, args.first.as_string, Sensitivity::High))
         end
         result = interp.eval(%(tainted("/etc/passwd") + 1))
-        # Propagation itself is independent of flow_log — label still joins.
+        # Propagation itself is independent of risk_flow_log — label still joins.
         result.label.not_nil!.sensitivity.should eq Sensitivity::High
-        interp.flow_log.events.should be_empty
+        interp.risk_flow_log.events.should be_empty
       end
     end
   end

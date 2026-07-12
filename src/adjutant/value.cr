@@ -12,7 +12,7 @@ module Adjutant
   #   - Automatic label propagation on assignment (label travels with value)
   #   - Cache-friendly storage in arrays and frame locals
   #
-  # The optional SecurityLabel reference is nil in the common unlabeled
+  # The optional RiskFlowLabel reference is nil in the common unlabeled
   # case, adding only a pointer-width cost with a predictable nil check.
   struct Value
     getter raw : ValueRaw
@@ -25,7 +25,7 @@ module Adjutant
     # push elsewhere), and Value is a struct copied on every assignment,
     # so an old copy's own @label field would otherwise go stale. See
     # research/IFC_DESIGN.md's "Container labeling" section.
-    def label : SecurityLabel?
+    def label : RiskFlowLabel?
       if arr = @raw.as?(LabeledArray)
         arr.label
       elsif h = @raw.as?(LabeledHash)
@@ -37,43 +37,43 @@ module Adjutant
 
     # --- Constructors ---------------------------------------------------
 
-    def self.nil_value(label : SecurityLabel? = nil) : Value
+    def self.nil_value(label : RiskFlowLabel? = nil) : Value
       new(nil, label)
     end
 
-    def self.bool(b : Bool, label : SecurityLabel? = nil) : Value
+    def self.bool(b : Bool, label : RiskFlowLabel? = nil) : Value
       new(b, label)
     end
 
-    def self.int(i : Int64, label : SecurityLabel? = nil) : Value
+    def self.int(i : Int64, label : RiskFlowLabel? = nil) : Value
       new(i, label)
     end
 
-    def self.float(f : Float64, label : SecurityLabel? = nil) : Value
+    def self.float(f : Float64, label : RiskFlowLabel? = nil) : Value
       new(f, label)
     end
 
-    def self.string(s : String, label : SecurityLabel? = nil) : Value
+    def self.string(s : String, label : RiskFlowLabel? = nil) : Value
       new(s, label)
     end
 
-    def self.symbol(sym : Sym, label : SecurityLabel? = nil) : Value
+    def self.symbol(sym : Sym, label : RiskFlowLabel? = nil) : Value
       new(sym, label)
     end
 
-    def self.proc(p : ScriptProc, label : SecurityLabel? = nil) : Value
+    def self.proc(p : ScriptProc, label : RiskFlowLabel? = nil) : Value
       new(p, label)
     end
 
-    def self.array(*values, label : SecurityLabel? = nil) : Value
+    def self.array(*values, label : RiskFlowLabel? = nil) : Value
       new(LabeledArray.new(values.to_a, label), label)
     end
 
-    def self.rclass(c : RubyClass, label : SecurityLabel? = nil) : Value
+    def self.rclass(c : RubyClass, label : RiskFlowLabel? = nil) : Value
       new(c, label)
     end
 
-    def self.robject(o : RubyObject, label : SecurityLabel? = nil) : Value
+    def self.robject(o : RubyObject, label : RiskFlowLabel? = nil) : Value
       new(o, label)
     end
 
@@ -228,7 +228,7 @@ module Adjutant
     # LabeledArray/LabeledHash directly (mutating it in place, visible
     # to every Value referencing the same container) rather than on a
     # field the computed #label getter above would ignore.
-    def with_label(l : SecurityLabel?) : Value
+    def with_label(l : RiskFlowLabel?) : Value
       if arr = @raw.as?(LabeledArray)
         arr.label = l
         return self
@@ -241,7 +241,7 @@ module Adjutant
     end
 
     def join_label(other : Value) : Value
-      with_label(SecurityLabel.join(label, other.label))
+      with_label(RiskFlowLabel.join(label, other.label))
     end
 
     # --- Display --------------------------------------------------------
@@ -276,7 +276,7 @@ module Adjutant
 
     # --- Protected constructor ------------------------------------------
 
-    protected def initialize(@raw : ValueRaw, @label : SecurityLabel?)
+    protected def initialize(@raw : ValueRaw, @label : RiskFlowLabel?)
     end
   end
 end

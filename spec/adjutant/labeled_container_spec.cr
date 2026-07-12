@@ -71,7 +71,7 @@ module Adjutant
     it "label is mutable and shared by reference" do
       arr = LabeledArray.new
       alias_ref = arr
-      arr.label = SecurityLabel.of(ProvenanceKind::File, "/etc/passwd", Sensitivity::High)
+      arr.label = RiskFlowLabel.of(ProvenanceKind::File, "/etc/passwd", Sensitivity::High)
       alias_ref.label.not_nil!.sensitivity.should eq Sensitivity::High
     end
 
@@ -119,7 +119,7 @@ module Adjutant
     it "label mutation is shared by reference" do
       h = LabeledHash.new
       alias_ref = h
-      h.label = SecurityLabel.of(ProvenanceKind::Host, "example.com")
+      h.label = RiskFlowLabel.of(ProvenanceKind::Host, "example.com")
       alias_ref.label.should_not be_nil
     end
 
@@ -139,7 +139,7 @@ module Adjutant
     end
 
     it "Value.array wraps values in a LabeledArray with the given label" do
-      l = SecurityLabel.of(ProvenanceKind::File, "/etc/hosts")
+      l = RiskFlowLabel.of(ProvenanceKind::File, "/etc/hosts")
       v = Value.array(Value.int(1_i64), Value.int(2_i64), label: l)
       v.array?.should be_true
       v.as_array.size.should eq 2
@@ -151,7 +151,7 @@ module Adjutant
         arr = LabeledArray.new
         v = Value.new(arr, nil)
         v.label.should be_nil
-        arr.label = SecurityLabel.of(ProvenanceKind::File, "/etc/passwd", Sensitivity::High)
+        arr.label = RiskFlowLabel.of(ProvenanceKind::File, "/etc/passwd", Sensitivity::High)
         # Same Value struct instance still reflects the mutation, since
         # #label is computed from the live container, not a stored field.
         v.label.not_nil!.sensitivity.should eq Sensitivity::High
@@ -161,7 +161,7 @@ module Adjutant
         arr = LabeledArray.new
         v1 = Value.new(arr, nil)
         v2 = v1 # struct copy, same underlying LabeledArray
-        arr.label = SecurityLabel.of(ProvenanceKind::Host, "example.com")
+        arr.label = RiskFlowLabel.of(ProvenanceKind::Host, "example.com")
         v2.label.should_not be_nil
       end
     end
@@ -169,7 +169,7 @@ module Adjutant
     describe "#with_label on containers" do
       it "sets the label on the underlying LabeledArray rather than being ignored" do
         v = Value.new(LabeledArray.new, nil)
-        labeled = v.with_label(SecurityLabel.of(ProvenanceKind::File, "/etc/hosts"))
+        labeled = v.with_label(RiskFlowLabel.of(ProvenanceKind::File, "/etc/hosts"))
         labeled.label.should_not be_nil
         # And it's visible on the original Value too, since it's the same container.
         v.label.should_not be_nil
@@ -177,7 +177,7 @@ module Adjutant
 
       it "sets the label on the underlying LabeledHash rather than being ignored" do
         v = Value.new(LabeledHash.new, nil)
-        labeled = v.with_label(SecurityLabel.of(ProvenanceKind::File, "/etc/hosts"))
+        labeled = v.with_label(RiskFlowLabel.of(ProvenanceKind::File, "/etc/hosts"))
         labeled.label.should_not be_nil
         v.label.should_not be_nil
       end

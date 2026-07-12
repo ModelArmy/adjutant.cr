@@ -86,7 +86,7 @@ module Adjutant::Builtins
         # (possibly labeled) provenance — join across the mapped
         # results, same principle as Op::MakeArray's construction-time
         # join, since this is also constructing a brand new container.
-        joined_label = mapped.reduce(nil.as(Adjutant::SecurityLabel?)) { |acc, v| Adjutant::SecurityLabel.join(acc, v.label) }
+        joined_label = mapped.reduce(nil.as(Adjutant::RiskFlowLabel?)) { |acc, v| Adjutant::RiskFlowLabel.join(acc, v.label) }
         Adjutant::Value.new(Adjutant::LabeledArray.new(mapped, joined_label), nil)
       else
         Adjutant::Value.new(Adjutant::LabeledArray.new, nil)

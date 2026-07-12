@@ -7,7 +7,7 @@ require "./module_registry"
 require "./vm"
 require "./effect_handler"
 require "./risk_profile"
-require "./ifc_policy"
+require "./risk_flow_policy"
 require "./native_callable"
 require "./builtins"
 
@@ -72,19 +72,19 @@ module Adjutant
     getter modules : ModuleRegistry
     getter effect : EffectHandler?
     getter limits : ExecutionLimits
-    getter flow_log : FlowLog
-    getter ifc_policy : IFCPolicy?
+    getter risk_flow_log : RiskFlowLog
+    getter risk_flow_policy : RiskFlowPolicy?
 
     def initialize(
       @effect : EffectHandler? = nil,
       @limits : ExecutionLimits = ExecutionLimits.new,
-      flow_tracking : Bool = false,
-      @ifc_policy : IFCPolicy? = nil,
+      risk_flow_tracking : Bool = false,
+      @risk_flow_policy : RiskFlowPolicy? = nil,
     )
       @symbols = SymbolTable.new
       @modules = ModuleRegistry.new
       @globals = {} of Int32 => Value
-      @flow_log = FlowLog.new(enabled: flow_tracking)
+      @risk_flow_log = RiskFlowLog.new(enabled: risk_flow_tracking)
       bootstrap_core_hierarchy
       bootstrap_error_classes
       bootstrap_builtin_classes
@@ -208,7 +208,7 @@ module Adjutant
     end
 
     private def make_vm : VM
-      VM.new(@symbols, @limits, @effect, self, @globals, @flow_log)
+      VM.new(@symbols, @limits, @effect, self, @globals, @risk_flow_log)
     end
 
     # Bootstraps the three classes at the root of the hierarchy —

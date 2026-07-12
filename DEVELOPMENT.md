@@ -214,8 +214,12 @@ All runtime values are represented as `Value`, a Crystal struct:
 ```crystal
 struct Value
   getter raw   : Nil | Bool | Int64 | Float64 | String | Sym | ScriptProc |
-                 Array(Value) | Hash(Value, Value) | RubyClass | RubyObject
-  getter label : SecurityLabel?
+                 LabeledArray | LabeledHash | RubyClass | RubyObject
+  # label is stored for scalars; for LabeledArray/LabeledHash values it's
+  # computed from the live container's own label instead — see
+  # "Information flow control (risk flow)" below.
+  def label : RiskFlowLabel?
+  end
 end
 ```
 
@@ -352,23 +356,27 @@ flowchart LR
     B -->|no| D["construct_object — allocate bare RubyObject, run initialize"]
 ```
 
-### Information flow control
+### Information flow control (risk flow)
 
-Every `Value` carries an optional `SecurityLabel` reference. Labels are heap-allocated classes so they can be shared across values without copying. When two labeled values are combined, their labels are joined via `SecurityLabel.join`, which computes the least upper bound in the label lattice — currently a powerset lattice over `ProvenanceTag`, ordered by set inclusion (join = tag-set union). See `research/IFC_DESIGN.md` for the full design rationale.
+Every `Value` carries an optional `RiskFlowLabel` — for scalars this is a plain stored field; for array/hash values it's computed from the live `LabeledArray`/`LabeledHash` object instead (see below), so a `Value` copy never goes stale even after the container it wraps is mutated elsewhere. When two labeled values are combined, their labels are joined via `RiskFlowLabel.join`, which computes the least upper bound in the label lattice — a powerset lattice over `ProvenanceTag`, ordered by set inclusion (join = tag-set union). See `research/IFC_DESIGN.md` for the full design rationale.
 
-A `SecurityLabel` holds a `Set(ProvenanceTag)`. Each `ProvenanceTag` is `{kind, origin, sensitivity}`:
+A `RiskFlowLabel` holds a `Set(ProvenanceTag)`. Each `ProvenanceTag` is `{kind, origin, sensitivity}`:
 
 - `kind` is a `ProvenanceKind` enum member (`File`, `Host`, `Env`, `UserInput`, ...) — a closed set, not a bare symbol, so it's typo-checked at compile time.
-- `origin` is a concrete identifier for the source (a path, host, env var name, ...) — always recorded, since it's what makes a later sink-time prompt or audit entry meaningful ("about to POST `/etc/passwd`", not "about to POST some file").
-- `sensitivity` (`Sensitivity::None`/`Elevated`/`High`) is looked up from policy at tag-creation time — not hardcoded per module, since a module has no way to know on its own that `/etc/passwd` matters differently from `/etc/hosts`. The sensitivity policy itself is not yet implemented (see below).
+- `origin` is a concrete identifier for the source (a path, host, env var name, ...) — always recorded, since it's what makes a later risk-flow prompt or audit entry meaningful ("about to POST `/etc/passwd`", not "about to POST some file").
+- `sensitivity` (`Sensitivity::None`/`Elevated`/`High`) is looked up from a `RiskFlowPolicy` at tag-creation time via `RiskFlowPolicy#sensitivity_for` — not hardcoded per module, since a module has no way to know on its own that `/etc/passwd` matters differently from `/etc/hosts`.
 
 Two same-origin tags merge to the worse (more sensitive) of the two rather than duplicating; sensitivity is monotonic — no operation lowers it once joined onto a value (declassification was considered and explicitly rejected, see `research/IFC_DESIGN.md`).
 
-Labels and tags are `JSON::Serializable` (a custom converter handles the `Set(ProvenanceTag)` field, since Crystal's `JSON::Serializable` only supports `Array` natively). `Interpreter#flow_log` exists — a `FlowLog` (also `JSON::Serializable`) that can record a `FlowEvent` per join for post-hoc audit/debugging, separate from the live label on each `Value`, enabled via `Interpreter.new(flow_tracking: true)` and defaulting to disabled. `#record` is currently a no-op with respect to actual VM behavior: **no join site in the dispatch loop calls it yet** — this is VM-propagation work, not yet done (see below).
+**Containers** (`Array`/`Hash`-typed values) don't store their label on the `Value` struct at all — `Value#raw` wraps a `LabeledArray`/`LabeledHash`, and the label lives as a mutable field on *that* object, shared by reference the same way the underlying elements already are. This is why `Op::SetIndex` and `arr << x` can accumulate a pushed/assigned value's label onto the container permanently (monotonic, same as scalar sensitivity — overwriting or removing the tainted element does not clear the container's label). See `research/IFC_DESIGN.md`'s "Container labeling" section for why the simpler "join onto the `Value`'s own label field" design doesn't work (a `Value` is a struct popped off the stack; there's no slot to write an updated label back to) and why `LabeledArray`/`LabeledHash` hand-write their read/mutate methods rather than including `Indexable`/`Enumerable` (both trigger a Crystal 1.20.3 compiler stack overflow over `Value`'s self-referential union type).
 
-**Currently implemented**: the `SecurityLabel`/`ProvenanceTag`/`Sensitivity` types, their join semantics, and the `FlowLog` recording mechanism. **Not yet implemented**: the VM dispatch loop does not actually call `.join_label` anywhere — every binary op, `Concat`, `MakeArray`/`MakeHash`/`MakeRange`, and `SetIndex` currently constructs its result with `label: nil`, discarding operand labels rather than joining them (see `research/IFC_DESIGN.md`'s "VM propagation" section for the exact list of call sites and the container-accumulation design for `SetIndex`). Also not yet implemented: the sensitivity policy (origin → sensitivity lookup), the sink check (comparing a `RiskProfile` against a label's sensitivity to decide whether to interrupt execution), and the agent-facing API for surfacing an interrupt/audit. Labels must currently be attached manually by native code (see "Writing a ScriptModule" below), and nothing yet reads them back out.
+Labels and tags are `JSON::Serializable` (a custom converter handles the `Set(ProvenanceTag)` field, since Crystal's `JSON::Serializable` only supports `Array` natively). `Interpreter#risk_flow_log` is a `RiskFlowLog` (also `JSON::Serializable`) that records a `RiskFlowEvent` per join for post-hoc audit/debugging, separate from the live label on each `Value` — enabled via `Interpreter.new(risk_flow_tracking: true)`, defaulting to disabled (`#record` is then a no-op, so every join site can call it unconditionally without branching on the flag itself).
 
-The `SecurityLabel` field adds one pointer width to every `Value` struct. When no label is present the field is `nil`, which is a predictable nil-check on the hot path — easily branch-predicted and potentially eliminated by the compiler when IFC is disabled.
+`Interpreter#risk_flow_policy` is an optional `RiskFlowPolicy` (agent-loaded `JSON::Serializable`; Adjutant never reads a policy path off disk itself) with two lookups: `#sensitivity_for(kind, origin)` (origin → sensitivity, via `SensitivityPattern` rules matched by `exact` or `regex` pattern type, highest explicit `priority` wins, a tie at the top priority raises `AmbiguousRiskFlowPolicyError`) and `#action_for(tag, sensitivity)` (the `(RiskTag, Sensitivity) → RiskFlowAction` table, via `RiskFlowRule` rows; `Sensitivity::None` always resolves to `RiskFlowAction::Allow` regardless of table contents). `RiskFlowAction` is `Allow`/`Ask`/`Reject` — `Reject` exists alongside `Ask` for organizational rules that should never be silently approved and for unattended execution, where there's no one to ask.
+
+**Currently implemented**: `RiskFlowLabel`/`ProvenanceTag`/`Sensitivity` and their join semantics; `LabeledArray`/`LabeledHash` container labeling; the `RiskFlowLog` recording mechanism; every VM dispatch-loop join site (`exec_binary`'s arithmetic/comparison family, `Eq`, `Concat`, `MakeArray`/`MakeHash`/`MakeRange`, `SetIndex`, `<<`) actually joins labels now, not just the types to support it; `RiskFlowPolicy`/`SensitivityPattern`/`RiskFlowRule` and their lookup logic. **Not yet implemented**: nothing in the VM actually calls `RiskFlowPolicy#action_for` yet — there is no live risk-flow check wired into `call_native`, no mechanism to actually pause execution and ask an agent/user (`EffectHandler` has no interrupt hook), and no agent-facing API for surfacing a decision request or audit trail. Labels must currently be attached manually by native code (see "Writing a ScriptModule" below); a real File IO/HTTP module consulting `sensitivity_for` doesn't exist yet.
+
+The `RiskFlowLabel` field adds one pointer width to every `Value` struct. When no label is present the field is `nil`, which is a predictable nil-check on the hot path — easily branch-predicted and potentially eliminated by the compiler when risk flow tracking is disabled.
 
 ### Writing a ScriptModule
 
@@ -402,12 +410,14 @@ end
 
 Scripts load the module with `require "agent/mymodule"`. Each module is loaded at most once per interpreter instance regardless of how many times the script calls `require`.
 
-For IFC, attach labels to values your module returns. `sensitivity` should come from policy once that exists (see "Information flow control" above); until then, pass `Sensitivity::None` or a manually-chosen level:
+For risk flow tracking, attach labels to values your module returns. Look up `sensitivity` from the interpreter's policy (native code closes over `interp` already, via the `define`/`define_native` block, so no extra plumbing is needed):
 
 ```crystal
 interp.define_native("fetch_data") do |args|
-  data = http_get(args.first.as_string)
-  label = Adjutant::SecurityLabel.of(Adjutant::ProvenanceKind::Host, args.first.as_string)
+  url = args.first.as_string
+  data = http_get(url)
+  sensitivity = interp.risk_flow_policy.try(&.sensitivity_for(Adjutant::ProvenanceKind::Host, url)) || Adjutant::Sensitivity::None
+  label = Adjutant::RiskFlowLabel.of(Adjutant::ProvenanceKind::Host, url, sensitivity)
   Adjutant::Value.string(data, label)
 end
 ```

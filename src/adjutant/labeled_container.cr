@@ -1,5 +1,5 @@
 module Adjutant
-  # Wraps an Array(Value), adding a mutable SecurityLabel that
+  # Wraps an Array(Value), adding a mutable RiskFlowLabel that
   # accumulates taint from elements set into it — see
   # research/IFC_DESIGN.md's "Container labeling (Stage 3.5)" section for
   # why this exists: Value is a struct, so a label living on a Value copy
@@ -30,9 +30,9 @@ module Adjutant
   # outright there; here it compiles but crashes — likely the same
   # underlying cause via a different code path).
   class LabeledArray
-    property label : SecurityLabel?
+    property label : RiskFlowLabel?
 
-    def initialize(@items : Array(Value) = [] of Value, @label : SecurityLabel? = nil)
+    def initialize(@items : Array(Value) = [] of Value, @label : RiskFlowLabel? = nil)
     end
 
     def size : Int32
@@ -95,7 +95,7 @@ module Adjutant
     # Escape hatch for operations (e.g. `+`) that need a genuinely new,
     # independent Array(Value) to build a new container from — callers
     # are responsible for deciding that new container's label themselves
-    # (typically SecurityLabel.join of the two sources' labels).
+    # (typically RiskFlowLabel.join of the two sources' labels).
     def dup_items : Array(Value)
       @items.dup
     end
@@ -117,9 +117,9 @@ module Adjutant
   # values_equal?'s hash case) are hand-written direct delegates instead
   # of coming from an included module.
   class LabeledHash
-    property label : SecurityLabel?
+    property label : RiskFlowLabel?
 
-    def initialize(@entries : Hash(Value, Value) = {} of Value => Value, @label : SecurityLabel? = nil)
+    def initialize(@entries : Hash(Value, Value) = {} of Value => Value, @label : RiskFlowLabel? = nil)
     end
 
     def size : Int32

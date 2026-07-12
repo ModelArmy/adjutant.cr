@@ -2,7 +2,7 @@ require "json"
 require "./risk_profile"
 
 module Adjutant
-  # How a matched sink rule resolves a risky call.
+  # How a matched risk flow rule resolves a risky call.
   #
   # Allow: proceed, no interruption.
   # Ask: pause and surface the concrete flow to the agent/user for a
@@ -13,8 +13,8 @@ module Adjutant
   #   regardless of who's asked, and for unattended execution where
   #   there's no one to ask.
   #
-  # See research/IFC_DESIGN.md's "Sink policy (piece 3)" section.
-  enum SinkAction
+  # See research/IFC_DESIGN.md's "Risk flow policy (piece 3)" section.
+  enum RiskFlowAction
     Allow
     Ask
     Reject
@@ -53,18 +53,18 @@ module Adjutant
     end
   end
 
-  # A single (RiskTag, Sensitivity) → SinkAction rule, consulted at the
-  # sink check. Sensitivity::None always allows regardless of table
-  # contents (see IFCPolicy#action_for) — rows here only need to cover
+  # A single (RiskTag, Sensitivity) → RiskFlowAction rule, consulted at the
+  # risk flow check. Sensitivity::None always allows regardless of table
+  # contents (see RiskFlowPolicy#action_for) — rows here only need to cover
   # Elevated/High cases that should escalate above the default.
-  struct SinkRule
+  struct RiskFlowRule
     include JSON::Serializable
 
     getter tag : RiskTag
     getter sensitivity : Sensitivity
-    getter action : SinkAction
+    getter action : RiskFlowAction
 
-    def initialize(@tag : RiskTag, @sensitivity : Sensitivity, @action : SinkAction)
+    def initialize(@tag : RiskTag, @sensitivity : Sensitivity, @action : RiskFlowAction)
     end
   end
 
@@ -75,27 +75,28 @@ module Adjutant
   # picking one arbitrarily: with explicit priorities, a tie means the
   # policy author's priorities actually collide, not that Adjutant
   # failed to compute specificity.
-  class AmbiguousPolicyError < Exception
+  class AmbiguousRiskFlowPolicyError < Exception
   end
 
-  # A single IFC policy: sensitivity lookup rules plus sink action
-  # rules. Loaded and owned by whatever embeds Adjutant (the agent) —
-  # Adjutant itself never reads a policy path off disk; the agent parses
-  # or constructs an IFCPolicy and passes it to Interpreter. See
-  # research/IFC_DESIGN.md's "Policy object" and "Sink policy" sections.
-  class IFCPolicy
+  # A single risk flow policy: sensitivity lookup rules plus risk flow
+  # action rules. Loaded and owned by whatever embeds Adjutant (the
+  # agent) — Adjutant itself never reads a policy path off disk; the
+  # agent parses or constructs a RiskFlowPolicy and passes it to
+  # Interpreter. See research/IFC_DESIGN.md's "Policy object" and "Risk
+  # flow policy" sections.
+  class RiskFlowPolicy
     include JSON::Serializable
 
     getter sensitivity_patterns : Array(SensitivityPattern)
-    getter sink_rules : Array(SinkRule)
+    getter risk_flow_rules : Array(RiskFlowRule)
 
     def initialize(@sensitivity_patterns : Array(SensitivityPattern) = [] of SensitivityPattern,
-                   @sink_rules : Array(SinkRule) = [] of SinkRule)
+                   @risk_flow_rules : Array(RiskFlowRule) = [] of RiskFlowRule)
     end
 
     # origin → sensitivity lookup, consulted by native modules at
     # tag-creation time. Highest-priority match wins; a tie among
-    # matches at the top priority raises AmbiguousPolicyError. No match
+    # matches at the top priority raises AmbiguousRiskFlowPolicyError. No match
     # at all → Sensitivity::None.
     def sensitivity_for(kind : ProvenanceKind, origin : String) : Sensitivity
       matches = sensitivity_patterns.select { |pattern| pattern.kind == kind && pattern.matches?(origin) }
@@ -104,24 +105,24 @@ module Adjutant
       top_priority = matches.max_of(&.priority)
       top = matches.select { |pattern| pattern.priority == top_priority }
       if top.size > 1
-        raise AmbiguousPolicyError.new(
-          "ambiguous IFC policy: #{top.size} sensitivity_patterns rules tie at priority " \
+        raise AmbiguousRiskFlowPolicyError.new(
+          "ambiguous risk flow policy: #{top.size} sensitivity_patterns rules tie at priority " \
           "#{top_priority} for #{kind}:#{origin}"
         )
       end
       top.first.sensitivity
     end
 
-    # (RiskTag, Sensitivity) → action lookup, consulted at the sink
+    # (RiskTag, Sensitivity) → action lookup, consulted at the risk flow
     # check. Sensitivity::None always allows regardless of table
     # contents — the universal default is not overridable by a rule,
     # only sensitivities above None can be. No matching rule for a
     # non-None sensitivity → Allow (a tag with no configured rows is
     # treated as not policy-relevant, not as an implicit escalation).
-    def action_for(tag : RiskTag, sensitivity : Sensitivity) : SinkAction
-      return SinkAction::Allow if sensitivity.none?
-      sink_rules.find { |rule| rule.tag == tag && rule.sensitivity == sensitivity }
-        .try(&.action) || SinkAction::Allow
+    def action_for(tag : RiskTag, sensitivity : Sensitivity) : RiskFlowAction
+      return RiskFlowAction::Allow if sensitivity.none?
+      risk_flow_rules.find { |rule| rule.tag == tag && rule.sensitivity == sensitivity }
+        .try(&.action) || RiskFlowAction::Allow
     end
   end
 end

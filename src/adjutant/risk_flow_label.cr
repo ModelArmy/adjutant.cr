@@ -20,7 +20,7 @@ module Adjutant
   # (rather than a bare Symbol) so typos are caught at compile time and
   # the set of recognized kinds is visible in one place; also gives a
   # natural, stable JSON representation (the enum member name) for
-  # FlowLog/audit output. Extend as new native modules need to label
+  # RiskFlowLog/audit output. Extend as new native modules need to label
   # values from sources not yet covered.
   enum ProvenanceKind
     File
@@ -29,7 +29,7 @@ module Adjutant
     UserInput
   end
 
-  # A single piece of provenance carried by a SecurityLabel: what kind of
+  # A single piece of provenance carried by a RiskFlowLabel: what kind of
   # source it came from, a concrete identifier for that source, and how
   # sensitive that source is judged to be by policy.
   #
@@ -79,7 +79,7 @@ module Adjutant
 
   # JSON::Serializable converter for Set(ProvenanceTag) — Crystal's
   # JSON::Serializable does not support Set directly, only Array, so
-  # SecurityLabel#tags uses this converter to serialize as a JSON array
+  # RiskFlowLabel#tags uses this converter to serialize as a JSON array
   # and deserialize back into a Set. Kept generic-free (fixed to
   # ProvenanceTag) since that's the only Set field needing this so far.
   module ProvenanceTagSetConverter
@@ -102,7 +102,7 @@ module Adjutant
   # an element of the powerset lattice over ProvenanceTag, ordered by set
   # inclusion (join = union). See research/IFC_DESIGN.md for the design
   # rationale.
-  class SecurityLabel
+  class RiskFlowLabel
     include JSON::Serializable
 
     @[JSON::Field(converter: Adjutant::ProvenanceTagSetConverter)]
@@ -112,13 +112,13 @@ module Adjutant
     end
 
     # Convenience: a label carrying a single tag.
-    def self.of(kind : ProvenanceKind, origin : String, sensitivity : Sensitivity = Sensitivity::None) : SecurityLabel
+    def self.of(kind : ProvenanceKind, origin : String, sensitivity : Sensitivity = Sensitivity::None) : RiskFlowLabel
       new(Set{ProvenanceTag.new(kind, origin, sensitivity)})
     end
 
     # The worst (most sensitive) tag's sensitivity, or None if there are
-    # no tags. This is what a sink check compares against a RiskProfile —
-    # see research/IFC_DESIGN.md's "Sink check" section.
+    # no tags. This is what a risk flow check compares against a RiskProfile —
+    # see research/IFC_DESIGN.md's "Risk flow check" section.
     def sensitivity : Sensitivity
       tags.reduce(Sensitivity::None) { |worst, tag| tag.sensitivity.worse_or_equal?(worst) ? tag.sensitivity : worst }
     end
@@ -127,7 +127,7 @@ module Adjutant
       io << "label:{" << tags.join(", ") << "}"
     end
 
-    def ==(other : SecurityLabel) : Bool
+    def ==(other : RiskFlowLabel) : Bool
       tags == other.tags
     end
 
@@ -135,7 +135,7 @@ module Adjutant
     # set union of tags, with same-origin tags merged to their worse
     # sensitivity (see ProvenanceTag#merge). nil is the lattice bottom
     # (no provenance) and is absorbed by whichever side is present.
-    def self.join(a : SecurityLabel?, b : SecurityLabel?) : SecurityLabel?
+    def self.join(a : RiskFlowLabel?, b : RiskFlowLabel?) : RiskFlowLabel?
       return b if a.nil?
       return a if b.nil?
       return a if a.same?(b)

@@ -1,23 +1,31 @@
-# IFC design — lattice, labels, flow log, VM propagation, container labeling
+# Risk flow design — lattice, labels, risk flow log, VM propagation, container labeling, policy
 
-Status: lattice types and `FlowLog` plumbing implemented (`SecurityLabel`,
-`ProvenanceTag`, `ProvenanceKind`, `Sensitivity`, `FlowLog`/`FlowEvent`,
-all `JSON::Serializable`; `Interpreter#flow_log`, `flow_tracking:` param).
-VM propagation for value-construction opcodes is implemented and tested:
-`exec_binary` (Add/Sub/Mul/Div/Mod/BitAnd/BitOr/Xor/Shl/Shr/Lt/Lte/Gt/Gte),
-`Op::Eq`, `Op::Concat`, `Op::MakeArray`, `Op::MakeHash`, `Op::MakeRange` all
-join operand labels into the result and record a `FlowEvent`.
+Status: implemented and tested — `RiskFlowLabel`/`ProvenanceTag`/
+`ProvenanceKind`/`Sensitivity` and their join semantics; `RiskFlowLog`/
+`RiskFlowEvent` (via `Interpreter#risk_flow_log`, `risk_flow_tracking:`
+param), all `JSON::Serializable`; every VM dispatch-loop join site
+(`exec_binary`'s arithmetic/comparison family, `Eq`, `Concat`,
+`MakeArray`/`MakeHash`/`MakeRange`, `SetIndex`, `<<`); `LabeledArray`/
+`LabeledHash` container wrapper types and their label accumulation;
+`RiskFlowPolicy`/`SensitivityPattern`/`RiskFlowRule`/`RiskFlowAction`
+(via `Interpreter#risk_flow_policy`) and their lookup logic.
 
-**`Op::SetIndex` (container mutation) is blocked, not yet implemented** —
-see "Container labeling (Stage 3.5, decided)" below for why the original
-plan (join the incoming value's label onto the container in place) doesn't
-actually work given `Value`'s struct semantics, and the revised direction
-(`LabeledArray`/`LabeledHash` wrapper types) needed before `SetIndex` can
-be finished. Scope: Phase 8 (IFC / `SecurityLabel`), pieces of five
-(lattice → VM propagation → sink policy → enforcement → agent-facing API),
-with an added Stage 3.5 (container labeling) between VM propagation and
-finishing `SetIndex`. This document covers the lattice, VM propagation,
-and container-labeling pieces.
+**Not yet implemented**: nothing calls `RiskFlowPolicy#action_for` from
+the VM — no live risk flow check wired into `call_native`, no mechanism
+to actually pause execution and ask an agent/user (`EffectHandler` has
+no interrupt hook yet), no agent-facing API. This is piece 4
+(enforcement) and piece 5 (agent-facing API), not yet started as of this
+writing.
+
+Scope: Phase 8 (IFC / `RiskFlowLabel`), all five pieces (lattice → VM
+propagation → risk flow policy → enforcement → agent-facing API), plus
+an added Stage 3.5 (container labeling) that landed between VM
+propagation and finishing `SetIndex`/`<<` once the original "join onto
+the `Value`'s own label field" plan turned out not to work (see
+"Container labeling" below). This document covers the lattice, VM
+propagation, container-labeling, and risk-flow-policy pieces; piece 4
+(enforcement) and piece 5 (agent-facing API) are being designed now, in
+the sections following the older material below.
 
 ## Goal
 
@@ -74,7 +82,7 @@ end
 symbol as originally sketched here — decided during Stage 2, so typos are
 caught at compile time and JSON serialization has a stable representation.
 Also: this member was originally named `Network`, renamed to `Host`
-during sink-policy design (piece 3) — `origin` for this kind is always a
+during risk flow policy design (piece 3) — `origin` for this kind is always a
 hostname/URL string, never a broader network fact like a port or
 protocol, so `Host` names what's actually stored more precisely. Renamed
 directly with no migration/mapping layer, since nothing had persisted
@@ -98,12 +106,12 @@ Rationale:
 ## Label
 
 ```crystal
-class SecurityLabel
+class RiskFlowLabel
   getter tags : Set(ProvenanceTag)
 end
 ```
 
-Every `Value` carries an optional `SecurityLabel` (nilable field, one
+Every `Value` carries an optional `RiskFlowLabel` (nilable field, one
 pointer width, same as the current stub — cheap on the hot path when IFC
 tracking or the label itself is absent).
 
@@ -111,7 +119,7 @@ tracking or the label itself is absent).
 
 Powerset lattice over `ProvenanceTag`, ordered by set inclusion (⊆).
 
-- **Join** (`SecurityLabel.join`) = set union of tags. Matches the general
+- **Join** (`RiskFlowLabel.join`) = set union of tags. Matches the general
   Denning join-as-accumulation model, and the WebKit IFC paper's approach of
   using a powerset lattice over concrete provenance elements (there: web
   domains; here: file paths / hosts / env vars / etc.) rather than a small
@@ -123,23 +131,23 @@ Powerset lattice over `ProvenanceTag`, ordered by set inclusion (⊆).
   sensitive source and one non-sensitive source stays sensitive.
 - No meet operation is needed yet — nothing currently requires computing a
   greatest lower bound; only join (accumulation during execution) and the
-  sink comparison (below) are used.
+  risk flow check comparison (below) are used.
 
-## Sink check (live, at call time)
+## Risk flow check (live, at call time)
 
 At a native call site with a static `RiskProfile`, compare the profile's
-`RiskTag`s against the `sensitivity` of the `SecurityLabel`s on the incoming
+`RiskTag`s against the `sensitivity` of the `RiskFlowLabel`s on the incoming
 argument `Value`s. Not just "does a tag of matching `kind` exist" — the
 `sensitivity` field is what actually drives escalation. Exact policy
 (which `RiskTag` × `Sensitivity` combinations interrupt vs. pass silently)
-is deferred to the sink-policy phase (piece 3 of 5), but the label/lattice
+is deferred to the risk flow policy phase (piece 3 of 5), but the label/lattice
 must expose enough (`kind`, `origin`, `sensitivity`) for that policy to be
 expressive — e.g. distinguishing "internal doc → internal server" (quiet)
 from "`/etc/passwd` → anywhere" (escalate).
 
-## Flow log (post-hoc, optional)
+## Risk flow log (post-hoc, optional)
 
-Live sink checks only need the *current* joined label. Audit and
+Live risk flow checks only need the *current* joined label. Audit and
 troubleshooting need the *history* of how a label was built — two values
 that both end up tainted `{file:/etc/passwd, network:internal-db}` can have
 arrived there via different paths, and that path matters when debugging the
@@ -149,26 +157,26 @@ Rather than embedding history in every label (expensive, defeats the
 "cheap on the hot path" goal), keep it as a separate, optional component:
 
 ```crystal
-class FlowLog
+class RiskFlowLog
   # append-only; one entry per join performed during execution
 end
 
-struct FlowEvent
+struct RiskFlowEvent
   getter op : String            # what VM operation triggered the join
-  getter inputs : Array(SecurityLabel?)
-  getter result : SecurityLabel?
+  getter inputs : Array(RiskFlowLabel?)
+  getter result : RiskFlowLabel?
   getter line : Int32           # or pc, for locating in source
 end
 ```
 
-- `SecurityLabel` stays label-only: tag set, no history. Always on.
-- `FlowLog` is owned by the `Interpreter`/VM, populated only when enabled.
+- `RiskFlowLabel` stays label-only: tag set, no history. Always on.
+- `RiskFlowLog` is owned by the `Interpreter`/VM, populated only when enabled.
   Disabled: join still happens (label computation unaffected), nothing is
   appended — zero overhead when off.
 - This split also gives a natural home for the future "enable/disable flow
   tracking per execution" config: a single boolean the dispatch loop checks
   before calling `flow_log.record(...)`, without touching the label type.
-- Post-hoc audit = replay/dump the `FlowLog` after the script completes.
+- Post-hoc audit = replay/dump the `RiskFlowLog` after the script completes.
 
 ```mermaid
 ---
@@ -179,9 +187,9 @@ config:
     fontSize: 12px
 ---
 flowchart TD
-    A[Value] --> B["label : SecurityLabel — tag set, always on"]
-    C[VM dispatch loop] -->|on join| D["FlowLog — append-only, optional"]
-    D --> E["FlowEvent: op, inputs, result label, line"]
+    A[Value] --> B["label : RiskFlowLabel — tag set, always on"]
+    C[VM dispatch loop] -->|on join| D["RiskFlowLog — append-only, optional"]
+    D --> E["RiskFlowEvent: op, inputs, result label, line"]
     F["config: track_flow?"] -.enable/disable.-> D
 ```
 
@@ -203,17 +211,17 @@ Survey of `vm.cr` / `value.cr` on branch `implement-ifc` @ `f2f4f34` found:
   `Op::MakeArray`, `Op::MakeHash`, `Op::MakeRange` previously constructed a
   fresh `Value` with `label: nil` (or no label argument at all), discarding
   whatever labels the operands carried. Fixed: each of these now joins the
-  labels of its inputs (`SecurityLabel.join`, folded across N parts for
+  labels of its inputs (`RiskFlowLabel.join`, folded across N parts for
   `Concat`/`MakeArray`/`MakeHash`) into the result's label, and records a
-  `FlowEvent` via `Interpreter#flow_log`. Tested in
+  `RiskFlowEvent` via `Interpreter#risk_flow_log`. Tested in
   `spec/adjutant/ifc_propagation_spec.cr` — both final-label assertions and
-  `FlowLog` contents, per the "verify via flow log" testing approach
+  `RiskFlowLog` contents, per the "verify via flow log" testing approach
   decided alongside the staged test plan.
-- **Sink check hook point**: `VM#call_native` — every `NativeCallable`
+- **Risk flow check hook point**: `VM#call_native` — every `NativeCallable`
   call (the only place a `RiskProfile` lives) routes through this single
   method, with the callable's `risk : RiskProfile` and every argument
   `Value` (labels included) already in hand. This is the natural
-  attachment point for the live sink check in piece 3; propagation itself
+  attachment point for the live risk flow check in piece 3; propagation itself
   does not need to change this method.
 
 ### Containers: labels must accumulate into the container itself, not just its elements (superseded — see Stage 3.5 below)
@@ -229,10 +237,10 @@ arr[0] = read_file("/etc/passwd")   # tainted value into a slot
 post(arr)                            # sink call
 ```
 
-The sink check at `post(arr)` inspects the label of the `Value` actually
+The risk flow check at `post(arr)` inspects the label of the `Value` actually
 passed to the sink — the array itself, not its elements. If `Op::SetIndex`
 only ever left the taint sitting on `arr.as_array[0]`, the array's own
-top-level label would stay `nil` and the sink check would miss it
+top-level label would stay `nil` and the risk flow check would miss it
 entirely: the exact explicit-flow-through-assignment case IFC exists to
 catch.
 
@@ -366,7 +374,7 @@ flowchart TD
     A[LabeledArray] --> B["includes Indexable(Value)"]
     B --> C["gets each/map/select/reduce/... from Enumerable, for free"]
     A --> D["holds @items : Array(Value) privately"]
-    A --> E["property label : SecurityLabel?"]
+    A --> E["property label : RiskFlowLabel?"]
 ```
 
 **Survey findings** (every `as_array`/`as_hash` call site, plus
@@ -414,9 +422,9 @@ elsewhere in the codebase instead:
 
 ```crystal
 class LabeledArray
-  property label : SecurityLabel?
+  property label : RiskFlowLabel?
 
-  def initialize(@items : Array(Value) = [] of Value, @label : SecurityLabel? = nil)
+  def initialize(@items : Array(Value) = [] of Value, @label : RiskFlowLabel? = nil)
   end
 
   def size : Int32
@@ -515,18 +523,18 @@ load/construct it however it likes (parse a file at an agent-provided path,
 build it in code, etc.) and simply pass the resulting object in — Adjutant
 itself does not read policy paths off disk internally.
 
-The policy object is attached to `Interpreter` (`Interpreter#ifc_policy`)
-so any native module or sink check can query it. Two lookup shapes it needs
+The policy object is attached to `Interpreter` (`Interpreter#risk_flow_policy`)
+so any native module or risk flow check can query it. Two lookup shapes it needs
 to support:
 
 - **origin → sensitivity**: path/host pattern matching, consulted by a
   native module at tag-creation time (e.g. File IO module checking whether
   the path it just opened matches a sensitive pattern).
-- **(RiskTag, Sensitivity) → action**: the sink table, consulted at call
-  time to decide whether a risky call with tainted arguments should
-  interrupt.
+- **(RiskTag, Sensitivity) → action**: the risk flow rules table,
+  consulted at call time to decide whether a risky call with tainted
+  arguments should interrupt.
 
-Exact JSON schema for both is deferred to the sink-policy phase (piece 3) —
+Exact JSON schema for both is deferred to the risk flow policy phase (piece 3) —
 this section fixes the *access pattern*, not the schema.
 
 ```mermaid
@@ -538,10 +546,10 @@ config:
     fontSize: 12px
 ---
 flowchart LR
-    A["agent: load/build policy"] --> B["IFCPolicy — JSON::Serializable"]
-    B --> C["Interpreter#ifc_policy"]
+    A["agent: load/build policy"] --> B["RiskFlowPolicy — JSON::Serializable"]
+    B --> C["Interpreter#risk_flow_policy"]
     C --> D["native module: policy.sensitivity_for(origin)"]
-    C --> E["sink check: policy.rule_for(risk_tag, sensitivity)"]
+    C --> E["risk flow check: policy.rule_for(risk_tag, sensitivity)"]
 ```
 
 ## Declassification (decided: not supported — sensitivity is monotonic)
@@ -563,7 +571,7 @@ Considered and rejected for this phase. Reasoning:
   approval, not on use, not via any operation defined here.
 - The actual problem worth solving — avoiding repeat interrupts for the
   *same* origin-to-sink flow within one script run — belongs in the
-  sink-policy phase as an **approval cache keyed by (tag, sink)**, separate
+  risk flow policy phase as an **approval cache keyed by (tag, sink)**, separate
   from the lattice entirely. The lattice/label design has no declassify
   operation and does not need one.
 
@@ -571,13 +579,13 @@ This keeps the lattice simple: join only ever holds sensitivity steady or
 escalates it, with no path for a value to become less sensitive during
 execution.
 
-## Sink policy (piece 3, decided)
+## Risk flow policy (piece 3, decided)
 
 Builds on the already-decided policy-object access pattern (agent-loaded
-`JSON::Serializable`, attached to `Interpreter#ifc_policy`) and the
+`JSON::Serializable`, attached to `Interpreter#risk_flow_policy`) and the
 existing `RiskProfile`/`RiskTag`/`RiskAggregator` vocabulary (see
 `risk_profile.cr`, `risk_aggregator.cr`) rather than inventing a parallel
-one — the sink check reuses the same `RiskTag` enum static risk analysis
+one — the risk flow check reuses the same `RiskTag` enum static risk analysis
 already tags every `NativeCallable` with.
 
 ### Actions
@@ -599,7 +607,7 @@ Three, not two:
   silently defaulting to `allow`.
 
 ```crystal
-enum SinkAction
+enum RiskFlowAction
   Allow
   Ask
   Reject
@@ -610,7 +618,7 @@ end
 
 Considered a formula (multiply a `RiskTag`'s static severity rank by the
 label's `Sensitivity` rank, escalate past a threshold) against an
-explicit `(RiskTag, Sensitivity) → SinkAction` table. Rejected the
+explicit `(RiskTag, Sensitivity) → RiskFlowAction` table. Rejected the
 formula: a single shared threshold can't express that different actions
 care about sensitivity differently at the same sensitivity level — e.g.
 `DeletesFiles` needs to escalate at `Sensitivity::Elevated` already (a
@@ -676,7 +684,7 @@ actually collide.
     { "kind": "Host", "pattern_type": "regex", "pattern": "\\.gmail\\.com$", "priority": 5, "sensitivity": "High" },
     { "kind": "Host", "pattern": "mybiz.example.com", "priority": 10, "sensitivity": "None" }
   ],
-  "sink_rules": [
+  "risk_flow_rules": [
     { "tag": "DeletesFiles", "sensitivity": "Elevated", "action": "Ask" },
     { "tag": "DeletesFiles", "sensitivity": "High", "action": "Ask" },
     { "tag": "NetworkEgress", "sensitivity": "High", "action": "Ask" },
@@ -707,18 +715,18 @@ struct SensitivityPattern
   end
 end
 
-struct SinkRule
+struct RiskFlowRule
   include JSON::Serializable
   getter tag : RiskTag
   getter sensitivity : Sensitivity
-  getter action : SinkAction
+  getter action : RiskFlowAction
 end
 
-class IFCPolicy
+class RiskFlowPolicy
   include JSON::Serializable
 
   getter sensitivity_patterns : Array(SensitivityPattern)
-  getter sink_rules : Array(SinkRule)
+  getter risk_flow_rules : Array(RiskFlowRule)
 
   # origin → sensitivity lookup, consulted by native modules at
   # tag-creation time (e.g. File IO checking the path it just opened).
@@ -734,14 +742,14 @@ class IFCPolicy
     top.first.sensitivity
   end
 
-  # (RiskTag, Sensitivity) → action lookup, consulted at the sink check.
+  # (RiskTag, Sensitivity) → action lookup, consulted at the risk flow check.
   # Sensitivity::None always allows regardless of table contents — the
   # universal default is not overridable by a rule, only sensitivities
   # above None can be.
-  def action_for(tag : RiskTag, sensitivity : Sensitivity) : SinkAction
-    return SinkAction::Allow if sensitivity.none?
-    sink_rules.find { |r| r.tag == tag && r.sensitivity == sensitivity }
-      .try(&.action) || SinkAction::Allow
+  def action_for(tag : RiskTag, sensitivity : Sensitivity) : RiskFlowAction
+    return RiskFlowAction::Allow if sensitivity.none?
+    risk_flow_rules.find { |r| r.tag == tag && r.sensitivity == sensitivity }
+      .try(&.action) || RiskFlowAction::Allow
   end
 end
 ```
@@ -767,13 +775,13 @@ This section defines *what gets decided*, not how the decision takes
 effect. Actually interrupting execution needs a real mechanism to ask
 a human/agent and get an answer back — `EffectHandler` currently has no
 such hook (it's strictly `write_stdout`/`vfs_read`/`vfs_exists?`, physical
-effects only, per its own doc comment). Adding that hook, wiring the sink
-check into `call_native`, and defining `reject`'s and an unanswerable
+effects only, per its own doc comment). Adding that hook, wiring the risk
+flow check into `call_native`, and defining `reject`'s and an unanswerable
 `ask`'s error/exception shape are piece 4's problem, not piece 3's.
 
 ### Open questions for piece 4 (enforcement) and beyond
 
-- Eager vs. lazy ambiguous-priority validation: should `IFCPolicy`
+- Eager vs. lazy ambiguous-priority validation: should `RiskFlowPolicy`
   check for tied-priority collisions across the whole
   `sensitivity_patterns` array at load time (catches a policy mistake
   before any script runs), or is the lazy per-lookup check sketched

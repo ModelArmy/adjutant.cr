@@ -48,9 +48,9 @@ module Adjutant
     end
   end
 
-  describe SecurityLabel do
+  describe RiskFlowLabel do
     it ".of builds a single-tag label" do
-      l = SecurityLabel.of(ProvenanceKind::Host, "example.com", Sensitivity::Elevated)
+      l = RiskFlowLabel.of(ProvenanceKind::Host, "example.com", Sensitivity::Elevated)
       l.tags.size.should eq 1
       l.tags.first.kind.should eq ProvenanceKind::Host
       l.tags.first.origin.should eq "example.com"
@@ -58,60 +58,60 @@ module Adjutant
     end
 
     it "an empty label has None sensitivity" do
-      SecurityLabel.new.sensitivity.should eq Sensitivity::None
+      RiskFlowLabel.new.sensitivity.should eq Sensitivity::None
     end
 
     describe ".join" do
       it "returns the other side when one side is nil" do
-        l = SecurityLabel.of(ProvenanceKind::File, "/etc/hosts")
-        SecurityLabel.join(nil, l).should eq l
-        SecurityLabel.join(l, nil).should eq l
+        l = RiskFlowLabel.of(ProvenanceKind::File, "/etc/hosts")
+        RiskFlowLabel.join(nil, l).should eq l
+        RiskFlowLabel.join(l, nil).should eq l
       end
 
       it "returns nil when both sides are nil" do
-        SecurityLabel.join(nil, nil).should be_nil
+        RiskFlowLabel.join(nil, nil).should be_nil
       end
 
       it "unions disjoint tag sets" do
-        a = SecurityLabel.of(ProvenanceKind::File, "/etc/hosts")
-        b = SecurityLabel.of(ProvenanceKind::Host, "example.com")
-        joined = SecurityLabel.join(a, b).not_nil!
+        a = RiskFlowLabel.of(ProvenanceKind::File, "/etc/hosts")
+        b = RiskFlowLabel.of(ProvenanceKind::Host, "example.com")
+        joined = RiskFlowLabel.join(a, b).not_nil!
         joined.tags.size.should eq 2
       end
 
       it "merges overlapping origins to the worse sensitivity instead of duplicating" do
-        a = SecurityLabel.of(ProvenanceKind::File, "/etc/passwd", Sensitivity::None)
-        b = SecurityLabel.of(ProvenanceKind::File, "/etc/passwd", Sensitivity::High)
-        joined = SecurityLabel.join(a, b).not_nil!
+        a = RiskFlowLabel.of(ProvenanceKind::File, "/etc/passwd", Sensitivity::None)
+        b = RiskFlowLabel.of(ProvenanceKind::File, "/etc/passwd", Sensitivity::High)
+        joined = RiskFlowLabel.join(a, b).not_nil!
         joined.tags.size.should eq 1
         joined.sensitivity.should eq Sensitivity::High
       end
 
       it "join is commutative for disjoint tag sets" do
-        a = SecurityLabel.of(ProvenanceKind::File, "/etc/hosts")
-        b = SecurityLabel.of(ProvenanceKind::Host, "example.com")
-        SecurityLabel.join(a, b).should eq SecurityLabel.join(b, a)
+        a = RiskFlowLabel.of(ProvenanceKind::File, "/etc/hosts")
+        b = RiskFlowLabel.of(ProvenanceKind::Host, "example.com")
+        RiskFlowLabel.join(a, b).should eq RiskFlowLabel.join(b, a)
       end
 
       it "join is associative" do
-        a = SecurityLabel.of(ProvenanceKind::File, "/etc/hosts")
-        b = SecurityLabel.of(ProvenanceKind::Host, "example.com")
-        c = SecurityLabel.of(ProvenanceKind::Env, "API_KEY", Sensitivity::High)
+        a = RiskFlowLabel.of(ProvenanceKind::File, "/etc/hosts")
+        b = RiskFlowLabel.of(ProvenanceKind::Host, "example.com")
+        c = RiskFlowLabel.of(ProvenanceKind::Env, "API_KEY", Sensitivity::High)
 
-        left = SecurityLabel.join(SecurityLabel.join(a, b), c)
-        right = SecurityLabel.join(a, SecurityLabel.join(b, c))
+        left = RiskFlowLabel.join(RiskFlowLabel.join(a, b), c)
+        right = RiskFlowLabel.join(a, RiskFlowLabel.join(b, c))
         left.should eq right
       end
 
       it "joining a label with itself is idempotent" do
-        a = SecurityLabel.of(ProvenanceKind::File, "/etc/hosts", Sensitivity::Elevated)
-        SecurityLabel.join(a, a).should eq a
+        a = RiskFlowLabel.of(ProvenanceKind::File, "/etc/hosts", Sensitivity::Elevated)
+        RiskFlowLabel.join(a, a).should eq a
       end
     end
 
     describe "#sensitivity" do
       it "reflects the single worst tag among several" do
-        l = SecurityLabel.new(Set{
+        l = RiskFlowLabel.new(Set{
           ProvenanceTag.new(ProvenanceKind::File, "/etc/hosts", Sensitivity::None),
           ProvenanceTag.new(ProvenanceKind::Host, "example.com", Sensitivity::Elevated),
           ProvenanceTag.new(ProvenanceKind::Env, "API_KEY", Sensitivity::High),
@@ -122,24 +122,24 @@ module Adjutant
 
     describe "JSON round-trip" do
       it "round-trips a single-tag label" do
-        original = SecurityLabel.of(ProvenanceKind::File, "/etc/passwd", Sensitivity::High)
-        parsed = SecurityLabel.from_json(original.to_json)
+        original = RiskFlowLabel.of(ProvenanceKind::File, "/etc/passwd", Sensitivity::High)
+        parsed = RiskFlowLabel.from_json(original.to_json)
         parsed.should eq original
         parsed.sensitivity.should eq Sensitivity::High
       end
 
       it "round-trips a multi-tag label" do
-        original = SecurityLabel.new(Set{
+        original = RiskFlowLabel.new(Set{
           ProvenanceTag.new(ProvenanceKind::File, "/etc/hosts", Sensitivity::None),
           ProvenanceTag.new(ProvenanceKind::Host, "example.com", Sensitivity::Elevated),
         })
-        parsed = SecurityLabel.from_json(original.to_json)
+        parsed = RiskFlowLabel.from_json(original.to_json)
         parsed.tags.should eq original.tags
       end
 
       it "round-trips an empty label" do
-        original = SecurityLabel.new
-        parsed = SecurityLabel.from_json(original.to_json)
+        original = RiskFlowLabel.new
+        parsed = RiskFlowLabel.from_json(original.to_json)
         parsed.tags.should be_empty
       end
 
@@ -155,22 +155,22 @@ module Adjutant
   describe "Interpreter flow_log wiring" do
     it "defaults to a disabled flow_log" do
       interp, _ = make_interp
-      interp.flow_log.enabled?.should be_false
+      interp.risk_flow_log.enabled?.should be_false
     end
 
-    it "flow_tracking: true enables the flow_log" do
+    it "risk_flow_tracking: true enables the risk_flow_log" do
       ef = TestEffectHandler.new
-      interp = Interpreter.new(effect: ef, flow_tracking: true)
-      interp.flow_log.enabled?.should be_true
+      interp = Interpreter.new(effect: ef, risk_flow_tracking: true)
+      interp.risk_flow_log.enabled?.should be_true
     end
 
     it "flow_log persists across multiple eval calls on the same interpreter" do
       ef = TestEffectHandler.new
-      interp = Interpreter.new(effect: ef, flow_tracking: true)
+      interp = Interpreter.new(effect: ef, risk_flow_tracking: true)
       interp.eval("1 + 1")
-      log_after_first = interp.flow_log
+      log_after_first = interp.risk_flow_log
       interp.eval("2 + 2")
-      interp.flow_log.should be log_after_first
+      interp.risk_flow_log.should be log_after_first
     end
   end
 end
