@@ -7,6 +7,7 @@ require "./module_registry"
 require "./vm"
 require "./effect_handler"
 require "./risk_profile"
+require "./ifc_policy"
 require "./native_callable"
 require "./builtins"
 
@@ -72,11 +73,13 @@ module Adjutant
     getter effect : EffectHandler?
     getter limits : ExecutionLimits
     getter flow_log : FlowLog
+    getter ifc_policy : IFCPolicy?
 
     def initialize(
       @effect : EffectHandler? = nil,
       @limits : ExecutionLimits = ExecutionLimits.new,
       flow_tracking : Bool = false,
+      @ifc_policy : IFCPolicy? = nil,
     )
       @symbols = SymbolTable.new
       @modules = ModuleRegistry.new

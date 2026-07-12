@@ -1,6 +1,7 @@
 require "./adjutant/security_label"
 require "./adjutant/flow_log"
 require "./adjutant/labeled_container"
+require "./adjutant/ifc_policy"
 require "./adjutant/symbol_table"
 require "./adjutant/value"
 require "./adjutant/ruby_class"

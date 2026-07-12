@@ -16,7 +16,7 @@ module Adjutant
 
     it "is not equal to a tag with a different kind, same origin string" do
       a = ProvenanceTag.new(ProvenanceKind::File, "example.com")
-      b = ProvenanceTag.new(ProvenanceKind::Network, "example.com")
+      b = ProvenanceTag.new(ProvenanceKind::Host, "example.com")
       a.should_not eq b
     end
 
@@ -50,9 +50,9 @@ module Adjutant
 
   describe SecurityLabel do
     it ".of builds a single-tag label" do
-      l = SecurityLabel.of(ProvenanceKind::Network, "example.com", Sensitivity::Elevated)
+      l = SecurityLabel.of(ProvenanceKind::Host, "example.com", Sensitivity::Elevated)
       l.tags.size.should eq 1
-      l.tags.first.kind.should eq ProvenanceKind::Network
+      l.tags.first.kind.should eq ProvenanceKind::Host
       l.tags.first.origin.should eq "example.com"
       l.tags.first.sensitivity.should eq Sensitivity::Elevated
     end
@@ -74,7 +74,7 @@ module Adjutant
 
       it "unions disjoint tag sets" do
         a = SecurityLabel.of(ProvenanceKind::File, "/etc/hosts")
-        b = SecurityLabel.of(ProvenanceKind::Network, "example.com")
+        b = SecurityLabel.of(ProvenanceKind::Host, "example.com")
         joined = SecurityLabel.join(a, b).not_nil!
         joined.tags.size.should eq 2
       end
@@ -89,13 +89,13 @@ module Adjutant
 
       it "join is commutative for disjoint tag sets" do
         a = SecurityLabel.of(ProvenanceKind::File, "/etc/hosts")
-        b = SecurityLabel.of(ProvenanceKind::Network, "example.com")
+        b = SecurityLabel.of(ProvenanceKind::Host, "example.com")
         SecurityLabel.join(a, b).should eq SecurityLabel.join(b, a)
       end
 
       it "join is associative" do
         a = SecurityLabel.of(ProvenanceKind::File, "/etc/hosts")
-        b = SecurityLabel.of(ProvenanceKind::Network, "example.com")
+        b = SecurityLabel.of(ProvenanceKind::Host, "example.com")
         c = SecurityLabel.of(ProvenanceKind::Env, "API_KEY", Sensitivity::High)
 
         left = SecurityLabel.join(SecurityLabel.join(a, b), c)
@@ -113,7 +113,7 @@ module Adjutant
       it "reflects the single worst tag among several" do
         l = SecurityLabel.new(Set{
           ProvenanceTag.new(ProvenanceKind::File, "/etc/hosts", Sensitivity::None),
-          ProvenanceTag.new(ProvenanceKind::Network, "example.com", Sensitivity::Elevated),
+          ProvenanceTag.new(ProvenanceKind::Host, "example.com", Sensitivity::Elevated),
           ProvenanceTag.new(ProvenanceKind::Env, "API_KEY", Sensitivity::High),
         })
         l.sensitivity.should eq Sensitivity::High
@@ -131,7 +131,7 @@ module Adjutant
       it "round-trips a multi-tag label" do
         original = SecurityLabel.new(Set{
           ProvenanceTag.new(ProvenanceKind::File, "/etc/hosts", Sensitivity::None),
-          ProvenanceTag.new(ProvenanceKind::Network, "example.com", Sensitivity::Elevated),
+          ProvenanceTag.new(ProvenanceKind::Host, "example.com", Sensitivity::Elevated),
         })
         parsed = SecurityLabel.from_json(original.to_json)
         parsed.tags.should eq original.tags

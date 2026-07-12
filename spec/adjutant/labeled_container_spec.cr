@@ -119,7 +119,7 @@ module Adjutant
     it "label mutation is shared by reference" do
       h = LabeledHash.new
       alias_ref = h
-      h.label = SecurityLabel.of(ProvenanceKind::Network, "example.com")
+      h.label = SecurityLabel.of(ProvenanceKind::Host, "example.com")
       alias_ref.label.should_not be_nil
     end
 
@@ -161,7 +161,7 @@ module Adjutant
         arr = LabeledArray.new
         v1 = Value.new(arr, nil)
         v2 = v1 # struct copy, same underlying LabeledArray
-        arr.label = SecurityLabel.of(ProvenanceKind::Network, "example.com")
+        arr.label = SecurityLabel.of(ProvenanceKind::Host, "example.com")
         v2.label.should_not be_nil
       end
     end

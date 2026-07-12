@@ -117,7 +117,7 @@ module Adjutant
       end
 
       it "carries a label when constructed with one" do
-        l = SecurityLabel.of(ProvenanceKind::Network, "internal-db.corp.local")
+        l = SecurityLabel.of(ProvenanceKind::Host, "internal-db.corp.local")
         v = Value.int(1_i64, l)
         v.label.should eq l
       end
@@ -138,14 +138,14 @@ module Adjutant
       end
 
       it "joins labels from two values into a union of tags" do
-        la = SecurityLabel.of(ProvenanceKind::Network, "internal-db.corp.local")
+        la = SecurityLabel.of(ProvenanceKind::Host, "internal-db.corp.local")
         lb = SecurityLabel.of(ProvenanceKind::File, "/etc/hosts")
         a = Value.int(1_i64, la)
         b = Value.int(2_i64, lb)
         result = a.join_label(b)
         joined = result.label.not_nil!
         joined.tags.size.should eq 2
-        joined.tags.should contain ProvenanceTag.new(ProvenanceKind::Network, "internal-db.corp.local")
+        joined.tags.should contain ProvenanceTag.new(ProvenanceKind::Host, "internal-db.corp.local")
         joined.tags.should contain ProvenanceTag.new(ProvenanceKind::File, "/etc/hosts")
       end
 
@@ -158,7 +158,7 @@ module Adjutant
       end
 
       it "join with nil on either side returns the other side unchanged" do
-        l = SecurityLabel.of(ProvenanceKind::Network, "example.com")
+        l = SecurityLabel.of(ProvenanceKind::Host, "example.com")
         SecurityLabel.join(nil, l).should eq l
         SecurityLabel.join(l, nil).should eq l
         SecurityLabel.join(nil, nil).should be_nil
@@ -173,9 +173,9 @@ module Adjutant
       end
 
       it "shows label in inspect output" do
-        l = SecurityLabel.of(ProvenanceKind::Network, "example.com")
+        l = SecurityLabel.of(ProvenanceKind::Host, "example.com")
         v = Value.string("secret", l)
-        v.inspect.should eq "\"secret\" [label:{network:example.com}]"
+        v.inspect.should eq "\"secret\" [label:{host:example.com}]"
       end
     end
   end

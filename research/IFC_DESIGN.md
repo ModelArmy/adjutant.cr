@@ -51,14 +51,14 @@ A tag is not a bare symbol. It carries identity, not just category:
 
 ```crystal
 struct ProvenanceTag
-  getter kind : ProvenanceKind      # File, Network, Env, UserInput, ...
+  getter kind : ProvenanceKind      # File, Host, Env, UserInput, ...
   getter origin : String            # concrete identifier — path, host, var name
   getter sensitivity : Sensitivity  # None, Elevated, High — see below
 end
 
 enum ProvenanceKind
   File
-  Network
+  Host
   Env
   UserInput
 end
@@ -72,7 +72,15 @@ end
 
 (As implemented: `kind` is a closed `ProvenanceKind` enum, not a bare
 symbol as originally sketched here — decided during Stage 2, so typos are
-caught at compile time and JSON serialization has a stable representation.)
+caught at compile time and JSON serialization has a stable representation.
+Also: this member was originally named `Network`, renamed to `Host`
+during sink-policy design (piece 3) — `origin` for this kind is always a
+hostname/URL string, never a broader network fact like a port or
+protocol, so `Host` names what's actually stored more precisely. Renamed
+directly with no migration/mapping layer, since nothing had persisted
+data using the old name yet. `RiskTag::NetworkEgress` is unaffected — a
+different concept, the *action* of egressing over the network, not the
+provenance kind of a value.)
 
 Rationale:
 - `kind` + `origin` together are what makes a sink-time prompt to the user
@@ -563,13 +571,229 @@ This keeps the lattice simple: join only ever holds sensitivity steady or
 escalates it, with no path for a value to become less sensitive during
 execution.
 
-## Open questions for the next design conversation (sink policy, piece 3)
+## Sink policy (piece 3, decided)
 
-- Exact `RiskTag` × `Sensitivity` policy table / rule language, and the
-  origin-pattern → sensitivity JSON schema.
-- Approval cache: keyed by (tag identity, sink) — what counts as "the same
-  flow" for suppressing repeat prompts within one script run (exact origin
-  match? origin pattern? tag kind alone?).
+Builds on the already-decided policy-object access pattern (agent-loaded
+`JSON::Serializable`, attached to `Interpreter#ifc_policy`) and the
+existing `RiskProfile`/`RiskTag`/`RiskAggregator` vocabulary (see
+`risk_profile.cr`, `risk_aggregator.cr`) rather than inventing a parallel
+one — the sink check reuses the same `RiskTag` enum static risk analysis
+already tags every `NativeCallable` with.
+
+### Actions
+
+Three, not two:
+
+- **`allow`**: proceed, no interruption.
+- **`ask`**: pause and surface the concrete flow (tag's origin, sink's
+  description) to the agent/user for a live decision. Non-deterministic
+  outcome — depends on who's asked. Requires something to ask, which
+  doesn't exist yet (see "Not covered here" below).
+- **`reject`**: policy has already decided no, unconditionally — no
+  prompt, script gets an error at that call site. Considered and added
+  deliberately (not in the original two-action sketch) for two reasons:
+  organizational rules that should never be silently approved regardless
+  of who's asked (compliance-style hard limits), and unattended
+  execution, where there's no live human to `ask` and something has to
+  define the deterministic fallback rather than leaving it undefined or
+  silently defaulting to `allow`.
+
+```crystal
+enum SinkAction
+  Allow
+  Ask
+  Reject
+end
+```
+
+### Table shape, not a formula
+
+Considered a formula (multiply a `RiskTag`'s static severity rank by the
+label's `Sensitivity` rank, escalate past a threshold) against an
+explicit `(RiskTag, Sensitivity) → SinkAction` table. Rejected the
+formula: a single shared threshold can't express that different actions
+care about sensitivity differently at the same sensitivity level — e.g.
+`DeletesFiles` needs to escalate at `Sensitivity::Elevated` already (a
+"critical dataset" shouldn't be silently deleted even if not the most
+sensitive category), while `NetworkEgress` reasonably stays quiet at
+`Elevated` and only escalates at `High`. Expressing that in a formula
+means per-tag multipliers, which is the table again with extra
+indirection. The table says this directly and is easier to audit later
+("show every rule where DeletesFiles is allowed").
+
+Decided: explicit table, `Sensitivity::None → Allow` as the universal
+default (unlabeled/non-sensitive data never blocks anything, regardless
+of tag — matches every worked example so far: a public README, a tmp
+file, an internal-to-internal flow are all `None` and none of them
+should prompt), with per-`(RiskTag, Sensitivity)` override rows only
+where the action differs from that default. Most tags won't need a row
+for every sensitivity level in practice.
+
+### Pattern matching for sensitivity lookup (decided)
+
+Considered and rejected, in order:
+
+1. **First-match-wins, order in the array is the priority** — simplest,
+   but silently wrong if a policy author lists a general rule after a
+   specific one; the mistake produces no error, just a rule that quietly
+   never fires.
+2. **Most-specific-match-wins, computed automatically** (e.g. by counting
+   wildcard characters or comparing pattern length) — rejected once a
+   concrete example showed it doesn't generalize: hostnames get more
+   specific reading *left* (`this.example.com` more specific than
+   `example.com`), file paths get more specific reading *right*
+   (`/etc/passwd` more specific than `/etc/*`), so no single
+   syntax-driven specificity rule works across both without Adjutant
+   having to understand path vs. host semantics — which defeats the
+   point of a generic pattern mechanism.
+3. **A glob pattern type** (`/etc/*`), considered as a third option
+   alongside `exact`/`regex` — rejected: adds a second pattern language
+   to maintain and explain for something `regex` already covers, and
+   Crystal's built-in glob support is filesystem-oriented (lists actual
+   matching paths on disk), not a string-matching primitive suited to
+   arbitrary origins (hostnames, non-existent future paths, etc.).
+   `prefix`/`suffix` types were floated as glob's cheap common-case
+   replacement, then also dropped rather than adding two more
+   pattern-type variants for cases `regex` already handles.
+
+**Decided**: two pattern types, `exact` (default, needs no extra field)
+and `regex` (explicit). Specificity is stated directly by the policy
+author via an explicit `priority : Int32` field — highest priority wins
+among matching rules, not inferred from pattern syntax or array
+position. If two matching rules tie at the top priority for the same
+origin, that's ambiguous policy — a load-time error, not a silent
+pick — since with explicit priorities a tie can no longer be blamed on
+"we can't compute specificity"; it means the author's priorities
+actually collide.
+
+```json
+{
+  "sensitivity_patterns": [
+    { "kind": "File", "pattern": "/etc/passwd", "priority": 10, "sensitivity": "High" },
+    { "kind": "File", "pattern": "/etc/hosts", "priority": 10, "sensitivity": "None" },
+    { "kind": "File", "pattern_type": "regex", "pattern": "^/etc/", "priority": 0, "sensitivity": "Elevated" },
+    { "kind": "Host", "pattern_type": "regex", "pattern": "\\.com$", "priority": 0, "sensitivity": "Elevated" },
+    { "kind": "Host", "pattern_type": "regex", "pattern": "\\.gmail\\.com$", "priority": 5, "sensitivity": "High" },
+    { "kind": "Host", "pattern": "mybiz.example.com", "priority": 10, "sensitivity": "None" }
+  ],
+  "sink_rules": [
+    { "tag": "DeletesFiles", "sensitivity": "Elevated", "action": "Ask" },
+    { "tag": "DeletesFiles", "sensitivity": "High", "action": "Ask" },
+    { "tag": "NetworkEgress", "sensitivity": "High", "action": "Ask" },
+    { "tag": "ElevatedPrivilege", "sensitivity": "High", "action": "Reject" }
+  ]
+}
+```
+
+```crystal
+enum PatternType
+  Exact
+  Regex
+end
+
+struct SensitivityPattern
+  include JSON::Serializable
+  getter kind : ProvenanceKind
+  getter pattern_type : PatternType = PatternType::Exact
+  getter pattern : String
+  getter priority : Int32
+  getter sensitivity : Sensitivity
+
+  def matches?(origin : String) : Bool
+    case pattern_type
+    in .exact? then pattern == origin
+    in .regex? then Regex.new(pattern).matches?(origin)
+    end
+  end
+end
+
+struct SinkRule
+  include JSON::Serializable
+  getter tag : RiskTag
+  getter sensitivity : Sensitivity
+  getter action : SinkAction
+end
+
+class IFCPolicy
+  include JSON::Serializable
+
+  getter sensitivity_patterns : Array(SensitivityPattern)
+  getter sink_rules : Array(SinkRule)
+
+  # origin → sensitivity lookup, consulted by native modules at
+  # tag-creation time (e.g. File IO checking the path it just opened).
+  # Highest-priority match wins; a tie among matches at the top priority
+  # is ambiguous policy (see rationale above), not resolved silently.
+  # No match at all → Sensitivity::None.
+  def sensitivity_for(kind : ProvenanceKind, origin : String) : Sensitivity
+    matches = sensitivity_patterns.select { |p| p.kind == kind && p.matches?(origin) }
+    return Sensitivity::None if matches.empty?
+    top_priority = matches.max_of(&.priority)
+    top = matches.select { |p| p.priority == top_priority }
+    raise "ambiguous IFC policy: #{top.size} rules tie at priority #{top_priority} for #{kind}:#{origin}" if top.size > 1
+    top.first.sensitivity
+  end
+
+  # (RiskTag, Sensitivity) → action lookup, consulted at the sink check.
+  # Sensitivity::None always allows regardless of table contents — the
+  # universal default is not overridable by a rule, only sensitivities
+  # above None can be.
+  def action_for(tag : RiskTag, sensitivity : Sensitivity) : SinkAction
+    return SinkAction::Allow if sensitivity.none?
+    sink_rules.find { |r| r.tag == tag && r.sensitivity == sensitivity }
+      .try(&.action) || SinkAction::Allow
+  end
+end
+```
+
+Note the ambiguity check as sketched happens at lookup time (first time
+a colliding origin is actually queried), not at policy-load time — an
+open question below is whether it should instead be validated eagerly
+when the policy is loaded, which would catch the mistake before any
+script runs rather than only when a script happens to touch the
+colliding origin.
+
+A call's overall action is the worst (highest-priority) action across
+every `(tag, incoming-label-sensitivity)` pair the call touches — same
+worse-wins combining principle `RiskAggregator#rank` already uses for
+severity/reversibility, applied here across `Reject > Ask > Allow`
+instead. A `NativeCallable` can have multiple `RiskTag`s and receive
+multiple labeled arguments; the check is the max over the full cross
+product, not just the first match.
+
+### Not covered here (deferred to enforcement, piece 4)
+
+This section defines *what gets decided*, not how the decision takes
+effect. Actually interrupting execution needs a real mechanism to ask
+a human/agent and get an answer back — `EffectHandler` currently has no
+such hook (it's strictly `write_stdout`/`vfs_read`/`vfs_exists?`, physical
+effects only, per its own doc comment). Adding that hook, wiring the sink
+check into `call_native`, and defining `reject`'s and an unanswerable
+`ask`'s error/exception shape are piece 4's problem, not piece 3's.
+
+### Open questions for piece 4 (enforcement) and beyond
+
+- Eager vs. lazy ambiguous-priority validation: should `IFCPolicy`
+  check for tied-priority collisions across the whole
+  `sensitivity_patterns` array at load time (catches a policy mistake
+  before any script runs), or is the lazy per-lookup check sketched
+  above (only raises if a script actually queries a colliding origin)
+  good enough? Leaning eager, since a load-time check is strictly
+  better information for the same cost and doesn't depend on a script
+  happening to exercise the bad rule — not fully settled here.
+- The approval cache (avoid re-prompting for an already-approved
+  origin→sink pair within one script run, from the declassification
+  discussion) — still not designed; a natural fit for piece 4 once
+  `ask`'s actual prompting mechanism exists to cache against.
+- What "the concrete flow" shown to the agent/user in an `ask` actually
+  contains — likely the tag's `kind`/`origin`, the `RiskTag` and a
+  human-readable description of the sink call (matching how
+  `RiskFinding#description` already works for the static case) — not
+  fully specified yet.
+- How `reject` surfaces to the script: presumably raises a real
+  exception into the running script (the class hierarchy already has
+  `RuntimeError`/`StandardError` etc. — see `interpreter.cr`), but which
+  class and what message is piece 4's call.
 
 ## Carried forward to VM propagation implementation (piece 2)
 

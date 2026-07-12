@@ -358,7 +358,7 @@ Every `Value` carries an optional `SecurityLabel` reference. Labels are heap-all
 
 A `SecurityLabel` holds a `Set(ProvenanceTag)`. Each `ProvenanceTag` is `{kind, origin, sensitivity}`:
 
-- `kind` is a `ProvenanceKind` enum member (`File`, `Network`, `Env`, `UserInput`, ...) — a closed set, not a bare symbol, so it's typo-checked at compile time.
+- `kind` is a `ProvenanceKind` enum member (`File`, `Host`, `Env`, `UserInput`, ...) — a closed set, not a bare symbol, so it's typo-checked at compile time.
 - `origin` is a concrete identifier for the source (a path, host, env var name, ...) — always recorded, since it's what makes a later sink-time prompt or audit entry meaningful ("about to POST `/etc/passwd`", not "about to POST some file").
 - `sensitivity` (`Sensitivity::None`/`Elevated`/`High`) is looked up from policy at tag-creation time — not hardcoded per module, since a module has no way to know on its own that `/etc/passwd` matters differently from `/etc/hosts`. The sensitivity policy itself is not yet implemented (see below).
 
@@ -407,7 +407,7 @@ For IFC, attach labels to values your module returns. `sensitivity` should come 
 ```crystal
 interp.define_native("fetch_data") do |args|
   data = http_get(args.first.as_string)
-  label = Adjutant::SecurityLabel.of(Adjutant::ProvenanceKind::Network, args.first.as_string)
+  label = Adjutant::SecurityLabel.of(Adjutant::ProvenanceKind::Host, args.first.as_string)
   Adjutant::Value.string(data, label)
 end
 ```

@@ -24,7 +24,7 @@ module Adjutant
   # values from sources not yet covered.
   enum ProvenanceKind
     File
-    Network
+    Host
     Env
     UserInput
   end
