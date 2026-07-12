@@ -47,11 +47,13 @@ module Adjutant::Builtins
     end
 
     define(cls, interp, "keys") do |args|
-      Adjutant::Value.new(args.first.as_hash.keys, nil)
+      h = args.first.as_hash
+      Adjutant::Value.new(Adjutant::LabeledArray.new(h.keys, h.label), nil)
     end
 
     define(cls, interp, "values") do |args|
-      Adjutant::Value.new(args.first.as_hash.values, nil)
+      h = args.first.as_hash
+      Adjutant::Value.new(Adjutant::LabeledArray.new(h.values, h.label), nil)
     end
 
     # `key?` is the real Ruby name; `include?` and `has_key?` are

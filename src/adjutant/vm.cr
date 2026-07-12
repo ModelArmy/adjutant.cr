@@ -477,6 +477,7 @@ module Adjutant
             idx = pop
             target = pop
             exec_set_index(target, idx, val)
+            @flow_log.record("SetIndex", [target.label, val.label], target.label, f.line)
             push(val)
 
             # --- Calls ----------------------------------------------------------
@@ -560,7 +561,7 @@ module Adjutant
             @stack.pop(n) if n > 0
             joined_label = elements.reduce(nil.as(SecurityLabel?)) { |acc, value| SecurityLabel.join(acc, value.label) }
             @flow_log.record("MakeArray", elements.map(&.label), joined_label, f.line)
-            push(Value.new(elements, joined_label))
+            push(Value.new(LabeledArray.new(elements, joined_label), joined_label))
           when Op::MakeHash
             n = inst.a.to_i * 2
             pairs = @stack.last(n)
@@ -569,7 +570,7 @@ module Adjutant
             pairs.each_slice(2) { |pair| h[pair[0]] = pair[1] }
             joined_label = pairs.reduce(nil.as(SecurityLabel?)) { |acc, value| SecurityLabel.join(acc, value.label) }
             @flow_log.record("MakeHash", pairs.map(&.label), joined_label, f.line)
-            push(Value.new(h, joined_label))
+            push(Value.new(LabeledHash.new(h, joined_label), joined_label))
           when Op::MakeRange
             rend = pop
             rstart = pop
@@ -579,7 +580,7 @@ module Adjutant
             elems = [rstart, rend, Value.bool(exclusive)]
             joined_label = SecurityLabel.join(rstart.label, rend.label)
             @flow_log.record("MakeRange", [rstart.label, rend.label], joined_label, f.line)
-            push(Value.new(elems, joined_label))
+            push(Value.new(LabeledArray.new(elems, joined_label), joined_label))
           when Op::Concat
             n = inst.a.to_i
             parts = @stack.last(n)
@@ -1050,7 +1051,12 @@ module Adjutant
         else
           STDOUT.puts(str)
         end
-        args.size == 1 ? args.first : Value.new(args.dup, nil)
+        if args.size == 1
+          args.first
+        else
+          joined_label = args.reduce(nil.as(SecurityLabel?)) { |acc, value| SecurityLabel.join(acc, value.label) }
+          Value.new(LabeledArray.new(args.dup, joined_label), nil)
+        end
       when "raise"
         cls, msg = if args.empty?
                      {builtin_error_class("RuntimeError"), "unhandled exception"}
@@ -1211,10 +1217,12 @@ module Adjutant
       when a.string? && b.string? then Value.string(a.as_string + b.as_string)
       when a.array? && b.array?
         # Real Ruby's Array#+ returns a NEW array (the two operands are
-        # untouched) — Value.new(Array(Value), nil) wraps a fresh
-        # Crystal array, same construction Op::MakeArray itself uses,
-        # not a mutation of either a's or b's underlying array.
-        Value.new(a.as_array + b.as_array, nil)
+        # untouched) — a fresh LabeledArray wrapping a fresh Crystal
+        # array, same construction Op::MakeArray itself uses, not a
+        # mutation of either a's or b's underlying array. The result's
+        # label is set via the outer exec_binary's with_label call
+        # (join of a's and b's labels), same as any other binary op.
+        Value.new(LabeledArray.new(a.as_array.dup_items + b.as_array.dup_items), nil)
       else
         raise runtime_error("cannot add #{a} and #{b}")
       end
@@ -1295,9 +1303,14 @@ module Adjutant
     private def exec_shl(a : Value, b : Value) : Value
       if a.array?
         # Real Ruby: mutates a in place AND returns a (so `arr << 1 <<
-        # 2` chains) — push onto the same underlying Array(Value), not
-        # a new one, matching Op::SetIndex's existing in-place
-        # mutation of the same reference.
+        # 2` chains) — push onto the same underlying LabeledArray, not a
+        # new one. Returning `a` here means exec_binary's outer
+        # `.with_label(join(a.label, b.label))` call mutates this same
+        # LabeledArray's own label field (see Value#with_label's
+        # container case) — the container accumulates b's taint exactly
+        # like Op::SetIndex does, for free, as a side effect of the
+        # normal exec_binary wrapping every binary op already goes
+        # through.
         a.as_array.push(b)
         a
       else
@@ -1378,7 +1391,7 @@ module Adjutant
         # Adjutant's own equality rules at every level instead of
         # Crystal's.
         aa, ba = a.as_array, b.as_array
-        aa.size == ba.size && aa.zip(ba).all? { |x, y| values_equal?(x, y) }
+        aa.size == ba.size && aa.zip(ba) { |x, y| values_equal?(x, y) }
       when a.hash? && b.hash?
         # Same reasoning as Array — same key set, and each value equal
         # via values_equal? (not Crystal's own Hash#==, which would use
@@ -1390,7 +1403,7 @@ module Adjutant
         # hash by reference instead of by content, a real but narrow
         # gap worth knowing about rather than a silent one.
         ah, bh = a.as_hash, b.as_hash
-        ah.size == bh.size && ah.all? { |k, v| (bv = bh[k]?) && values_equal?(v, bv) }
+        ah.size == bh.size && ah.all? { |k, v| bv = bh[k]?; bv ? values_equal?(v, bv) : false }
       else false
       end
     end
@@ -1424,9 +1437,14 @@ module Adjutant
         i = idx.as_int.to_i
         arr = target.as_array
         i = arr.size + i if i < 0
-        arr[i] = val if i >= 0 && i < arr.size
+        if i >= 0 && i < arr.size
+          arr[i] = val
+          arr.label = SecurityLabel.join(arr.label, val.label)
+        end
       when target.hash?
-        target.as_hash[idx] = val
+        h = target.as_hash
+        h[idx] = val
+        h.label = SecurityLabel.join(h.label, val.label)
       end
     end
 

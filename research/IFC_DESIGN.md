@@ -361,28 +361,146 @@ flowchart TD
     A --> E["property label : SecurityLabel?"]
 ```
 
-**Not yet decided / next steps before implementation**:
-- Full survey of every `as_array`/`as_hash` call site plus
-  `builtins/array.cr`/`builtins/hash.cr` to size the actual change —
-  flagged as likely touching most native `Array`/`Hash` methods,
-  `exec_get_index`, `values_equal?`, `arith_add`'s array case, and
-  `to_s`/`inspect`. Not yet performed as of this writing.
-- Exact API surface `LabeledArray`/`LabeledHash` need to expose so
-  existing native-method code changes minimally (ideally: change the
-  type used, not the call sites, wherever `Indexable`/`Enumerable`
-  already provide the needed method).
-- `Value#raw`'s union changes from `Array(Value) | Hash(Value, Value)` to
-  `LabeledArray | LabeledHash` — a real signature change, not additive;
-  every exhaustive `case`/`when` over `Value`'s raw kinds needs
-  re-checking.
-- Once this lands, `Op::SetIndex`'s original join logic (join incoming
-  value's label onto `target.label`, in place — no write-back needed,
-  since the label now lives on the shared container object) becomes the
-  correct, straightforward implementation. Stage 4 (originally scoped as
-  "SetIndex container accumulation") is effectively unblocked once Stage
-  3.5 lands, and should need little beyond that join call itself.
+**Survey findings** (every `as_array`/`as_hash` call site, plus
+`builtins/array.cr`/`builtins/hash.cr`, reviewed before settling the API
+below):
+
+|Area               |Sites                                                                                                            |Impact                                                                                                                                                                                                                                                                                                                   |
+|-------------------|-----------------------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|`value.cr`         |4 accessors (`as_array`, `as_hash`, `as_array?`, `as_hash?`) + `array?`/`hash?` predicates + the `ValueRaw` union|The actual type definitions — everything else follows from here                                                                                                                                                                                                                                                          |
+|`builtins/array.cr`|9                                                                                                                |All reduce to `Indexable`/`Enumerable`-style ops (`.size`, `.empty?`, `.push`, `.pop`, `.any?`, `.map`, `.each`) — expected to need **no call-site changes**                                                                                                                                                             |
+|`builtins/hash.cr` |7                                                                                                                |Same — `.size`, `.empty?`, `.keys`, `.values`, `.has_key?`, `.each`                                                                                                                                                                                                                                                      |
+|`vm.cr`            |11                                                                                                               |`exec_get_index`/`exec_set_index` (2), `values_equal?`'s array/hash cases (2), `arith_add`'s array `+` (1, genuine new-array construction — needs `LabeledArray.new(...)` instead of a bare literal), `exec_shl`'s array `<<` (1, **same write-back gap as `SetIndex`, same fix**), `exec_builtin`'s `.size` fallback (1)|
+|`interpreter.cr`   |0 direct, 2 predicate                                                                                            |Unaffected beyond the predicate implementation itself                                                                                                                                                                                                                                                                    |
+|specs              |~32 across 7 files                                                                                               |Mostly read-only assertions (`.size`, `[]`, `.map(&.as_int)`) — expected to keep working unchanged                                                                                                                                                                                                                       |
+
+Smaller than initially estimated: most of the edit surface is
+`value.cr` plus a handful of direct-construction sites in `vm.cr`, not "most
+native Array/Hash methods" as originally flagged.
+
+One incidental, pre-existing bug noted (not IFC, not fixed here):
+`Value#to_s`'s `case` has no `when Array`/`when Hash` branch, so arrays/
+hashes don't render as `[1, 2, 3]` today — falls through to
+`"#<Array(Adjutant::Value)>"`. Worth a `DEVELOPMENT.md` "known missing"
+entry at some point.
+
+**Settled API shape (as implemented — revised from the original sketch during implementation)**:
+
+The original sketch called for `include Indexable(Value)`. That was
+tried first but hits a Crystal compiler stack overflow (Crystal
+1.20.3): `Value`'s raw union includes `LabeledArray` itself, making
+`Value` a self-referential type, and instantiating `Indexable`/
+`Enumerable`'s generic methods over a self-referential element type
+appears to blow up the compiler's overload resolution (deep recursion
+through `lookup_matches`/`instantiate`/`match_block_arg`, eventually a
+literal stack overflow in the compiler process, not a normal type
+error). `LabeledHash`'s `include Enumerable({Value, Value})` hit a
+related, more directly diagnosed compiler restriction first (Crystal
+rejects `Value` as a generic type argument outright: "can't use Value
+as a generic type argument yet, use a more specific type") — likely the
+same underlying cause via a different code path.
+
+**Resolution**: neither wrapper includes a generic collection module.
+Each hand-writes the small, fixed set of methods actually used
+elsewhere in the codebase instead:
+
+```crystal
+class LabeledArray
+  property label : SecurityLabel?
+
+  def initialize(@items : Array(Value) = [] of Value, @label : SecurityLabel? = nil)
+  end
+
+  def size : Int32
+    @items.size
+  end
+
+  def empty? : Bool
+    @items.empty?
+  end
+
+  def [](index : Int) : Value
+    @items[index]
+  end
+
+  def []?(index : Int) : Value?
+    @items[index]?
+  end
+
+  def each(& : Value ->) : Nil
+    @items.each { |v| yield v }
+  end
+
+  def map(& : Value -> Value) : Array(Value)
+    @items.map { |v| yield v }
+  end
+
+  def any?(& : Value -> Bool) : Bool
+    @items.any? { |v| yield v }
+  end
+
+  def to_a : Array(Value)
+    @items.dup
+  end
+
+  # Only ever used (values_equal?) to check element-wise equality of two
+  # same-length arrays — not a general zip, so this returns the
+  # all?-style Bool the one real call site needs.
+  def zip(other : LabeledArray, & : Value, Value -> Bool) : Bool
+    @items.each_with_index.all? { |v, i| yield v, other[i] }
+  end
+
+  def push(value : Value) : LabeledArray
+    @items.push(value)
+    self
+  end
+
+  def pop : Value
+    @items.pop
+  end
+
+  def pop? : Value?
+    @items.pop?
+  end
+
+  def []=(index : Int, value : Value) : Value
+    @items[index] = value
+  end
+
+  def dup_items : Array(Value) # escape hatch for +, which builds a new (unlabeled-by-default) array
+    @items.dup
+  end
+end
+```
+
+`LabeledHash` mirrors this over `Hash(Value, Value)`: `size`, `empty?`,
+`[]`, `[]?`, `[]=`, `has_key?`, `keys`, `values`, `each`, and `all?`
+(needed by `values_equal?`'s hash case) are all hand-written direct
+delegates — never included a generic module to begin with, since
+Crystal has no single `Indexable`-equivalent for hash-like types.
+
+**Known limitation, accepted**: `map`/`any?`/etc. as hand-written above
+always return a plain `Array(Value)`/`Bool`, not a `LabeledArray` — same
+consequence the original `Indexable`-based design would have had anyway
+(`Enumerable#map` always constructs a plain `Array` internally,
+regardless of the receiver's type). So native methods that construct a
+*new* container from an existing one (`Array#map`, future `#select`,
+etc.) must explicitly wrap the result themselves
+(`Value.new(LabeledArray.new(recv.as_array.map { ... }, joined_label), nil)`)
+rather than getting it for free — an extra step, but contained to methods
+that already build a new container, not a propagation gap.
+
+**Consequence for Stage 4**: once this lands, `Op::SetIndex`'s original
+join logic (join the incoming value's label onto `target.label`, in
+place — no write-back needed, since `label` now lives on the shared
+`LabeledArray`/`LabeledHash` object) becomes the correct, straightforward
+implementation, as does the same fix for `exec_shl`'s `arr << x`. Stage 4
+is effectively unblocked once Stage 3.5 lands, and should need little
+beyond those two join calls.
 
 ## Policy object (decided)
+
+A single IFC policy, loaded from JSON (not YAML — indentation errors in
 YAML are hard to catch; JSON's explicit structure avoids that class of
 bug), modeled as `JSON::Serializable` so the *agent* embedding Adjutant can
 load/construct it however it likes (parse a file at an agent-provided path,

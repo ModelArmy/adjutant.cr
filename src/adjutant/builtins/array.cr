@@ -81,9 +81,15 @@ module Adjutant::Builtins
     define(cls, interp, "map") do |args, blk, ncc|
       recv = args.first
       if blk
-        Adjutant::Value.new(recv.as_array.map { |elem| ncc.invoke(blk, [elem]) }, nil)
+        mapped = recv.as_array.map { |elem| ncc.invoke(blk, [elem]) }
+        # New container from a block whose results have their own
+        # (possibly labeled) provenance — join across the mapped
+        # results, same principle as Op::MakeArray's construction-time
+        # join, since this is also constructing a brand new container.
+        joined_label = mapped.reduce(nil.as(Adjutant::SecurityLabel?)) { |acc, v| Adjutant::SecurityLabel.join(acc, v.label) }
+        Adjutant::Value.new(Adjutant::LabeledArray.new(mapped, joined_label), nil)
       else
-        Adjutant::Value.new([] of Adjutant::Value, nil)
+        Adjutant::Value.new(Adjutant::LabeledArray.new, nil)
       end
     end
 

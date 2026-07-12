@@ -134,6 +134,97 @@ module Adjutant
       end
     end
 
+    describe "Op::SetIndex (container accumulation, Stage 4)" do
+      it "accumulates a tainted element's label onto the array's own label" do
+        interp, _ = make_tainted_interp
+        result = interp.eval(<<-RUBY)
+          arr = [1, 2, 3]
+          arr[0] = tainted("/etc/passwd")
+          arr
+        RUBY
+        result.array?.should be_true
+        result.label.not_nil!.sensitivity.should eq Sensitivity::High
+      end
+
+      it "the accumulated label is visible via a later GetLocal read of the same array" do
+        interp, _ = make_tainted_interp
+        result = interp.eval(<<-RUBY)
+          arr = [1, 2, 3]
+          arr[0] = tainted("/etc/passwd")
+          post_target = arr
+          post_target
+        RUBY
+        result.label.not_nil!.sensitivity.should eq Sensitivity::High
+      end
+
+      it "does not taint the array when the assigned value is unlabeled" do
+        interp, _ = make_tainted_interp
+        result = interp.eval(<<-RUBY)
+          arr = [1, 2, 3]
+          arr[0] = 99
+          arr
+        RUBY
+        result.label.should be_nil
+      end
+
+      it "accumulates onto a Hash's own label the same way" do
+        interp, _ = make_tainted_interp
+        result = interp.eval(<<-RUBY)
+          h = {"a" => 1}
+          h["a"] = tainted("/etc/passwd")
+          h
+        RUBY
+        result.hash?.should be_true
+        result.label.not_nil!.sensitivity.should eq Sensitivity::High
+      end
+
+      it "records a FlowEvent for SetIndex" do
+        interp, _ = make_tainted_interp
+        interp.eval(<<-RUBY)
+          arr = [1, 2, 3]
+          arr[0] = tainted("/etc/passwd")
+        RUBY
+        events = interp.flow_log.events.select { |e| e.op == "SetIndex" }
+        events.size.should eq 1
+        events.first.result.not_nil!.sensitivity.should eq Sensitivity::High
+      end
+
+      it "labels accumulate monotonically — overwriting the tainted slot does not clear the array's label" do
+        interp, _ = make_tainted_interp
+        result = interp.eval(<<-RUBY)
+          arr = [1, 2, 3]
+          arr[0] = tainted("/etc/passwd")
+          arr[0] = "clean"
+          arr
+        RUBY
+        result.label.not_nil!.sensitivity.should eq Sensitivity::High
+      end
+    end
+
+    describe "Op::Shl (<<, container accumulation)" do
+      it "accumulates a pushed tainted value's label onto the array" do
+        interp, _ = make_tainted_interp
+        result = interp.eval(<<-RUBY)
+          arr = []
+          arr << tainted("/etc/passwd")
+          arr
+        RUBY
+        result.label.not_nil!.sensitivity.should eq Sensitivity::High
+      end
+
+      it "chained << calls all accumulate" do
+        interp, _ = make_tainted_interp
+        result = interp.eval(<<-RUBY)
+          arr = []
+          arr << 1 << tainted("/etc/passwd") << 3
+          arr
+        RUBY
+        result.array?.should be_true
+        result.as_array.size.should eq 3
+        result.label.not_nil!.sensitivity.should eq Sensitivity::High
+      end
+    end
+
     describe "flow_log disabled by default" do
       it "records nothing when flow_tracking is not enabled" do
         ef = TestEffectHandler.new
