@@ -8,7 +8,12 @@ module Adjutant
   # do once the sensitivity policy exists (see research/IFC_DESIGN.md).
   private def self.make_tainted_interp : {Interpreter, TestEffectHandler}
     ef = TestEffectHandler.new
-    interp = Interpreter.new(effect: ef, risk_flow_tracking: true)
+    interp = Interpreter.new(
+      risk_flow_policy: RiskFlowPolicy.reject_all,
+      on_risk_flow_decision: TEST_UNEXPECTED_ASK_CALLBACK,
+      effect: ef,
+      risk_flow_tracking: true,
+    )
     interp.define_native("tainted") do |args|
       origin = args.first.as_string
       Value.int(1_i64, RiskFlowLabel.of(ProvenanceKind::File, origin, Sensitivity::High))
@@ -228,7 +233,11 @@ module Adjutant
     describe "risk_flow_log disabled by default" do
       it "records nothing when flow_tracking is not enabled" do
         ef = TestEffectHandler.new
-        interp = Interpreter.new(effect: ef)
+        interp = Interpreter.new(
+          risk_flow_policy: RiskFlowPolicy.reject_all,
+          on_risk_flow_decision: TEST_UNEXPECTED_ASK_CALLBACK,
+          effect: ef,
+        )
         interp.define_native("tainted") do |args|
           Value.int(1_i64, RiskFlowLabel.of(ProvenanceKind::File, args.first.as_string, Sensitivity::High))
         end

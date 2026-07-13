@@ -75,6 +75,17 @@ module Adjutant
   # picking one arbitrarily: with explicit priorities, a tie means the
   # policy author's priorities actually collide, not that Adjutant
   # failed to compute specificity.
+  #
+  # NOT script-visible — a plain Crystal Exception, not a StandardError
+  # subclass in the bootstrapped script exception hierarchy. A malformed
+  # policy is an agent/embedder configuration problem, not something a
+  # running script did wrong; a script must not be able to `rescue` its
+  # way past a broken policy any more than it can catch an internal
+  # Adjutant bug. See research/IFC_DESIGN.md's enforcement design notes
+  # for the general script-visible vs. Adjutant/agent-only distinction
+  # this follows. The script-visible counterpart, RiskFlowRejectedError,
+  # lives in risk_flow_decision.cr alongside RiskFlowDecisionRequest,
+  # which it needs to carry.
   class AmbiguousRiskFlowPolicyError < Exception
   end
 
@@ -84,14 +95,39 @@ module Adjutant
   # agent parses or constructs a RiskFlowPolicy and passes it to
   # Interpreter. See research/IFC_DESIGN.md's "Policy object" and "Risk
   # flow policy" sections.
+  #
+  # There is no bare `RiskFlowPolicy.new` default that means "allow
+  # everything" — Adjutant does not silently permit risky calls just
+  # because an embedder didn't think about IFC. An embedder who
+  # genuinely wants no risk assessment must say so explicitly by
+  # constructing `RiskFlowPolicy.reject_all` (safe default: reject
+  # rather than allow) or a real policy — not by omission.
   class RiskFlowPolicy
     include JSON::Serializable
 
     getter sensitivity_patterns : Array(SensitivityPattern)
     getter risk_flow_rules : Array(RiskFlowRule)
 
+    # When true, action_for always returns Reject for any non-None
+    # sensitivity, regardless of risk_flow_rules — see .reject_all.
+    # Not persisted via JSON: a loaded policy file is always a real
+    # rule table, never this blanket mode.
+    @[JSON::Field(ignore: true)]
+    getter? reject_all_flows : Bool = false
+
     def initialize(@sensitivity_patterns : Array(SensitivityPattern) = [] of SensitivityPattern,
-                   @risk_flow_rules : Array(RiskFlowRule) = [] of RiskFlowRule)
+                   @risk_flow_rules : Array(RiskFlowRule) = [] of RiskFlowRule,
+                   @reject_all_flows : Bool = false)
+    end
+
+    # A policy that rejects every risky call outright — no sensitivity
+    # patterns or risk_flow_rules needed, and (unlike an exhaustive
+    # generated rule table) never silently stops covering a RiskTag
+    # that's added later. The explicit, safe-by-default choice for an
+    # embedder who wants "no risk assessment" without accidentally
+    # meaning "allow everything."
+    def self.reject_all : RiskFlowPolicy
+      new(reject_all_flows: true)
     end
 
     # origin → sensitivity lookup, consulted by native modules at
@@ -118,11 +154,21 @@ module Adjutant
     # contents — the universal default is not overridable by a rule,
     # only sensitivities above None can be. No matching rule for a
     # non-None sensitivity → Allow (a tag with no configured rows is
-    # treated as not policy-relevant, not as an implicit escalation).
-    def action_for(tag : RiskTag, sensitivity : Sensitivity) : RiskFlowAction
-      return RiskFlowAction::Allow if sensitivity.none?
-      risk_flow_rules.find { |rule| rule.tag == tag && rule.sensitivity == sensitivity }
-        .try(&.action) || RiskFlowAction::Allow
+    # treated as not policy-relevant, not as an implicit escalation) —
+    # unless reject_all_flows is set, in which case every non-None
+    # sensitivity is Reject regardless of risk_flow_rules.
+    #
+    # Returns the RiskFlowRule that was matched, if any, alongside the
+    # action — nil when the result came from a default (None
+    # sensitivity, reject_all_flows, or no matching rule) rather than an
+    # explicit rule. Callers building a RiskFlowMatch for a
+    # RiskFlowDecisionRequest need the specific rule that fired, not
+    # just the resulting action.
+    def action_for(tag : RiskTag, sensitivity : Sensitivity) : {RiskFlowAction, RiskFlowRule?}
+      return {RiskFlowAction::Allow, nil} if sensitivity.none?
+      return {RiskFlowAction::Reject, nil} if reject_all_flows?
+      matched = risk_flow_rules.find { |rule| rule.tag == tag && rule.sensitivity == sensitivity }
+      {matched.try(&.action) || RiskFlowAction::Allow, matched}
     end
   end
 end

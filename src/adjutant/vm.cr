@@ -2,6 +2,8 @@ require "./bytecode"
 require "./symbol_table"
 require "./value"
 require "./ast"
+require "./risk_flow_policy"
+require "./risk_flow_decision"
 
 module Adjutant
   # A compiled proc (method body or block).
@@ -144,6 +146,8 @@ module Adjutant
     getter instruction_count : UInt64
     getter globals : Hash(Int32, Value)
     getter risk_flow_log : RiskFlowLog
+    getter risk_flow_policy : RiskFlowPolicy
+    getter on_risk_flow_decision : RiskFlowDecisionRequest -> RiskFlowDecision
 
     def initialize(
       @symbols : SymbolTable,
@@ -152,6 +156,8 @@ module Adjutant
       @interpreter : Interpreter? = nil,
       @globals : Hash(Int32, Value) = {} of Int32 => Value,
       @risk_flow_log : RiskFlowLog = RiskFlowLog.new,
+      @risk_flow_policy : RiskFlowPolicy = RiskFlowPolicy.reject_all,
+      @on_risk_flow_decision : RiskFlowDecisionRequest -> RiskFlowDecision = ->(_req : RiskFlowDecisionRequest) { RiskFlowDecision::Reject },
     )
       @stack = Array(Value).new(256)
       @frames = [] of Frame

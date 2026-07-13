@@ -66,7 +66,7 @@ module Adjutant
     end
 
     it "calling delegates to the wrapped func" do
-      interp = Interpreter.new
+      interp, _ = make_interp
       interp.modules.register("test/callable") do |i|
         i.define_native("double") { |args| Value.int(args.first.as_int * 2) }
       end
@@ -77,7 +77,7 @@ module Adjutant
 
   describe "Interpreter#define_native with risk" do
     it "attaches a risk profile to a native function" do
-      interp = Interpreter.new
+      interp, _ = make_interp
       risk = RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
       interp.define_native("dangerous_delete", risk: risk) { |_| Value.nil_value }
       sym_id = interp.symbols.lookup("dangerous_delete").not_nil!.value
@@ -85,14 +85,14 @@ module Adjutant
     end
 
     it "defaults new native functions to RiskProfile.none" do
-      interp = Interpreter.new
+      interp, _ = make_interp
       interp.define_native("harmless") { |_| Value.nil_value }
       sym_id = interp.symbols.lookup("harmless").not_nil!.value
       interp.native_callable(sym_id).not_nil!.risk.should eq RiskProfile.none
     end
 
     it "still executes correctly through the VM when a risk profile is attached" do
-      interp = Interpreter.new
+      interp, _ = make_interp
       risk = RiskProfile.new(tags: Set{RiskTag::NetworkEgress}, severity: Severity::Warning)
       interp.define_native("fetch_thing", risk: risk) { |args| Value.string("fetched:#{args.first.as_string}") }
       interp.eval(%(fetch_thing("url"))).as_string.should eq "fetched:url"

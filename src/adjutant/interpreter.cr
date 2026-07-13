@@ -8,6 +8,7 @@ require "./vm"
 require "./effect_handler"
 require "./risk_profile"
 require "./risk_flow_policy"
+require "./risk_flow_decision"
 require "./native_callable"
 require "./builtins"
 
@@ -62,9 +63,25 @@ module Adjutant
   # per execution. The EffectHandler defines the containment boundary
   # for physical effects.
   #
+  # `risk_flow_policy` and `on_risk_flow_decision` are both required,
+  # always — there is no default that means "skip risk assessment."
+  # An embedder who genuinely wants no risk assessment must say so
+  # explicitly via `RiskFlowPolicy.reject_all` (safe default: reject
+  # rather than silently allow); `on_risk_flow_decision` is required
+  # even then, so the constructor's shape doesn't depend on what's
+  # inside the policy (Crystal can't express "required only if the
+  # policy could ever produce Ask" as a type constraint, so requiring
+  # it unconditionally is what makes this a real, checked guarantee
+  # rather than a runtime one). See research/IFC_DESIGN.md's
+  # enforcement design notes.
+  #
   # Usage:
   #   effect  = TestEffectHandler.new
-  #   interp  = Interpreter.new(effect: effect)
+  #   interp  = Interpreter.new(
+  #     effect: effect,
+  #     risk_flow_policy: RiskFlowPolicy.reject_all,
+  #     on_risk_flow_decision: ->(req : RiskFlowDecisionRequest) { RiskFlowDecision::Reject },
+  #   )
   #   interp.modules.register("agent/io") { |i| ... }
   #   interp.eval("require \"agent/io\"\nputs(42)")
   class Interpreter
@@ -73,13 +90,15 @@ module Adjutant
     getter effect : EffectHandler?
     getter limits : ExecutionLimits
     getter risk_flow_log : RiskFlowLog
-    getter risk_flow_policy : RiskFlowPolicy?
+    getter risk_flow_policy : RiskFlowPolicy
+    getter on_risk_flow_decision : RiskFlowDecisionRequest -> RiskFlowDecision
 
     def initialize(
+      @risk_flow_policy : RiskFlowPolicy,
+      @on_risk_flow_decision : RiskFlowDecisionRequest -> RiskFlowDecision,
       @effect : EffectHandler? = nil,
       @limits : ExecutionLimits = ExecutionLimits.new,
       risk_flow_tracking : Bool = false,
-      @risk_flow_policy : RiskFlowPolicy? = nil,
     )
       @symbols = SymbolTable.new
       @modules = ModuleRegistry.new
@@ -208,7 +227,7 @@ module Adjutant
     end
 
     private def make_vm : VM
-      VM.new(@symbols, @limits, @effect, self, @globals, @risk_flow_log)
+      VM.new(@symbols, @limits, @effect, self, @globals, @risk_flow_log, @risk_flow_policy, @on_risk_flow_decision)
     end
 
     # Bootstraps the three classes at the root of the hierarchy —
@@ -266,6 +285,8 @@ module Adjutant
       define_builtin_class("NoMethodError", name_error)
       index_error = define_builtin_class("IndexError", standard_error)
       define_builtin_class("KeyError", index_error)
+      risk_flow_policy_error = define_builtin_class("RiskFlowPolicyError", standard_error)
+      define_builtin_class("RiskFlowRejectedError", risk_flow_policy_error)
     end
 
     # Bootstraps every builtin type's RubyClass into `interp`'s globals,

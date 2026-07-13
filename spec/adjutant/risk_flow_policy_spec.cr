@@ -108,28 +108,80 @@ module Adjutant
         policy = RiskFlowPolicy.new(risk_flow_rules: [
           RiskFlowRule.new(RiskTag::DeletesFiles, Sensitivity::None, RiskFlowAction::Reject),
         ])
-        policy.action_for(RiskTag::DeletesFiles, Sensitivity::None).should eq RiskFlowAction::Allow
+        action, rule = policy.action_for(RiskTag::DeletesFiles, Sensitivity::None)
+        action.should eq RiskFlowAction::Allow
+        rule.should be_nil
       end
 
-      it "returns Allow when no rule matches a non-None sensitivity" do
+      it "returns Allow and no matched rule when no rule matches a non-None sensitivity" do
         policy = RiskFlowPolicy.new
-        policy.action_for(RiskTag::NetworkEgress, Sensitivity::High).should eq RiskFlowAction::Allow
+        action, rule = policy.action_for(RiskTag::NetworkEgress, Sensitivity::High)
+        action.should eq RiskFlowAction::Allow
+        rule.should be_nil
       end
 
-      it "returns the matching rule's action" do
-        policy = RiskFlowPolicy.new(risk_flow_rules: [
-          RiskFlowRule.new(RiskTag::DeletesFiles, Sensitivity::Elevated, RiskFlowAction::Ask),
-          RiskFlowRule.new(RiskTag::ElevatedPrivilege, Sensitivity::High, RiskFlowAction::Reject),
-        ])
-        policy.action_for(RiskTag::DeletesFiles, Sensitivity::Elevated).should eq RiskFlowAction::Ask
-        policy.action_for(RiskTag::ElevatedPrivilege, Sensitivity::High).should eq RiskFlowAction::Reject
+      it "returns the matching rule's action and the rule itself" do
+        ask_rule = RiskFlowRule.new(RiskTag::DeletesFiles, Sensitivity::Elevated, RiskFlowAction::Ask)
+        reject_rule = RiskFlowRule.new(RiskTag::ElevatedPrivilege, Sensitivity::High, RiskFlowAction::Reject)
+        policy = RiskFlowPolicy.new(risk_flow_rules: [ask_rule, reject_rule])
+
+        action, rule = policy.action_for(RiskTag::DeletesFiles, Sensitivity::Elevated)
+        action.should eq RiskFlowAction::Ask
+        rule.should eq ask_rule
+
+        action2, rule2 = policy.action_for(RiskTag::ElevatedPrivilege, Sensitivity::High)
+        action2.should eq RiskFlowAction::Reject
+        rule2.should eq reject_rule
       end
 
       it "does not cross-match a different RiskTag with the same sensitivity" do
         policy = RiskFlowPolicy.new(risk_flow_rules: [
           RiskFlowRule.new(RiskTag::DeletesFiles, Sensitivity::High, RiskFlowAction::Reject),
         ])
-        policy.action_for(RiskTag::NetworkEgress, Sensitivity::High).should eq RiskFlowAction::Allow
+        action, rule = policy.action_for(RiskTag::NetworkEgress, Sensitivity::High)
+        action.should eq RiskFlowAction::Allow
+        rule.should be_nil
+      end
+    end
+
+    describe ".reject_all" do
+      it "rejects any non-None sensitivity regardless of risk_flow_rules" do
+        policy = RiskFlowPolicy.reject_all
+        policy.action_for(RiskTag::NetworkEgress, Sensitivity::Elevated)[0].should eq RiskFlowAction::Reject
+        policy.action_for(RiskTag::DeletesFiles, Sensitivity::High)[0].should eq RiskFlowAction::Reject
+        policy.action_for(RiskTag::ElevatedPrivilege, Sensitivity::High)[0].should eq RiskFlowAction::Reject
+      end
+
+      it "still allows Sensitivity::None" do
+        policy = RiskFlowPolicy.reject_all
+        action, rule = policy.action_for(RiskTag::NetworkEgress, Sensitivity::None)
+        action.should eq RiskFlowAction::Allow
+        rule.should be_nil
+      end
+
+      it "does not need any risk_flow_rules configured" do
+        policy = RiskFlowPolicy.reject_all
+        policy.risk_flow_rules.should be_empty
+      end
+
+      it "returns no matched rule even when rejecting, since reject_all is not a rule" do
+        policy = RiskFlowPolicy.reject_all
+        _, rule = policy.action_for(RiskTag::NetworkEgress, Sensitivity::High)
+        rule.should be_nil
+      end
+
+      it "reject_all_flows is not part of the JSON representation" do
+        policy = RiskFlowPolicy.reject_all
+        policy.to_json.should_not contain("reject_all")
+      end
+
+      it "a loaded policy JSON (never containing reject_all_flows) does not accidentally reject everything" do
+        policy = RiskFlowPolicy.new(risk_flow_rules: [
+          RiskFlowRule.new(RiskTag::DeletesFiles, Sensitivity::High, RiskFlowAction::Ask),
+        ])
+        parsed = RiskFlowPolicy.from_json(policy.to_json)
+        parsed.reject_all_flows?.should be_false
+        parsed.action_for(RiskTag::NetworkEgress, Sensitivity::High)[0].should eq RiskFlowAction::Allow
       end
     end
 
@@ -148,8 +200,8 @@ module Adjutant
         parsed = RiskFlowPolicy.from_json(original.to_json)
         parsed.sensitivity_for(ProvenanceKind::File, "/etc/passwd").should eq Sensitivity::High
         parsed.sensitivity_for(ProvenanceKind::File, "/etc/shadow").should eq Sensitivity::Elevated
-        parsed.action_for(RiskTag::DeletesFiles, Sensitivity::Elevated).should eq RiskFlowAction::Ask
-        parsed.action_for(RiskTag::ElevatedPrivilege, Sensitivity::High).should eq RiskFlowAction::Reject
+        parsed.action_for(RiskTag::DeletesFiles, Sensitivity::Elevated)[0].should eq RiskFlowAction::Ask
+        parsed.action_for(RiskTag::ElevatedPrivilege, Sensitivity::High)[0].should eq RiskFlowAction::Reject
       end
 
       it "parses the design doc's worked example" do
@@ -181,26 +233,33 @@ module Adjutant
         policy.sensitivity_for(ProvenanceKind::Host, "mail.gmail.com").should eq Sensitivity::High
         policy.sensitivity_for(ProvenanceKind::Host, "mybiz.example.com").should eq Sensitivity::None
         policy.sensitivity_for(ProvenanceKind::Host, "other.com").should eq Sensitivity::Elevated
-        policy.action_for(RiskTag::DeletesFiles, Sensitivity::Elevated).should eq RiskFlowAction::Ask
-        policy.action_for(RiskTag::ElevatedPrivilege, Sensitivity::High).should eq RiskFlowAction::Reject
+        policy.action_for(RiskTag::DeletesFiles, Sensitivity::Elevated)[0].should eq RiskFlowAction::Ask
+        policy.action_for(RiskTag::ElevatedPrivilege, Sensitivity::High)[0].should eq RiskFlowAction::Reject
       end
     end
   end
 
-  describe "Interpreter ifc_policy wiring" do
-    it "defaults to no policy" do
-      interp, _ = make_interp
-      interp.risk_flow_policy.should be_nil
-    end
-
-    it "accepts an RiskFlowPolicy at construction" do
+  describe "Interpreter risk_flow_policy wiring" do
+    it "accepts a RiskFlowPolicy at construction" do
       ef = TestEffectHandler.new
       policy = RiskFlowPolicy.new(sensitivity_patterns: [
         SensitivityPattern.new(ProvenanceKind::File, "/etc/passwd", 10, Sensitivity::High),
       ])
-      interp = Interpreter.new(effect: ef, risk_flow_policy: policy)
-      interp.risk_flow_policy.should_not be_nil
-      interp.risk_flow_policy.not_nil!.sensitivity_for(ProvenanceKind::File, "/etc/passwd").should eq Sensitivity::High
+      interp = Interpreter.new(
+        risk_flow_policy: policy,
+        on_risk_flow_decision: TEST_UNEXPECTED_ASK_CALLBACK,
+        effect: ef,
+      )
+      interp.risk_flow_policy.should be policy
+      interp.risk_flow_policy.sensitivity_for(ProvenanceKind::File, "/etc/passwd").should eq Sensitivity::High
+    end
+
+    it "risk_flow_policy and on_risk_flow_decision are required (no bare Interpreter.new default)" do
+      # make_interp supplies both explicitly via spec_helper's shared
+      # TEST_REJECT_ALL_POLICY/TEST_UNEXPECTED_ASK_CALLBACK defaults —
+      # there is no Interpreter.new() with zero args, by design.
+      interp, _ = make_interp
+      interp.risk_flow_policy.should be TEST_REJECT_ALL_POLICY
     end
   end
 end
