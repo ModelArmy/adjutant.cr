@@ -8,14 +8,22 @@ param), all `JSON::Serializable`; every VM dispatch-loop join site
 `MakeArray`/`MakeHash`/`MakeRange`, `SetIndex`, `<<`); `LabeledArray`/
 `LabeledHash` container wrapper types and their label accumulation;
 `RiskFlowPolicy`/`SensitivityPattern`/`RiskFlowRule`/`RiskFlowAction`
-(via `Interpreter#risk_flow_policy`) and their lookup logic.
+(via `Interpreter#risk_flow_policy`, now a required constructor param —
+see "Enforcement" below for why the earlier optional-with-permissive-
+default design was rejected) and their lookup logic; `RiskFlowMatch`/
+`RiskFlowDecisionRequest`/`RiskFlowDecision` (`risk_flow_decision.cr`);
+and piece 4 (enforcement) itself — `VM#call_native` runs the risk flow
+check before every tagged native call with labeled arguments, raising a
+script-catchable `RiskFlowRejectedError` on `Reject` (from a rule,
+`reject_all`, or an `Ask` resolved to `Reject` via the required
+`on_risk_flow_decision` callback).
 
-**Not yet implemented**: nothing calls `RiskFlowPolicy#action_for` from
-the VM — no live risk flow check wired into `call_native`, no mechanism
-to actually pause execution and ask an agent/user (`EffectHandler` has
-no interrupt hook yet), no agent-facing API. This is piece 4
-(enforcement) and piece 5 (agent-facing API), not yet started as of this
-writing.
+**Not yet implemented**: piece 5 (agent-facing API) — nothing beyond the
+raw `RiskFlowDecisionRequest -> RiskFlowDecision` callback shape exists
+yet for an embedding agent to build a richer UI/prompt against. The
+approval cache (avoid re-prompting for an already-approved origin→sink
+flow within one script run) is also still undesigned — see "Open
+questions" below.
 
 Scope: Phase 8 (IFC / `RiskFlowLabel`), all five pieces (lattice → VM
 propagation → risk flow policy → enforcement → agent-facing API), plus
@@ -779,6 +787,137 @@ effects only, per its own doc comment). Adding that hook, wiring the risk
 flow check into `call_native`, and defining `reject`'s and an unanswerable
 `ask`'s error/exception shape are piece 4's problem, not piece 3's.
 
+## Enforcement (piece 4, decided)
+
+### Interactivity: a synchronous callback, not a new EffectHandler hook
+
+Considered adding a new `EffectHandler` method for asking the user.
+Rejected in favor of a plain callback (`RiskFlowDecisionRequest ->
+RiskFlowDecision`) passed to `Interpreter.new` — `EffectHandler` models
+physical side effects (stdout, filesystem); "ask a human" isn't a
+physical effect Adjutant performs, it's a decision point Adjutant pauses
+at and hands off. The callback is called synchronously, in-fiber, at the
+call site — Adjutant does not decide *how* the agent actually surfaces
+the prompt (terminal, chat UI, whatever); that's entirely the agent's
+concern, matching the "leave interactivity to the agent" principle this
+was designed under from the start.
+
+### RiskFlowDecisionRequest carries matched (rule, tag) pairs, not raw arguments
+
+Considered including the call's raw arguments (rendered/truncated
+strings) in the request, reasoning an agent might want to show "about to
+`File.delete(\"/etc/passwd\")`", not just abstract provenance. Rejected:
+positional arguments have no reliable way to tell the agent *which* arg
+was the dangerous one (no named-parameter information, even if Adjutant
+had it, since Ruby itself doesn't require naming at the call site) — an
+agent trying to build a good prompt from raw args would have to guess.
+The actual tainted value's provenance (`ProvenanceTag`, with its
+concrete `origin` string) is what triggered the policy match in the
+first place, and is strictly more precise: `RiskFlowDecisionRequest`
+carries `matches : Array(RiskFlowMatch)`, each pairing the specific
+`RiskFlowRule` that fired with the specific `ProvenanceTag` that
+triggered it — not a flattened set of either, since a call can have
+several independently-tainted arguments and the pairing (which tag
+caused which rule to fire) is exactly the information a flattened
+representation would lose. `matches` is never summarized down to "the
+one reason" — every contributing pair is included, sorted worst-first
+(`RiskFlowAction` then `Sensitivity`, ties preserving discovery order)
+so an agent that only wants "the primary reason" can reasonably take
+`matches.first` without computing its own ranking, while an agent that
+wants the full picture still has it.
+
+### RiskFlowRule can be nil even for a non-Allow action
+
+`RiskFlowMatch#rule` is `RiskFlowRule?`, not `RiskFlowRule` — a
+`RiskFlowPolicy.reject_all` policy produces `RiskFlowAction::Reject`
+with no specific rule behind it (see `RiskFlowPolicy#action_for`'s
+`reject_all_flows?` branch). `RiskFlowMatch` carries its own `action`
+field independent of `rule` so callers never need to unwrap a nilable
+rule just to know what action resulted — found as a real bug during
+implementation (the first draft used `rule.not_nil!`, which would have
+crashed on exactly the `reject_all` case, the safe-default path this
+whole design exists to protect).
+
+### RiskFlowPolicy and the decision callback are both required, unconditionally
+
+Revisits the original plan (optional `RiskFlowPolicy?`, `nil` meaning
+"no risk assessment, everything allowed"). Rejected: a lazy integration
+that never thinks about IFC would silently get zero protection by
+omission, which is exactly backwards for a security-relevant default.
+Decided: both `risk_flow_policy : RiskFlowPolicy` and
+`on_risk_flow_decision : RiskFlowDecisionRequest -> RiskFlowDecision`
+are required `Interpreter.new` params, no defaults, always — not
+conditionally required only when a policy could actually produce `Ask`
+(Crystal can't express that as a type constraint, since it depends on
+the policy's *data*, not its type; making it unconditional keeps the
+guarantee a real, checked one instead of a runtime surprise).
+
+An embedder who genuinely wants "no risk assessment" must say so
+explicitly via `RiskFlowPolicy.reject_all` — a policy that rejects every
+non-`None`-sensitivity flow unconditionally, requiring no
+`risk_flow_rules` at all (and, unlike a generated exhaustive rule table
+covering every `RiskTag`, never silently stops covering a `RiskTag`
+added later, since it's a real short-circuit in `action_for`, not data
+that can drift out of sync). `reject_all`, not `allow_all`, is what
+Adjutant ships as the "I want out" escape hatch — choosing the safe
+extreme rather than the permissive one when someone reaches for a
+"just make it compile" option.
+
+### Unattended execution is the agent's problem, not Adjutant's
+
+Originally, `Ask` with no callback configured was going to fail-safe to
+`Reject`. Revisited once the policy/callback became mandatory: since a
+callback is now always present, "no callback" can no longer happen —
+there is nothing left for Adjutant to have an opinion about. An agent
+that wants unattended-as-reject behavior configures a callback that
+always returns `RiskFlowDecision::Reject`; an agent that wants
+unattended-as-allow configures one that returns `Allow`. Either way it's
+an explicit, visible choice in the agent's own integration code, not a
+hidden Adjutant default — matching the same "no default that lets you
+skip thinking about it" principle as `RiskFlowPolicy` itself.
+
+### Rejection is script-catchable, deliberately, and doesn't distinguish its cause
+
+A rejected call raises an error the script can `rescue` — the LLM that
+authored the script sees the outcome either way (an uncaught exception
+surfaces as an eval failure on the next turn; a caught one lets the
+script report something more concise), so catchability is strictly
+better than an unconditional hard-stop with no compensating benefit.
+The script-visible class is `RiskFlowRejectedError < RiskFlowPolicyError
+< StandardError`, bootstrapped by `Interpreter#bootstrap_error_classes`
+alongside `RuntimeError`/`TypeError`/etc. Deliberately does not
+distinguish *why* a call was rejected (a matched `Reject` rule, a
+`reject_all` policy, or a callback answering `Ask` with `Reject`) — from
+the script's point of view a risky call it tried to make simply didn't
+happen, and which of those three produced that outcome isn't useful
+information for the script's own logic to branch on.
+
+Mechanically, this does **not** mean a separate Crystal-level exception
+hierarchy — found as a real bug during implementation: the VM's
+rescue-and-unwind dispatch loop only catches `RuntimeError`
+specifically (`rescue ex : RuntimeError` in `execute`), the single
+Crystal exception type every script-catchable error already uses,
+carrying an `error_value : Value?` (a `RubyObject` of the actual
+script-visible class) to convey identity — the same mechanism `raise`,
+division-by-zero, and every other internal VM error already use. A
+first draft that raised a bespoke `RiskFlowRejectedError < Exception`
+compiled fine but would never actually have been caught by a script's
+`rescue`, since the dispatch loop's unwind logic would never see it as
+the `RuntimeError` it's looking for. `raise_risk_flow_rejected` follows
+the established `RuntimeError.new(message, filename, line,
+error_value: make_error_object(cls, message))` pattern exactly.
+
+### AmbiguousRiskFlowPolicyError stays out of this entirely
+
+Unaffected by the above — it's a malformed-policy error (two
+`sensitivity_patterns` rules tying at the same priority), an
+agent/embedder configuration bug, not something a running script did
+wrong. It remains a plain Crystal `Exception`, not participating in the
+`RuntimeError`/`error_value` script-catchable mechanism at all — a
+script must not be able to `rescue` its way past a broken policy any
+more than it could catch an internal Adjutant bug. See "Pattern matching
+for sensitivity lookup" above for the original reasoning.
+
 ### Open questions for piece 4 (enforcement) and beyond
 
 - Eager vs. lazy ambiguous-priority validation: should `RiskFlowPolicy`
@@ -791,17 +930,14 @@ flow check into `call_native`, and defining `reject`'s and an unanswerable
   happening to exercise the bad rule — not fully settled here.
 - The approval cache (avoid re-prompting for an already-approved
   origin→sink pair within one script run, from the declassification
-  discussion) — still not designed; a natural fit for piece 4 once
-  `ask`'s actual prompting mechanism exists to cache against.
-- What "the concrete flow" shown to the agent/user in an `ask` actually
-  contains — likely the tag's `kind`/`origin`, the `RiskTag` and a
-  human-readable description of the sink call (matching how
-  `RiskFinding#description` already works for the static case) — not
-  fully specified yet.
-- How `reject` surfaces to the script: presumably raises a real
-  exception into the running script (the class hierarchy already has
-  `RuntimeError`/`StandardError` etc. — see `interpreter.cr`), but which
-  class and what message is piece 4's call.
+  discussion) — still not designed; `on_risk_flow_decision` now exists
+  as the real prompting mechanism to cache against, so this is
+  unblocked, just not yet done.
+- Piece 5 (agent-facing API): nothing beyond the raw
+  `RiskFlowDecisionRequest`/`RiskFlowDecision` callback shape exists for
+  an embedding agent to build a richer UI/prompt against — no helper
+  for rendering a request as a human-readable string, no structured
+  audit-trail export beyond what `RiskFlowLog` already provides.
 
 ## Carried forward to VM propagation implementation (piece 2)
 

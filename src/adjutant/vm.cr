@@ -878,7 +878,7 @@ module Adjutant
               return call_script_proc(method, args[1..], filename, blk, nil, self_val: recv)
             end
             if native = cls.find_native_method(sym_id)
-              return call_native(native, args, filename, line, blk)
+              return call_native(native, args, filename, line, blk, "#{cls.name}##{name}")
             end
           end
         elsif recv.rclass?
@@ -893,7 +893,7 @@ module Adjutant
               return call_script_proc(method, args[1..], filename, blk, nil, self_val: recv)
             end
             if native = cls.find_native_singleton_method(sym_id)
-              return call_native(native, args, filename, line, blk)
+              return call_native(native, args, filename, line, blk, "#{cls.name}.#{name}")
             end
           end
         elsif interp = @interpreter
@@ -902,7 +902,7 @@ module Adjutant
           # Interpreter#builtin_class_for instead.
           if (cls = interp.builtin_class_for(recv)) && (sym_id = @symbols.lookup(name).try(&.value))
             if native = cls.find_native_method(sym_id)
-              return call_native(native, args, filename, line, blk)
+              return call_native(native, args, filename, line, blk, "#{cls.name}##{name}")
             end
           end
         end
@@ -912,7 +912,7 @@ module Adjutant
       if interp = @interpreter
         sym_id = (@symbols.lookup(name).try(&.value)) || -1
         if native = interp.native_callable(sym_id)
-          return call_native(native, args, filename, line, blk)
+          return call_native(native, args, filename, line, blk, name)
         end
       end
 
@@ -940,11 +940,85 @@ module Adjutant
     # (RubyClass#find_native_method) and top-level native functions
     # (Interpreter#native_callable) — same calling convention, same
     # error-wrapping contract.
+    #
+    # Before the call itself, runs the risk flow check (see
+    # research/IFC_DESIGN.md's enforcement design notes): if any
+    # argument's label carries a ProvenanceTag whose sensitivity,
+    # combined with one of `native.risk.tags`, resolves to
+    # RiskFlowAction::Reject or ::Ask via `@risk_flow_policy`, the call
+    # does not proceed silently — Reject (or an Ask resolved to Reject
+    # by `@on_risk_flow_decision`) raises a script-catchable
+    # RiskFlowRejectedError (see raise_risk_flow_rejected); Ask
+    # resolved to Allow proceeds normally.
     private def call_native(native : NativeCallable, args : Array(Value),
-                            filename : String, line : Int32, blk : ScriptProc?) : Value
+                            filename : String, line : Int32, blk : ScriptProc?, name : String) : Value
+      check_risk_flow(native, args, name, filename, line)
       NativeFunctionCall.new(self, native, filename, line).call(args, blk)
+    rescue ex : RuntimeError
+      raise ex
     rescue ex
       raise runtime_error("Native call error: #{ex.message}", current_frame, cause: ex)
+    end
+
+    # The risk flow check itself — see call_native's doc comment. A
+    # no-op (cheap: one empty-tags check, no allocation) for the
+    # overwhelming majority of native calls, which either have no
+    # RiskTag at all (RiskProfile.none) or receive no labeled arguments.
+    private def check_risk_flow(native : NativeCallable, args : Array(Value), name : String,
+                                filename : String, line : Int32) : Nil
+      return if native.risk.tags.empty?
+      return unless args.any?(&.label)
+
+      matches = [] of RiskFlowMatch
+      native.risk.tags.each do |tag|
+        args.each do |arg|
+          label = arg.label
+          next unless label
+          label.tags.each do |provenance_tag|
+            action, rule = @risk_flow_policy.action_for(tag, provenance_tag.sensitivity)
+            next if action.allow?
+            matches << RiskFlowMatch.new(action, rule, provenance_tag)
+          end
+        end
+      end
+      return if matches.empty?
+
+      # Worst-first: RiskFlowAction (Reject > Ask), then Sensitivity
+      # (High > Elevated), stable beyond that — see
+      # RiskFlowDecisionRequest#matches's doc comment.
+      matches = matches.sort_by { |match| {-match.action.value, -match.tag.sensitivity.value} }
+
+      request = RiskFlowDecisionRequest.new(name, native.risk, matches, filename, line)
+
+      worst_action = matches.first.action
+      if worst_action.reject?
+        raise_risk_flow_rejected(request, filename, line)
+      else
+        # Ask: every path through here requires a real decision — no
+        # implicit fallback (see Interpreter's required
+        # on_risk_flow_decision param and research/IFC_DESIGN.md).
+        decision = @on_risk_flow_decision.call(request)
+        raise_risk_flow_rejected(request, filename, line) if decision.reject?
+      end
+    end
+
+    # Raises a script-catchable RiskFlowRejectedError — following the
+    # same one-Crystal-exception-type pattern every other script-raised
+    # error uses (see Op::raise's "raise" handler above and
+    # runtime_error/make_error_object): the Crystal-level exception is
+    # always RuntimeError, script-visible identity comes from
+    # error_value (a RubyObject of the bootstrapped RiskFlowRejectedError
+    # class), not from a separate Crystal exception hierarchy — needed
+    # because the dispatch loop's rescue-and-unwind machinery only
+    # catches `RuntimeError` specifically (see execute's `rescue ex :
+    # RuntimeError` clause).
+    private def raise_risk_flow_rejected(request : RiskFlowDecisionRequest, filename : String, line : Int32) : NoReturn
+      first = request.matches.first
+      reason = first.rule.try { |rule| "#{rule.tag} (#{first.tag})" } || "reject_all policy (#{first.tag})"
+      msg = "risk flow policy rejected #{request.call_name}: #{reason}"
+      cls = builtin_error_class("RiskFlowRejectedError")
+      err_val = cls ? make_error_object(cls, msg) : Value.string(msg)
+      raise RuntimeError.new(msg, filename, line, error_value: err_val)
     end
 
     # `Foo.new(args)` — dispatches to a native singleton `new` if the
@@ -959,7 +1033,7 @@ module Adjutant
       raise runtime_error("can't instantiate module #{cls.name}") if cls.is_module?
       if sym_id = @symbols.lookup("new").try(&.value)
         if native_new = cls.find_native_singleton_method(sym_id)
-          return call_native(native_new, [Value.rclass(cls)] + args, filename, line, blk)
+          return call_native(native_new, [Value.rclass(cls)] + args, filename, line, blk, "#{cls.name}.new")
         end
       end
       construct_object(cls, args)

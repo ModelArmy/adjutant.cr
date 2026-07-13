@@ -6,14 +6,17 @@ module Adjutant
   #
   # Allow: proceed, no interruption.
   # Ask: pause and surface the concrete flow to the agent/user for a
-  #   live decision — requires an actual prompting mechanism, added in
-  #   piece 4 (enforcement); not wired up yet.
+  #   live decision, via the required on_risk_flow_decision callback
+  #   (see Interpreter.new) — VM#call_native wires this up for every
+  #   tagged native call with labeled arguments.
   # Reject: policy has already decided no, unconditionally — no prompt.
   #   For organizational rules that should never be silently approved
-  #   regardless of who's asked, and for unattended execution where
-  #   there's no one to ask.
+  #   regardless of who's asked. (Unattended execution is not this
+  #   enum's concern — see research/IFC_DESIGN.md's "Unattended
+  #   execution is the agent's problem, not Adjutant's" section.)
   #
-  # See research/IFC_DESIGN.md's "Risk flow policy (piece 3)" section.
+  # See research/IFC_DESIGN.md's "Risk flow policy" and "Enforcement"
+  # sections.
   enum RiskFlowAction
     Allow
     Ask
@@ -76,16 +79,18 @@ module Adjutant
   # policy author's priorities actually collide, not that Adjutant
   # failed to compute specificity.
   #
-  # NOT script-visible — a plain Crystal Exception, not a StandardError
-  # subclass in the bootstrapped script exception hierarchy. A malformed
-  # policy is an agent/embedder configuration problem, not something a
-  # running script did wrong; a script must not be able to `rescue` its
-  # way past a broken policy any more than it can catch an internal
-  # Adjutant bug. See research/IFC_DESIGN.md's enforcement design notes
-  # for the general script-visible vs. Adjutant/agent-only distinction
-  # this follows. The script-visible counterpart, RiskFlowRejectedError,
-  # lives in risk_flow_decision.cr alongside RiskFlowDecisionRequest,
-  # which it needs to carry.
+  # NOT script-visible — a plain Crystal Exception, not raised via the
+  # RuntimeError+error_value mechanism every script-catchable error
+  # uses (see vm.cr's raise_risk_flow_rejected and Op::raise's "raise"
+  # handler). A malformed policy is an agent/embedder configuration
+  # problem, not something a running script did wrong; a script must
+  # not be able to `rescue` its way past a broken policy any more than
+  # it can catch an internal Adjutant bug. See research/IFC_DESIGN.md's
+  # enforcement design notes for the general script-visible vs.
+  # Adjutant/agent-only distinction this follows. The script-visible
+  # counterpart is the bootstrapped RiskFlowRejectedError builtin class
+  # (Interpreter#bootstrap_error_classes), not a Crystal exception type
+  # of its own.
   class AmbiguousRiskFlowPolicyError < Exception
   end
 
