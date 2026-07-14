@@ -699,15 +699,37 @@ module Adjutant
     end
 
     private def compile_for(node : ForNode) : Nil
-      # Desugar: `for i in expr do body end`
-      # → `expr.each { |i| body }`
-      compile_node(node.iter)
-      # Build a synthetic block
-      sym_idx = intern("each")
-      nil_idx = @chunk.add_const(Value.nil_value)
-      @chunk.emit(Op::Const, node.line, c: nil_idx)
+      # Desugar: `for i in expr do body end` → `expr.each { |i| body }`
+      #
+      # Two bugs fixed here together (both silent, neither raised a
+      # compile error):
+      #   1. The receiver bit was never set on the emitted Call, so
+      #      `expr` was pushed as a bare *argument* to a receiverless
+      #      `each` instead of as the receiver — `each` was dispatched
+      #      as an undefined global call ("undefined method or
+      #      variable: each"), never reaching Array#each/etc at all.
+      #   2. The "block" was a hardcoded nil constant — node.vars and
+      #      node.body were never compiled into a real block, so even
+      #      with (1) fixed the for-body would never have run.
+      compile_node(node.iter) # receiver: the iterable
+
+      blk_chunk, blk_locals = Compiler.compile_proc(
+        node.body, @symbols,
+        params: node.vars,
+        in_block: true,
+        parent_scope: @scope
+      )
+      sproc = ScriptProc.new(blk_chunk, "<block>", node.vars, blk_locals, true)
+      proc_idx = @chunk.add_const(Value.proc(sproc))
+      @chunk.emit(Op::MakeProc, node.line, c: proc_idx)
       @chunk.emit(Op::SetBlock, node.line)
-      @chunk.emit(Op::Call, node.line, a: 1_u8, c: sym_idx)
+
+      sym_idx = intern("each")
+      # argc: 1 — the receiver alone, no additional args; recv_bit set
+      # (0b10) so dispatch treats the pushed value as a receiver, not
+      # an argument, exactly matching what compile_call emits for a
+      # real `expr.each { ... }` call.
+      @chunk.emit(Op::Call, node.line, a: 1_u8, b: 0b10_u16, c: sym_idx)
     end
 
     private def compile_case(node : CaseNode) : Nil
