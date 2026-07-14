@@ -1,39 +1,46 @@
 # Risk flow design — lattice, labels, risk flow log, VM propagation, container labeling, policy
 
-Status: implemented and tested — `RiskFlowLabel`/`ProvenanceTag`/
-`ProvenanceKind`/`Sensitivity` and their join semantics; `RiskFlowLog`/
-`RiskFlowEvent` (via `Interpreter#risk_flow_log`, `risk_flow_tracking:`
-param), all `JSON::Serializable`; every VM dispatch-loop join site
-(`exec_binary`'s arithmetic/comparison family, `Eq`, `Concat`,
-`MakeArray`/`MakeHash`/`MakeRange`, `SetIndex`, `<<`); `LabeledArray`/
-`LabeledHash` container wrapper types and their label accumulation;
-`RiskFlowPolicy`/`SensitivityPattern`/`RiskFlowRule`/`RiskFlowAction`
-(via `Interpreter#risk_flow_policy`, now a required constructor param —
-see "Enforcement" below for why the earlier optional-with-permissive-
-default design was rejected) and their lookup logic; `RiskFlowMatch`/
-`RiskFlowDecisionRequest`/`RiskFlowDecision` (`risk_flow_decision.cr`);
-and piece 4 (enforcement) itself — `VM#call_native` runs the risk flow
-check before every tagged native call with labeled arguments, raising a
-script-catchable `RiskFlowRejectedError` on `Reject` (from a rule,
-`reject_all`, or an `Ask` resolved to `Reject` via the required
-`on_risk_flow_decision` callback).
+Status: implemented and tested, all five pieces plus one detour:
 
-**Not yet implemented**: piece 5 (agent-facing API) — nothing beyond the
-raw `RiskFlowDecisionRequest -> RiskFlowDecision` callback shape exists
-yet for an embedding agent to build a richer UI/prompt against. The
-approval cache (avoid re-prompting for an already-approved origin→sink
-flow within one script run) is also still undesigned — see "Open
+- **Lattice** (piece 1): `RiskFlowLabel`/`ProvenanceTag`/`ProvenanceKind`/
+  `Sensitivity` and their join semantics.
+- **VM propagation** (piece 2): every dispatch-loop join site
+  (`exec_binary`'s arithmetic/comparison family, `Eq`, `Concat`,
+  `MakeArray`/`MakeHash`/`MakeRange`, `SetIndex`, `<<`); `RiskFlowLog`/
+  `RiskFlowEvent` for post-hoc audit (`Interpreter#risk_flow_log`,
+  `risk_flow_tracking:` param).
+- **Container labeling** (Stage 3.5 — an unplanned detour, not one of
+  the original five pieces; see "Container labeling" below for why):
+  `LabeledArray`/`LabeledHash` wrapper types and their label
+  accumulation.
+- **Risk flow policy** (piece 3): `RiskFlowPolicy`/`SensitivityPattern`/
+  `RiskFlowRule`/`RiskFlowAction` and their lookup logic, via
+  `Interpreter#risk_flow_policy` — now a required constructor param,
+  not optional (see "Enforcement" below for why the earlier
+  optional-with-permissive-default design was rejected).
+- **Enforcement** (piece 4): `RiskFlowMatch`/`RiskFlowDecisionRequest`/
+  `RiskFlowDecision` (`risk_flow_decision.cr`); `VM#call_native` runs
+  the risk flow check before every tagged native call with labeled
+  arguments, raising a script-catchable `RiskFlowRejectedError` on
+  `Reject` (from a rule, `reject_all`, or an `Ask` resolved to `Reject`
+  via the required `on_risk_flow_decision` callback); and
+  `NativeCallContext#declare_sensitivity`, added after enforcement
+  first landed once hands-on testing surfaced a real blind spot in
+  label propagation alone — a bare literal or misleadingly-named
+  variable carries no label at all (see "declare_sensitivity: closing
+  the label-propagation blind spot" below).
+- **Agent-facing API** (piece 5): resolved mostly as documentation, not
+  new core API — see the open-questions note below for why.
+  `samples/run_script.cr` and the README/`DEVELOPMENT.md` "Risk flow"
+  sections demonstrate everything above end to end, alongside static
+  risk assessment, on the same script.
+
+**Not yet implemented**: the approval cache (avoid re-prompting for an
+already-approved origin→sink flow within one script run) — see "Open
 questions" below.
 
-Scope: Phase 8 (IFC / `RiskFlowLabel`), all five pieces (lattice → VM
-propagation → risk flow policy → enforcement → agent-facing API), plus
-an added Stage 3.5 (container labeling) that landed between VM
-propagation and finishing `SetIndex`/`<<` once the original "join onto
-the `Value`'s own label field" plan turned out not to work (see
-"Container labeling" below). This document covers the lattice, VM
-propagation, container-labeling, and risk-flow-policy pieces; piece 4
-(enforcement) and piece 5 (agent-facing API) are being designed now, in
-the sections following the older material below.
+This document covers all five pieces plus the container-labeling
+detour, roughly in the order they were designed and built.
 
 ## Goal
 
@@ -918,6 +925,112 @@ script must not be able to `rescue` its way past a broken policy any
 more than it could catch an internal Adjutant bug. See "Pattern matching
 for sensitivity lookup" above for the original reasoning.
 
+### declare_sensitivity: closing the label-propagation blind spot
+
+Discovered by hands-on testing of the enforcement sample, not by
+design review — worth recording precisely, since the failure mode is
+easy to miss by reasoning alone. Two scripts exposed it:
+
+```ruby
+# (1) a bare literal, no read_file call at all
+delete_file("/etc/passwd")
+```
+
+```ruby
+# (2) a misleadingly-named variable holding the same literal
+safe_file = "/etc/passwd"
+delete_file(safe_file)
+```
+
+Both went through with no risk flow interruption. Neither is a bug in
+the enforcement check itself — `VM#call_native`'s automatic check
+correctly found no labeled arguments, because there were none:
+`RiskFlowLabel`s only ever get attached by a native function that
+explicitly creates one (`RiskFlowLabel.of(...)`, typically inside a
+data-producing function like `read_file`). A plain script-level string
+literal, however sensitive-looking its content or however a variable
+holding it is named, is unlabeled by construction — this is consistent
+with how every taint-tracking system works (provenance, not content, is
+what's tracked), not a gap specific to this implementation.
+
+Static analysis doesn't help either, and script (2) is why: static
+analysis can see `delete_file("/etc/passwd")` in script (1) as
+literally written, but has no way to know what `safe_file` holds in
+script (2) — that's exactly the class of problem dynamic IFC exists to
+solve, and dynamic IFC's *label-propagation* mechanism specifically
+doesn't solve it either, for the reason above. This is a real, distinct
+gap neither of Adjutant's two existing layers (static shape analysis,
+dynamic label propagation) closes on its own.
+
+**Considered: per-parameter provenance declaration at registration
+time** — have `define_native` accept a schema declaring which
+parameter position(s) carry which `ProvenanceKind`, checked
+automatically by the VM without the native function needing to do
+anything. Rejected immediately once examined concretely: Ruby (and
+Adjutant's own `Array(Value)`-based native calling convention) has no
+fixed arity or positional-parameter contract a schema could describe
+reliably — variadic functions (`puts_args`), optional arguments, and
+functions whose argument *roles* depend on other arguments' values all
+defeat a purely declarative, position-based schema. A declarative
+approach would need to special-case all of these or be silently wrong
+for whichever ones it doesn't cover.
+
+**Decided: an imperative call the native function itself makes** —
+`NativeCallContext#declare_sensitivity(tag, kind, origin, sensitivity =
+nil)`. Only the native function's own author knows which argument (if
+any) is the dangerous one and what it means in context; asking the
+function to state that imperatively, in its own body, sidesteps the
+schema problem entirely rather than trying to solve it.
+
+**Naming**: went through several iterations —
+`check_risk_flow`/`declare_risk_flow`/`report_provenance`/
+`assert_risk_flow`/`consult_risk_flow` were all considered and set
+aside. The objection to `declare_risk_flow` specifically is worth
+recording: it reads as declaring that *a risk flow itself* exists (an
+event), when what the method actually does is narrower — state a fact
+about one value's provenance and sensitivity, a data point, not an
+event. `declare_sensitivity` names that precisely and was the one that
+stuck.
+
+**Implementation**: rather than duplicating `check_risk_flow`'s
+match-building/sorting/resolution logic, that logic was factored into
+a shared `resolve_risk_flow_matches(matches, name, risk, filename,
+line)`, called by both the automatic label-driven check and
+`declare_sensitivity`'s explicit single-match path. Found a real bug
+while doing this factoring: the first draft of `declare_sensitivity`
+built its `RiskFlowMatch` with `rule.not_nil!`, which would have
+crashed on exactly the case this method exists to protect
+(`RiskFlowPolicy.reject_all`, which produces `Reject` with no specific
+`RiskFlowRule` behind it — see "RiskFlowRule can be nil" above). Fixed
+by using the same nilable-`rule` `RiskFlowMatch` shape already in
+place.
+
+`NativeCallContext` is a module implemented by `NativeFunctionCall`
+(the real VM-backed implementation) and by test-only `FakeContext`
+stand-ins used for direct `NativeCallable#call` tests that don't go
+through the VM — adding `declare_sensitivity` as an abstract method
+required updating both `FakeContext` implementations with a no-op
+(those tests exercise method dispatch, not risk flow enforcement).
+
+See `samples/run_script.cr`'s `delete_file` for the real usage pattern,
+and `samples/scripts/risk_flow_declared_literal.rb` /
+`risk_flow_declared_variable.rb` for scripts written specifically to
+reproduce the two failing cases above and confirm `declare_sensitivity`
+catches both.
+
+**A design principle worth stating explicitly, since it wasn't written
+down anywhere until now**: Adjutant's deployment model assumes native
+functions are audited/auditable by whoever integrates Adjutant before
+deployment (they're Crystal code the embedder writes and controls, not
+script-authored) — this is *why* it's acceptable for correct risk flow
+behavior to depend on a native function author remembering to call
+`declare_sensitivity` where appropriate, rather than requiring the VM
+to guarantee it automatically. A native module that fails to declare
+sensitivity on a risky argument is a real gap, but it's a gap in an
+audited trust boundary, not in an unaudited one — the same trust
+assumption `RiskProfile` tagging on `define_native` already rests on
+for static analysis.
+
 ### Open questions for piece 4 (enforcement) and beyond
 
 - Eager vs. lazy ambiguous-priority validation: should `RiskFlowPolicy`
@@ -933,11 +1046,16 @@ for sensitivity lookup" above for the original reasoning.
   discussion) — still not designed; `on_risk_flow_decision` now exists
   as the real prompting mechanism to cache against, so this is
   unblocked, just not yet done.
-- Piece 5 (agent-facing API): nothing beyond the raw
-  `RiskFlowDecisionRequest`/`RiskFlowDecision` callback shape exists for
-  an embedding agent to build a richer UI/prompt against — no helper
-  for rendering a request as a human-readable string, no structured
-  audit-trail export beyond what `RiskFlowLog` already provides.
+- ~~Piece 5 (agent-facing API)~~ — resolved as scoped: per the design
+  decision that piece 5 was mostly documentation/example territory, not
+  missing core API (an i18n concern ruled out Adjutant ever generating
+  end-user-facing prompt text itself — see the `RiskFlowDecisionRequest`
+  design above), `samples/run_script.cr` plus the README/DEVELOPMENT.md
+  "Risk flow" sections now cover the worked-example half of piece 5.
+  Still genuinely open, not just documentation: no structured
+  audit-trail export beyond what `RiskFlowLog` already provides (e.g.
+  nothing turns a `RiskFlowLog` into a saved/replayable session
+  record).
 
 ## Carried forward to VM propagation implementation (piece 2)
 
