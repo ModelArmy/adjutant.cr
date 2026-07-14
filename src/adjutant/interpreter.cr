@@ -32,6 +32,35 @@ module Adjutant
     # values_equal?'s logic itself and risk drifting out of sync with
     # what Op::Eq actually does.
     abstract def values_equal?(a : Value, b : Value) : Bool
+
+    # Lets a native function declare that one of its own arguments
+    # (identified by a concrete ProvenanceKind + origin, not
+    # necessarily an already-labeled Value) is the risky subject of
+    # `tag`, feeding the same risk flow enforcement machinery
+    # VM#call_native's automatic label-driven check uses (sorting,
+    # RiskFlowDecisionRequest construction, the on_risk_flow_decision
+    # callback, the script-catchable RiskFlowRejectedError raise).
+    #
+    # Exists because dynamic IFC alone has a real blind spot: it only
+    # ever sees taint that flowed *through* a labeling call (like a
+    # File IO module's read returning a labeled Value) — a script that
+    # writes a sensitive-looking literal directly (`delete_file
+    # ("/etc/passwd")`, no read_file/variable involved) produces no
+    # label at all, and the automatic check has nothing to see. A sink
+    # native function whose own argument IS the dangerous thing (a
+    # path being deleted, a URL being posted to) should call this on
+    # that argument's literal content directly, rather than relying on
+    # the caller having pre-labeled it — see
+    # research/IFC_DESIGN.md's enforcement design notes and
+    # DEVELOPMENT.md's "Writing a ScriptModule" section for the
+    # worked example this documents.
+    #
+    # `sensitivity`, when given, skips policy's sensitivity_for lookup
+    # (the native function already knows it, e.g. it just computed a
+    # value rather than looking one up); when nil, this method
+    # performs the lookup itself.
+    abstract def declare_sensitivity(tag : RiskTag, kind : ProvenanceKind, origin : String,
+                                     sensitivity : Sensitivity? = nil) : Nil
   end
 
   struct NativeFunctionCall
@@ -39,8 +68,9 @@ module Adjutant
 
     @vm : VM
     @callable : NativeCallable
+    @name : String
 
-    protected def initialize(@vm, @callable, @filename, @line); end
+    protected def initialize(@vm, @callable, @filename, @line, @name); end
 
     protected def call(args : Array(Value), blk : ScriptProc?) : Value
       @callable.call(args, blk, self)
@@ -53,6 +83,11 @@ module Adjutant
 
     def values_equal?(a : Value, b : Value) : Bool
       @vm.values_equal?(a, b)
+    end
+
+    def declare_sensitivity(tag : RiskTag, kind : ProvenanceKind, origin : String,
+                            sensitivity : Sensitivity? = nil) : Nil
+      @vm.declare_sensitivity(tag, kind, origin, @name, filename, line, sensitivity)
     end
   end
 

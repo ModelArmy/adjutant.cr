@@ -953,7 +953,7 @@ module Adjutant
     private def call_native(native : NativeCallable, args : Array(Value),
                             filename : String, line : Int32, blk : ScriptProc?, name : String) : Value
       check_risk_flow(native, args, name, filename, line)
-      NativeFunctionCall.new(self, native, filename, line).call(args, blk)
+      NativeFunctionCall.new(self, native, filename, line, name).call(args, blk)
     rescue ex : RuntimeError
       raise ex
     rescue ex
@@ -983,12 +983,48 @@ module Adjutant
       end
       return if matches.empty?
 
+      resolve_risk_flow_matches(matches, name, native.risk, filename, line)
+    end
+
+    # Explicit counterpart to check_risk_flow's automatic, label-driven
+    # check — see NativeFunctionCall#declare_sensitivity (the public
+    # entry point native functions actually call) for why this exists:
+    # a native function whose own argument is the risky subject (a path
+    # being deleted, a URL being posted to) may need to consult policy
+    # on that argument's literal content directly, not only rely on a
+    # label some upstream call may or may not have already attached.
+    # `sensitivity` lets a native function that already knows the
+    # sensitivity (e.g. it just computed it) skip the lookup; when nil,
+    # this method performs the lookup itself via `sensitivity_for`.
+    def declare_sensitivity(tag : RiskTag, kind : ProvenanceKind, origin : String, name : String,
+                            filename : String, line : Int32, sensitivity : Sensitivity? = nil) : Nil
+      resolved_sensitivity = sensitivity || @risk_flow_policy.sensitivity_for(kind, origin)
+      return if resolved_sensitivity.none?
+
+      action, rule = @risk_flow_policy.action_for(tag, resolved_sensitivity)
+      return if action.allow?
+
+      provenance_tag = ProvenanceTag.new(kind, origin, resolved_sensitivity)
+      matches = [RiskFlowMatch.new(action, rule, provenance_tag)]
+      risk = RiskProfile.new(tags: Set{tag})
+      resolve_risk_flow_matches(matches, name, risk, filename, line)
+    end
+
+    # Shared by check_risk_flow (automatic, label-driven) and
+    # declare_sensitivity (explicit, native-function-driven): given a
+    # non-empty list of already-built RiskFlowMatches, sorts them
+    # worst-first, builds the RiskFlowDecisionRequest, and resolves it —
+    # Reject (or reject_all, or an Ask resolved to Reject via
+    # @on_risk_flow_decision) raises; Allow (directly, or via a
+    # callback's answer to Ask) returns normally.
+    private def resolve_risk_flow_matches(matches : Array(RiskFlowMatch), name : String, risk : RiskProfile,
+                                          filename : String, line : Int32) : Nil
       # Worst-first: RiskFlowAction (Reject > Ask), then Sensitivity
       # (High > Elevated), stable beyond that — see
       # RiskFlowDecisionRequest#matches's doc comment.
       matches = matches.sort_by { |match| {-match.action.value, -match.tag.sensitivity.value} }
 
-      request = RiskFlowDecisionRequest.new(name, native.risk, matches, filename, line)
+      request = RiskFlowDecisionRequest.new(name, risk, matches, filename, line)
 
       worst_action = matches.first.action
       if worst_action.reject?
