@@ -376,18 +376,28 @@ module Adjutant
           when Op::GetGlobal
             sym = chunk.consts[inst.c].as_sym
             gval = @globals[sym.value]?
-            if gval && gval.proc?
-              # A global holding a ScriptProc was defined via top-level
-              # `def`, so a bare reference (no parens) is an implicit
-              # zero-arg method call — Ruby semantics for identifiers
-              # that aren't local variables. Without this, `def`s called
-              # bare would silently return the uncalled proc instead of
-              # running.
-              depth_before = @frames.size
-              result = call_script_proc(gval.as_proc.as(ScriptProc), [] of Value, f.filename)
-              push(result) if @frames.size == depth_before
+            if gval && !gval.proc?
+              # A plain data global ($foo-style or otherwise pre-set) —
+              # push its value as-is. Not a call attempt.
+              push(gval)
             else
-              push(gval || Value.nil_value)
+              # Either a global holding a ScriptProc (top-level `def`),
+              # or nothing in @globals at all. Either way this bare
+              # identifier isn't a local variable, so — matching real
+              # Ruby — treat it as an implicit zero-arg method call
+              # attempt and run it through the same dispatch path a
+              # real `name()` call uses. That path already checks
+              # native functions, then global ScriptProcs, then
+              # builtins, and raises NameError (script-catchable) if
+              # none match — so this single call now covers bare
+              # `def`s (worked before), bare native calls like
+              # `read_input` (previously resolved to nil, never
+              # called), and truly undefined identifiers (previously
+              # silently nil, now raises).
+              depth_before = @frames.size
+              result = dispatch_call(sym.name, [] of Value, safe: false,
+                filename: f.filename, line: inst.line)
+              push(result) if @frames.size == depth_before
             end
           when Op::SetGlobal
             sym = chunk.consts[inst.c].as_sym
@@ -931,8 +941,12 @@ module Adjutant
         return result
       end
 
-      # Fail with exception until proper exception raising lands
-      raise RuntimeError.new("unknown method: #{name}", filename, line)
+      # No local, no native, no global proc, no builtin — this is an
+      # unresolved bare identifier/method name. Real Ruby raises
+      # NameError here (undefined local variable or method), so this
+      # is script-catchable via `rescue NameError` (or `rescue`, since
+      # NameError < StandardError) rather than silently returning nil.
+      raise name_error("undefined method or variable: #{name}", filename, line)
     end
 
     # Invoke a NativeCallable, wrapping any Crystal exception as a
@@ -1576,6 +1590,18 @@ module Adjutant
       cls = builtin_error_class("RuntimeError")
       err_val = cls ? make_error_object(cls, msg) : nil
       RuntimeError.new(msg, frame, cause, error_value: err_val)
+    end
+
+    # Same shape as runtime_error, but tags the script-visible error
+    # object as NameError instead of RuntimeError — used for the
+    # "no local, no native, no global, no builtin" dispatch miss,
+    # matching real Ruby's NameError for an unresolved bare
+    # identifier. Takes filename/line directly (not a Frame) since
+    # its one caller, dispatch_call, only has those two in scope.
+    private def name_error(msg : String, filename : String, line : Int32, cause = nil) : RuntimeError
+      cls = builtin_error_class("NameError")
+      err_val = cls ? make_error_object(cls, msg) : nil
+      RuntimeError.new(msg, filename, line, cause, error_value: err_val)
     end
 
     # Look up a bootstrapped builtin error class (Exception, StandardError,
