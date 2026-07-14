@@ -117,40 +117,65 @@ module Adjutant
       end
 
       it "carries a label when constructed with one" do
-        l = SecurityLabel.new("network")
+        l = RiskFlowLabel.of(ProvenanceKind::Host, "internal-db.corp.local")
         v = Value.int(1_i64, l)
         v.label.should eq l
       end
 
       it "attaches a label via with_label" do
-        l = SecurityLabel.new("fs")
+        l = RiskFlowLabel.of(ProvenanceKind::File, "/tmp/scratch")
         v = Value.int(1_i64).with_label(l)
         v.label.should eq l
         v.as_int.should eq 1_i64
       end
 
       it "label propagates on copy (struct assignment)" do
-        l = SecurityLabel.new("user_input")
+        l = RiskFlowLabel.of(ProvenanceKind::UserInput, "stdin")
         a = Value.int(42_i64, l)
         b = a # struct copy
         b.label.should eq l
         b.as_int.should eq 42_i64
       end
 
-      it "joins labels from two values" do
-        la = SecurityLabel.new("network")
-        lb = SecurityLabel.new("fs")
+      it "joins labels from two values into a union of tags" do
+        la = RiskFlowLabel.of(ProvenanceKind::Host, "internal-db.corp.local")
+        lb = RiskFlowLabel.of(ProvenanceKind::File, "/etc/hosts")
         a = Value.int(1_i64, la)
         b = Value.int(2_i64, lb)
         result = a.join_label(b)
-        result.label.should_not be_nil
-        result.label.not_nil!.name.should eq "network+fs"
+        joined = result.label.not_nil!
+        joined.tags.size.should eq 2
+        joined.tags.should contain ProvenanceTag.new(ProvenanceKind::Host, "internal-db.corp.local")
+        joined.tags.should contain ProvenanceTag.new(ProvenanceKind::File, "/etc/hosts")
+      end
+
+      it "join keeps the worse sensitivity when both sides tag the same origin" do
+        la = RiskFlowLabel.of(ProvenanceKind::File, "/etc/passwd", Sensitivity::None)
+        lb = RiskFlowLabel.of(ProvenanceKind::File, "/etc/passwd", Sensitivity::High)
+        joined = RiskFlowLabel.join(la, lb).not_nil!
+        joined.tags.size.should eq 1
+        joined.sensitivity.should eq Sensitivity::High
+      end
+
+      it "join with nil on either side returns the other side unchanged" do
+        l = RiskFlowLabel.of(ProvenanceKind::Host, "example.com")
+        RiskFlowLabel.join(nil, l).should eq l
+        RiskFlowLabel.join(l, nil).should eq l
+        RiskFlowLabel.join(nil, nil).should be_nil
+      end
+
+      it "label sensitivity reflects the worst tag present" do
+        l = RiskFlowLabel.new(Set{
+          ProvenanceTag.new(ProvenanceKind::File, "/etc/hosts", Sensitivity::None),
+          ProvenanceTag.new(ProvenanceKind::File, "/etc/passwd", Sensitivity::High),
+        })
+        l.sensitivity.should eq Sensitivity::High
       end
 
       it "shows label in inspect output" do
-        l = SecurityLabel.new("network")
+        l = RiskFlowLabel.of(ProvenanceKind::Host, "example.com")
         v = Value.string("secret", l)
-        v.inspect.should eq "\"secret\" [label:network]"
+        v.inspect.should eq "\"secret\" [label:{host:example.com}]"
       end
     end
   end

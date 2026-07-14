@@ -2,6 +2,8 @@ require "./bytecode"
 require "./symbol_table"
 require "./value"
 require "./ast"
+require "./risk_flow_policy"
+require "./risk_flow_decision"
 
 module Adjutant
   # A compiled proc (method body or block).
@@ -143,6 +145,9 @@ module Adjutant
 
     getter instruction_count : UInt64
     getter globals : Hash(Int32, Value)
+    getter risk_flow_log : RiskFlowLog
+    getter risk_flow_policy : RiskFlowPolicy
+    getter on_risk_flow_decision : RiskFlowDecisionRequest -> RiskFlowDecision
 
     def initialize(
       @symbols : SymbolTable,
@@ -150,6 +155,9 @@ module Adjutant
       @effect : EffectHandler? = nil,
       @interpreter : Interpreter? = nil,
       @globals : Hash(Int32, Value) = {} of Int32 => Value,
+      @risk_flow_log : RiskFlowLog = RiskFlowLog.new,
+      @risk_flow_policy : RiskFlowPolicy = RiskFlowPolicy.reject_all,
+      @on_risk_flow_decision : RiskFlowDecisionRequest -> RiskFlowDecision = ->(_req : RiskFlowDecisionRequest) { RiskFlowDecision::Reject },
     )
       @stack = Array(Value).new(256)
       @frames = [] of Frame
@@ -475,6 +483,7 @@ module Adjutant
             idx = pop
             target = pop
             exec_set_index(target, idx, val)
+            @risk_flow_log.record("SetIndex", [target.label, val.label], target.label, f.line)
             push(val)
 
             # --- Calls ----------------------------------------------------------
@@ -518,7 +527,9 @@ module Adjutant
 
           when Op::Eq
             b, a = pop, pop
-            push(Value.bool(values_equal?(a, b)))
+            result = Value.bool(values_equal?(a, b), RiskFlowLabel.join(a.label, b.label))
+            @risk_flow_log.record("Eq", [a.label, b.label], result.label, f.line)
+            push(result)
           when Op::Lt  then exec_binary(inst) { |lhs, rhs| compare_op(lhs, rhs, :<) }
           when Op::Lte then exec_binary(inst) { |lhs, rhs| compare_op(lhs, rhs, :<=) }
           when Op::Gt  then exec_binary(inst) { |lhs, rhs| compare_op(lhs, rhs, :>) }
@@ -554,14 +565,18 @@ module Adjutant
             n = inst.a.to_i
             elements = @stack.last(n).dup
             @stack.pop(n) if n > 0
-            push(Value.new(elements, nil))
+            joined_label = elements.reduce(nil.as(RiskFlowLabel?)) { |acc, value| RiskFlowLabel.join(acc, value.label) }
+            @risk_flow_log.record("MakeArray", elements.map(&.label), joined_label, f.line)
+            push(Value.new(LabeledArray.new(elements, joined_label), joined_label))
           when Op::MakeHash
             n = inst.a.to_i * 2
             pairs = @stack.last(n)
             @stack.pop(n) if n > 0
             h = {} of Value => Value
             pairs.each_slice(2) { |pair| h[pair[0]] = pair[1] }
-            push(Value.new(h, nil))
+            joined_label = pairs.reduce(nil.as(RiskFlowLabel?)) { |acc, value| RiskFlowLabel.join(acc, value.label) }
+            @risk_flow_log.record("MakeHash", pairs.map(&.label), joined_label, f.line)
+            push(Value.new(LabeledHash.new(h, joined_label), joined_label))
           when Op::MakeRange
             rend = pop
             rstart = pop
@@ -569,7 +584,9 @@ module Adjutant
             # a Range object type will be added with the object model.
             exclusive = inst.a == 1_u8
             elems = [rstart, rend, Value.bool(exclusive)]
-            push(Value.new(elems, nil))
+            joined_label = RiskFlowLabel.join(rstart.label, rend.label)
+            @risk_flow_log.record("MakeRange", [rstart.label, rend.label], joined_label, f.line)
+            push(Value.new(LabeledArray.new(elems, joined_label), joined_label))
           when Op::Concat
             n = inst.a.to_i
             parts = @stack.last(n)
@@ -585,7 +602,9 @@ module Adjutant
               else                   part.to_s
               end
             }.join
-            push(Value.string(str))
+            joined_label = parts.reduce(nil.as(RiskFlowLabel?)) { |acc, part| RiskFlowLabel.join(acc, part.label) }
+            @risk_flow_log.record("Concat", parts.map(&.label), joined_label, f.line)
+            push(Value.string(str, joined_label))
 
             # --- Local variables ------------------------------------------------
           when Op::GetLocal
@@ -859,7 +878,7 @@ module Adjutant
               return call_script_proc(method, args[1..], filename, blk, nil, self_val: recv)
             end
             if native = cls.find_native_method(sym_id)
-              return call_native(native, args, filename, line, blk)
+              return call_native(native, args, filename, line, blk, "#{cls.name}##{name}")
             end
           end
         elsif recv.rclass?
@@ -874,7 +893,7 @@ module Adjutant
               return call_script_proc(method, args[1..], filename, blk, nil, self_val: recv)
             end
             if native = cls.find_native_singleton_method(sym_id)
-              return call_native(native, args, filename, line, blk)
+              return call_native(native, args, filename, line, blk, "#{cls.name}.#{name}")
             end
           end
         elsif interp = @interpreter
@@ -883,7 +902,7 @@ module Adjutant
           # Interpreter#builtin_class_for instead.
           if (cls = interp.builtin_class_for(recv)) && (sym_id = @symbols.lookup(name).try(&.value))
             if native = cls.find_native_method(sym_id)
-              return call_native(native, args, filename, line, blk)
+              return call_native(native, args, filename, line, blk, "#{cls.name}##{name}")
             end
           end
         end
@@ -893,7 +912,7 @@ module Adjutant
       if interp = @interpreter
         sym_id = (@symbols.lookup(name).try(&.value)) || -1
         if native = interp.native_callable(sym_id)
-          return call_native(native, args, filename, line, blk)
+          return call_native(native, args, filename, line, blk, name)
         end
       end
 
@@ -921,11 +940,121 @@ module Adjutant
     # (RubyClass#find_native_method) and top-level native functions
     # (Interpreter#native_callable) — same calling convention, same
     # error-wrapping contract.
+    #
+    # Before the call itself, runs the risk flow check (see
+    # research/IFC_DESIGN.md's enforcement design notes): if any
+    # argument's label carries a ProvenanceTag whose sensitivity,
+    # combined with one of `native.risk.tags`, resolves to
+    # RiskFlowAction::Reject or ::Ask via `@risk_flow_policy`, the call
+    # does not proceed silently — Reject (or an Ask resolved to Reject
+    # by `@on_risk_flow_decision`) raises a script-catchable
+    # RiskFlowRejectedError (see raise_risk_flow_rejected); Ask
+    # resolved to Allow proceeds normally.
     private def call_native(native : NativeCallable, args : Array(Value),
-                            filename : String, line : Int32, blk : ScriptProc?) : Value
-      NativeFunctionCall.new(self, native, filename, line).call(args, blk)
+                            filename : String, line : Int32, blk : ScriptProc?, name : String) : Value
+      check_risk_flow(native, args, name, filename, line)
+      NativeFunctionCall.new(self, native, filename, line, name).call(args, blk)
+    rescue ex : RuntimeError
+      raise ex
     rescue ex
       raise runtime_error("Native call error: #{ex.message}", current_frame, cause: ex)
+    end
+
+    # The risk flow check itself — see call_native's doc comment. A
+    # no-op (cheap: one empty-tags check, no allocation) for the
+    # overwhelming majority of native calls, which either have no
+    # RiskTag at all (RiskProfile.none) or receive no labeled arguments.
+    private def check_risk_flow(native : NativeCallable, args : Array(Value), name : String,
+                                filename : String, line : Int32) : Nil
+      return if native.risk.tags.empty?
+      return unless args.any?(&.label)
+
+      matches = [] of RiskFlowMatch
+      native.risk.tags.each do |tag|
+        args.each do |arg|
+          label = arg.label
+          next unless label
+          label.tags.each do |provenance_tag|
+            action, rule = @risk_flow_policy.action_for(tag, provenance_tag.sensitivity)
+            next if action.allow?
+            matches << RiskFlowMatch.new(action, rule, provenance_tag)
+          end
+        end
+      end
+      return if matches.empty?
+
+      resolve_risk_flow_matches(matches, name, native.risk, filename, line)
+    end
+
+    # Explicit counterpart to check_risk_flow's automatic, label-driven
+    # check — see NativeFunctionCall#declare_sensitivity (the public
+    # entry point native functions actually call) for why this exists:
+    # a native function whose own argument is the risky subject (a path
+    # being deleted, a URL being posted to) may need to consult policy
+    # on that argument's literal content directly, not only rely on a
+    # label some upstream call may or may not have already attached.
+    # `sensitivity` lets a native function that already knows the
+    # sensitivity (e.g. it just computed it) skip the lookup; when nil,
+    # this method performs the lookup itself via `sensitivity_for`.
+    def declare_sensitivity(tag : RiskTag, kind : ProvenanceKind, origin : String, name : String,
+                            filename : String, line : Int32, sensitivity : Sensitivity? = nil) : Nil
+      resolved_sensitivity = sensitivity || @risk_flow_policy.sensitivity_for(kind, origin)
+      return if resolved_sensitivity.none?
+
+      action, rule = @risk_flow_policy.action_for(tag, resolved_sensitivity)
+      return if action.allow?
+
+      provenance_tag = ProvenanceTag.new(kind, origin, resolved_sensitivity)
+      matches = [RiskFlowMatch.new(action, rule, provenance_tag)]
+      risk = RiskProfile.new(tags: Set{tag})
+      resolve_risk_flow_matches(matches, name, risk, filename, line)
+    end
+
+    # Shared by check_risk_flow (automatic, label-driven) and
+    # declare_sensitivity (explicit, native-function-driven): given a
+    # non-empty list of already-built RiskFlowMatches, sorts them
+    # worst-first, builds the RiskFlowDecisionRequest, and resolves it —
+    # Reject (or reject_all, or an Ask resolved to Reject via
+    # @on_risk_flow_decision) raises; Allow (directly, or via a
+    # callback's answer to Ask) returns normally.
+    private def resolve_risk_flow_matches(matches : Array(RiskFlowMatch), name : String, risk : RiskProfile,
+                                          filename : String, line : Int32) : Nil
+      # Worst-first: RiskFlowAction (Reject > Ask), then Sensitivity
+      # (High > Elevated), stable beyond that — see
+      # RiskFlowDecisionRequest#matches's doc comment.
+      matches = matches.sort_by { |match| {-match.action.value, -match.tag.sensitivity.value} }
+
+      request = RiskFlowDecisionRequest.new(name, risk, matches, filename, line)
+
+      worst_action = matches.first.action
+      if worst_action.reject?
+        raise_risk_flow_rejected(request, filename, line)
+      else
+        # Ask: every path through here requires a real decision — no
+        # implicit fallback (see Interpreter's required
+        # on_risk_flow_decision param and research/IFC_DESIGN.md).
+        decision = @on_risk_flow_decision.call(request)
+        raise_risk_flow_rejected(request, filename, line) if decision.reject?
+      end
+    end
+
+    # Raises a script-catchable RiskFlowRejectedError — following the
+    # same one-Crystal-exception-type pattern every other script-raised
+    # error uses (see Op::raise's "raise" handler above and
+    # runtime_error/make_error_object): the Crystal-level exception is
+    # always RuntimeError, script-visible identity comes from
+    # error_value (a RubyObject of the bootstrapped RiskFlowRejectedError
+    # class), not from a separate Crystal exception hierarchy — needed
+    # because the dispatch loop's rescue-and-unwind machinery only
+    # catches `RuntimeError` specifically (see execute's `rescue ex :
+    # RuntimeError` clause).
+    private def raise_risk_flow_rejected(request : RiskFlowDecisionRequest, filename : String, line : Int32) : NoReturn
+      first = request.matches.first
+      reason = first.rule.try { |rule| "#{rule.tag} (#{first.tag})" } || "reject_all policy (#{first.tag})"
+      msg = "risk flow policy rejected #{request.call_name}: #{reason}"
+      cls = builtin_error_class("RiskFlowRejectedError")
+      err_val = cls ? make_error_object(cls, msg) : Value.string(msg)
+      raise RuntimeError.new(msg, filename, line, error_value: err_val)
     end
 
     # `Foo.new(args)` — dispatches to a native singleton `new` if the
@@ -940,7 +1069,7 @@ module Adjutant
       raise runtime_error("can't instantiate module #{cls.name}") if cls.is_module?
       if sym_id = @symbols.lookup("new").try(&.value)
         if native_new = cls.find_native_singleton_method(sym_id)
-          return call_native(native_new, [Value.rclass(cls)] + args, filename, line, blk)
+          return call_native(native_new, [Value.rclass(cls)] + args, filename, line, blk, "#{cls.name}.new")
         end
       end
       construct_object(cls, args)
@@ -1038,7 +1167,12 @@ module Adjutant
         else
           STDOUT.puts(str)
         end
-        args.size == 1 ? args.first : Value.new(args.dup, nil)
+        if args.size == 1
+          args.first
+        else
+          joined_label = args.reduce(nil.as(RiskFlowLabel?)) { |acc, value| RiskFlowLabel.join(acc, value.label) }
+          Value.new(LabeledArray.new(args.dup, joined_label), nil)
+        end
       when "raise"
         cls, msg = if args.empty?
                      {builtin_error_class("RuntimeError"), "unhandled exception"}
@@ -1199,10 +1333,12 @@ module Adjutant
       when a.string? && b.string? then Value.string(a.as_string + b.as_string)
       when a.array? && b.array?
         # Real Ruby's Array#+ returns a NEW array (the two operands are
-        # untouched) — Value.new(Array(Value), nil) wraps a fresh
-        # Crystal array, same construction Op::MakeArray itself uses,
-        # not a mutation of either a's or b's underlying array.
-        Value.new(a.as_array + b.as_array, nil)
+        # untouched) — a fresh LabeledArray wrapping a fresh Crystal
+        # array, same construction Op::MakeArray itself uses, not a
+        # mutation of either a's or b's underlying array. The result's
+        # label is set via the outer exec_binary's with_label call
+        # (join of a's and b's labels), same as any other binary op.
+        Value.new(LabeledArray.new(a.as_array.dup_items + b.as_array.dup_items), nil)
       else
         raise runtime_error("cannot add #{a} and #{b}")
       end
@@ -1283,9 +1419,14 @@ module Adjutant
     private def exec_shl(a : Value, b : Value) : Value
       if a.array?
         # Real Ruby: mutates a in place AND returns a (so `arr << 1 <<
-        # 2` chains) — push onto the same underlying Array(Value), not
-        # a new one, matching Op::SetIndex's existing in-place
-        # mutation of the same reference.
+        # 2` chains) — push onto the same underlying LabeledArray, not a
+        # new one. Returning `a` here means exec_binary's outer
+        # `.with_label(join(a.label, b.label))` call mutates this same
+        # LabeledArray's own label field (see Value#with_label's
+        # container case) — the container accumulates b's taint exactly
+        # like Op::SetIndex does, for free, as a side effect of the
+        # normal exec_binary wrapping every binary op already goes
+        # through.
         a.as_array.push(b)
         a
       else
@@ -1366,7 +1507,7 @@ module Adjutant
         # Adjutant's own equality rules at every level instead of
         # Crystal's.
         aa, ba = a.as_array, b.as_array
-        aa.size == ba.size && aa.zip(ba).all? { |x, y| values_equal?(x, y) }
+        aa.size == ba.size && aa.zip(ba) { |x, y| values_equal?(x, y) }
       when a.hash? && b.hash?
         # Same reasoning as Array — same key set, and each value equal
         # via values_equal? (not Crystal's own Hash#==, which would use
@@ -1378,7 +1519,7 @@ module Adjutant
         # hash by reference instead of by content, a real but narrow
         # gap worth knowing about rather than a silent one.
         ah, bh = a.as_hash, b.as_hash
-        ah.size == bh.size && ah.all? { |k, v| (bv = bh[k]?) && values_equal?(v, bv) }
+        ah.size == bh.size && ah.all? { |k, v| bv = bh[k]?; bv ? values_equal?(v, bv) : false }
       else false
       end
     end
@@ -1412,16 +1553,23 @@ module Adjutant
         i = idx.as_int.to_i
         arr = target.as_array
         i = arr.size + i if i < 0
-        arr[i] = val if i >= 0 && i < arr.size
+        if i >= 0 && i < arr.size
+          arr[i] = val
+          arr.label = RiskFlowLabel.join(arr.label, val.label)
+        end
       when target.hash?
-        target.as_hash[idx] = val
+        h = target.as_hash
+        h[idx] = val
+        h.label = RiskFlowLabel.join(h.label, val.label)
       end
     end
 
     private def exec_binary(inst : Instruction, &block : Value, Value -> Value) : Nil
       b = pop
       a = pop
-      push(block.call(a, b))
+      result = block.call(a, b).with_label(RiskFlowLabel.join(a.label, b.label))
+      @risk_flow_log.record(inst.op.to_s, [a.label, b.label], result.label, current_frame.line)
+      push(result)
     end
 
     private def runtime_error(msg : String, frame : Frame = current_frame, cause = nil) : RuntimeError

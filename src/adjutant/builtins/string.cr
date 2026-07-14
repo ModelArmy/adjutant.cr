@@ -74,10 +74,14 @@ module Adjutant::Builtins
     end
 
     define(cls, interp, "split") do |args|
-      s = args.first.as_string
+      recv = args.first
+      s = recv.as_string
       sep = args[1]?.try(&.as_string?)
       parts = sep ? s.split(sep) : s.split
-      Adjutant::Value.new(parts.map { |part| Adjutant::Value.string(part) }, nil)
+      # Parts are substrings of a labeled receiver — the array as a
+      # whole inherits the receiver's label, same principle as any other
+      # construction from a labeled source (see MakeArray/MakeHash).
+      Adjutant::Value.new(Adjutant::LabeledArray.new(parts.map { |part| Adjutant::Value.string(part) }, recv.label), nil)
     end
 
     cls

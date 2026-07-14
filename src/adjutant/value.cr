@@ -2,7 +2,7 @@ module Adjutant
   # The raw storage union for a Value.
   # Crystal's union type carries its own discriminant — no separate tag needed.
   alias ValueRaw = Nil | Bool | Int64 | Float64 | String | Sym | ScriptProc |
-                   Array(Value) | Hash(Value, Value) | RubyClass | RubyObject
+                   LabeledArray | LabeledHash | RubyClass | RubyObject
 
   # The core runtime value type for the Adjutant interpreter.
   #
@@ -12,51 +12,68 @@ module Adjutant
   #   - Automatic label propagation on assignment (label travels with value)
   #   - Cache-friendly storage in arrays and frame locals
   #
-  # The optional SecurityLabel reference is nil in the common unlabeled
+  # The optional RiskFlowLabel reference is nil in the common unlabeled
   # case, adding only a pointer-width cost with a predictable nil check.
   struct Value
     getter raw : ValueRaw
-    getter label : SecurityLabel?
+
+    # For scalar/non-container values this is just the stored label. For
+    # array/hash values it defers to the live LabeledArray/LabeledHash's
+    # own label instead of the field this Value struct was constructed
+    # with — necessary because LabeledArray/LabeledHash#label can be
+    # mutated after this Value was created (e.g. by a later SetIndex or
+    # push elsewhere), and Value is a struct copied on every assignment,
+    # so an old copy's own @label field would otherwise go stale. See
+    # research/IFC_DESIGN.md's "Container labeling" section.
+    def label : RiskFlowLabel?
+      if arr = @raw.as?(LabeledArray)
+        arr.label
+      elsif h = @raw.as?(LabeledHash)
+        h.label
+      else
+        @label
+      end
+    end
 
     # --- Constructors ---------------------------------------------------
 
-    def self.nil_value(label : SecurityLabel? = nil) : Value
+    def self.nil_value(label : RiskFlowLabel? = nil) : Value
       new(nil, label)
     end
 
-    def self.bool(b : Bool, label : SecurityLabel? = nil) : Value
+    def self.bool(b : Bool, label : RiskFlowLabel? = nil) : Value
       new(b, label)
     end
 
-    def self.int(i : Int64, label : SecurityLabel? = nil) : Value
+    def self.int(i : Int64, label : RiskFlowLabel? = nil) : Value
       new(i, label)
     end
 
-    def self.float(f : Float64, label : SecurityLabel? = nil) : Value
+    def self.float(f : Float64, label : RiskFlowLabel? = nil) : Value
       new(f, label)
     end
 
-    def self.string(s : String, label : SecurityLabel? = nil) : Value
+    def self.string(s : String, label : RiskFlowLabel? = nil) : Value
       new(s, label)
     end
 
-    def self.symbol(sym : Sym, label : SecurityLabel? = nil) : Value
+    def self.symbol(sym : Sym, label : RiskFlowLabel? = nil) : Value
       new(sym, label)
     end
 
-    def self.proc(p : ScriptProc, label : SecurityLabel? = nil) : Value
+    def self.proc(p : ScriptProc, label : RiskFlowLabel? = nil) : Value
       new(p, label)
     end
 
-    def self.array(*values, label : SecurityLabel? = nil) : Value
-      new(values.to_a, label)
+    def self.array(*values, label : RiskFlowLabel? = nil) : Value
+      new(LabeledArray.new(values.to_a, label), label)
     end
 
-    def self.rclass(c : RubyClass, label : SecurityLabel? = nil) : Value
+    def self.rclass(c : RubyClass, label : RiskFlowLabel? = nil) : Value
       new(c, label)
     end
 
-    def self.robject(o : RubyObject, label : SecurityLabel? = nil) : Value
+    def self.robject(o : RubyObject, label : RiskFlowLabel? = nil) : Value
       new(o, label)
     end
 
@@ -87,11 +104,11 @@ module Adjutant
     end
 
     def array? : Bool
-      @raw.is_a?(Array(Value))
+      @raw.is_a?(LabeledArray)
     end
 
     def hash? : Bool
-      @raw.is_a?(Hash(Value, Value))
+      @raw.is_a?(LabeledHash)
     end
 
     def proc? : Bool
@@ -128,12 +145,12 @@ module Adjutant
       @raw.as(Sym)
     end
 
-    def as_array : Array(Value)
-      @raw.as(Array(Value))
+    def as_array : LabeledArray
+      @raw.as(LabeledArray)
     end
 
-    def as_hash : Hash(Value, Value)
-      @raw.as(Hash(Value, Value))
+    def as_hash : LabeledHash
+      @raw.as(LabeledHash)
     end
 
     def as_proc : ScriptProc
@@ -170,12 +187,12 @@ module Adjutant
       @raw.as?(Sym)
     end
 
-    def as_array? : Array(Value)?
-      @raw.as?(Array(Value))
+    def as_array? : LabeledArray?
+      @raw.as?(LabeledArray)
     end
 
-    def as_hash? : Hash(Value, Value)?
-      @raw.as?(Hash(Value, Value))
+    def as_hash? : LabeledHash?
+      @raw.as?(LabeledHash)
     end
 
     def as_proc? : ScriptProc?
@@ -206,13 +223,25 @@ module Adjutant
 
     # --- IFC ------------------------------------------------------------
 
-    def with_label(l : SecurityLabel?) : Value
+    # For scalars, attaches the given label to a new Value. For
+    # array/hash values, sets the label on the underlying
+    # LabeledArray/LabeledHash directly (mutating it in place, visible
+    # to every Value referencing the same container) rather than on a
+    # field the computed #label getter above would ignore.
+    def with_label(l : RiskFlowLabel?) : Value
+      if arr = @raw.as?(LabeledArray)
+        arr.label = l
+        return self
+      end
+      if h = @raw.as?(LabeledHash)
+        h.label = l
+        return self
+      end
       Value.new(@raw, l)
     end
 
     def join_label(other : Value) : Value
-      joined = SecurityLabel.join(label, other.label)
-      Value.new(@raw, joined)
+      with_label(RiskFlowLabel.join(label, other.label))
     end
 
     # --- Display --------------------------------------------------------
@@ -247,7 +276,7 @@ module Adjutant
 
     # --- Protected constructor ------------------------------------------
 
-    protected def initialize(@raw : ValueRaw, @label : SecurityLabel?)
+    protected def initialize(@raw : ValueRaw, @label : RiskFlowLabel?)
     end
   end
 end

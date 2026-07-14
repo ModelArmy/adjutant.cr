@@ -38,15 +38,13 @@ This will run all the test scripts in `spec/scripts` folder.
 
 #### Sample `run_script`
 
-The sample `run_script.cr` shows a simple script runner with some low-risk native functions.
-- Run `ops build` and
-- then run `bin/debug/run_script samples/scripts/fib_10.rb`
+The sample `run_script.cr` runs a script end to end through both risk layers: a static risk assessment pass before execution, then live risk flow (dynamic IFC) enforcement during execution, with an `IO.gets`-based approval prompt for any `Ask` decision. See the sample's own comments for how its native module (`read_file`, `fetch_url`, `delete_file`, `post_data`) labels data and declares sensitivity.
+- Run `ops build`, then
+- run `bin/debug/run_script samples/scripts/risk_flow_ask.rb`
 
-You should receive the following output:
+You'll see a static assessment summary first (the `RiskTag`s the script's calls could trigger, independent of any data), then the script actually running — pausing to prompt you for a decision when it reaches the call that triggers `RiskFlowAction::Ask`. Try the other `samples/scripts/risk_flow_*.rb` scripts too: `risk_flow_allowed.rb` runs straight through with no prompt, `risk_flow_reject.rb` demonstrates a hard policy rejection *and* a live `Ask` in the same run, and `risk_flow_declared_literal.rb`/`risk_flow_declared_variable.rb` show `declare_sensitivity` catching a risky call that carries no propagated label at all (see "Information flow control (risk flow)" below for why that's a separate mechanism from label propagation).
 
-```
-Result: 55
-```
+Plain scripts with no native calls (e.g. `samples/scripts/fib_10.rb`) still work the same as before — the static assessment reports no tags, and execution proceeds with no risk flow interruptions.
 
 #### Sample `assess_script`
 
@@ -214,8 +212,12 @@ All runtime values are represented as `Value`, a Crystal struct:
 ```crystal
 struct Value
   getter raw   : Nil | Bool | Int64 | Float64 | String | Sym | ScriptProc |
-                 Array(Value) | Hash(Value, Value) | RubyClass | RubyObject
-  getter label : SecurityLabel?
+                 LabeledArray | LabeledHash | RubyClass | RubyObject
+  # label is stored for scalars; for LabeledArray/LabeledHash values it's
+  # computed from the live container's own label instead — see
+  # "Information flow control (risk flow)" below.
+  def label : RiskFlowLabel?
+  end
 end
 ```
 
@@ -352,18 +354,33 @@ flowchart LR
     B -->|no| D["construct_object — allocate bare RubyObject, run initialize"]
 ```
 
-### Information flow control
+### Information flow control (risk flow)
 
-Every `Value` carries an optional `SecurityLabel` reference. Labels are heap-allocated classes so they can be shared across values without copying. When two labeled values are combined, their labels are joined via `SecurityLabel.join`, which computes the least upper bound in the label lattice.
+Every `Value` carries an optional `RiskFlowLabel` — for scalars this is a plain stored field; for array/hash values it's computed from the live `LabeledArray`/`LabeledHash` object instead (see below), so a `Value` copy never goes stale even after the container it wraps is mutated elsewhere. When two labeled values are combined, their labels are joined via `RiskFlowLabel.join`, which computes the least upper bound in the label lattice — a powerset lattice over `ProvenanceTag`, ordered by set inclusion (join = tag-set union). See `research/IFC_DESIGN.md` for the full design rationale.
 
-This is currently a stub — the lattice is a simple name-concatenation join and labels must be attached manually by native code (e.g. a module returning network data labels its values `{source: :network}`). The full IFC design will:
+A `RiskFlowLabel` holds a `Set(ProvenanceTag)`. Each `ProvenanceTag` is `{kind, origin, sensitivity}`:
 
-- Define a proper lattice with partial order and meet/join operations
-- Track label propagation automatically through the VM dispatch loop
-- Enforce declassification policies at the effect boundary
-- Surface label information to the harness so the user can reason about data provenance
+- `kind` is a `ProvenanceKind` enum member (`File`, `Host`, `Env`, `UserInput`, ...) — a closed set, not a bare symbol, so it's typo-checked at compile time.
+- `origin` is a concrete identifier for the source (a path, host, env var name, ...) — always recorded, since it's what makes a later risk-flow prompt or audit entry meaningful ("about to POST `/etc/passwd`", not "about to POST some file").
+- `sensitivity` (`Sensitivity::None`/`Elevated`/`High`) is looked up from a `RiskFlowPolicy` at tag-creation time via `RiskFlowPolicy#sensitivity_for` — not hardcoded per module, since a module has no way to know on its own that `/etc/passwd` matters differently from `/etc/hosts`.
 
-The `SecurityLabel` field adds one pointer width to every `Value` struct. When no label is present the field is `nil`, which is a predictable nil-check on the hot path — easily branch-predicted and potentially eliminated by the compiler when IFC is disabled.
+Two same-origin tags merge to the worse (more sensitive) of the two rather than duplicating; sensitivity is monotonic — no operation lowers it once joined onto a value (declassification was considered and explicitly rejected, see `research/IFC_DESIGN.md`).
+
+**Containers** (`Array`/`Hash`-typed values) don't store their label on the `Value` struct at all — `Value#raw` wraps a `LabeledArray`/`LabeledHash`, and the label lives as a mutable field on *that* object, shared by reference the same way the underlying elements already are. This is why `Op::SetIndex` and `arr << x` can accumulate a pushed/assigned value's label onto the container permanently (monotonic, same as scalar sensitivity — overwriting or removing the tainted element does not clear the container's label). See `research/IFC_DESIGN.md`'s "Container labeling" section for why the simpler "join onto the `Value`'s own label field" design doesn't work (a `Value` is a struct popped off the stack; there's no slot to write an updated label back to) and why `LabeledArray`/`LabeledHash` hand-write their read/mutate methods rather than including `Indexable`/`Enumerable` (both trigger a Crystal 1.20.3 compiler stack overflow over `Value`'s self-referential union type).
+
+Labels and tags are `JSON::Serializable` (a custom converter handles the `Set(ProvenanceTag)` field, since Crystal's `JSON::Serializable` only supports `Array` natively). `Interpreter#risk_flow_log` is a `RiskFlowLog` (also `JSON::Serializable`) that records a `RiskFlowEvent` per join for post-hoc audit/debugging, separate from the live label on each `Value` — enabled via `Interpreter.new(risk_flow_tracking: true)`, defaulting to disabled (`#record` is then a no-op, so every join site can call it unconditionally without branching on the flag itself).
+
+`Interpreter#risk_flow_policy` is a required `RiskFlowPolicy` (agent-loaded `JSON::Serializable`; Adjutant never reads a policy path off disk itself) with two lookups: `#sensitivity_for(kind, origin)` (origin → sensitivity, via `SensitivityPattern` rules matched by `exact` or `regex` pattern type, highest explicit `priority` wins, a tie at the top priority raises `AmbiguousRiskFlowPolicyError`) and `#action_for(tag, sensitivity)` (the `(RiskTag, Sensitivity) → RiskFlowAction` table, via `RiskFlowRule` rows; `Sensitivity::None` always resolves to `RiskFlowAction::Allow` regardless of table contents, and returns the matched `RiskFlowRule?` alongside the action). `RiskFlowAction` is `Allow`/`Ask`/`Reject`.
+
+There is no `Interpreter.new` default that means "skip risk assessment" — `risk_flow_policy` and `on_risk_flow_decision` (a `RiskFlowDecisionRequest -> RiskFlowDecision` callback) are both required constructor params, always, with no defaults. An embedder who genuinely wants no risk assessment must say so explicitly via `RiskFlowPolicy.reject_all` (a policy that rejects every non-`None`-sensitivity flow unconditionally, with no `risk_flow_rules` needed) rather than by omission — Adjutant does not silently permit risky calls just because an integration didn't think about IFC. The callback is required unconditionally too, even for a `reject_all` policy that will never actually call it — Crystal can't express "required only if the policy could produce `Ask`" as a type constraint, so requiring it always is what makes the guarantee a checked one rather than a runtime surprise deep in a script.
+
+**Enforcement** is implemented: `VM#call_native` runs a risk flow check before every native call whose `RiskProfile` has any `RiskTag` and whose arguments include a labeled value. For each `(RiskTag, ProvenanceTag)` pair, `action_for` decides `Allow`/`Ask`/`Reject`; non-`Allow` results become `RiskFlowMatch`es (rule + triggering tag), sorted worst-first (`Reject` > `Ask`, then `Sensitivity`) into a `RiskFlowDecisionRequest`. A `Reject` (from a rule, or from `reject_all`, or from the `on_risk_flow_decision` callback answering an `Ask` with `Reject`) raises a script-catchable error: script-visible class `RiskFlowRejectedError` (a `RiskFlowPolicyError` subclass, itself a `StandardError`), following the same `RuntimeError` + `error_value` mechanism every other script-raised error uses — not a separate Crystal exception hierarchy, since the dispatch loop's rescue-and-unwind machinery only catches `RuntimeError` specifically. A script can `rescue RiskFlowRejectedError`, `rescue RiskFlowPolicyError`, or a bare `rescue` to catch it; the script (and the LLM that authored it) never needs to know whether the rejection came from a hard policy rule or a live decision — both look identical from inside the script.
+
+**Label propagation alone has a real blind spot**: it only ever sees taint that flowed *through* a labeling call. A script that writes a sensitive-looking value directly (`delete_file("/etc/passwd")`, no intermediate `read_file` call or variable at all) produces no `RiskFlowLabel` for anything to track — the automatic, label-driven check above has nothing to see. `NativeCallContext#declare_sensitivity(tag, kind, origin, sensitivity = nil)` closes this: a native function whose own argument *is* the risky subject (a path being deleted, a URL being posted to) calls it directly on that argument's literal content, consulting `sensitivity_for` itself (or using an already-known `sensitivity` to skip the lookup) and feeding the result into the same `RiskFlowMatch`/`RiskFlowDecisionRequest`/enforcement machinery as the automatic check — same sorting, same callback, same script-catchable error. This is why `declare_sensitivity` exists as a distinct, explicit call rather than something the VM could infer automatically: only the native function itself knows which of its arguments (if any) is the dangerous one, and in what role (Ruby has no static typing or required argument-naming to infer this from). See `samples/run_script.cr`'s `delete_file` for the pattern, and `samples/scripts/risk_flow_declared_literal.rb`/`risk_flow_declared_variable.rb` for scripts that specifically exercise it (a bare literal and a misleadingly-named variable, respectively — both invisible to label propagation, both caught by this).
+
+**Currently implemented**: `RiskFlowLabel`/`ProvenanceTag`/`Sensitivity` and their join semantics; `LabeledArray`/`LabeledHash` container labeling; the `RiskFlowLog` recording mechanism; every VM dispatch-loop join site; `RiskFlowPolicy`/`SensitivityPattern`/`RiskFlowRule`/`RiskFlowAction` and their lookup logic; the full `call_native` enforcement check and `declare_sensitivity` described above. **Not yet implemented**: no higher-level agent-facing API beyond the raw `RiskFlowDecisionRequest`/`RiskFlowDecision` callback shape (no helper for rendering a request as a human-readable string, no structured audit-trail export beyond what `RiskFlowLog` already provides); no approval cache (an `Ask` for the same origin→sink flow re-prompts every time within one script run — see `research/IFC_DESIGN.md`'s open questions); no real, shippable File IO/HTTP native module — `samples/run_script.cr`'s `SampleModule` demonstrates the labeling/`declare_sensitivity` pattern with simulated I/O, but isn't itself a production module.
+
+The `RiskFlowLabel` field adds one pointer width to every `Value` struct. When no label is present the field is `nil`, which is a predictable nil-check on the hot path — easily branch-predicted and potentially eliminated by the compiler when risk flow tracking is disabled.
 
 ### Writing a ScriptModule
 
@@ -397,15 +414,33 @@ end
 
 Scripts load the module with `require "agent/mymodule"`. Each module is loaded at most once per interpreter instance regardless of how many times the script calls `require`.
 
-For IFC, attach labels to values your module returns:
+For risk flow tracking, a module has two responsibilities depending on what kind of function it's writing:
+
+**A function that produces data** (reads a file, fetches a URL, ...) attaches a label to the value it returns, looking up sensitivity from the interpreter's policy (native code closes over `interp` already, via the `define`/`define_native` block, so no extra plumbing is needed):
 
 ```crystal
 interp.define_native("fetch_data") do |args|
-  data = http_get(args.first.as_string)
-  label = Adjutant::SecurityLabel.new("network")
+  url = args.first.as_string
+  data = http_get(url)
+  sensitivity = interp.risk_flow_policy.sensitivity_for(Adjutant::ProvenanceKind::Host, url)
+  label = Adjutant::RiskFlowLabel.of(Adjutant::ProvenanceKind::Host, url, sensitivity)
   Adjutant::Value.string(data, label)
 end
 ```
+
+**A function that consumes a risky argument directly** (deletes a path, posts to a URL, ...) should call `ncc.declare_sensitivity` on that argument's literal content, rather than relying only on whatever label the caller happened to attach — otherwise a script that never touched a labeling function at all (a bare `delete_file("/etc/passwd")`, or a misleadingly-named variable holding the same string) produces no label and goes entirely unnoticed. `declare_sensitivity` feeds the same enforcement machinery — including the possibility of an `Ask` prompt or a `RiskFlowRejectedError` — as the automatic, label-driven check:
+
+```crystal
+interp.define_native("delete_file",
+  risk: Adjutant::RiskProfile.new(tags: Set{Adjutant::RiskTag::DeletesFiles})) do |args, _blk, ncc|
+  path = args.first.as_string
+  ncc.declare_sensitivity(Adjutant::RiskTag::DeletesFiles, Adjutant::ProvenanceKind::File, path)
+  File.delete(path)
+  Adjutant::Value.bool(true)
+end
+```
+
+A function can do both if it both consumes a risky argument and returns risky data.
 
 ### Side-effect risk
 

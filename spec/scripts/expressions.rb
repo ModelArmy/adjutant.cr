@@ -149,3 +149,42 @@ assert("Ranges") do
 #  assert_not_equal b.class, Array
 end
 # ---
+
+assert "in-script methods" do
+  def test
+    10
+  end
+
+  # Script-defined method
+  assert_not_equal test.class, NilClass
+
+  x = assert "test" do
+    true
+  end
+
+  assert_not_equal x.class, NilClass
+end
+
+# # --- TODO: known defect !!!
+# # pre-existing interpreter bug (parenless call resolution falling back
+# # to nil instead of raising NameError and instead of resolving to a
+# # real native call)
+
+# assert "unknown var in method should raise" do
+#   def test; unknown; end
+
+#   assert_raise do
+#     test
+#   end
+# end
+
+# assert "unknown var should raise" do
+#   assert_raise do
+#     unknown
+#   end
+# end
+
+# # Native method without params or parens
+# assert_not_equal assert.class, NilClass
+
+# # ---

@@ -43,7 +43,12 @@ module Testing
       short = path.sub(@scripts_dir + "/", "")
       ef = Adjutant::TestEffectHandler.new
       limits = Adjutant::ExecutionLimits.new(instruction_limit: 500_000_u64, call_depth_limit: 256)
-      interp = Adjutant::Interpreter.new(effect: ef, limits: limits)
+      interp = Adjutant::Interpreter.new(
+        risk_flow_policy: Adjutant::RiskFlowPolicy.reject_all,
+        on_risk_flow_decision: ->(_req : Adjutant::RiskFlowDecisionRequest) { Adjutant::RiskFlowDecision::Reject },
+        effect: ef,
+        limits: limits,
+      )
       mod = AssertModule.new
       interp.modules.register(mod)
 
