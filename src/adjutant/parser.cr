@@ -13,6 +13,17 @@ module Adjutant
   end
 
   class Parser
+    # When true, `block_follows_no_paren?` ignores a bare `do` as a
+    # block-start signal. Set while parsing a `for`-loop's iterable
+    # expression or a `while`/`until`'s condition expression, where a
+    # trailing `do` belongs to the loop construct itself
+    # (`for i in a do ... end`, `while i < a.size do ... end`), not to
+    # a bare identifier immediately before it (`a do ... end` would
+    # otherwise parse as a parenless call-with-block, consuming the
+    # loop's own `end`). `{`-style blocks are unaffected — only
+    # literal `do` is ambiguous with a loop construct's own `do`.
+    @no_do_block = false
+
     def initialize(source : IO, filename : String = "<input>")
       @lexer = Lexer.new(source, filename)
       @current = @lexer.next_token
@@ -424,6 +435,7 @@ module Adjutant
     end
 
     private def block_follows_no_paren? : Bool
+      return at_kind?(TokenKind::LBrace) if @no_do_block
       at_any?(TokenKind::KwDo, TokenKind::LBrace)
     end
 
@@ -726,8 +738,22 @@ module Adjutant
     private def parse_while(until_loop : Bool) : WhileNode
       l, c = line, col
       advance
-      cond = parse_expression(0)
+      @no_do_block = true
+      cond = begin
+        parse_expression(0)
+      ensure
+        @no_do_block = false
+      end
       skip_terminators
+      # Optional trailing `do`, same as `for ... in ... do` — Ruby
+      # allows (but doesn't require) `do` after a while/until
+      # condition. Previously never consumed here at all, so
+      # `while cond do` left `do` sitting as the next token and the
+      # body parse failed on it immediately.
+      if at_kind?(TokenKind::KwDo)
+        advance
+        skip_terminators
+      end
       body = parse_body_until(TokenKind::KwEnd)
       expect(TokenKind::KwEnd)
       WhileNode.new(cond, body, until_loop, l, c)
@@ -761,7 +787,12 @@ module Adjutant
         advance
       end
       expect(TokenKind::KwIn)
-      iter = parse_expression(0)
+      @no_do_block = true
+      iter = begin
+        parse_expression(0)
+      ensure
+        @no_do_block = false
+      end
       skip_terminators
       if at_kind?(TokenKind::KwDo)
         advance

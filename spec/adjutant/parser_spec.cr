@@ -315,10 +315,63 @@ module Adjutant
         node.as(WhileNode).until_loop?.should be_true
       end
 
+      it "parses a while loop with a trailing do" do
+        node = parse_expr("while x > 0 do\nx -= 1\nend")
+        node.should be_a(WhileNode)
+      end
+
+      it "parses an until loop with a trailing do" do
+        node = parse_expr("until x == 0 do\nx -= 1\nend")
+        node.should be_a(WhileNode)
+        node.as(WhileNode).until_loop?.should be_true
+      end
+
+      it "parses a while loop whose condition ends in a bare identifier, with do" do
+        # Regression: `running do` used to parse as a parenless
+        # call-with-block on `running`, swallowing the while-loop's
+        # own `end`.
+        node = parse_expr("while running do\nstep\nend")
+        node.should be_a(WhileNode)
+      end
+
+      it "parses a while loop whose condition ends in a dot-call, with do" do
+        # Regression: the same ambiguity applies to a parenless
+        # dot-call as the rightmost primary before `do` (`a.size do`),
+        # not just a bare identifier — block_follows_no_paren? is
+        # checked from parse_call_args_and_block too.
+        node = parse_expr("while i < a.size do\ni += 1\nend")
+        node.should be_a(WhileNode)
+      end
+
       it "parses a for loop" do
         node = parse_expr("for i in 1..3\nputs(i)\nend")
         node.should be_a(ForNode)
         node.as(ForNode).vars.should eq ["i"]
+      end
+
+      it "parses a for loop over a bare-identifier iterable with a trailing do" do
+        # Regression: `a do` used to parse as a parenless call-with-
+        # block on `a`, swallowing the for-loop's own `end` and
+        # leaving the parser expecting KwEnd at EOF.
+        node = parse_expr("for o in a do\nputs(o)\nend")
+        node.should be_a(ForNode)
+        node.as(ForNode).vars.should eq ["o"]
+        node.as(ForNode).iter.should be_a(Identifier)
+      end
+
+      it "parses a for loop over a bare-identifier iterable without do" do
+        node = parse_expr("for o in a\nputs(o)\nend")
+        node.should be_a(ForNode)
+        node.as(ForNode).iter.should be_a(Identifier)
+      end
+
+      it "still parses a normal parenless call-with-block outside a for-loop" do
+        # Confirms the no_do_block suppression is properly scoped to
+        # the for-loop's iterable and doesn't leak into unrelated
+        # parsing.
+        node = parse_expr("foo do\n1\nend")
+        node.should be_a(Call)
+        node.as(Call).block.should_not be_nil
       end
 
       it "parses a case statement" do

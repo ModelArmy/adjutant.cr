@@ -604,5 +604,106 @@ module Adjutant
         interp.eval(src).as_string.should contain "NameError"
       end
     end
+
+    # Regression coverage for two bugs found while testing Range#each
+    # support (2026-07-14 session): compile_for never set the
+    # receiver bit on its emitted Call, so `for x in expr` dispatched
+    # a receiverless bare `each` ("undefined method or variable:
+    # each") instead of `expr.each`; separately, the "block" it built
+    # was a hardcoded nil constant, so node.vars/node.body were never
+    # compiled — even a correctly-dispatched each would have run an
+    # empty/no-op block.
+    describe "for loop" do
+      it "iterates an array, binding the loop variable each pass" do
+        src = <<-RUBY
+        total = 0
+        for x in [1, 2, 3, 4]
+          total += x
+        end
+        total
+        RUBY
+        eval(src).as_int.should eq 10
+      end
+
+      it "iterates with the do keyword" do
+        src = <<-RUBY
+        total = 0
+        for x in [1, 2, 3] do
+          total += x
+        end
+        total
+        RUBY
+        eval(src).as_int.should eq 6
+      end
+
+      it "iterates over a bare-identifier array variable (not just a literal)" do
+        src = <<-RUBY
+        a = [1, 3, 5, 7, 9]
+        total = 0
+        for o in a
+          total += o
+        end
+        total
+        RUBY
+        eval(src).as_int.should eq 25
+      end
+
+      it "iterates over a bare-identifier array variable with do" do
+        src = <<-RUBY
+        a = [1, 3, 5, 7, 9]
+        total = 0
+        for o in a do
+          total += o
+        end
+        total
+        RUBY
+        eval(src).as_int.should eq 25
+      end
+
+      it "the loop body actually runs, not a no-op" do
+        src = <<-RUBY
+        seen = []
+        for x in [10, 20]
+          seen << x
+        end
+        seen
+        RUBY
+        result = eval(src)
+        result.as_array.map(&.as_int).should eq [10, 20]
+      end
+    end
+
+    # Regression coverage for the same do-ambiguity found in `for`,
+    # reported separately for `while`/`until`: a parenless dot-call
+    # (`a.size`) as the rightmost primary in the condition, followed
+    # by `do`, used to be swallowed as `a.size do ... end` — a call
+    # with a block — consuming the while-loop's own `end`.
+    describe "while loop with trailing do" do
+      it "parses and runs a while condition ending in a bare identifier" do
+        src = <<-RUBY
+        i = 0
+        running = true
+        while running do
+          i += 1
+          running = false if i >= 3
+        end
+        i
+        RUBY
+        eval(src).as_int.should eq 3
+      end
+
+      it "parses and runs a while condition ending in a dot-call (a.size)" do
+        src = <<-RUBY
+        a = [1, 3, 5, 7, 9]
+        i = 0
+        while i < a.size do
+          o = a[i]
+          i += 1
+        end
+        i
+        RUBY
+        eval(src).as_int.should eq 5
+      end
+    end
   end
 end
