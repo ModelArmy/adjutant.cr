@@ -63,36 +63,20 @@ assert_equal(add(3, 5), 8)
 assert_equal add(3, 5), 8
 assert_equal 3+5, 8
 
-# --- TODO: global access should raise.
-# Ruby raises:
-# ```
-# tmp.rb:5:in '<main>': undefined local variable or method 'greet' for main (NameError)
-#
-# greet
-# ^^^^^
-# ```
-# assert_raise do
-#   class A
-#     def self.greet; "hi"; end
-#   end
-#   greet
-# end
-# ---
+assert "unknown bare names should raise" do
+  assert_raise NameError do
+    class A
+      def self.greet; "hi"; end
+    end
 
-# --- TODO: unknown method or local should raise
-# Ruby raises:
-# ```
-# tmp.rb:3:in 'A.check': undefined local variable or method 'boom' for class A (NameError)
-#
-#   def self.check; boom; end
-#                   ^^^^
-# 	from tmp.rb:6:in '<main>'
-# ```
-# assert_raise do
-#   class A
-#     def self.check; boom; end
-#   end
+    greet
+  end
 
-#   A.check
-# end
-# ---
+  assert_raise NameError do
+    class A
+      def self.check; boom; end
+    end
+
+    A.check
+  end
+end

@@ -165,26 +165,13 @@ assert "in-script methods" do
   assert_not_equal x.class, NilClass
 end
 
-# # --- TODO: known defect !!!
-# # pre-existing interpreter bug (parenless call resolution falling back
-# # to nil instead of raising NameError and instead of resolving to a
-# # real native call)
+assert "unknown var should raise" do
+  assert_raise NameError do
+    unknown
+  end
+end
 
-# assert "unknown var in method should raise" do
-#   def test; unknown; end
-
-#   assert_raise do
-#     test
-#   end
-# end
-
-# assert "unknown var should raise" do
-#   assert_raise do
-#     unknown
-#   end
-# end
-
-# # Native method without params or parens
-# assert_not_equal assert.class, NilClass
-
-# # ---
+assert "known native global" do
+  assert_not_nil version
+  assert_equal version.class, String
+end
