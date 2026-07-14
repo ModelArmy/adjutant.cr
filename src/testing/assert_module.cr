@@ -51,6 +51,7 @@ module Testing
       define_assert_not_nil(interp)
       define_assert_raise(interp)
       define_assert_nothing_raised(interp)
+      define_version(interp)
     end
 
     private def define_assert(interp)
@@ -162,6 +163,12 @@ module Testing
           record("assert_nothing_raised", false, "no block given", ncc)
         end
         Adjutant::Value.bool(true)
+      end
+    end
+
+    private def define_version(interp)
+      interp.define_native("version") do
+        Adjutant::Value.string(Adjutant::VERSION)
       end
     end
 

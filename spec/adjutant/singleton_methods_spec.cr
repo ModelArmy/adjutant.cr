@@ -36,10 +36,11 @@ module Adjutant
       RUBY
       # If DefSingleton still leaked into globals under the bare name,
       # this would find and run it, returning "hi". A bare reference to
-      # a name that isn't a local, global, or defined identifier reads
-      # as nil (Op::GetGlobal's fallback) — it must NOT be "hi".
-      result = interp.eval("greet")
-      result.null?.should be_true
+      # a name that isn't a local, global, or defined identifier raises —
+      # it must NOT be "hi".
+      expect_raises(RuntimeError) do
+        interp.eval("greet")
+      end
     end
 
     it "a bare-name global with the same name as a singleton method is unaffected" do

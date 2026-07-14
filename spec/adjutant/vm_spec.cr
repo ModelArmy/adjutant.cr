@@ -535,6 +535,74 @@ module Adjutant
         RUBY
         eval(src).as_string.should eq "hi"
       end
+
+      # Regression coverage for the bug noted in the 2026-07-14
+      # handoff: native functions live in the interpreter's native
+      # table, not in @globals, so a bare reference used to miss the
+      # ScriptProc check entirely and fall through to "push nil"
+      # instead of ever calling the native fn. GetGlobal now routes
+      # any non-data-global bare identifier through the same
+      # dispatch_call path a real `name()` call uses, which checks
+      # natives first.
+      it "calls a native function when referenced bare (no parens)" do
+        interp, _ = make_interp
+        interp.define_native("read_input") { |_| Value.string("hello") }
+        interp.eval(%("hello, " + read_input)).as_string.should eq "hello, hello"
+      end
+
+      it "still calls a native function normally when parens are used" do
+        interp, _ = make_interp
+        interp.define_native("read_input") { |_| Value.string("hello") }
+        interp.eval(%("hello, " + read_input())).as_string.should eq "hello, hello"
+      end
+
+      # The other half of the same bug: an identifier that resolves
+      # to nothing at all (no local, no native, no global proc/value,
+      # no builtin) used to silently push nil via `gval || Value.nil_value`
+      # instead of raising — unlike real Ruby, which raises on first
+      # use of an undefined bare identifier. dispatch_call's existing
+      # "unknown method" fallback now backs GetGlobal too, tagged as
+      # NameError (script-catchable, since NameError < StandardError).
+      it "raises NameError for a truly undefined bare identifier" do
+        expect_raises(Adjutant::RuntimeError, /undefined method or variable: totally_unknown/) do
+          eval("totally_unknown")
+        end
+      end
+
+      it "raises NameError for an undefined identifier referenced inside a method body" do
+        src = <<-RUBY
+        def test
+          unknown
+        end
+        test
+        RUBY
+        expect_raises(Adjutant::RuntimeError, /undefined method or variable: unknown/) do
+          eval(src)
+        end
+      end
+
+      it "is catchable via a script-level rescue, since NameError < StandardError" do
+        src = <<-RUBY
+        begin
+          totally_unknown
+        rescue => e
+          e.message
+        end
+        RUBY
+        eval(src).as_string.should eq "undefined method or variable: totally_unknown"
+      end
+
+      it "tags the raised error object as NameError specifically" do
+        interp, _ = make_interp
+        src = <<-RUBY
+        begin
+          totally_unknown
+        rescue => e
+          e.class.to_s
+        end
+        RUBY
+        interp.eval(src).as_string.should contain "NameError"
+      end
     end
   end
 end
