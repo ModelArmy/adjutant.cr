@@ -138,17 +138,44 @@ assert("Hashmaps") do
   end
 end
 
-# --- TODO: Define and implement Range value properly
 assert("Ranges") do
   a = 0..3
   assert_not_nil a
-#  assert_not_equal a.class, Array
+  assert_equal a.class, Range
+  assert_equal a.min, 0
+  assert_equal a.max, 3
+  assert_equal a.exclusive?, false
 
   b = 0...3
   assert_not_nil b
-#  assert_not_equal b.class, Array
+  assert_equal b.class, Range
+  assert_equal b.exclusive?, true
+
+  total = 0
+  for x in 1..4
+    total += x
+  end
+  assert_equal total, 10 # inclusive: 1+2+3+4
+
+  total2 = 0
+  for x in 1...4
+    total2 += x
+  end
+  assert_equal total2, 6 # exclusive: 1+2+3
+
+  seen = []
+  (1..3).each do |n|
+    seen << n
+  end
+  assert_equal seen, [1, 2, 3]
+
+  r = 1..5
+  re = 1...5
+  assert_equal r.include?(3), true
+  assert_equal r.include?(5), true
+  assert_equal re.include?(5), false
+  assert_equal r.include?(0), false
 end
-# ---
 
 assert "in-script methods" do
   def test
@@ -174,4 +201,19 @@ end
 assert "known native global" do
   assert_not_nil version
   assert_equal version.class, String
+end
+
+assert "class names should include namespace unless root" do
+  module A
+    class B
+    end
+  end
+  class C
+  end
+
+  b = A::B.new
+  c = C.new
+
+  assert_equal b.class.to_s, "A::B"
+  assert_equal c.class.to_s, "C"
 end

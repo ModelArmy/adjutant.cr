@@ -32,10 +32,22 @@ module Adjutant
       eval("2 + 3").as_int.should eq 5_i64
     end
 
+    it "succ returns the next integer" do
+      eval("5.succ").as_int.should eq 6_i64
+    end
+
+    it "next is an alias of succ" do
+      eval("5.next").as_int.should eq 6_i64
+    end
+
+    it "succ/next work on negative integers too" do
+      eval("(-1).succ").as_int.should eq 0_i64
+    end
+
     it "every builtin Integer method defaults to RiskProfile.none" do
       interp, _ = make_interp
       cls = interp.get_global("Integer").as_rclass
-      %w[to_s to_i to_f].each do |name|
+      %w[to_s to_i to_f succ next].each do |name|
         sym_id = interp.symbols.lookup(name).not_nil!.value
         cls.find_native_method(sym_id).not_nil!.risk.should eq RiskProfile.none
       end

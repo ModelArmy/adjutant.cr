@@ -21,6 +21,31 @@ assert "for loop without 'do'" do
   end
 end
 
+assert "for loop over a Range with 'do'" do
+  total = 0
+  for o in 1..4 do
+    assert_equal o.class, Integer
+    total += o
+  end
+  assert_equal total, 10
+end
+
+assert "for loop over a Range without 'do'" do
+  total = 0
+  for o in 1..4
+    total += o
+  end
+  assert_equal total, 10
+end
+
+assert "for loop over an exclusive Range" do
+  total = 0
+  for o in 1...4
+    total += o
+  end
+  assert_equal total, 6
+end
+
 assert "while loop with 'do'" do
   a = [1, 3, 5, 7, 9]
   i = 0

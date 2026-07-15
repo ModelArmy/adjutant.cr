@@ -109,32 +109,4 @@ module Adjutant
       end
     end
   end
-
-  # Minimal NativeCallContext for direct NativeCallable#call tests that
-  # don't go through the VM.
-  private class FakeContext
-    include NativeCallContext
-
-    def initialize(@filename : String = "<spec>", @line : Int32 = 0)
-    end
-
-    def invoke(proc : ScriptProc, args : Array(Value)) : Value
-      Value.nil_value
-    end
-
-    # Minimal but real, not a stub — a direct-NativeCallable test that
-    # exercises a method relying on == (e.g. Array#include?) needs
-    # actual comparison semantics, not just a type-checking placeholder.
-    def values_equal?(a : Value, b : Value) : Bool
-      a == b
-    end
-
-    # No-op — these direct-NativeCallable tests don't exercise risk
-    # flow enforcement, just method dispatch. See
-    # risk_flow_enforcement_spec.cr for real declare_sensitivity
-    # coverage, which goes through the actual VM.
-    def declare_sensitivity(tag : RiskTag, kind : ProvenanceKind, origin : String,
-                            sensitivity : Sensitivity? = nil) : Nil
-    end
-  end
 end

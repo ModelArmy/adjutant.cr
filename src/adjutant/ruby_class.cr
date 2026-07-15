@@ -211,8 +211,20 @@ module Adjutant
       nil
     end
 
+    # Fully-qualified name, walking lexical_parent — `class A; class
+    # B; end; end` gives B.to_s == "A::B", matching real Ruby. A
+    # top-level class/module (lexical_parent nil) is just its own
+    # name.
     def to_s(io : IO) : Nil
-      io << (@is_module ? "module " : "class ") << @name
+      io << qualified_name
+    end
+
+    def qualified_name : String
+      if parent = @lexical_parent
+        "#{parent.qualified_name}::#{@name}"
+      else
+        @name
+      end
     end
   end
 

@@ -65,7 +65,7 @@ module Adjutant
     describe "self inside a class body" do
       it "self is the class being defined" do
         val = eval("class Foo\n SELF_STR = self.to_s\nend\nFoo::SELF_STR")
-        val.as_string.should eq "class Foo"
+        val.as_string.should eq "Foo"
       end
 
       it "self is restored after the class body, unaffected by the body's last value" do
@@ -82,7 +82,7 @@ module Adjutant
           end
           Outer::OUTER_SELF_STR
           RB
-        val.as_string.should eq "class Outer"
+        val.as_string.should eq "Outer"
       end
     end
 
@@ -481,6 +481,17 @@ module Adjutant
           ::A::B::X
           RB
         val.as_int.should eq 1_i64
+      end
+
+      it "#to_s returns qualified name" do
+        val = eval(<<-RB)
+          module A
+            class B
+            end
+          end
+          A::B.new.class.to_s
+        RB
+        val.as_string.should eq "A::B"
       end
     end
   end
