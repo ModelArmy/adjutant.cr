@@ -75,7 +75,7 @@ module Testing
       interp.define_native("assert_equal") do |args, _blk, ncc|
         expected = args[0]? || Adjutant::Value.nil_value
         actual = args[1]? || Adjutant::Value.nil_value
-        ok = values_equal?(expected, actual)
+        ok = Adjutant::ValueOps.equal?(expected, actual)
         msg = ok ? nil : "expected #{expected.inspect}, got #{actual.inspect}"
         record("assert_equal", ok, msg, ncc)
         Adjutant::Value.bool(true)
@@ -86,7 +86,7 @@ module Testing
       interp.define_native("assert_not_equal") do |args, _blk, ncc|
         expected = args[0]? || Adjutant::Value.nil_value
         actual = args[1]? || Adjutant::Value.nil_value
-        ok = !values_equal?(expected, actual)
+        ok = !Adjutant::ValueOps.equal?(expected, actual)
         record("assert_not_equal", ok, ok ? nil : "both are #{actual.inspect}", ncc)
         Adjutant::Value.bool(true)
       end
@@ -193,25 +193,6 @@ module Testing
 
     private def record(description : String, passed : Bool, message : String?, ncc : Adjutant::NativeCallContext, cause = nil) : Nil
       @results << AssertResult.new(description, passed, message, ncc.filename, ncc.line, cause)
-    end
-
-    # ameba:disable Metrics/CyclomaticComplexity - It is what it is
-    private def values_equal?(a : Adjutant::Value, b : Adjutant::Value) : Bool
-      case
-      when a.null? && b.null?       then true
-      when a.bool? && b.bool?       then a.as_bool == b.as_bool
-      when a.int? && b.int?         then a.as_int == b.as_int
-      when a.float? && b.float?     then a.as_float == b.as_float
-      when a.int? && b.float?       then a.as_int.to_f64 == b.as_float
-      when a.float? && b.int?       then a.as_float == b.as_int.to_f64
-      when a.string? && b.string?   then a.as_string == b.as_string
-      when a.symbol? && b.symbol?   then a.as_sym == b.as_sym
-      when a.array? && b.array?     then a.as_array == b.as_array
-      when a.hash? && b.hash?       then a.as_hash == b.as_hash
-      when a.rclass? && b.rclass?   then a.as_rclass == b.as_rclass
-      when a.robject? && b.robject? then a.as_robject == b.as_robject
-      else                               false
-      end
     end
   end
 end

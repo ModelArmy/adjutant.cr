@@ -7,12 +7,13 @@ module Adjutant::Builtins
   # Builds the `Array` RubyClass and registers its native methods.
   #
   # `+` and `<<` are NOT registered here — `+` (concatenation, returns
-  # a new array) is now a real arith_add case, and `<<` (in-place
-  # append, returns self) is a real exec_shl case — see vm.cr, both
-  # extended alongside this class since real Ruby overloads those
-  # operators across Integer/String/Array and they're unreachable via
-  # find_native_method regardless (same reasoning as Integer/Float/
-  # String's own arithmetic). `[]`/`[]=` are also already real opcodes
+  # a new array) is now a real ValueOps.add case, and `<<` (in-place
+  # append, returns self) is a real ValueOps.shl case — see
+  # value_ops.cr, both extended alongside this class since real Ruby
+  # overloads those operators across Integer/String/Array and they're
+  # unreachable via find_native_method regardless (same reasoning as
+  # Integer/Float/String's own arithmetic). `[]`/`[]=` are also
+  # already real opcodes
   # (Op::GetIndex/Op::SetIndex, see exec_get_index/exec_set_index) —
   # not registered here either. `==` (deep, element-wise) is a real
   # values_equal? case, also extended alongside this class.

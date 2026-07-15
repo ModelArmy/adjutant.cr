@@ -34,14 +34,15 @@ module Adjutant
     abstract def values_equal?(a : Value, b : Value) : Bool
 
     # Real Ruby `<=>`-style ordering for two Values — delegates to
-    # VM#compare_op, the same comparison logic Op::Lt/Op::Le/etc.
-    # already use for `<`/`<=`/`>`/`>=` in script code. Needed by any
-    # native method that has to order Values without duplicating that
-    # logic (Range#each's loop condition — see builtins/range.cr —
-    # is the first user). `op` is one of :<, :<=, :>, :>=, matching
-    # compare_op's own symbol vocabulary; returns false for any pair
-    # compare_op doesn't know how to order (mirroring compare_op's
-    # own permissive-false fallback rather than raising).
+    # ValueOps.compare (value_ops.cr), the same comparison logic
+    # Op::Lt/Op::Le/etc. already use for `<`/`<=`/`>`/`>=` in script
+    # code. Needed by any native method that has to order Values
+    # without duplicating that logic (Range#each's loop condition —
+    # see builtins/range.cr — is the first user). `op` is one of :<,
+    # :<=, :>, :>=, matching ValueOps.compare's own symbol vocabulary;
+    # returns false for any pair it doesn't know how to order
+    # (mirroring its own permissive-false fallback rather than
+    # raising).
     abstract def compare(a : Value, b : Value, op : Symbol) : Bool
 
     # Calls a method by name on an arbitrary Value receiver, the same

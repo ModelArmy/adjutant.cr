@@ -3,10 +3,10 @@ require "../../spec_helper"
 module Adjutant
   # Covers Phase 4b of the base-types work: Array. `[]`/`[]=` were
   # already real opcodes; `+`, `<<`, and `==` needed real fixes
-  # alongside this class (arith_add/exec_shl/values_equal? had no
-  # Array case at all before this session — genuine pre-existing
-  # gaps, not new behavior), covered here as regression checks
-  # alongside the native methods this file actually adds.
+  # alongside this class (ValueOps.add/shl/equal? had no Array case
+  # at all before this session — genuine pre-existing gaps, not new
+  # behavior), covered here as regression checks alongside the native
+  # methods this file actually adds.
   describe "Array" do
     it "[1, 2].class is Array" do
       interp, _ = make_interp

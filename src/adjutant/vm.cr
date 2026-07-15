@@ -1,6 +1,7 @@
 require "./bytecode"
 require "./symbol_table"
 require "./value"
+require "./value_ops"
 require "./ast"
 require "./risk_flow_policy"
 require "./risk_flow_decision"
@@ -523,27 +524,27 @@ module Adjutant
             push(result) unless @frames.empty?
 
             # --- Arithmetic -----------------------------------------------------
-          when Op::Add    then exec_binary(inst) { |lhs, rhs| arith_add(lhs, rhs) }
-          when Op::Sub    then exec_binary(inst) { |lhs, rhs| arith_op(lhs, rhs, :-) }
-          when Op::Mul    then exec_binary(inst) { |lhs, rhs| arith_op(lhs, rhs, :*) }
-          when Op::Div    then exec_binary(inst) { |lhs, rhs| arith_div(lhs, rhs) }
-          when Op::Mod    then exec_binary(inst) { |lhs, rhs| arith_mod(lhs, rhs) }
-          when Op::BitAnd then exec_binary(inst) { |lhs, rhs| int_op(lhs, rhs, :&) }
-          when Op::BitOr  then exec_binary(inst) { |lhs, rhs| int_op(lhs, rhs, :|) }
-          when Op::Xor    then exec_binary(inst) { |lhs, rhs| int_op(lhs, rhs, :^) }
-          when Op::Shl    then exec_binary(inst) { |lhs, rhs| exec_shl(lhs, rhs) }
-          when Op::Shr    then exec_binary(inst) { |lhs, rhs| int_op(lhs, rhs, :>>) }
+          when Op::Add    then exec_binary(inst) { |lhs, rhs| ValueOps.add(lhs, rhs, error_raiser(f)) }
+          when Op::Sub    then exec_binary(inst) { |lhs, rhs| ValueOps.op(lhs, rhs, :-, error_raiser(f)) }
+          when Op::Mul    then exec_binary(inst) { |lhs, rhs| ValueOps.op(lhs, rhs, :*, error_raiser(f)) }
+          when Op::Div    then exec_binary(inst) { |lhs, rhs| ValueOps.div(lhs, rhs, error_raiser(f)) }
+          when Op::Mod    then exec_binary(inst) { |lhs, rhs| ValueOps.mod(lhs, rhs, error_raiser(f)) }
+          when Op::BitAnd then exec_binary(inst) { |lhs, rhs| ValueOps.int_op(lhs, rhs, :&, error_raiser(f)) }
+          when Op::BitOr  then exec_binary(inst) { |lhs, rhs| ValueOps.int_op(lhs, rhs, :|, error_raiser(f)) }
+          when Op::Xor    then exec_binary(inst) { |lhs, rhs| ValueOps.int_op(lhs, rhs, :^, error_raiser(f)) }
+          when Op::Shl    then exec_binary(inst) { |lhs, rhs| ValueOps.shl(lhs, rhs, error_raiser(f)) }
+          when Op::Shr    then exec_binary(inst) { |lhs, rhs| ValueOps.int_op(lhs, rhs, :>>, error_raiser(f)) }
             # --- Comparison -----------------------------------------------------
 
           when Op::Eq
             b, a = pop, pop
-            result = Value.bool(values_equal?(a, b), RiskFlowLabel.join(a.label, b.label))
+            result = Value.bool(ValueOps.equal?(a, b), RiskFlowLabel.join(a.label, b.label))
             @risk_flow_log.record("Eq", [a.label, b.label], result.label, f.line)
             push(result)
-          when Op::Lt  then exec_binary(inst) { |lhs, rhs| compare_op(lhs, rhs, :<) }
-          when Op::Lte then exec_binary(inst) { |lhs, rhs| compare_op(lhs, rhs, :<=) }
-          when Op::Gt  then exec_binary(inst) { |lhs, rhs| compare_op(lhs, rhs, :>) }
-          when Op::Gte then exec_binary(inst) { |lhs, rhs| compare_op(lhs, rhs, :>=) }
+          when Op::Lt  then exec_binary(inst) { |lhs, rhs| Value.bool(ValueOps.compare(lhs, rhs, :<)) }
+          when Op::Lte then exec_binary(inst) { |lhs, rhs| Value.bool(ValueOps.compare(lhs, rhs, :<=)) }
+          when Op::Gt  then exec_binary(inst) { |lhs, rhs| Value.bool(ValueOps.compare(lhs, rhs, :>)) }
+          when Op::Gte then exec_binary(inst) { |lhs, rhs| Value.bool(ValueOps.compare(lhs, rhs, :>=)) }
             # --- Unary ----------------------------------------------------------
 
           when Op::Not
@@ -1331,230 +1332,36 @@ module Adjutant
         else                   Value.int(0_i64)
         end
       when "+"
-        arith_add(args[0], args[1])
+        ValueOps.add(args[0], args[1], error_raiser(current_frame))
       when "-"
-        arith_op(args[0], args[1], :-)
+        ValueOps.op(args[0], args[1], :-, error_raiser(current_frame))
       when "*"
-        arith_op(args[0], args[1], :*)
+        ValueOps.op(args[0], args[1], :*, error_raiser(current_frame))
       when "/"
-        arith_div(args[0], args[1])
+        ValueOps.div(args[0], args[1], error_raiser(current_frame))
       when "%"
-        arith_mod(args[0], args[1])
+        ValueOps.mod(args[0], args[1], error_raiser(current_frame))
       else
         nil
       end
     end
 
-    # --- Arithmetic helpers -------------------------------------------------
+    # --- Operators ------------------------------------------------------------
+    # The actual arithmetic/comparison/equality logic lives in
+    # ValueOps (value_ops.cr) now — VM-independent, pure Value
+    # dispatch, previously duplicated here across 8 separate methods
+    # plus a third copy in the FakeContext spec helper. These two
+    # `protected` wrappers exist only because NativeCallContext's real
+    # implementation (NativeFunctionCall, in interpreter.cr) delegates
+    # to `@vm.compare`/`@vm.values_equal?` by name — the delegation
+    # contract stays the same, the logic behind it moved.
 
-    # ameba:disable Metrics/CyclomaticComplexity
-    private def arith_add(a : Value, b : Value) : Value
-      case
-      when a.int? && b.int?       then Value.int(a.as_int + b.as_int)
-      when a.float? && b.float?   then Value.float(a.as_float + b.as_float)
-      when a.int? && b.float?     then Value.float(a.as_int.to_f64 + b.as_float)
-      when a.float? && b.int?     then Value.float(a.as_float + b.as_int.to_f64)
-      when a.string? && b.string? then Value.string(a.as_string + b.as_string)
-      when a.array? && b.array?
-        # Real Ruby's Array#+ returns a NEW array (the two operands are
-        # untouched) — a fresh LabeledArray wrapping a fresh Crystal
-        # array, same construction Op::MakeArray itself uses, not a
-        # mutation of either a's or b's underlying array. The result's
-        # label is set via the outer exec_binary's with_label call
-        # (join of a's and b's labels), same as any other binary op.
-        Value.new(LabeledArray.new(a.as_array.dup_items + b.as_array.dup_items), nil)
-      else
-        raise runtime_error("cannot add #{a} and #{b}")
-      end
-    end
-
-    # ameba:disable Metrics/CyclomaticComplexity
-    private def arith_op(a : Value, b : Value, op : Symbol) : Value
-      case
-      when a.int? && b.int?
-        n = case op
-            when :- then a.as_int - b.as_int
-            when :* then a.as_int * b.as_int
-            else         0_i64
-            end
-        Value.int(n)
-      when a.float? || b.float?
-        fa = a.int? ? a.as_int.to_f64 : a.as_float
-        fb = b.int? ? b.as_int.to_f64 : b.as_float
-        n = case op
-            when :- then fa - fb
-            when :* then fa * fb
-            else         0.0
-            end
-        Value.float(n)
-      else
-        raise runtime_error("type error in arithmetic")
-      end
-    end
-
-    private def arith_div(a : Value, b : Value) : Value
-      case
-      when a.int? && b.int?
-        raise runtime_error("divided by 0") if b.as_int == 0
-        Value.int(a.as_int // b.as_int)
-      when a.float? || b.float?
-        fa = a.int? ? a.as_int.to_f64 : a.as_float
-        fb = b.int? ? b.as_int.to_f64 : b.as_float
-        raise runtime_error("divided by 0") if fb == 0.0
-        Value.float(fa / fb)
-      else
-        raise runtime_error("type error in division")
-      end
-    end
-
-    # ameba:disable Metrics/CyclomaticComplexity
-    private def arith_mod(a : Value, b : Value) : Value
-      raise runtime_error("divided by 0") if (b.int? && b.as_int == 0) || (b.float? && b.as_float == 0.0)
-      case
-      when a.int? && b.int? then Value.int(a.as_int % b.as_int)
-      when a.float? || b.float?
-        fa = a.int? ? a.as_int.to_f64 : a.as_float
-        fb = b.int? ? b.as_int.to_f64 : b.as_float
-        Value.float(fa % fb)
-      else
-        raise runtime_error("type error in modulo")
-      end
-    end
-
-    private def int_op(a : Value, b : Value, op : Symbol) : Value
-      raise runtime_error("bitwise op requires Integer") unless a.int? && b.int?
-      n = case op
-          when :&  then a.as_int & b.as_int
-          when :|  then a.as_int | b.as_int
-          when :^  then a.as_int ^ b.as_int
-          when :<< then a.as_int << b.as_int
-          when :>> then a.as_int >> b.as_int
-          else          0_i64
-          end
-      Value.int(n)
-    end
-
-    # `<<` is overloaded in real Ruby between Integer's bit-shift and
-    # Array's append-and-return-self — genuinely different operations
-    # sharing one operator. Split out from int_op (which stays
-    # Integer-only, still backing `&`/`|`/`^`/`>>`) rather than adding
-    # an array branch inside it, so those other bitwise ops don't
-    # silently gain array behavior they were never meant to have.
-    private def exec_shl(a : Value, b : Value) : Value
-      if a.array?
-        # Real Ruby: mutates a in place AND returns a (so `arr << 1 <<
-        # 2` chains) — push onto the same underlying LabeledArray, not a
-        # new one. Returning `a` here means exec_binary's outer
-        # `.with_label(join(a.label, b.label))` call mutates this same
-        # LabeledArray's own label field (see Value#with_label's
-        # container case) — the container accumulates b's taint exactly
-        # like Op::SetIndex does, for free, as a side effect of the
-        # normal exec_binary wrapping every binary op already goes
-        # through.
-        a.as_array.push(b)
-        a
-      else
-        int_op(a, b, :<<)
-      end
-    end
-
-    # `protected`, not `private` — same reasoning and relationship as
-    # values_equal? just below: NativeFunctionCall (NativeCallContext's
-    # implementation, in interpreter.cr) delegates to this so native
-    # methods (e.g. Range#each) can order two Values without
-    # duplicating compare_op's logic.
     protected def compare(a : Value, b : Value, op : Symbol) : Bool
-      compare_op(a, b, op).as_bool
+      ValueOps.compare(a, b, op)
     end
 
-    # ameba:disable Metrics/CyclomaticComplexity
-    private def compare_op(a : Value, b : Value, op : Symbol) : Value
-      result = case
-               when a.int? && b.int?
-                 case op
-                 when :<  then a.as_int < b.as_int
-                 when :<= then a.as_int <= b.as_int
-                 when :>  then a.as_int > b.as_int
-                 when :>= then a.as_int >= b.as_int
-                 else          false
-                 end
-               when a.float? || b.float?
-                 fa = a.int? ? a.as_int.to_f64 : a.as_float
-                 fb = b.int? ? b.as_int.to_f64 : b.as_float
-                 case op
-                 when :<  then fa < fb
-                 when :<= then fa <= fb
-                 when :>  then fa > fb
-                 when :>= then fa >= fb
-                 else          false
-                 end
-               when a.string? && b.string?
-                 case op
-                 when :<  then a.as_string < b.as_string
-                 when :<= then a.as_string <= b.as_string
-                 when :>  then a.as_string > b.as_string
-                 when :>= then a.as_string >= b.as_string
-                 else          false
-                 end
-               else
-                 false
-               end
-      Value.bool(result)
-    end
-
-    # `protected`, not `private`, so NativeFunctionCall (NativeCallContext's
-    # implementation, in interpreter.cr) can delegate to it — same
-    # relationship as VM#invoke above.
-    # ameba:disable Metrics/CyclomaticComplexity
     protected def values_equal?(a : Value, b : Value) : Bool
-      case
-      when a.null? && b.null?     then true
-      when a.bool? && b.bool?     then a.as_bool == b.as_bool
-      when a.int? && b.int?       then a.as_int == b.as_int
-      when a.float? && b.float?   then a.as_float == b.as_float
-      when a.int? && b.float?     then a.as_int.to_f64 == b.as_float
-      when a.float? && b.int?     then a.as_float == b.as_int.to_f64
-      when a.string? && b.string? then a.as_string == b.as_string
-      when a.symbol? && b.symbol? then a.as_sym == b.as_sym
-      when a.rclass? && b.rclass?
-        # Reference identity — `Object.class == Class`, `Foo.superclass
-        # == Bar`, etc. RubyClass has no user-facing notion of two
-        # DIFFERENT classes comparing equal, so Crystal's default
-        # reference `==` on the underlying RubyClass is exactly right,
-        # not a placeholder pending a real override.
-        a.as_rclass == b.as_rclass
-      when a.robject? && b.robject?
-        # Reference identity too, for now — real Ruby lets a class
-        # override `==` for value-style comparison (two Points with
-        # the same x/y), but Adjutant has no user-defined `==`
-        # dispatch yet. Matches default Ruby Object#== (identity)
-        # before any override, so this is the correct default, not a
-        # simplification silently diverging from Ruby.
-        a.as_robject == b.as_robject
-      when a.array? && b.array?
-        # Deep, element-wise equality — real Ruby's Array#== compares
-        # length then each element via ITS OWN ==, recursively (so
-        # [[1], [2]] == [[1], [2]] is true). Recursing through
-        # values_equal? itself, not Crystal's Array#== on the
-        # underlying Array(Value), is what makes that recursion use
-        # Adjutant's own equality rules at every level instead of
-        # Crystal's.
-        aa, ba = a.as_array, b.as_array
-        aa.size == ba.size && aa.zip(ba) { |x, y| values_equal?(x, y) }
-      when a.hash? && b.hash?
-        # Same reasoning as Array — same key set, and each value equal
-        # via values_equal? (not Crystal's own Hash#==, which would use
-        # Value's default struct == instead of this method's rules).
-        # Value has no custom hash() override, so key lookup itself
-        # still uses Crystal's structural hashing on the ValueRaw union
-        # — fine for the Nil/Bool/Int64/Float64/String/Sym keys real
-        # scripts actually use; an Array or Hash used AS a key would
-        # hash by reference instead of by content, a real but narrow
-        # gap worth knowing about rather than a silent one.
-        ah, bh = a.as_hash, b.as_hash
-        ah.size == bh.size && ah.all? { |k, v| bv = bh[k]?; bv ? values_equal?(v, bv) : false }
-      else false
-      end
+      ValueOps.equal?(a, b)
     end
 
     # --- Index helpers ------------------------------------------------------
@@ -1603,6 +1410,15 @@ module Adjutant
       result = block.call(a, b).with_label(RiskFlowLabel.join(a.label, b.label))
       @risk_flow_log.record(inst.op.to_s, [a.label, b.label], result.label, current_frame.line)
       push(result)
+    end
+
+    # Builds the `on_error` proc ValueOps' arithmetic methods (add/op/
+    # div/mod/int_op/shl) take — the only bridge those VM-independent
+    # methods need back into VM#runtime_error, so the rich,
+    # script-catchable error object (a real RuntimeError RubyObject,
+    # not just a message string) is still built in exactly one place.
+    private def error_raiser(frame : Frame) : ValueOps::OnError
+      ->(msg : String) { raise runtime_error(msg, frame) }
     end
 
     private def runtime_error(msg : String, frame : Frame = current_frame, cause = nil) : RuntimeError

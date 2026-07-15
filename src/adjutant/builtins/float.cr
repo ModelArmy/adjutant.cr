@@ -9,8 +9,8 @@ module Adjutant::Builtins
   # Mirrors Integer's bootstrap closely — same reasoning applies:
   # arithmetic (`+`, `-`, `*`, `/`) and comparison (`<`, `<=`, `>`,
   # `>=`, `==`) are NOT registered here, since they already compile to
-  # dedicated VM opcodes (Op::Add etc., see arith_add/arith_op/
-  # arith_div/compare_op in vm.cr) which already handle Integer/Float
+  # dedicated VM opcodes (Op::Add etc., see ValueOps.add/op/div/
+  # compare in value_ops.cr) which already handle Integer/Float
   # mixing correctly (`5 + 2.5`, `5 < 2.5`, ...) — this class exists so
   # `2.5.is_a?(Float)`, `2.5.to_s`, etc. work against a real RubyClass
   # rather than exec_builtin's receiver-agnostic fallback.

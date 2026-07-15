@@ -2,8 +2,8 @@ require "../../spec_helper"
 
 module Adjutant
   # Covers Phase 4a of the base-types work: String. `+`, `==`,
-  # `<`/`<=`/`>`/`>=`, and `[]` are already opcodes (see arith_add/
-  # values_equal?/compare_op/exec_get_index in vm.cr) and covered
+  # `<`/`<=`/`>`/`>=`, and `[]` are already opcodes (see ValueOps.add/
+  # equal?/compare and exec_get_index in vm.cr) and covered
   # elsewhere; this file covers String's own RubyClass (.class,
   # is_a?, superclass) and its native methods.
   describe "String" do
