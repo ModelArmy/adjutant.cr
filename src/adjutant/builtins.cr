@@ -5,6 +5,7 @@ require "./builtins/literals"
 require "./builtins/string"
 require "./builtins/array"
 require "./builtins/hash"
+require "./builtins/range"
 
 module Adjutant::Builtins
 end

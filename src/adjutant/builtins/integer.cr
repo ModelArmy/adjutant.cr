@@ -28,6 +28,18 @@ module Adjutant::Builtins
       Adjutant::Value.float(args.first.as_int.to_f64)
     end
 
+    # Real Ruby's Integer#succ / #next (aliases of each other) — the
+    # mechanism Range#each iterates with (see builtins/range.cr),
+    # matching Ruby's own Range implementation rather than requiring
+    # a special-cased "is this an Integer range" branch there.
+    define(cls, interp, "succ") do |args|
+      Adjutant::Value.int(args.first.as_int + 1)
+    end
+
+    define(cls, interp, "next") do |args|
+      Adjutant::Value.int(args.first.as_int + 1)
+    end
+
     cls
   end
 end

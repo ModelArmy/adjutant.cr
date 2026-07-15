@@ -33,6 +33,28 @@ module Adjutant
     # what Op::Eq actually does.
     abstract def values_equal?(a : Value, b : Value) : Bool
 
+    # Real Ruby `<=>`-style ordering for two Values — delegates to
+    # VM#compare_op, the same comparison logic Op::Lt/Op::Le/etc.
+    # already use for `<`/`<=`/`>`/`>=` in script code. Needed by any
+    # native method that has to order Values without duplicating that
+    # logic (Range#each's loop condition — see builtins/range.cr —
+    # is the first user). `op` is one of :<, :<=, :>, :>=, matching
+    # compare_op's own symbol vocabulary; returns false for any pair
+    # compare_op doesn't know how to order (mirroring compare_op's
+    # own permissive-false fallback rather than raising).
+    abstract def compare(a : Value, b : Value, op : Symbol) : Bool
+
+    # Calls a method by name on an arbitrary Value receiver, the same
+    # way script code calling `recv.name(*args)` would — resolves
+    # through the normal script-method-then-native dispatch order
+    # (VM#dispatch_call), not just a fixed native table. Needed by
+    # any native method that has to invoke a receiver's OWN method
+    # generically rather than assuming a specific native
+    # implementation — Range#each's #succ advance (see
+    # builtins/range.cr) is the first user, since it must work for
+    # any bound type that defines #succ, not just Integer.
+    abstract def call_method(recv : Value, name : String, args : Array(Value)) : Value
+
     # Lets a native function declare that one of its own arguments
     # (identified by a concrete ProvenanceKind + origin, not
     # necessarily an already-labeled Value) is the risky subject of
@@ -83,6 +105,14 @@ module Adjutant
 
     def values_equal?(a : Value, b : Value) : Bool
       @vm.values_equal?(a, b)
+    end
+
+    def compare(a : Value, b : Value, op : Symbol) : Bool
+      @vm.compare(a, b, op)
+    end
+
+    def call_method(recv : Value, name : String, args : Array(Value)) : Value
+      @vm.call_method(recv, name, args, filename, line)
     end
 
     def declare_sensitivity(tag : RiskTag, kind : ProvenanceKind, origin : String,
@@ -346,6 +376,7 @@ module Adjutant
       register_builtin_class(Builtins.bootstrap_string(self))
       register_builtin_class(Builtins.bootstrap_array(self))
       register_builtin_class(Builtins.bootstrap_hash(self))
+      register_builtin_class(Builtins.bootstrap_range(self))
     end
 
     # Applies the same superclass/rclass defaulting define_builtin_class

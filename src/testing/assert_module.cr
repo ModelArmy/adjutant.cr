@@ -206,6 +206,8 @@ module Testing
       when a.float? && b.int?       then a.as_float == b.as_int.to_f64
       when a.string? && b.string?   then a.as_string == b.as_string
       when a.symbol? && b.symbol?   then a.as_sym == b.as_sym
+      when a.array? && b.array?     then a.as_array == b.as_array
+      when a.hash? && b.hash?       then a.as_hash == b.as_hash
       when a.rclass? && b.rclass?   then a.as_rclass == b.as_rclass
       when a.robject? && b.robject? then a.as_robject == b.as_robject
       else                               false

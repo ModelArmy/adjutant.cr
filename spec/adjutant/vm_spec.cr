@@ -705,5 +705,116 @@ module Adjutant
         eval(src).as_int.should eq 5
       end
     end
+
+    # Range: a real RubyObject (@min/@max/@exclusive ivars) backing
+    # `1..5`/`1...5` literals, replacing the earlier
+    # `[start, end, exclusive_flag]` LabeledArray stand-in noted in
+    # the 2026-07-14 handoff. #each is implemented via #succ (see
+    # builtins/range.cr and Integer#succ in builtins/integer.cr),
+    # which is why Integer#succ is exercised indirectly by every
+    # each/for-loop-over-a-Range spec here, not just directly.
+    describe "Range" do
+      it "is a real RubyObject, not an Array" do
+        interp, _ = make_interp
+        src = <<-RUBY
+        r = 1..5
+        [r.class.to_s, r.is_a?(Array)]
+        RUBY
+        result = interp.eval(src).as_array
+        result[0].as_string.should eq "Range"
+        result[1].as_bool.should be_false
+      end
+
+      it "exposes min/max/first/last" do
+        src = <<-RUBY
+        r = 2..7
+        [r.min, r.max, r.first, r.last]
+        RUBY
+        result = eval(src).as_array.map(&.as_int)
+        result.should eq [2, 7, 2, 7]
+      end
+
+      it "exclusive? is false for .. and true for ..." do
+        src = <<-RUBY
+        [(1..5).exclusive?, (1...5).exclusive?]
+        RUBY
+        result = eval(src).as_array.map(&.as_bool)
+        result.should eq [false, true]
+      end
+
+      it "Integer#succ advances by one" do
+        eval("5.succ").as_int.should eq 6
+      end
+
+      it "each yields every value, inclusive of max for .." do
+        src = <<-RUBY
+        seen = []
+        (1..4).each { |n| seen << n }
+        seen
+        RUBY
+        eval(src).as_array.map(&.as_int).should eq [1, 2, 3, 4]
+      end
+
+      it "each excludes max for ..." do
+        src = <<-RUBY
+        seen = []
+        (1...4).each { |n| seen << n }
+        seen
+        RUBY
+        eval(src).as_array.map(&.as_int).should eq [1, 2, 3]
+      end
+
+      it "each on an empty range (min > max) yields nothing" do
+        src = <<-RUBY
+        seen = []
+        (5..1).each { |n| seen << n }
+        seen
+        RUBY
+        eval(src).as_array.should be_empty
+      end
+
+      it "each returns the receiver, matching real Ruby" do
+        src = <<-RUBY
+        r = 1..3
+        (r.each { |n| n }).equal?(r)
+        RUBY
+        eval(src).as_bool.should be_true
+      end
+
+      it "include? respects exclusivity at the boundary" do
+        src = <<-RUBY
+        [
+          (1..5).include?(5),
+          (1...5).include?(5),
+          (1..5).include?(0),
+          (1..5).include?(3),
+        ]
+        RUBY
+        result = eval(src).as_array.map(&.as_bool)
+        result.should eq [true, false, false, true]
+      end
+
+      it "works as a for-loop's iterable, inclusive" do
+        src = <<-RUBY
+        total = 0
+        for x in 1..4
+          total += x
+        end
+        total
+        RUBY
+        eval(src).as_int.should eq 10
+      end
+
+      it "works as a for-loop's iterable, exclusive" do
+        src = <<-RUBY
+        total = 0
+        for x in 1...4
+          total += x
+        end
+        total
+        RUBY
+        eval(src).as_int.should eq 6
+      end
+    end
   end
 end

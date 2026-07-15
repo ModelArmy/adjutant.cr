@@ -212,7 +212,8 @@ module Adjutant
     end
 
     def to_s(io : IO) : Nil
-      io << (@is_module ? "module " : "class ") << @name
+      io << @name
+      # io << (@is_module ? "module " : "class ") << @name
     end
   end
 

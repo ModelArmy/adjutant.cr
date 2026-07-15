@@ -590,13 +590,10 @@ module Adjutant
           when Op::MakeRange
             rend = pop
             rstart = pop
-            # Store as array [start, end, exclusive_flag] for now;
-            # a Range object type will be added with the object model.
             exclusive = inst.a == 1_u8
-            elems = [rstart, rend, Value.bool(exclusive)]
             joined_label = RiskFlowLabel.join(rstart.label, rend.label)
             @risk_flow_log.record("MakeRange", [rstart.label, rend.label], joined_label, f.line)
-            push(Value.new(LabeledArray.new(elems, joined_label), joined_label))
+            push(make_range_object(rstart, rend, exclusive, joined_label))
           when Op::Concat
             n = inst.a.to_i
             parts = @stack.last(n)
@@ -861,6 +858,19 @@ module Adjutant
 
     # --- Dispatch -----------------------------------------------------------
 
+    # `protected` — lets a native method (e.g. Range#each, see
+    # builtins/range.cr) call a method BY NAME on an arbitrary Value
+    # receiver, the same way script code calling `x.foo` would.
+    # `invoke` only runs an already-resolved ScriptProc block; this is
+    # for the more general "I have a Value and a method name, resolve
+    # and call it" case — needed so Range#each can advance via #succ
+    # without hardcoding Integer#succ specifically, keeping it generic
+    # over any bound type that defines #succ.
+    protected def call_method(recv : Value, name : String, args : Array(Value),
+                              filename : String = "<native>", line : Int32 = 0) : Value
+      dispatch_call(name, [recv] + args, safe: false, filename: filename, line: line, has_receiver: true)
+    end
+
     # ameba:disable Metrics/CyclomaticComplexity - Clear steps, better together
     private def dispatch_call(name : String,
                               args : Array(Value),
@@ -1066,7 +1076,7 @@ module Adjutant
       first = request.matches.first
       reason = first.rule.try { |rule| "#{rule.tag} (#{first.tag})" } || "reject_all policy (#{first.tag})"
       msg = "risk flow policy rejected #{request.call_name}: #{reason}"
-      cls = builtin_error_class("RiskFlowRejectedError")
+      cls = builtin_class_by_name("RiskFlowRejectedError")
       err_val = cls ? make_error_object(cls, msg) : Value.string(msg)
       raise RuntimeError.new(msg, filename, line, error_value: err_val)
     end
@@ -1189,12 +1199,12 @@ module Adjutant
         end
       when "raise"
         cls, msg = if args.empty?
-                     {builtin_error_class("RuntimeError"), "unhandled exception"}
+                     {builtin_class_by_name("RuntimeError"), "unhandled exception"}
                    elsif args.first.rclass?
                      raised_cls = args.first.as_rclass
                      {raised_cls, args[1]?.try(&.to_s) || raised_cls.name}
                    else
-                     {builtin_error_class("RuntimeError"), args.first.to_s}
+                     {builtin_class_by_name("RuntimeError"), args.first.to_s}
                    end
         err_val = cls ? make_error_object(cls, msg) : Value.string(msg)
         raise RuntimeError.new(msg, filename, line, error_value: err_val)
@@ -1448,6 +1458,15 @@ module Adjutant
       end
     end
 
+    # `protected`, not `private` — same reasoning and relationship as
+    # values_equal? just below: NativeFunctionCall (NativeCallContext's
+    # implementation, in interpreter.cr) delegates to this so native
+    # methods (e.g. Range#each) can order two Values without
+    # duplicating compare_op's logic.
+    protected def compare(a : Value, b : Value, op : Symbol) : Bool
+      compare_op(a, b, op).as_bool
+    end
+
     # ameba:disable Metrics/CyclomaticComplexity
     private def compare_op(a : Value, b : Value, op : Symbol) : Value
       result = case
@@ -1587,7 +1606,7 @@ module Adjutant
     end
 
     private def runtime_error(msg : String, frame : Frame = current_frame, cause = nil) : RuntimeError
-      cls = builtin_error_class("RuntimeError")
+      cls = builtin_class_by_name("RuntimeError")
       err_val = cls ? make_error_object(cls, msg) : nil
       RuntimeError.new(msg, frame, cause, error_value: err_val)
     end
@@ -1599,19 +1618,45 @@ module Adjutant
     # identifier. Takes filename/line directly (not a Frame) since
     # its one caller, dispatch_call, only has those two in scope.
     private def name_error(msg : String, filename : String, line : Int32, cause = nil) : RuntimeError
-      cls = builtin_error_class("NameError")
+      cls = builtin_class_by_name("NameError")
       err_val = cls ? make_error_object(cls, msg) : nil
       RuntimeError.new(msg, filename, line, cause, error_value: err_val)
     end
 
-    # Look up a bootstrapped builtin error class (Exception, StandardError,
-    # RuntimeError, etc. — see Interpreter#bootstrap_error_classes) by name.
-    # Returns nil if the interpreter hasn't registered it (shouldn't happen
-    # in practice, but VM shouldn't hard-fail if it does).
-    private def builtin_error_class(name : String) : RubyClass?
+    # Look up any builtin/bootstrapped RubyClass by name — error
+    # classes (Exception, StandardError, RuntimeError, ... — see
+    # Interpreter#bootstrap_error_classes) and other builtins
+    # registered into globals the same way (e.g. Range — see
+    # bootstrap_builtin_classes/make_range_object). Returns nil if the
+    # interpreter hasn't registered it (shouldn't happen in practice,
+    # but VM shouldn't hard-fail if it does).
+    private def builtin_class_by_name(name : String) : RubyClass?
       sym = @symbols.lookup(name)
       return nil unless sym
       @globals[sym.value]?.try(&.as_rclass?)
+    end
+
+    # Build a RubyObject of the Range class with its @min/@max/
+    # @exclusive ivars set — the real-object replacement for the
+    # earlier `[start, end, exclusive_flag]` LabeledArray stand-in
+    # (see Op::MakeRange). Ivar names are double-underscore-prefixed
+    # (`__min` etc.) to avoid colliding with a same-named ivar a
+    # script might set on some OTHER object — Range instances are
+    # never script-subclassed today, but there's no reason to claim
+    # the unprefixed names if a future change did allow that.
+    # Native-method accessors in builtins/range.cr intern the same
+    # names and must be kept in sync with this.
+    private def make_range_object(rstart : Value, rend : Value, exclusive : Bool,
+                                  label : RiskFlowLabel?) : Value
+      cls = builtin_class_by_name("Range")
+      unless cls
+        raise runtime_error("Range class not registered — bootstrap_builtin_classes must run before any Range literal is evaluated")
+      end
+      obj = RubyObject.new(cls)
+      obj.ivars[@symbols.intern("__min").value] = rstart
+      obj.ivars[@symbols.intern("__max").value] = rend
+      obj.ivars[@symbols.intern("__exclusive").value] = Value.bool(exclusive)
+      Value.robject(obj, label)
     end
 
     # Build a RubyObject of `cls` with its `message` ivar set — the

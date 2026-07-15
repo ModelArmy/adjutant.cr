@@ -203,30 +203,4 @@ module Adjutant
       summary.tags.should eq Set{RiskTag::WritesFiles}
     end
   end
-
-  # Minimal NativeCallContext for direct NativeCallable#call tests that
-  # don't go through the VM — mirrors the one in
-  # ruby_class_native_methods_spec.cr.
-  private class FakeContext
-    include NativeCallContext
-
-    def initialize(@filename : String = "<spec>", @line : Int32 = 0)
-    end
-
-    def invoke(proc : ScriptProc, args : Array(Value)) : Value
-      Value.nil_value
-    end
-
-    def values_equal?(a : Value, b : Value) : Bool
-      a == b
-    end
-
-    # No-op — these direct-NativeCallable tests don't exercise risk
-    # flow enforcement, just method dispatch. See
-    # risk_flow_enforcement_spec.cr for real declare_sensitivity
-    # coverage, which goes through the actual VM.
-    def declare_sensitivity(tag : RiskTag, kind : ProvenanceKind, origin : String,
-                            sensitivity : Sensitivity? = nil) : Nil
-    end
-  end
 end
