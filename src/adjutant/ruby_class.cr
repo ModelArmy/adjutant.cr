@@ -213,7 +213,6 @@ module Adjutant
 
     def to_s(io : IO) : Nil
       io << @name
-      # io << (@is_module ? "module " : "class ") << @name
     end
   end
 
