@@ -482,6 +482,17 @@ module Adjutant
           RB
         val.as_int.should eq 1_i64
       end
+
+      it "#to_s returns qualified name" do
+        val = eval(<<-RB)
+          module A
+            class B
+            end
+          end
+          A::B.new.class.to_s
+        RB
+        val.as_string.should eq "A::B"
+      end
     end
   end
 end

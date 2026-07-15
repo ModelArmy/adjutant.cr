@@ -214,8 +214,6 @@ assert "class names should include namespace unless root" do
   b = A::B.new
   c = C.new
 
-  # --- TODO: use namespace chain
-  # assert_equal b.class.to_s, "A::B"
-  # ---
+  assert_equal b.class.to_s, "A::B"
   assert_equal c.class.to_s, "C"
 end
