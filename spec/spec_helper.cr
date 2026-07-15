@@ -61,47 +61,19 @@ module Adjutant
       Value.nil_value
     end
 
-    # Real, not a stub — a direct-NativeCallable test that exercises a
-    # method relying on == (e.g. Array#include?) needs actual
-    # comparison semantics, not just a type-checking placeholder.
+    # Delegates to ValueOps (value_ops.cr) — the same VM-independent
+    # logic Op::Eq/Op::Lt/etc. use, and the only implementation now;
+    # this used to be a third hand-duplicated copy of compare_op's
+    # int/float/string cases, kept in sync by hand. ValueOps existing
+    # as a standalone module (no VM reference needed for compare/
+    # equal?, which never raise) is what makes this a one-line
+    # delegation instead of another copy.
     def values_equal?(a : Value, b : Value) : Bool
-      a == b
+      ValueOps.equal?(a, b)
     end
 
-    # Real, mirroring VM#compare_op's own int/float/string cases —
-    # same reasoning as values_equal? above (e.g. Range#include?/#each
-    # need actual ordering, not a placeholder).
     def compare(a : Value, b : Value, op : Symbol) : Bool
-      case
-      when a.int? && b.int?
-        case op
-        when :<  then a.as_int < b.as_int
-        when :<= then a.as_int <= b.as_int
-        when :>  then a.as_int > b.as_int
-        when :>= then a.as_int >= b.as_int
-        else          false
-        end
-      when a.float? || b.float?
-        fa = a.int? ? a.as_int.to_f64 : a.as_float
-        fb = b.int? ? b.as_int.to_f64 : b.as_float
-        case op
-        when :<  then fa < fb
-        when :<= then fa <= fb
-        when :>  then fa > fb
-        when :>= then fa >= fb
-        else          false
-        end
-      when a.string? && b.string?
-        case op
-        when :<  then a.as_string < b.as_string
-        when :<= then a.as_string <= b.as_string
-        when :>  then a.as_string > b.as_string
-        when :>= then a.as_string >= b.as_string
-        else          false
-        end
-      else
-        false
-      end
+      ValueOps.compare(a, b, op)
     end
 
     # No-op — these direct-NativeCallable tests call a NativeCallable

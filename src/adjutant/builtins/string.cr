@@ -7,14 +7,14 @@ module Adjutant::Builtins
   # Builds the `String` RubyClass and registers its native methods.
   #
   # `+` and `==`/`<`/`<=`/`>`/`>=` are NOT registered here — they
-  # already compile to dedicated VM opcodes (arith_add, values_equal?,
-  # compare_op in vm.cr all already have real String cases) the same
-  # way Integer/Float's arithmetic does. `[]` (indexing) is also
+  # already compile to dedicated VM opcodes (ValueOps.add, .equal?,
+  # .compare in value_ops.cr all already have real String cases) the
+  # same way Integer/Float's arithmetic does. `[]` (indexing) is also
   # already a real opcode (Op::GetIndex, see exec_get_index) — not
   # registered here either.
   #
-  # `*` (string repetition, `"ab" * 3`) is NOT supported — arith_op has
-  # no String case, only Integer/Float. A real, separate gap from
+  # `*` (string repetition, `"ab" * 3`) is NOT supported — ValueOps.op
+  # has no String case, only Integer/Float. A real, separate gap from
   # anything this class controls; noted, not fixed here (this class
   # only wires up NATIVE METHODS, not opcodes).
   #
