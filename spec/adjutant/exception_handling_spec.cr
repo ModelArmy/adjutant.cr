@@ -546,4 +546,103 @@ module Adjutant
       result.should eq Value.int(2_i64)
     end
   end
+
+  # Regression coverage for a bug found while implementing the
+  # 2026-07-15 top-level/class-module-body scoping fix: `rescue => e`
+  # compiled to a hardcoded Op::SetGlobal, independent of everything
+  # else that fix touched (compile_rescue_bind_and_body never went
+  # through emit_store at all) — so `e` leaked out of the rescue
+  # block as a real global and could collide with a same-named
+  # top-level `def`, same bug shape as the original `dbl`/`def dbl`
+  # collision that fix corrected for ordinary assignment.
+  describe "rescue variable scoping" do
+    it "persists at the enclosing scope after the rescue block, since begin/end " \
+       "does not introduce its own scope (confirmed against real Ruby)" do
+      # Real Ruby: nested begin/end blocks share the enclosing scope —
+      # a variable assigned (or rescue-bound) inside one is visible
+      # afterward at that same enclosing level. Only a method/class/
+      # module/block boundary introduces real isolation. Adjutant's
+      # compile_begin never pushes a CompilerScope (confirmed by
+      # reading it — no `@scope =` assignment anywhere in that
+      # function), so `e` correctly resolves via emit_store_name's
+      # resolve_local against the SAME scope the begin/end sits in,
+      # both inside the rescue clause and afterward.
+      src = <<-RUBY
+      begin
+        1 / 0
+      rescue => e
+        :caught
+      end
+      e.message
+      RUBY
+      eval(src).as_string.should eq "divided by 0"
+    end
+
+    it "does NOT persist past a method boundary" do
+      src = <<-RUBY
+      def catch_it
+        begin
+          1 / 0
+        rescue => e
+          :caught
+        end
+      end
+      catch_it
+      e
+      RUBY
+      expect_raises(Adjutant::RuntimeError, /undefined method or variable: e/) do
+        eval(src)
+      end
+    end
+
+    it "does not collide with a same-named top-level def" do
+      src = <<-RUBY
+      def e; "method"; end
+      begin
+        1 / 0
+      rescue => e
+        e.message
+      end
+      e()
+      RUBY
+      # The rescue variable and the method must be genuinely separate
+      # bindings — binding `e` inside the rescue clause must not have
+      # clobbered the global `def e` (which SetGlobal would have,
+      # since both used to share one @globals slot).
+      eval(src).as_string.should eq "method"
+    end
+
+    it "binds a real, scoped local even inside a block (force_define, " \
+       "not ordinary block assignment's resolve-outward-then-global rule)" do
+      src = <<-RUBY
+      messages = []
+      [1, 0].each do |n|
+        begin
+          10 / n
+        rescue => e
+          messages << e.message
+        end
+      end
+      messages
+      RUBY
+      result = eval(src).as_array
+      result.size.should eq 1
+      result[0].as_string.should eq "divided by 0"
+    end
+
+    it "reuses an already-local same-named variable rather than shadowing it" do
+      # force_define still checks resolve_local first — if `e` is
+      # already a local in this exact scope, the rescue binding
+      # reassigns it rather than allocating a redundant second slot.
+      src = <<-RUBY
+      e = "before"
+      begin
+        1 / 0
+      rescue => e
+        e.message
+      end
+      RUBY
+      eval(src).as_string.should eq "divided by 0"
+    end
+  end
 end

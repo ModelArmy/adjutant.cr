@@ -489,33 +489,19 @@ module Adjutant
     end
 
     # Store the top-of-stack value into the appropriate variable slot.
-    # Inside a method/block scope, bare identifiers are locals.
-    # At the top level (no scope), they are globals.
+    # Every scope (top-level, class/module body, method, block) has a
+    # real CompilerScope after the 2026-07-15 scoping fix — bare
+    # identifiers are locals everywhere now, not just inside a method/
+    # block. The SetGlobal fallback below is unreachable in practice
+    # for a bare Identifier (every Compiler instance gets @scope set
+    # immediately after construction — see Compiler.compile/
+    # compile_proc), kept only as a defensive fallback rather than
+    # asserting @scope is never nil.
     # Constants are lexically scoped — see SetConstant.
     private def emit_store(target : Node, line : Int32) : Nil
       case target
       when Identifier
-        name = target.name
-        if scope = @scope
-          if slot = scope.resolve_local(name)
-            @chunk.emit(Op::SetLocal, line, c: slot.to_u32)
-            return
-          end
-          if slot = scope.resolve_outer(name)
-            @chunk.emit(Op::SetOuter, line, c: slot.to_u32)
-            return
-          end
-          # In a block, an unresolved name falls through to global —
-          # blocks don't introduce new locals for names they can't see.
-          # In a method body, first assignment defines a new local.
-          unless scope.is_block?
-            slot = scope.define(name)
-            @chunk.emit(Op::SetLocal, line, c: slot.to_u32)
-            return
-          end
-        end
-        sym_idx = intern(name)
-        @chunk.emit(Op::SetGlobal, line, c: sym_idx)
+        emit_store_name(target.name, line)
         return
       when Constant
         sym_idx = intern(target.name)
@@ -537,6 +523,53 @@ module Adjutant
     end
 
     # --- Calls --------------------------------------------------------------
+
+    # The actual name-resolution-and-emit logic for storing into a
+    # bare identifier — factored out of emit_store's Identifier case
+    # so a non-assignment binding that still needs "put this name in
+    # the current scope" (currently only compile_rescue_bind_and_body,
+    # for `rescue => e`) can share it instead of hardcoding SetGlobal.
+    # `rescue e` used to do exactly that — bind unconditionally via
+    # Op::SetGlobal, leaking `e` out of the rescue block as a real
+    # global and colliding with any top-level `def e` of the same
+    # name, same bug shape as the 2026-07-15 scoping fix, just never
+    # caught by that pass since it's a hardcoded emission rather than
+    # a path through emit_store itself.
+    # `force_define`: for `rescue => e` (see
+    # compile_rescue_bind_and_body) — real Ruby always binds a rescue
+    # variable as a genuine local of the enclosing body, even inside a
+    # block, unlike ordinary assignment. Concretely this means: still
+    # reuse an EXISTING same-scope local of that name if there is one
+    # (resolve_local still runs first, same as ordinary assignment),
+    # but never reach into an enclosing scope via resolve_outer, and
+    # never fall through to a global if truly unresolved — a rescue
+    # binding isn't "maybe an existing OUTER variable the user meant
+    # to update"; it's the language guaranteeing a local scoped to
+    # right here.
+    private def emit_store_name(name : String, line : Int32, force_define : Bool = false) : Nil
+      if scope = @scope
+        if slot = scope.resolve_local(name)
+          @chunk.emit(Op::SetLocal, line, c: slot.to_u32)
+          return
+        end
+        if !force_define && (slot = scope.resolve_outer(name))
+          @chunk.emit(Op::SetOuter, line, c: slot.to_u32)
+          return
+        end
+        # In a block, an unresolved name falls through to global —
+        # blocks don't introduce new locals for names they can't see.
+        # In a non-block scope (method, top-level, class/module body),
+        # first assignment defines a new local. force_define skips
+        # straight here regardless of is_block?, for the reason above.
+        if force_define || !scope.is_block?
+          slot = scope.define(name)
+          @chunk.emit(Op::SetLocal, line, c: slot.to_u32)
+          return
+        end
+      end
+      sym_idx = intern(name)
+      @chunk.emit(Op::SetGlobal, line, c: sym_idx)
+    end
 
     private def compile_call(node : Call) : Nil
       if recv = node.receiver
@@ -994,8 +1027,7 @@ module Adjutant
     private def compile_rescue_bind_and_body(node : BeginNode, rescue_body : Body) : Nil
       if rvar = node.rescue_var
         @chunk.emit(Op::PushError, node.line)
-        sym_idx = intern(rvar)
-        @chunk.emit(Op::SetGlobal, node.line, c: sym_idx)
+        emit_store_name(rvar, node.line, force_define: true)
         @chunk.emit(Op::Pop, node.line)
       end
       compile_body(rescue_body)
