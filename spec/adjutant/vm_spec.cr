@@ -262,11 +262,30 @@ module Adjutant
     end
 
     describe "require via VFS" do
-      it "loads a script file from the VFS" do
+      it "loads a script file from the VFS and its def is callable afterward" do
+        # A required file's DEF should be visible afterward, same as
+        # real Ruby (require executes the file and its method/class/
+        # constant definitions persist in the requiring context). A
+        # required file's own top-level LOCAL variables should NOT
+        # persist — require's VFS fallback runs the file via a
+        # genuinely separate eval call (see
+        # Interpreter#require_module), and a top-level local is now
+        # correctly scoped to its own eval call (see the 2026-07-15
+        # scoping fix) — matching real Ruby, where a required file's
+        # locals were never visible to the requiring context either.
+        interp, ef = make_interp
+        ef.add_file("greet.rb", %(def greeting; "hello from vfs"; end))
+        interp.eval(%(require "greet.rb"))
+        interp.eval("greeting").as_string.should eq "hello from vfs"
+      end
+
+      it "does NOT leak a required file's own top-level local variables" do
         interp, ef = make_interp
         ef.add_file("greet.rb", %(x = "hello from vfs"))
         interp.eval(%(require "greet.rb"))
-        interp.get_global("x").as_string.should eq "hello from vfs"
+        expect_raises(Adjutant::RuntimeError, /undefined method or variable: x/) do
+          interp.eval("x")
+        end
       end
 
       it "raises when file not found" do
@@ -310,11 +329,31 @@ module Adjutant
     end
 
     describe "shared symbol table across evals" do
-      it "retains variables across multiple evals" do
+      it "does NOT retain a plain top-level variable across separate evals" do
+        # This spec used to assert the opposite — the exact bug the
+        # 2026-07-15 scoping fix corrects. Sharing one SymbolTable
+        # across eval calls (so "x" always interns to the same
+        # integer ID — see the sibling spec below) does NOT imply
+        # variable VALUES persist across calls; those are two
+        # independent things. A top-level local is scoped to its own
+        # CompilerScope/Frame, fresh every eval call, matching real
+        # Ruby (nothing links two separately-run scripts' locals just
+        # because they happen to share a process/interpreter).
         interp, _ = make_interp
         interp.eval("x = 10")
-        result = interp.eval("x + 5")
-        result.as_int.should eq 15_i64
+        expect_raises(Adjutant::RuntimeError, /undefined method or variable: x/) do
+          interp.eval("x + 5")
+        end
+      end
+
+      it "DOES retain a top-level def across separate evals" do
+        # Unlike plain variables, a def genuinely should persist —
+        # this is require's whole point (see the VFS require specs
+        # above) and matches real Ruby (a required file's methods
+        # remain callable afterward).
+        interp, _ = make_interp
+        interp.eval("def ten; 10; end")
+        interp.eval("ten + 5").as_int.should eq 15_i64
       end
 
       it "shares symbol IDs across compilations" do
@@ -417,6 +456,14 @@ module Adjutant
         end
       end
 
+      # Fixed 2026-07-15 (same session as A's scoping fix, as a direct
+      # follow-up): a block's closure capture now correctly comes from
+      # the frame it was CREATED in (captured at Op::SetBlock time,
+      # carried on the callee's Frame#block_outer_locals, read by
+      # Op::Yield) rather than whatever frame happens to be executing
+      # when yield later fires. Previously masked by the pre-A bug
+      # (top-level locals were accidentally globals, so this worked by
+      # accident regardless of which frame outer_locals pointed at).
       it "block captures local from its defining scope via yield" do
         src = <<-RUBY
         total = 0
@@ -441,9 +488,17 @@ module Adjutant
         eval(src).as_int.should eq 2_i64
       end
 
-      it "return value accumulates across calls" do
+      it "a def from one eval call is callable, and composes correctly, in a later eval call" do
+        # Split from an earlier version of this spec that also tried
+        # to accumulate into a plain top-level variable ACROSS eval
+        # calls — that relied on the same accidental persistence the
+        # 2026-07-15 scoping fix corrects (see "shared symbol table
+        # across evals" above). The part worth keeping is real: a def
+        # genuinely does persist across eval calls, and repeated calls
+        # to it within one later eval call correctly compose using
+        # THAT call's own local (fresh CompilerScope per eval call,
+        # but perfectly normal accumulation within a single one).
         interp, _ = make_interp
-        interp.eval("total = 0")
         src = <<-RUBY
         def add_one(n)
           n + 1
@@ -451,12 +506,13 @@ module Adjutant
         RUBY
         interp.eval(src)
         src = <<-RUBY
+        total = 0
         total = add_one(total)
         total = add_one(total)
         total = add_one(total)
+        total
         RUBY
-        interp.eval(src)
-        interp.get_global("total").as_int.should eq 3_i64
+        interp.eval(src).as_int.should eq 3_i64
       end
     end
 
@@ -522,18 +578,56 @@ module Adjutant
         eval(src).as_int.should eq 7_i64
       end
 
-      # Known limitation: because methods and variables share one
-      # namespace, a top-level variable holding a lambda is also
-      # auto-invoked on bare reference, diverging from real Ruby
-      # (where you'd need `.call`). Documented here rather than
-      # silently regressed; revisit if/when methods and variables
-      # get separate namespaces.
-      it "(known limitation) auto-invokes a top-level variable holding a lambda" do
+      # Previously a known limitation (documented, not silently
+      # regressed): because top-level `def`s and top-level variable
+      # assignments shared one @globals namespace, a bare reference to
+      # a variable holding a lambda was indistinguishable from a bare
+      # reference to a method, so it was auto-invoked — diverging from
+      # real Ruby, where a local variable is NEVER auto-called on bare
+      # reference regardless of what it holds. Fixed by giving
+      # top-level code (and class/module bodies) a real CompilerScope
+      # — `greet = ->() { ... }` now compiles to a genuine
+      # Op::SetLocal, so a bare `greet` afterward is Op::GetLocal (the
+      # proc VALUE, unevaluated), never Op::GetGlobal's
+      # call-if-it's-a-ScriptProc path at all. `.call` (Proc#call) is
+      # still not implemented — see the Lambda/Proc design discussion
+      # from the 2026-07-15 session — so this spec checks proc-ness
+      # via the Value directly rather than actually invoking it.
+      it "does NOT auto-invoke a top-level local variable holding a lambda" do
         src = <<-RUBY
         greet = ->() { "hi" }
         greet
         RUBY
-        eval(src).as_string.should eq "hi"
+        eval(src).proc?.should be_true
+      end
+
+      it "a top-level local holding a lambda is a real local, not a global —\
+          a same-named def afterward does not collide with it" do
+        # If this were still Op::SetGlobal/Op::GetGlobal under the
+        # hood, `def greet; \"method\"; end` afterward would silently
+        # overwrite the SAME @globals slot the local used. Proven
+        # behaviorally (return different, distinguishable values from
+        # each) rather than via `.class`/`.proc?` from INSIDE the
+        # script — those have their own separate, pre-existing gaps
+        # for a bare lambda Value (no builtin_class_for case for a
+        # proc; not yet wrapped as a real Proc RubyObject — see the
+        # Lambda/Proc design discussion from the 2026-07-15 session)
+        # that this spec isn't about and shouldn't depend on.
+        src = <<-RUBY
+        greet = ->() { "lambda" }
+        def greet; "method"; end
+        greet()
+        RUBY
+        eval(src).as_string.should eq "method"
+      end
+
+      it "reassigning a local after a same-named def still reads back the local, not the method" do
+        src = <<-RUBY
+        def greet; "method"; end
+        greet = ->() { "lambda" }
+        greet
+        RUBY
+        eval(src).proc?.should be_true
       end
 
       # Regression coverage for the bug noted in the 2026-07-14
@@ -602,6 +696,24 @@ module Adjutant
         end
         RUBY
         interp.eval(src).as_string.should contain "NameError"
+      end
+
+      it "x += 1 with no prior x raises, matching real Ruby's NameError " \
+         "for a first-ever compound assignment" do
+        # OpAssign compiles as `x = x + 1` — the READ half (x's
+        # current value) runs before the WRITE half (which is what
+        # defines x as a local on first sight — see emit_store).
+        # With no earlier plain `x = ...` anywhere in scope, the read
+        # genuinely has nothing to resolve to yet, same as real Ruby:
+        # `x += 1` alone raises NameError, it does not silently
+        # default x to 0/nil first.
+        expect_raises(Adjutant::RuntimeError, /undefined method or variable: x/) do
+          eval("x += 1")
+        end
+      end
+
+      it "x += 1 works once x has a prior plain assignment earlier in scope" do
+        eval("x = 0\nx += 1").as_int.should eq 1
       end
     end
 

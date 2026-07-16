@@ -34,6 +34,113 @@ module Adjutant
       end
     end
 
+    # A class/module body previously had NO real local-variable scope
+    # at all — a bare `x = 5` inside `class Foo; ...; end` compiled to
+    # Op::SetGlobal, the exact same opcode/table a top-level `x = 5`
+    # or a `def x` used, so class-body locals silently leaked out as
+    # globals and could collide with method names. Fixed by giving
+    # class/module bodies (and the top-level program itself) a real
+    # CompilerScope — see Compiler#with_nested_scope and
+    # Compiler.compile in compiler.cr.
+    describe "class/module body local variable scoping" do
+      it "a local defined in a module body does not leak outside it" do
+        src = <<-RUBY
+        module M
+          dbl = ->(n) { n + n }
+        end
+        dbl
+        RUBY
+        expect_raises(Adjutant::RuntimeError, /undefined method or variable: dbl/) do
+          eval(src)
+        end
+      end
+
+      it "calling a module-body local like a method raises, matching real Ruby" do
+        # Real Ruby: `dbl(3)` where dbl is a local (not a method) is a
+        # NameError — locals are never callable with ()-call syntax.
+        src = <<-RUBY
+        module M
+          dbl = ->(n) { n + n }
+          dbl(3)
+        end
+        RUBY
+        expect_raises(Adjutant::RuntimeError, /undefined method or variable: dbl/) do
+          eval(src)
+        end
+      end
+
+      it "(separate, pre-existing gap — not fixed by this scoping change) a bare " \
+         "receiverless call inside a module body does not implicitly check self's own methods" do
+        # Real Ruby: a bare `x` inside `module M`'s body, after `def
+        # x`, implicitly calls M's own method x (self is receiver by
+        # default inside a class/module/method body). Adjutant's
+        # dispatch_call has NO implicit-self step for the receiverless
+        # path (has_receiver is only true for an EXPLICIT receiver —
+        # see dispatch_call's step 1.5 gate in vm.cr) — discovered
+        # while writing specs for this scoping fix, but it's a
+        # dispatch gap, not a scoping one, so left as a documented,
+        # separate follow-up rather than folded into this change.
+        src = <<-RUBY
+        module M
+          def x; 42; end
+          x
+        end
+        RUBY
+        expect_raises(Adjutant::RuntimeError, /undefined method or variable: x/) do
+          eval(src)
+        end
+      end
+
+      it "a nested module's body cannot see its enclosing module's locals" do
+        # The exact motivating example from the 2026-07-15 design
+        # conversation: real Ruby raises NameError on `puts tmp_a`
+        # inside module B, since a nested module body does NOT close
+        # over its enclosing module body's locals (unlike a block,
+        # which does).
+        src = <<-RUBY
+        module A
+          tmp_a = 55
+          module B
+            tmp_b = 66
+            tmp_a
+          end
+        end
+        RUBY
+        expect_raises(Adjutant::RuntimeError, /undefined method or variable: tmp_a/) do
+          eval(src)
+        end
+      end
+
+      it "a class body's own local does not collide with the SAME slot an outer local uses" do
+        # Regression guard for the slot-numbering half of the fix —
+        # without CompilerScope's starting_slot continuing from the
+        # outer scope, a fresh class-body scope starting back at slot
+        # 0 would silently alias the outer local living at that same
+        # Frame.locals index (class/module bodies share their
+        # enclosing Frame — see with_nested_scope's own comment).
+        src = <<-RUBY
+        outer = 1
+        module M
+          inner = 2
+        end
+        outer
+        RUBY
+        eval(src).as_int.should eq 1
+      end
+
+      it "class bodies get the same real scoping as module bodies" do
+        src = <<-RUBY
+        class C
+          local = 99
+        end
+        local
+        RUBY
+        expect_raises(Adjutant::RuntimeError, /undefined method or variable: local/) do
+          eval(src)
+        end
+      end
+    end
+
     describe "superclass resolution" do
       it "resolves a defined superclass" do
         val = eval("class Animal\nend\nclass Dog < Animal\nend\nDog")

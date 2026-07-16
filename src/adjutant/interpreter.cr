@@ -201,9 +201,9 @@ module Adjutant
     # Parse, compile, and execute from an IO stream.
     def eval(io : IO, filename : String = "<eval>") : Value
       body = Parser.new(io, filename).parse
-      chunk = Compiler.compile(body, @symbols)
+      chunk, local_count = Compiler.compile(body, @symbols)
       vm = make_vm
-      result = vm.run(chunk, filename)
+      result = vm.run(chunk, filename, local_count)
       result
     end
 
@@ -214,7 +214,8 @@ module Adjutant
 
     def compile(io : IO, filename : String = "<compile>") : Chunk
       body = Parser.new(io, filename).parse
-      Compiler.compile(body, @symbols)
+      chunk, _local_count = Compiler.compile(body, @symbols)
+      chunk
     end
 
     # Called by VM when a script issues `require "path"`.

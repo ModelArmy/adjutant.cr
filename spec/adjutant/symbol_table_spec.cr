@@ -95,8 +95,8 @@ module Adjutant
       # Simulate two scripts compiled against the same interpreter
       body1 = Parser.new(":shared").parse
       body2 = Parser.new(":shared").parse
-      chunk1 = Compiler.compile(body1, table)
-      chunk2 = Compiler.compile(body2, table)
+      chunk1, _lc1 = Compiler.compile(body1, table)
+      chunk2, _lc2 = Compiler.compile(body2, table)
       sym1 = chunk1.consts.find(&.symbol?).not_nil!.as_sym
       sym2 = chunk2.consts.find(&.symbol?).not_nil!.as_sym
       sym1.value.should eq sym2.value

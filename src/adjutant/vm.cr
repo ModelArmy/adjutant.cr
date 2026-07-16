@@ -95,7 +95,30 @@ module Adjutant
     # (transparent) — see `call_script_proc`.
     property lexical_scope : RubyClass?
 
-    def initialize(@proc, @chunk, @stack_base, @filename, @block = nil, outer : Array(Value)? = nil, @self_val : Value = Value.nil_value, @lexical_scope : RubyClass? = nil)
+    # The locals array of the frame that was CURRENT when a block was
+    # attached to the call that created this frame (see Op::SetBlock,
+    # which snapshots current_frame.locals into @current_block_locals
+    # at the moment a block literal is pushed as a call's block
+    # argument — before Op::Call, so it's genuinely the block's
+    # creation-site frame, not whatever's executing later). Op::Yield
+    # reads THIS (not `locals`/`outer_locals`, which describe this
+    # frame's own variables) when it eventually calls the block, so
+    # the block correctly closes over the scope it was WRITTEN in
+    # rather than whichever frame happens to be running `yield`.
+    #
+    # nil whenever this frame has no block (block was nil at
+    # Op::SetBlock, or Op::Call ran with none pending at all).
+    #
+    # This is genuinely different from `outer_locals` above:
+    # `outer_locals` is for when THIS frame's own proc IS a block,
+    # closing over ITS creator. `block_outer_locals` is for a
+    # DIFFERENT proc (the block passed TO this call) that this frame
+    # might later `yield` to.
+    property block_outer_locals : Array(Value)?
+
+    def initialize(@proc, @chunk, @stack_base, @filename, @block = nil, outer : Array(Value)? = nil,
+                   @self_val : Value = Value.nil_value, @lexical_scope : RubyClass? = nil,
+                   @block_outer_locals : Array(Value)? = nil)
       @ip = 0
       @line = 0
       @handlers = [] of HandlerEntry
@@ -164,6 +187,15 @@ module Adjutant
       @frames = [] of Frame
       @instruction_count = 0_u64
       @current_block = nil.as(ScriptProc?)
+      # The locals array of the frame active when @current_block was
+      # attached via Op::SetBlock — i.e. the block's true creation
+      # site. Threaded through dispatch_call/call_script_proc onto the
+      # CALLEE's frame (as Frame#block_outer_locals) so a later
+      # Op::Yield inside that callee correctly closes the block over
+      # where it was WRITTEN, not over whatever frame happens to be
+      # running yield. See Op::SetBlock, Op::Yield, and Frame#
+      # block_outer_locals's own comment for the full mechanism.
+      @current_block_locals = nil.as(Array(Value)?)
       # Value of the most recently caught error, for Op::PushError.
       # A RubyObject of the raised/builtin error class when one was
       # constructed (see RuntimeError#error_value); a plain string for
@@ -180,9 +212,9 @@ module Adjutant
     end
 
     # Execute a compiled chunk and return the result.
-    def run(chunk : Chunk, filename : String = "<script>") : Value
+    def run(chunk : Chunk, filename : String = "<script>", local_count : Int32 = 0) : Value
       raise RuntimeError.new("Must be fresh VM to run a compiled chunk.", filename) unless @frames.empty?
-      main_proc = ScriptProc.new(chunk, "<main>")
+      main_proc = ScriptProc.new(chunk, "<main>", local_count: local_count)
       push_frame(main_proc, filename)
       execute
     end
@@ -193,6 +225,7 @@ module Adjutant
       saved_frames = @frames
       saved_ins_count = @instruction_count
       saved_cur_block = @current_block
+      saved_cur_block_locals = @current_block_locals
       result = Value.nil_value
       begin
         f = current_frame # before replacing @frames
@@ -208,6 +241,7 @@ module Adjutant
         @frames = saved_frames
         @instruction_count = saved_ins_count
         @current_block = saved_cur_block
+        @current_block_locals = saved_cur_block_locals
       end
       result
     end
@@ -307,11 +341,13 @@ module Adjutant
       end
     end
 
-    private def push_frame(proc : ScriptProc, filename : String, block : ScriptProc? = nil, stack_base : Int32 = @stack.size, outer : Array(Value)? = nil, self_val : Value = Value.nil_value, lexical_scope : RubyClass? = nil) : Frame
+    private def push_frame(proc : ScriptProc, filename : String, block : ScriptProc? = nil, stack_base : Int32 = @stack.size,
+                           outer : Array(Value)? = nil, self_val : Value = Value.nil_value, lexical_scope : RubyClass? = nil,
+                           block_outer_locals : Array(Value)? = nil) : Frame
       if @limits.call_depth_limit > 0 && @frames.size >= @limits.call_depth_limit
         raise runtime_error("call stack too deep (limit: #{@limits.call_depth_limit})")
       end
-      frame = Frame.new(proc, proc.chunk, stack_base, filename, block, outer, self_val, lexical_scope)
+      frame = Frame.new(proc, proc.chunk, stack_base, filename, block, outer, self_val, lexical_scope, block_outer_locals)
       @frames.push(frame)
       frame
     end
@@ -501,6 +537,12 @@ module Adjutant
           when Op::SetBlock
             v = pop
             @current_block = v.proc? ? v.as_proc.as(ScriptProc) : nil
+            # Snapshot NOW, while `f` is still the block literal's own
+            # creation-site frame — Op::Call (which consumes this)
+            # happens immediately after, still within the same frame,
+            # but by the time a later Op::Yield fires (possibly deep
+            # inside the callee), `f` will have moved on entirely.
+            @current_block_locals = @current_block ? f.locals : nil
           when Op::Call, Op::SafeCall
             sym = chunk.consts[inst.c].as_sym
             argc = inst.a.to_i
@@ -511,8 +553,10 @@ module Adjutant
             @stack.pop(argc) if argc > 0
 
             depth_before = @frames.size
-            result = dispatch_call(sym.name, args, safe, f.filename, inst.line, @current_block, has_receiver)
+            result = dispatch_call(sym.name, args, safe, f.filename, inst.line, @current_block, has_receiver,
+              blk_outer: @current_block_locals)
             @current_block = nil
+            @current_block_locals = nil
             # If dispatch pushed a new ScriptProc frame, do NOT push the
             # sentinel return value — Op::Ret will push the real result.
             push(result) if @frames.size == depth_before
@@ -708,7 +752,13 @@ module Adjutant
             blk = f.block
             if blk
               depth_before = @frames.size
-              result = call_script_proc(blk, args, f.filename, nil, f.locals)
+              # f.block_outer_locals — NOT f.locals. The block closes
+              # over the scope it was WRITTEN in (captured at
+              # Op::SetBlock time, on the CALLER's side, before this
+              # frame even existed — see Frame#block_outer_locals),
+              # not over this frame's own locals, which are almost
+              # always a completely unrelated method body.
+              result = call_script_proc(blk, args, f.filename, nil, f.block_outer_locals)
               push(result) if @frames.size == depth_before
             else
               raise runtime_error("no block given", f)
@@ -878,7 +928,8 @@ module Adjutant
                               safe : Bool,
                               filename : String, line : Int32,
                               blk : ScriptProc? = nil,
-                              has_receiver : Bool = false) : Value
+                              has_receiver : Bool = false,
+                              blk_outer : Array(Value)? = nil) : Value
       # 1) Safe navigation: skip call if receiver (first arg) is nil
       if safe && !args.empty? && args.first.null?
         return Value.nil_value
@@ -896,7 +947,7 @@ module Adjutant
           cls = recv.as_robject.rclass
           if sym_id = @symbols.lookup(name).try(&.value)
             if method = cls.find_method(sym_id)
-              return call_script_proc(method, args[1..], filename, blk, nil, self_val: recv)
+              return call_script_proc(method, args[1..], filename, blk, nil, self_val: recv, block_outer: blk_outer)
             end
             if native = cls.find_native_method(sym_id)
               return call_native(native, args, filename, line, blk, "#{cls.name}##{name}")
@@ -911,7 +962,7 @@ module Adjutant
           cls = recv.as_rclass
           if sym_id = @symbols.lookup(name).try(&.value)
             if method = cls.find_singleton_method(sym_id)
-              return call_script_proc(method, args[1..], filename, blk, nil, self_val: recv)
+              return call_script_proc(method, args[1..], filename, blk, nil, self_val: recv, block_outer: blk_outer)
             end
             if native = cls.find_native_singleton_method(sym_id)
               return call_native(native, args, filename, line, blk, "#{cls.name}.#{name}")
@@ -943,7 +994,7 @@ module Adjutant
         gval = @globals[sym.value]?
         if gval && gval.proc?
           sproc = gval.as_proc.as(ScriptProc)
-          return call_script_proc(sproc, args, filename, blk, nil)
+          return call_script_proc(sproc, args, filename, blk, nil, block_outer: blk_outer)
         end
       end
 
@@ -1130,6 +1181,13 @@ module Adjutant
     # forces `lexical_scope` regardless of `proc.lexical_scope` — used
     # only by `invoke`, which has already computed the correct value
     # before resetting the frame stack.
+    # `blk`/`block_outer` travel together: `blk` is the block PASSED TO
+    # `proc` (available inside `proc`'s body as the implicit `yield`
+    # target), `block_outer` is the locals array active at the moment
+    # `blk` was attached to this call (see Op::SetBlock) — carried on
+    # the new frame so Op::Yield, whenever it eventually fires inside
+    # `proc`'s body, can correctly close `blk` over ITS creation site
+    # rather than over `proc`'s own locals.
     private def call_script_proc(proc : ScriptProc,
                                  args : Array(Value),
                                  filename : String,
@@ -1137,7 +1195,8 @@ module Adjutant
                                  outer : Array(Value)? = nil,
                                  self_val : Value? = nil,
                                  lexical_scope : RubyClass? = nil,
-                                 lexical_override : Bool = false) : Value
+                                 lexical_override : Bool = false,
+                                 block_outer : Array(Value)? = nil) : Value
       base = @stack.size
       inherited_self = self_val || (@frames.empty? ? Value.nil_value : current_frame.self_val)
       effective_lexical = if lexical_override
@@ -1145,7 +1204,8 @@ module Adjutant
                           else
                             proc.lexical_scope || (@frames.empty? ? nil : current_frame.lexical_scope)
                           end
-      frame = push_frame(proc, filename, block: blk, stack_base: base, outer: outer, self_val: inherited_self, lexical_scope: effective_lexical)
+      frame = push_frame(proc, filename, block: blk, stack_base: base, outer: outer, self_val: inherited_self,
+        lexical_scope: effective_lexical, block_outer_locals: block_outer)
       args.each_with_index do |arg, i|
         frame.locals[i] = arg if i < frame.locals.size
       end

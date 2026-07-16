@@ -36,9 +36,37 @@ module Adjutant
     getter? is_block : Bool
     getter parent : CompilerScope?
 
-    def initialize(@is_block = false, @parent = nil)
+    # `starting_slot` is deliberately independent from `parent`/
+    # `is_block` — it's pure slot-numbering bookkeeping, not name
+    # visibility. A class/module body shares its enclosing frame
+    # (unlike a def/block body, which gets its own fresh Frame via
+    # call_script_proc — see compile_proc/Op::MakeProc), so its own
+    # CompilerScope must continue slot numbering where the enclosing
+    # scope left off, or Op::SetLocal inside the body would silently
+    # overwrite an outer local living at the same Frame.locals index.
+    # It must NOT set `parent` to achieve this — `parent` is what
+    # `resolve_outer` uses for real closure capture (blocks reading
+    # an enclosing method's locals live), and a class/module body
+    # must NOT see its enclosing scope's locals at all:
+    #
+    #   module A
+    #     tmp_a = 55
+    #     module B
+    #       tmp_b = 66
+    #       puts tmp_a  # real Ruby: NameError — B cannot see A's tmp_a
+    #     end
+    #   end
+    #
+    # `is_block: false, parent: nil, starting_slot: <wherever A left
+    # off>` is exactly right here: B's own CompilerScope resolves
+    # `tmp_a` as unresolved (falls through past locals — same
+    # NameError path as any other undefined bare identifier) while
+    # still allocating `tmp_b` a slot number that can't collide with
+    # `tmp_a`'s, since both live in the one Frame this whole program
+    # (or this whole class/module nest) is executing in.
+    def initialize(@is_block = false, @parent = nil, starting_slot : Int32 = 0)
       @vars = {} of String => Int32
-      @next_slot = 0
+      @next_slot = starting_slot
     end
 
     # Define a new local variable, returning its slot index.
@@ -74,11 +102,22 @@ module Adjutant
       @scope = nil.as(CompilerScope?)
     end
 
-    # Compile a full program body and return the resulting Chunk.
-    def self.compile(body : Body, symbols : SymbolTable) : Chunk
+    # Compile a full top-level program body. Returns {chunk, local_count}
+    # — same shape as compile_proc, and for the same reason: top-level
+    # code needs real local-variable scoping too (previously it had
+    # none at all, so every bare `x = 5` at top level silently became
+    # a global — see CompilerScope#initialize's `starting_slot` comment
+    # and with_nested_scope for the related class/module-body fix).
+    # The top-level scope is a genuine root — no parent, not a block —
+    # so it behaves exactly like a method body's own scope: first
+    # assignment to an unresolved name defines a new local (see
+    # emit_store's `unless scope.is_block?` branch), not a global.
+    def self.compile(body : Body, symbols : SymbolTable) : {Chunk, Int32}
       c = new(symbols)
+      scope = CompilerScope.new(is_block: false, parent: nil)
+      c.scope = scope
       c.compile_body(body)
-      c.chunk
+      {c.chunk, scope.next_slot}
     end
 
     # Compile a method/block body.
@@ -546,6 +585,31 @@ module Adjutant
 
     # --- Definitions --------------------------------------------------------
 
+    # A class/module body's own local-variable scope. Fresh
+    # CompilerScope (`parent: nil, is_block: false`) so names defined
+    # inside are invisible both outside the body (once popped, @scope
+    # reverts to the outer one, whose `vars` was never touched) and to
+    # any OUTER local of the same name (no `parent` link means
+    # resolve_local/resolve_outer can never see past this scope's own
+    # `vars`, matching real Ruby: a class/module body does not close
+    # over its enclosing scope's locals the way a block does). Slot
+    # numbering continues from the outer scope's `next_slot` (NOT a
+    # fresh 0) because a class/module body runs in the SAME Frame as
+    # its enclosing code — unlike a def/block body, which gets its own
+    # Frame via call_script_proc, a class/module body is never a
+    # separate ScriptProc/MakeProc/call at all (see compile_class/
+    # compile_module: no compile_proc call, just inline compile_body
+    # with self swapped via Op::SetClass). Two different CompilerScope
+    # objects sharing one Frame.locals array would silently collide at
+    # the SAME slot index without this.
+    private def with_nested_scope(&) : Nil
+      outer = @scope
+      start = outer.try(&.next_slot) || 0
+      @scope = CompilerScope.new(is_block: false, parent: nil, starting_slot: start)
+      yield
+      @scope = outer
+    end
+
     private def compile_def(node : DefNode) : Nil
       params = node.params.map(&.name)
       body_chunk, local_count = Compiler.compile_proc(
@@ -581,7 +645,7 @@ module Adjutant
       @chunk.emit(Op::SetConstant, node.line, c: name_idx)             # [old_self, new_class]  registers in old_self's scope (or globals at top level)
       @chunk.emit(Op::SetClass, node.line)                             # [old_self]  self := new_class
       @class_depth += 1
-      compile_body(node.body) # [old_self, body_val]
+      with_nested_scope { compile_body(node.body) } # [old_self, body_val]
       @class_depth -= 1
       @chunk.emit(Op::Pop, node.line)      # [old_self]  discard body value
       @chunk.emit(Op::SetClass, node.line) # []  self := old_self (restored)
@@ -596,7 +660,7 @@ module Adjutant
       @chunk.emit(Op::SetConstant, node.line, c: name_idx) # [old_self, new_module]
       @chunk.emit(Op::SetClass, node.line)                 # [old_self]  self := new_module
       @class_depth += 1
-      compile_body(node.body) # [old_self, body_val]
+      with_nested_scope { compile_body(node.body) } # [old_self, body_val]
       @class_depth -= 1
       @chunk.emit(Op::Pop, node.line)      # [old_self]
       @chunk.emit(Op::SetClass, node.line) # []  self := old_self (restored)
