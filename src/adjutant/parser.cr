@@ -450,7 +450,7 @@ module Adjutant
       case current_kind
       when TokenKind::Integer, TokenKind::Float,
            TokenKind::String, TokenKind::StringPart,
-           TokenKind::Symbol,
+           TokenKind::Symbol, TokenKind::KwSelf,
            TokenKind::KwNil, TokenKind::KwTrue, TokenKind::KwFalse,
            TokenKind::Bang, TokenKind::Tilde,
            TokenKind::LParen,

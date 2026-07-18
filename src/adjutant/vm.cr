@@ -95,7 +95,30 @@ module Adjutant
     # (transparent) — see `call_script_proc`.
     property lexical_scope : RubyClass?
 
-    def initialize(@proc, @chunk, @stack_base, @filename, @block = nil, outer : Array(Value)? = nil, @self_val : Value = Value.nil_value, @lexical_scope : RubyClass? = nil)
+    # The locals array of the frame that was CURRENT when a block was
+    # attached to the call that created this frame (see Op::SetBlock,
+    # which snapshots current_frame.locals into @current_block_locals
+    # at the moment a block literal is pushed as a call's block
+    # argument — before Op::Call, so it's genuinely the block's
+    # creation-site frame, not whatever's executing later). Op::Yield
+    # reads THIS (not `locals`/`outer_locals`, which describe this
+    # frame's own variables) when it eventually calls the block, so
+    # the block correctly closes over the scope it was WRITTEN in
+    # rather than whichever frame happens to be running `yield`.
+    #
+    # nil whenever this frame has no block (block was nil at
+    # Op::SetBlock, or Op::Call ran with none pending at all).
+    #
+    # This is genuinely different from `outer_locals` above:
+    # `outer_locals` is for when THIS frame's own proc IS a block,
+    # closing over ITS creator. `block_outer_locals` is for a
+    # DIFFERENT proc (the block passed TO this call) that this frame
+    # might later `yield` to.
+    property block_outer_locals : Array(Value)?
+
+    def initialize(@proc, @chunk, @stack_base, @filename, @block = nil, outer : Array(Value)? = nil,
+                   @self_val : Value = Value.nil_value, @lexical_scope : RubyClass? = nil,
+                   @block_outer_locals : Array(Value)? = nil)
       @ip = 0
       @line = 0
       @handlers = [] of HandlerEntry
@@ -164,6 +187,15 @@ module Adjutant
       @frames = [] of Frame
       @instruction_count = 0_u64
       @current_block = nil.as(ScriptProc?)
+      # The locals array of the frame active when @current_block was
+      # attached via Op::SetBlock — i.e. the block's true creation
+      # site. Threaded through dispatch_call/call_script_proc onto the
+      # CALLEE's frame (as Frame#block_outer_locals) so a later
+      # Op::Yield inside that callee correctly closes the block over
+      # where it was WRITTEN, not over whatever frame happens to be
+      # running yield. See Op::SetBlock, Op::Yield, and Frame#
+      # block_outer_locals's own comment for the full mechanism.
+      @current_block_locals = nil.as(Array(Value)?)
       # Value of the most recently caught error, for Op::PushError.
       # A RubyObject of the raised/builtin error class when one was
       # constructed (see RuntimeError#error_value); a plain string for
@@ -180,10 +212,19 @@ module Adjutant
     end
 
     # Execute a compiled chunk and return the result.
-    def run(chunk : Chunk, filename : String = "<script>") : Value
+    def run(chunk : Chunk, filename : String = "<script>", local_count : Int32 = 0) : Value
       raise RuntimeError.new("Must be fresh VM to run a compiled chunk.", filename) unless @frames.empty?
-      main_proc = ScriptProc.new(chunk, "<main>")
-      push_frame(main_proc, filename)
+      main_proc = ScriptProc.new(chunk, "<main>", local_count: local_count)
+      # self at top level is `main` — a real RubyObject of class
+      # Object, matching real Ruby (see Interpreter#main's own
+      # comment). Falls back to nil_value only for a VM built without
+      # an Interpreter (no Object class exists to construct `main`
+      # from in that configuration) — a top-level `def` in that setup
+      # correctly raises "def outside of a class/module body", same
+      # as it always has, since there's genuinely nothing for it to
+      # attach to.
+      self_val = @interpreter.try { |i| Value.robject(i.main) } || Value.nil_value
+      push_frame(main_proc, filename, self_val: self_val)
       execute
     end
 
@@ -193,6 +234,7 @@ module Adjutant
       saved_frames = @frames
       saved_ins_count = @instruction_count
       saved_cur_block = @current_block
+      saved_cur_block_locals = @current_block_locals
       result = Value.nil_value
       begin
         f = current_frame # before replacing @frames
@@ -208,6 +250,7 @@ module Adjutant
         @frames = saved_frames
         @instruction_count = saved_ins_count
         @current_block = saved_cur_block
+        @current_block_locals = saved_cur_block_locals
       end
       result
     end
@@ -307,11 +350,13 @@ module Adjutant
       end
     end
 
-    private def push_frame(proc : ScriptProc, filename : String, block : ScriptProc? = nil, stack_base : Int32 = @stack.size, outer : Array(Value)? = nil, self_val : Value = Value.nil_value, lexical_scope : RubyClass? = nil) : Frame
+    private def push_frame(proc : ScriptProc, filename : String, block : ScriptProc? = nil, stack_base : Int32 = @stack.size,
+                           outer : Array(Value)? = nil, self_val : Value = Value.nil_value, lexical_scope : RubyClass? = nil,
+                           block_outer_locals : Array(Value)? = nil) : Frame
       if @limits.call_depth_limit > 0 && @frames.size >= @limits.call_depth_limit
         raise runtime_error("call stack too deep (limit: #{@limits.call_depth_limit})")
       end
-      frame = Frame.new(proc, proc.chunk, stack_base, filename, block, outer, self_val, lexical_scope)
+      frame = Frame.new(proc, proc.chunk, stack_base, filename, block, outer, self_val, lexical_scope, block_outer_locals)
       @frames.push(frame)
       frame
     end
@@ -379,25 +424,29 @@ module Adjutant
             gval = @globals[sym.value]?
             if gval && !gval.proc?
               # A plain data global ($foo-style or otherwise pre-set) —
-              # push its value as-is. Not a call attempt.
+              # push its value as-is. Not a call attempt. (@globals now
+              # holds only constants/classes in practice — see the
+              # 2026-07-16 root-scope work — so `gval` here is really
+              # always a RubyClass; this branch is kept general rather
+              # than narrowed, since nothing stops a future feature
+              # from writing a genuine data global here too.)
               push(gval)
             else
-              # Either a global holding a ScriptProc (top-level `def`),
-              # or nothing in @globals at all. Either way this bare
-              # identifier isn't a local variable, so — matching real
-              # Ruby — treat it as an implicit zero-arg method call
-              # attempt and run it through the same dispatch path a
-              # real `name()` call uses. That path already checks
-              # native functions, then global ScriptProcs, then
-              # builtins, and raises NameError (script-catchable) if
-              # none match — so this single call now covers bare
-              # `def`s (worked before), bare native calls like
-              # `read_input` (previously resolved to nil, never
-              # called), and truly undefined identifiers (previously
-              # silently nil, now raises).
+              # Not a resolvable local (checked earlier at compile
+              # time — see compile_identifier), and not a plain data
+              # global either. Matching real Ruby, treat this as an
+              # implicit zero-arg method call attempt: self's own
+              # methods first (a top-level def, now a real method of
+              # Object — see Interpreter#main/dispatch_call's
+              # implicit-self step), then native functions (also on
+              # Object's own native_methods table), then builtins, and
+              # NameError (script-catchable) if none match. `def`s no
+              # longer live in @globals at all — this single
+              # dispatch_call covers them via implicit self, not via
+              # any @globals lookup.
               depth_before = @frames.size
               result = dispatch_call(sym.name, [] of Value, safe: false,
-                filename: f.filename, line: inst.line)
+                filename: f.filename, line: inst.line, self_val: f.self_val)
               push(result) if @frames.size == depth_before
             end
           when Op::SetGlobal
@@ -501,6 +550,12 @@ module Adjutant
           when Op::SetBlock
             v = pop
             @current_block = v.proc? ? v.as_proc.as(ScriptProc) : nil
+            # Snapshot NOW, while `f` is still the block literal's own
+            # creation-site frame — Op::Call (which consumes this)
+            # happens immediately after, still within the same frame,
+            # but by the time a later Op::Yield fires (possibly deep
+            # inside the callee), `f` will have moved on entirely.
+            @current_block_locals = @current_block ? f.locals : nil
           when Op::Call, Op::SafeCall
             sym = chunk.consts[inst.c].as_sym
             argc = inst.a.to_i
@@ -511,8 +566,10 @@ module Adjutant
             @stack.pop(argc) if argc > 0
 
             depth_before = @frames.size
-            result = dispatch_call(sym.name, args, safe, f.filename, inst.line, @current_block, has_receiver)
+            result = dispatch_call(sym.name, args, safe, f.filename, inst.line, @current_block, has_receiver,
+              blk_outer: @current_block_locals, self_val: f.self_val)
             @current_block = nil
+            @current_block_locals = nil
             # If dispatch pushed a new ScriptProc frame, do NOT push the
             # sentinel return value — Op::Ret will push the real result.
             push(result) if @frames.size == depth_before
@@ -681,7 +738,20 @@ module Adjutant
           when Op::DefMethod
             proc_val = pop
             name_sym = chunk.consts[inst.c].as_sym
-            unless owner = f.self_val.as_rclass?
+            # `def` always targets self's CLASS — uniform rule, not two
+            # special cases: inside a class/module body, self IS the
+            # RubyClass directly (define there); anywhere else with a
+            # RubyObject self (top-level main, or `def` nested inside
+            # another method body — both legal in real Ruby, and both
+            # just mean "self at the point this def executes"), target
+            # self's OWN rclass instead. This is what makes a
+            # top-level `def greet` become a real (private, in real
+            # Ruby's terms) method of Object — callable from anywhere,
+            # not a special top-level-only table — matching real
+            # Ruby's actual `main`/Object relationship rather than a
+            # simplification of it.
+            owner = f.self_val.as_rclass? || f.self_val.as_robject?.try(&.rclass)
+            unless owner
               raise runtime_error("def outside of a class/module body", f)
             end
             proc = proc_val.as_proc
@@ -692,7 +762,29 @@ module Adjutant
             recv = pop
             proc_val = pop
             name_sym = chunk.consts[inst.c].as_sym
-            unless owner = recv.as_rclass?
+            # Same fix as Op::DefMethod above: `recv` (self at the
+            # `def self.foo` site) may be a RubyObject (top-level
+            # main, or `def self.foo` written inside an instance
+            # method body), not just a bare RubyClass (the class/
+            # module-body case).
+            #
+            # NOTE — approximation, not a full fix: real Ruby's
+            # `def self.foo` on an INSTANCE defines a true per-object
+            # singleton method (only that one object gets it, not
+            # every instance of its class) — Adjutant has no
+            # per-instance method table on RubyObject at all, only
+            # RubyClass-level ones, so this targets the RECEIVER'S
+            # CLASS instead, meaning every instance of that class
+            # would see the new method, not just `recv`. This
+            # happens to be observably correct for the motivating
+            # case — top-level `def self.greet`, where self is
+            # `main`, the ONE AND ONLY instance of Object a script
+            # typically ever has as self — but is a real, separate
+            # gap from true Ruby fidelity for the general "singleton
+            # method on an arbitrary instance" case. Worth a proper
+            # per-instance singleton table if that ever matters.
+            owner = recv.as_rclass? || recv.as_robject?.try(&.rclass)
+            unless owner
               raise runtime_error("def self.#{name_sym.name} outside of a class/module body", f)
             end
             proc = proc_val.as_proc
@@ -708,7 +800,13 @@ module Adjutant
             blk = f.block
             if blk
               depth_before = @frames.size
-              result = call_script_proc(blk, args, f.filename, nil, f.locals)
+              # f.block_outer_locals — NOT f.locals. The block closes
+              # over the scope it was WRITTEN in (captured at
+              # Op::SetBlock time, on the CALLER's side, before this
+              # frame even existed — see Frame#block_outer_locals),
+              # not over this frame's own locals, which are almost
+              # always a completely unrelated method body.
+              result = call_script_proc(blk, args, f.filename, nil, f.block_outer_locals)
               push(result) if @frames.size == depth_before
             else
               raise runtime_error("no block given", f)
@@ -872,13 +970,27 @@ module Adjutant
       dispatch_call(name, [recv] + args, safe: false, filename: filename, line: line, has_receiver: true)
     end
 
+    # The display name a native call shows in an error message or a
+    # RiskFlowDecisionRequest, for an IMPLICIT-self call specifically.
+    # Bare `name`, NOT "ClassName#name" — unlike real explicit-
+    # receiver dispatch (obj.foo, where the class qualification is
+    # genuinely informative), an implicit-self call looks like a
+    # plain function call in the script itself (`delete_file(...)`,
+    # not `Object#delete_file(...)`) — the display name should match
+    # what's actually in the source, not an internal dispatch detail.
+    private def display_name_for_implicit_self(name : String) : String
+      name
+    end
+
     # ameba:disable Metrics/CyclomaticComplexity - Clear steps, better together
     private def dispatch_call(name : String,
                               args : Array(Value),
                               safe : Bool,
                               filename : String, line : Int32,
                               blk : ScriptProc? = nil,
-                              has_receiver : Bool = false) : Value
+                              has_receiver : Bool = false,
+                              blk_outer : Array(Value)? = nil,
+                              self_val : Value? = nil) : Value
       # 1) Safe navigation: skip call if receiver (first arg) is nil
       if safe && !args.empty? && args.first.null?
         return Value.nil_value
@@ -896,7 +1008,7 @@ module Adjutant
           cls = recv.as_robject.rclass
           if sym_id = @symbols.lookup(name).try(&.value)
             if method = cls.find_method(sym_id)
-              return call_script_proc(method, args[1..], filename, blk, nil, self_val: recv)
+              return call_script_proc(method, args[1..], filename, blk, nil, self_val: recv, block_outer: blk_outer)
             end
             if native = cls.find_native_method(sym_id)
               return call_native(native, args, filename, line, blk, "#{cls.name}##{name}")
@@ -911,7 +1023,7 @@ module Adjutant
           cls = recv.as_rclass
           if sym_id = @symbols.lookup(name).try(&.value)
             if method = cls.find_singleton_method(sym_id)
-              return call_script_proc(method, args[1..], filename, blk, nil, self_val: recv)
+              return call_script_proc(method, args[1..], filename, blk, nil, self_val: recv, block_outer: blk_outer)
             end
             if native = cls.find_native_singleton_method(sym_id)
               return call_native(native, args, filename, line, blk, "#{cls.name}.#{name}")
@@ -929,21 +1041,114 @@ module Adjutant
         end
       end
 
-      # 2) Check native functions registered via interpreter
-      if interp = @interpreter
-        sym_id = (@symbols.lookup(name).try(&.value)) || -1
-        if native = interp.native_callable(sym_id)
-          return call_native(native, args, filename, line, blk, name)
+      # 2) Implicit self: a bare/receiverless call tries self's OWN
+      # class first — matching real Ruby's actual method resolution
+      # (a bare `greet` inside any body, including top level, tries
+      # `self.greet` before anything else). This is what makes a
+      # top-level `def greet` reachable via a later bare `greet` call:
+      # top-level self is `main` (a RubyObject of class Object — see
+      # Interpreter#main), so `def greet` at top level lands in
+      # Object#methods (see Op::DefMethod), and THIS step is what
+      # finds it again — @globals no longer holds defs at all (see
+      # the 2026-07-16 root-scope work; @globals is constants/classes
+      # only now). This ALSO now covers what used to be a separate
+      # "check native functions registered via interpreter" step:
+      # define_native registers into Object's own native_methods
+      # table (see Interpreter#define_native), the exact table
+      # find_native_method below checks — a genuinely separate step
+      # was redundant with this one, and (worse) didn't respect
+      # has_receiver AT ALL, so ANY receiver (even one with no
+      # inheritance relationship to Object at all — impossible in
+      # practice, since every RubyObject's class ultimately descends
+      # from Object, but the old step didn't even check that much)
+      # could resolve a native function. Note this is NOT the same as
+      # matching real Ruby's private-method visibility rule —
+      # Adjutant has no public/private/protected modifiers at all, so
+      # step 1.5 (explicit-receiver dispatch, above) correctly finds
+      # an inherited native/top-level method via a normal
+      # find_native_method superclass walk, same as any other
+      # inherited method (`Foo.new.some_native_fn` DOES work if Foo <
+      # Object, which every script class is by default) — genuinely
+      # different from real Ruby, and a real, separate gap (method
+      # visibility) this piece doesn't attempt to close.
+      unless has_receiver
+        if self_val && (sym_id = @symbols.lookup(name).try(&.value))
+          if obj = self_val.as_robject?
+            # self is an ordinary object (main at top level, or any
+            # instance inside its own method body) — its OWN class's
+            # instance-method chain is exactly what a bare call means
+            # here, same table an explicit `self.foo`/`obj.foo` would
+            # use.
+            cls = obj.rclass
+            if method = cls.find_method(sym_id)
+              return call_script_proc(method, args, filename, blk, nil, self_val: self_val, block_outer: blk_outer)
+            end
+            if native = cls.find_native_method(sym_id)
+              return call_native(native, args, filename, line, blk, display_name_for_implicit_self(name))
+            end
+          elsif self_rclass = self_val.as_rclass?
+            # self IS a class/module object (inside a class/module
+            # body). Two genuinely different lookups here, not one:
+            #
+            # 1) self_rclass's OWN singleton tables — `def self.foo`
+            #    called bare from elsewhere in the same body (these
+            #    are methods usable ON this class/module object
+            #    itself, exactly what implicit self means here).
+            #
+            # 2) self_rclass.rclass's (Module's, for a `module M`
+            #    body — Class's, for a `class Foo` body) instance-
+            #    method CHAIN, walked up to Object — this is how a
+            #    bare Kernel-style native call (`puts`, or any
+            #    define_native function) resolves inside a class/
+            #    module body in real Ruby: M is itself an INSTANCE of
+            #    Module, and Module < Object (see
+            #    bootstrap_core_hierarchy), so M can call anything
+            #    Object provides, the same way any other object can.
+            #    A module has NO superclass of its own to walk (only
+            #    classes do) — this chain is genuinely different from
+            #    that, and is what was MISSING before, causing a
+            #    regression: a module body couldn't reach ANY native
+            #    function (assert_not_nil, puts, ...) at all.
+            #
+            # self_rclass.find_method/.find_native_method (self's own
+            # INSTANCE tables — i.e. what M.new's instances, or
+            # things that `include M`, would see) are deliberately
+            # NOT checked here — those mean something different
+            # (methods available on instances OF this class), not
+            # methods usable on the class object itself.
+            if singleton = self_rclass.find_singleton_method(sym_id)
+              return call_script_proc(singleton, args, filename, blk, nil, self_val: self_val, block_outer: blk_outer)
+            end
+            if native_singleton = self_rclass.find_native_singleton_method(sym_id)
+              return call_native(native_singleton, args, filename, line, blk, display_name_for_implicit_self(name))
+            end
+            if meta = self_rclass.rclass
+              if method = meta.find_method(sym_id)
+                return call_script_proc(method, args, filename, blk, nil, self_val: self_val, block_outer: blk_outer)
+              end
+              if native = meta.find_native_method(sym_id)
+                return call_native(native, args, filename, line, blk, display_name_for_implicit_self(name))
+              end
+            end
+          end
         end
       end
 
-      # 3) Check globals for a ScriptProc
+      # 3) Check globals for a ScriptProc — legacy fallback only.
+      # @globals no longer holds top-level defs (step 2 above finds
+      # those, via Object#methods) or top-level plain variables (real
+      # locals since the 2026-07-15 scoping fix); nothing in a
+      # currently-parseable script writes a ScriptProc into @globals
+      # anymore. Kept as a defensive fallback rather than removed
+      # outright, same reasoning as emit_store_name's own
+      # SetGlobal fallback. self_val threaded through for the same
+      # reason, even though this path is dead in practice.
       sym = @symbols.lookup(name)
       if sym
         gval = @globals[sym.value]?
         if gval && gval.proc?
           sproc = gval.as_proc.as(ScriptProc)
-          return call_script_proc(sproc, args, filename, blk, nil)
+          return call_script_proc(sproc, args, filename, blk, nil, self_val: self_val, block_outer: blk_outer)
         end
       end
 
@@ -1130,6 +1335,13 @@ module Adjutant
     # forces `lexical_scope` regardless of `proc.lexical_scope` — used
     # only by `invoke`, which has already computed the correct value
     # before resetting the frame stack.
+    # `blk`/`block_outer` travel together: `blk` is the block PASSED TO
+    # `proc` (available inside `proc`'s body as the implicit `yield`
+    # target), `block_outer` is the locals array active at the moment
+    # `blk` was attached to this call (see Op::SetBlock) — carried on
+    # the new frame so Op::Yield, whenever it eventually fires inside
+    # `proc`'s body, can correctly close `blk` over ITS creation site
+    # rather than over `proc`'s own locals.
     private def call_script_proc(proc : ScriptProc,
                                  args : Array(Value),
                                  filename : String,
@@ -1137,7 +1349,8 @@ module Adjutant
                                  outer : Array(Value)? = nil,
                                  self_val : Value? = nil,
                                  lexical_scope : RubyClass? = nil,
-                                 lexical_override : Bool = false) : Value
+                                 lexical_override : Bool = false,
+                                 block_outer : Array(Value)? = nil) : Value
       base = @stack.size
       inherited_self = self_val || (@frames.empty? ? Value.nil_value : current_frame.self_val)
       effective_lexical = if lexical_override
@@ -1145,7 +1358,8 @@ module Adjutant
                           else
                             proc.lexical_scope || (@frames.empty? ? nil : current_frame.lexical_scope)
                           end
-      frame = push_frame(proc, filename, block: blk, stack_base: base, outer: outer, self_val: inherited_self, lexical_scope: effective_lexical)
+      frame = push_frame(proc, filename, block: blk, stack_base: base, outer: outer, self_val: inherited_self,
+        lexical_scope: effective_lexical, block_outer_locals: block_outer)
       args.each_with_index do |arg, i|
         frame.locals[i] = arg if i < frame.locals.size
       end

@@ -159,6 +159,20 @@ module Adjutant
     getter risk_flow_policy : RiskFlowPolicy
     getter on_risk_flow_decision : RiskFlowDecisionRequest -> RiskFlowDecision
 
+    # `self` at the top level of a script — a real RubyObject whose
+    # class is Object, matching real Ruby's actual `main` (not a
+    # simplification of it: a bare top-level `def` genuinely becomes
+    # a method of Object this way — see Op::DefMethod — callable from
+    # ANY object anywhere, not confined to some top-level-only table,
+    # exactly like real Ruby's top-level defs becoming private
+    # instance methods of Object). One `main` per Interpreter, reused
+    # across every `eval` call on it, so top-level defs persist across
+    # eval calls the same way they always have (this is unrelated to,
+    # and unaffected by, the 2026-07-15 fix that made top-level plain
+    # VARIABLES scoped per-eval-call — methods living on Object were
+    # always meant to persist).
+    getter main : RubyObject
+
     def initialize(
       @risk_flow_policy : RiskFlowPolicy,
       @on_risk_flow_decision : RiskFlowDecisionRequest -> RiskFlowDecision,
@@ -171,6 +185,13 @@ module Adjutant
       @globals = {} of Int32 => Value
       @risk_flow_log = RiskFlowLog.new(enabled: risk_flow_tracking)
       bootstrap_core_hierarchy
+      # @main must be assigned here, right after object_class first
+      # becomes valid — NOT after bootstrap_error_classes/
+      # bootstrap_builtin_classes, both of which pass `self` outward
+      # (e.g. `Builtins.bootstrap_range(self)`), and Crystal requires
+      # every non-nilable ivar assigned before `self` escapes the
+      # constructor in any way, not just before it returns.
+      @main = RubyObject.new(object_class)
       bootstrap_error_classes
       bootstrap_builtin_classes
     end
@@ -201,9 +222,9 @@ module Adjutant
     # Parse, compile, and execute from an IO stream.
     def eval(io : IO, filename : String = "<eval>") : Value
       body = Parser.new(io, filename).parse
-      chunk = Compiler.compile(body, @symbols)
+      chunk, local_count = Compiler.compile(body, @symbols)
       vm = make_vm
-      result = vm.run(chunk, filename)
+      result = vm.run(chunk, filename, local_count)
       result
     end
 
@@ -214,7 +235,8 @@ module Adjutant
 
     def compile(io : IO, filename : String = "<compile>") : Chunk
       body = Parser.new(io, filename).parse
-      Compiler.compile(body, @symbols)
+      chunk, _local_count = Compiler.compile(body, @symbols)
+      chunk
     end
 
     # Called by VM when a script issues `require "path"`.
@@ -240,17 +262,25 @@ module Adjutant
     # RiskProfile. Defaults to RiskProfile.none (pure, no side effects),
     # correct for the common case; pass an explicit profile for any
     # function with file, network, process, or environment effects.
+    #
+    # Registers into Object's OWN native_methods table — not a
+    # separate top-level-only table — matching real Ruby, where
+    # Kernel methods (puts, require, ...) are technically private
+    # instance methods reachable from any object. This is what makes
+    # a native function callable via implicit self from anywhere,
+    # the same mechanism a bare top-level `def` uses (see
+    # Op::DefMethod / dispatch_call's implicit-self step).
     def define_native(name : String, risk : RiskProfile = RiskProfile.none,
                       &block : Array(Value), ScriptProc?, NativeCallContext -> Value) : Nil
       sym = @symbols.intern(name)
-      func = NativeFunc.new { |args, blk, ncc| block.call(args, blk, ncc) }
-      native_funcs[sym.value] = NativeCallable.new(func, risk)
+      object_class.define_native_method(sym.value, risk, &block)
     end
 
     # Look up a native callable by symbol ID — called by VM dispatch.
-    # Returns both the function and its RiskProfile.
+    # Returns both the function and its RiskProfile. Delegates to
+    # Object's own native_methods table (see define_native above).
     def native_callable(sym_id : Int32) : NativeCallable?
-      @native_funcs[sym_id]?
+      object_class.native_methods[sym_id]?
     end
 
     # Look up a builtin type's RubyClass by the runtime kind of a Value
@@ -319,7 +349,21 @@ module Adjutant
       class_cls = RubyClass.new("Class", nil, is_module: false)
       obj_cls = RubyClass.new("Object", nil, is_module: false)
 
+      # Real Ruby: Class.superclass == Module, Module.superclass ==
+      # Object (Object.superclass == BasicObject in real Ruby;
+      # Adjutant has no BasicObject, so Object's superclass stays nil
+      # as the deliberate root). Module's own link was missing
+      # entirely before — Module.superclass was nil, breaking the
+      # chain a module needs to reach Object's methods (see
+      # dispatch_call's implicit-self step: when self is a RubyClass,
+      # e.g. inside a `module M` body, finding a native/Kernel-style
+      # method like `puts` requires walking self.rclass's (M.rclass
+      # == Module's) OWN superclass chain up to Object, not M's own
+      # (modules have no superclass of their own in real Ruby at
+      # all) — that chain was broken at its very first link without
+      # this).
       class_cls.superclass = mod_cls
+      mod_cls.superclass = obj_cls
       obj_cls.rclass = class_cls
       class_cls.rclass = class_cls
       mod_cls.rclass = class_cls
@@ -405,10 +449,5 @@ module Adjutant
     end
 
     @globals : Hash(Int32, Value) = {} of Int32 => Value
-    @native_funcs = {} of Int32 => NativeCallable
-
-    private def native_funcs : Hash(Int32, NativeCallable)
-      @native_funcs
-    end
   end
 end

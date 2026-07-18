@@ -36,9 +36,37 @@ module Adjutant
     getter? is_block : Bool
     getter parent : CompilerScope?
 
-    def initialize(@is_block = false, @parent = nil)
+    # `starting_slot` is deliberately independent from `parent`/
+    # `is_block` — it's pure slot-numbering bookkeeping, not name
+    # visibility. A class/module body shares its enclosing frame
+    # (unlike a def/block body, which gets its own fresh Frame via
+    # call_script_proc — see compile_proc/Op::MakeProc), so its own
+    # CompilerScope must continue slot numbering where the enclosing
+    # scope left off, or Op::SetLocal inside the body would silently
+    # overwrite an outer local living at the same Frame.locals index.
+    # It must NOT set `parent` to achieve this — `parent` is what
+    # `resolve_outer` uses for real closure capture (blocks reading
+    # an enclosing method's locals live), and a class/module body
+    # must NOT see its enclosing scope's locals at all:
+    #
+    #   module A
+    #     tmp_a = 55
+    #     module B
+    #       tmp_b = 66
+    #       puts tmp_a  # real Ruby: NameError — B cannot see A's tmp_a
+    #     end
+    #   end
+    #
+    # `is_block: false, parent: nil, starting_slot: <wherever A left
+    # off>` is exactly right here: B's own CompilerScope resolves
+    # `tmp_a` as unresolved (falls through past locals — same
+    # NameError path as any other undefined bare identifier) while
+    # still allocating `tmp_b` a slot number that can't collide with
+    # `tmp_a`'s, since both live in the one Frame this whole program
+    # (or this whole class/module nest) is executing in.
+    def initialize(@is_block = false, @parent = nil, starting_slot : Int32 = 0)
       @vars = {} of String => Int32
-      @next_slot = 0
+      @next_slot = starting_slot
     end
 
     # Define a new local variable, returning its slot index.
@@ -69,16 +97,26 @@ module Adjutant
       @symbols = symbols
       @chunk = Chunk.new
       @loop_stack = [] of LoopScope
-      @class_depth = 0
       @in_block = false
       @scope = nil.as(CompilerScope?)
     end
 
-    # Compile a full program body and return the resulting Chunk.
-    def self.compile(body : Body, symbols : SymbolTable) : Chunk
+    # Compile a full top-level program body. Returns {chunk, local_count}
+    # — same shape as compile_proc, and for the same reason: top-level
+    # code needs real local-variable scoping too (previously it had
+    # none at all, so every bare `x = 5` at top level silently became
+    # a global — see CompilerScope#initialize's `starting_slot` comment
+    # and with_nested_scope for the related class/module-body fix).
+    # The top-level scope is a genuine root — no parent, not a block —
+    # so it behaves exactly like a method body's own scope: first
+    # assignment to an unresolved name defines a new local (see
+    # emit_store's `unless scope.is_block?` branch), not a global.
+    def self.compile(body : Body, symbols : SymbolTable) : {Chunk, Int32}
       c = new(symbols)
+      scope = CompilerScope.new(is_block: false, parent: nil)
+      c.scope = scope
       c.compile_body(body)
-      c.chunk
+      {c.chunk, scope.next_slot}
     end
 
     # Compile a method/block body.
@@ -450,33 +488,19 @@ module Adjutant
     end
 
     # Store the top-of-stack value into the appropriate variable slot.
-    # Inside a method/block scope, bare identifiers are locals.
-    # At the top level (no scope), they are globals.
+    # Every scope (top-level, class/module body, method, block) has a
+    # real CompilerScope after the 2026-07-15 scoping fix — bare
+    # identifiers are locals everywhere now, not just inside a method/
+    # block. The SetGlobal fallback below is unreachable in practice
+    # for a bare Identifier (every Compiler instance gets @scope set
+    # immediately after construction — see Compiler.compile/
+    # compile_proc), kept only as a defensive fallback rather than
+    # asserting @scope is never nil.
     # Constants are lexically scoped — see SetConstant.
     private def emit_store(target : Node, line : Int32) : Nil
       case target
       when Identifier
-        name = target.name
-        if scope = @scope
-          if slot = scope.resolve_local(name)
-            @chunk.emit(Op::SetLocal, line, c: slot.to_u32)
-            return
-          end
-          if slot = scope.resolve_outer(name)
-            @chunk.emit(Op::SetOuter, line, c: slot.to_u32)
-            return
-          end
-          # In a block, an unresolved name falls through to global —
-          # blocks don't introduce new locals for names they can't see.
-          # In a method body, first assignment defines a new local.
-          unless scope.is_block?
-            slot = scope.define(name)
-            @chunk.emit(Op::SetLocal, line, c: slot.to_u32)
-            return
-          end
-        end
-        sym_idx = intern(name)
-        @chunk.emit(Op::SetGlobal, line, c: sym_idx)
+        emit_store_name(target.name, line)
         return
       when Constant
         sym_idx = intern(target.name)
@@ -498,6 +522,53 @@ module Adjutant
     end
 
     # --- Calls --------------------------------------------------------------
+
+    # The actual name-resolution-and-emit logic for storing into a
+    # bare identifier — factored out of emit_store's Identifier case
+    # so a non-assignment binding that still needs "put this name in
+    # the current scope" (currently only compile_rescue_bind_and_body,
+    # for `rescue => e`) can share it instead of hardcoding SetGlobal.
+    # `rescue e` used to do exactly that — bind unconditionally via
+    # Op::SetGlobal, leaking `e` out of the rescue block as a real
+    # global and colliding with any top-level `def e` of the same
+    # name, same bug shape as the 2026-07-15 scoping fix, just never
+    # caught by that pass since it's a hardcoded emission rather than
+    # a path through emit_store itself.
+    # `force_define`: for `rescue => e` (see
+    # compile_rescue_bind_and_body) — real Ruby always binds a rescue
+    # variable as a genuine local of the enclosing body, even inside a
+    # block, unlike ordinary assignment. Concretely this means: still
+    # reuse an EXISTING same-scope local of that name if there is one
+    # (resolve_local still runs first, same as ordinary assignment),
+    # but never reach into an enclosing scope via resolve_outer, and
+    # never fall through to a global if truly unresolved — a rescue
+    # binding isn't "maybe an existing OUTER variable the user meant
+    # to update"; it's the language guaranteeing a local scoped to
+    # right here.
+    private def emit_store_name(name : String, line : Int32, force_define : Bool = false) : Nil
+      if scope = @scope
+        if slot = scope.resolve_local(name)
+          @chunk.emit(Op::SetLocal, line, c: slot.to_u32)
+          return
+        end
+        if !force_define && (slot = scope.resolve_outer(name))
+          @chunk.emit(Op::SetOuter, line, c: slot.to_u32)
+          return
+        end
+        # In a block, an unresolved name falls through to global —
+        # blocks don't introduce new locals for names they can't see.
+        # In a non-block scope (method, top-level, class/module body),
+        # first assignment defines a new local. force_define skips
+        # straight here regardless of is_block?, for the reason above.
+        if force_define || !scope.is_block?
+          slot = scope.define(name)
+          @chunk.emit(Op::SetLocal, line, c: slot.to_u32)
+          return
+        end
+      end
+      sym_idx = intern(name)
+      @chunk.emit(Op::SetGlobal, line, c: sym_idx)
+    end
 
     private def compile_call(node : Call) : Nil
       if recv = node.receiver
@@ -546,6 +617,31 @@ module Adjutant
 
     # --- Definitions --------------------------------------------------------
 
+    # A class/module body's own local-variable scope. Fresh
+    # CompilerScope (`parent: nil, is_block: false`) so names defined
+    # inside are invisible both outside the body (once popped, @scope
+    # reverts to the outer one, whose `vars` was never touched) and to
+    # any OUTER local of the same name (no `parent` link means
+    # resolve_local/resolve_outer can never see past this scope's own
+    # `vars`, matching real Ruby: a class/module body does not close
+    # over its enclosing scope's locals the way a block does). Slot
+    # numbering continues from the outer scope's `next_slot` (NOT a
+    # fresh 0) because a class/module body runs in the SAME Frame as
+    # its enclosing code — unlike a def/block body, which gets its own
+    # Frame via call_script_proc, a class/module body is never a
+    # separate ScriptProc/MakeProc/call at all (see compile_class/
+    # compile_module: no compile_proc call, just inline compile_body
+    # with self swapped via Op::SetClass). Two different CompilerScope
+    # objects sharing one Frame.locals array would silently collide at
+    # the SAME slot index without this.
+    private def with_nested_scope(&) : Nil
+      outer = @scope
+      start = outer.try(&.next_slot) || 0
+      @scope = CompilerScope.new(is_block: false, parent: nil, starting_slot: start)
+      yield
+      @scope = outer
+    end
+
     private def compile_def(node : DefNode) : Nil
       params = node.params.map(&.name)
       body_chunk, local_count = Compiler.compile_proc(
@@ -561,10 +657,15 @@ module Adjutant
       if recv = node.receiver
         compile_node(recv)
         @chunk.emit(Op::DefSingleton, node.line, c: sym_idx)
-      elsif @class_depth > 0
-        @chunk.emit(Op::DefMethod, node.line, c: sym_idx)
       else
-        @chunk.emit(Op::SetGlobal, node.line, c: sym_idx)
+        # `def` always targets self's class (see Op::DefMethod) —
+        # true everywhere now, not just "inside a class/module body":
+        # top-level self is `main`, a real RubyObject whose class is
+        # Object, so a bare top-level `def` correctly becomes a method
+        # of Object (matching real Ruby exactly) via the SAME opcode a
+        # class body's `def` uses. No more @class_depth branch/
+        # Op::SetGlobal special case for "am I at top level."
+        @chunk.emit(Op::DefMethod, node.line, c: sym_idx)
       end
     end
 
@@ -580,12 +681,10 @@ module Adjutant
       @chunk.emit(Op::MakeClass, node.line, b: super_idx, c: name_idx) # [old_self, new_class]
       @chunk.emit(Op::SetConstant, node.line, c: name_idx)             # [old_self, new_class]  registers in old_self's scope (or globals at top level)
       @chunk.emit(Op::SetClass, node.line)                             # [old_self]  self := new_class
-      @class_depth += 1
-      compile_body(node.body) # [old_self, body_val]
-      @class_depth -= 1
-      @chunk.emit(Op::Pop, node.line)      # [old_self]  discard body value
-      @chunk.emit(Op::SetClass, node.line) # []  self := old_self (restored)
-      emit_nil(node.line)                  # [nil]  class-def statement's own value
+      with_nested_scope { compile_body(node.body) }                    # [old_self, body_val]
+      @chunk.emit(Op::Pop, node.line)                                  # [old_self]  discard body value
+      @chunk.emit(Op::SetClass, node.line)                             # []  self := old_self (restored)
+      emit_nil(node.line)                                              # [nil]  class-def statement's own value
     end
 
     private def compile_module(node : ModuleNode) : Nil
@@ -595,12 +694,10 @@ module Adjutant
       @chunk.emit(Op::MakeModule, node.line, c: name_idx)  # [old_self, new_module]
       @chunk.emit(Op::SetConstant, node.line, c: name_idx) # [old_self, new_module]
       @chunk.emit(Op::SetClass, node.line)                 # [old_self]  self := new_module
-      @class_depth += 1
-      compile_body(node.body) # [old_self, body_val]
-      @class_depth -= 1
-      @chunk.emit(Op::Pop, node.line)      # [old_self]
-      @chunk.emit(Op::SetClass, node.line) # []  self := old_self (restored)
-      emit_nil(node.line)                  # [nil]
+      with_nested_scope { compile_body(node.body) }        # [old_self, body_val]
+      @chunk.emit(Op::Pop, node.line)                      # [old_self]
+      @chunk.emit(Op::SetClass, node.line)                 # []  self := old_self (restored)
+      emit_nil(node.line)                                  # [nil]
     end
 
     private def compile_lambda(node : Lambda) : Nil
@@ -930,8 +1027,7 @@ module Adjutant
     private def compile_rescue_bind_and_body(node : BeginNode, rescue_body : Body) : Nil
       if rvar = node.rescue_var
         @chunk.emit(Op::PushError, node.line)
-        sym_idx = intern(rvar)
-        @chunk.emit(Op::SetGlobal, node.line, c: sym_idx)
+        emit_store_name(rvar, node.line, force_define: true)
         @chunk.emit(Op::Pop, node.line)
       end
       compile_body(rescue_body)

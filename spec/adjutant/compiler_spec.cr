@@ -8,7 +8,8 @@ module Adjutant
   # Helper: parse source and compile to a Chunk.
   private def self.compile(source : String) : Chunk
     body = Parser.new(source).parse
-    Compiler.compile(body, COMPILER_SPEC_SYMBOLS)
+    chunk, _local_count = Compiler.compile(body, COMPILER_SPEC_SYMBOLS)
+    chunk
   end
 
   # Helper: return just the opcode sequence (excluding Const setup noise).
@@ -102,7 +103,15 @@ module Adjutant
       end
 
       it "deduplicates symbol constants" do
-        chunk = compile("x = 1\nx")
+        # x = 1; x used to exercise this by accident, via
+        # SetGlobal/GetGlobal both needing a :x Sym constant to look
+        # up in @globals — now that top-level locals get real
+        # CompilerScope slots (see the 2026-07-15 scoping fix),
+        # x = 1; x compiles to SetLocal/GetLocal (integer slot
+        # indices, no Sym constant involved at all). Test what this
+        # spec is actually about — Symbol constant dedup — directly,
+        # with a repeated Symbol literal instead.
+        chunk = compile(":x\n:x")
         x_count = chunk.consts.count { |v| v.symbol? && v.as_sym.name == "x" }
         x_count.should eq 1
       end
@@ -158,8 +167,16 @@ module Adjutant
     end
 
     describe "assignment" do
-      it "compiles simple assignment with SetGlobal" do
-        ops("x = 1").should contain(Op::SetGlobal)
+      it "compiles simple top-level assignment with SetLocal, not SetGlobal" do
+        # Previously x = 1 at top level compiled to SetGlobal — the
+        # exact bug the 2026-07-15 scoping fix corrects (see
+        # Compiler.compile/CompilerScope). A bare top-level assignment
+        # is now a real local, matching real Ruby (SetGlobal is
+        # reserved for `def` at top level, and $global-style globals
+        # once those land — never a plain `x = 1`).
+        o = ops("x = 1")
+        o.should contain(Op::SetLocal)
+        o.should_not contain(Op::SetGlobal)
       end
 
       it "compiles ivar assignment with SetIvar" do
@@ -170,11 +187,12 @@ module Adjutant
         ops("@@x = 1").should contain(Op::SetCvar)
       end
 
-      it "compiles += as load, add, store" do
-        o = ops("x += 1")
-        o.should contain(Op::GetGlobal)
+      it "compiles += as load, add, store, all against the local — not global" do
+        o = ops("x = 0\nx += 1")
+        o.should contain(Op::GetLocal)
         o.should contain(Op::Add)
-        o.should contain(Op::SetGlobal)
+        o.should contain(Op::SetLocal)
+        o.should_not contain(Op::SetGlobal)
       end
     end
 
@@ -239,10 +257,16 @@ module Adjutant
     end
 
     describe "def" do
-      it "compiles a def as MakeProc + SetGlobal at top level" do
+      it "compiles a def as MakeProc + DefMethod at top level, same as inside a class body" do
+        # Previously SetGlobal at top level, a special case — piece B
+        # (2026-07-16) unified this: self at top level is `main`, a
+        # real RubyObject of class Object, so Op::DefMethod's uniform
+        # "def always targets self's class" rule applies everywhere
+        # now, no more @class_depth branch/top-level special case.
         o = ops("def greet()\nend")
         o.should contain(Op::MakeProc)
-        o.should contain(Op::SetGlobal)
+        o.should contain(Op::DefMethod)
+        o.should_not contain(Op::SetGlobal)
       end
 
       it "compiles a def inside a class as DefMethod" do
@@ -285,7 +309,7 @@ module Adjutant
       it "compiles yield with Yield opcode" do
         # yield is in the method body chunk; outer chunk just registers the def
         chunk = compile("def f\nyield 1\nend")
-        chunk.code.map(&.op).should contain(Op::SetGlobal)
+        chunk.code.map(&.op).should contain(Op::DefMethod)
       end
     end
 

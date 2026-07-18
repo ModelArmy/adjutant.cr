@@ -529,9 +529,15 @@ module Adjutant
         if native = @interp.native_callable(sym.value)
           return RiskLeaf.new(native.risk, node.method, node.line)
         end
-        gval = @interp.get_global(node.method)
-        if gval.proc?
-          return walk_script_method(gval.as_proc.as(ScriptProc), node.line)
+        # A top-level def already executed via a PRIOR interp.eval
+        # call — genuinely pre-existing, same footing as a native
+        # function (see the comment above). Top-level defs live on
+        # Object's own methods table now (Interpreter#main is a
+        # RubyObject of class Object — see the 2026-07-16 root-scope
+        # work), not @globals, so this checks main.rclass directly
+        # rather than the removed @globals-ScriptProc lookup.
+        if proc = @interp.main.rclass.find_method(sym.value)
+          return walk_script_method(proc, node.line)
         end
       end
       if proc = @top_level_procs[node.method]?

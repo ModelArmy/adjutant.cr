@@ -34,6 +34,118 @@ module Adjutant
       end
     end
 
+    # A class/module body previously had NO real local-variable scope
+    # at all — a bare `x = 5` inside `class Foo; ...; end` compiled to
+    # Op::SetGlobal, the exact same opcode/table a top-level `x = 5`
+    # or a `def x` used, so class-body locals silently leaked out as
+    # globals and could collide with method names. Fixed by giving
+    # class/module bodies (and the top-level program itself) a real
+    # CompilerScope — see Compiler#with_nested_scope and
+    # Compiler.compile in compiler.cr.
+    describe "class/module body local variable scoping" do
+      it "a local defined in a module body does not leak outside it" do
+        src = <<-RUBY
+        module M
+          dbl = ->(n) { n + n }
+        end
+        dbl
+        RUBY
+        expect_raises(Adjutant::RuntimeError, /undefined method or variable: dbl/) do
+          eval(src)
+        end
+      end
+
+      it "calling a module-body local like a method raises, matching real Ruby" do
+        # Real Ruby: `dbl(3)` where dbl is a local (not a method) is a
+        # NameError — locals are never callable with ()-call syntax.
+        src = <<-RUBY
+        module M
+          dbl = ->(n) { n + n }
+          dbl(3)
+        end
+        RUBY
+        expect_raises(Adjutant::RuntimeError, /undefined method or variable: dbl/) do
+          eval(src)
+        end
+      end
+
+      it "a bare receiverless call inside a module body raises unknown symbol error" do
+        # Real Ruby: a bare `x` inside `module M`'s body, after `def
+        # x`, raises "undefined method" error.
+        src = <<-RUBY
+        module M
+          def x; 42; end
+          RESULT = x
+        end
+        RUBY
+        expect_raises(Adjutant::RuntimeError, /undefined method or variable: x/) do
+          eval(src)
+        end
+      end
+
+      it "a bare receiverless call inside a module body find module's singleton method" do
+        # Real Ruby: a bare `x` inside `module M`'s body, after `def
+        # self.x`, is available
+        src = <<-RUBY
+        module M
+          def self.x; 42; end
+          RESULT = x
+        end
+        M::RESULT
+        RUBY
+        eval(src).as_int.should eq 42
+      end
+
+      it "a nested module's body cannot see its enclosing module's locals" do
+        # The exact motivating example from the 2026-07-15 design
+        # conversation: real Ruby raises NameError on `puts tmp_a`
+        # inside module B, since a nested module body does NOT close
+        # over its enclosing module body's locals (unlike a block,
+        # which does).
+        src = <<-RUBY
+        module A
+          tmp_a = 55
+          module B
+            tmp_b = 66
+            tmp_a
+          end
+        end
+        RUBY
+        expect_raises(Adjutant::RuntimeError, /undefined method or variable: tmp_a/) do
+          eval(src)
+        end
+      end
+
+      it "a class body's own local does not collide with the SAME slot an outer local uses" do
+        # Regression guard for the slot-numbering half of the fix —
+        # without CompilerScope's starting_slot continuing from the
+        # outer scope, a fresh class-body scope starting back at slot
+        # 0 would silently alias the outer local living at that same
+        # Frame.locals index (class/module bodies share their
+        # enclosing Frame — see with_nested_scope's own comment).
+        src = <<-RUBY
+        outer = 1
+        module M
+          inner = 2
+        end
+        outer
+        RUBY
+        eval(src).as_int.should eq 1
+      end
+
+      it "class bodies get the same real scoping as module bodies" do
+        src = <<-RUBY
+        class C
+          local = 99
+        end
+        local
+        RUBY
+        expect_raises(Adjutant::RuntimeError, /undefined method or variable: local/) do
+          eval(src)
+        end
+      end
+    end
+
     describe "superclass resolution" do
       it "resolves a defined superclass" do
         val = eval("class Animal\nend\nclass Dog < Animal\nend\nDog")
@@ -69,8 +181,17 @@ module Adjutant
       end
 
       it "self is restored after the class body, unaffected by the body's last value" do
-        val = eval("class Foo\n1 + 1\nend\nself")
-        val.null?.should be_true
+        # Previously asserted self.null? — only true because top-level
+        # self_val defaulted to Value.nil_value before piece B
+        # (2026-07-16). Now self at top level is `main` (a real
+        # RubyObject of class Object — see Interpreter#main), never
+        # nil, matching real Ruby exactly: self after a class body
+        # ends, back at top level, is main. Op::GetClass/Op::SetClass
+        # correctly save/restore whatever self_val WAS beforehand
+        # (main, here), regardless of the class body's own last
+        # expression value.
+        val = eval("class Foo\n1 + 1\nend\nself.class == Object")
+        val.truthy?.should be_true
       end
 
       it "self is restored correctly across nested class definitions" do
@@ -337,10 +458,24 @@ module Adjutant
         val.as_int.should eq 2_i64
       end
 
-      it "raises for cvar access outside a class context" do
-        expect_raises(RuntimeError, /class variable access outside/) do
-          eval("@@x")
-        end
+      it "@@x at top level is legal, matching real Ruby — defines a cvar on Object " \
+         "(self is main, an instance of Object)" do
+        # Previously asserted this raises — that was itself the bug,
+        # an artifact of top-level self_val defaulting to nil_value
+        # before piece B (2026-07-16). Real Ruby: `@@x = 1` at the
+        # top level of a script IS legal, and defines a class
+        # variable on Object. Adjutant now matches this exactly,
+        # since self at top level is `main` (Interpreter#main, a real
+        # RubyObject of class Object) — cvar_class's
+        # `f.self_val.as_robject?.rclass` branch correctly resolves
+        # to Object, same as it would for any other RubyObject
+        # instance. cvar_class's raise is still real code (see
+        # vm.cr), just no longer reachable via a normal eval call now
+        # that self_val is never genuinely absent for a VM built with
+        # a real Interpreter — only a VM constructed with no
+        # Interpreter at all (not exercised by any spec) still hits
+        # the nil_value default that raise guards against.
+        eval("@@x = 1\n@@x").as_int.should eq 1
       end
     end
 

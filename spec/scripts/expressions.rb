@@ -217,3 +217,34 @@ assert "class names should include namespace unless root" do
   assert_equal b.class.to_s, "A::B"
   assert_equal c.class.to_s, "C"
 end
+
+assert "lambdas" do
+  def callback(fun, val)
+    fun(val)
+  end
+
+  dbl = ->(n) { n + n }
+  assert_equal dbl(3), 6
+  # y = dbl
+end
+
+assert "lambdas in module" do
+  module M
+    dbl = ->(n) { n + n }
+    assert_equal dbl(3), 6
+
+    def self.x; end
+
+    assert_not_nil(x)
+  end
+
+  assert_equal dbl(3), 6
+  true
+end
+
+assert "self as param in no-paren method call" do
+  module M
+  assert_not_equal self, nil
+  end
+  assert_not_equal self, nil
+end
