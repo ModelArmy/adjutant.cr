@@ -422,6 +422,7 @@ module Adjutant
       register_builtin_class(Builtins.bootstrap_array(self))
       register_builtin_class(Builtins.bootstrap_hash(self))
       register_builtin_class(Builtins.bootstrap_range(self))
+      register_builtin_class(Builtins.bootstrap_proc(self))
     end
 
     # Applies the same superclass/rclass defaulting define_builtin_class

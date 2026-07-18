@@ -710,7 +710,11 @@ module Adjutant
       )
       sproc = ScriptProc.new(lam_chunk, "<lambda>", params, local_count, true)
       proc_idx = @chunk.add_const(Value.proc(sproc))
-      @chunk.emit(Op::MakeProc, node.line, c: proc_idx)
+      # a=1: wrap as a real Proc RubyObject (see vm.cr Op::MakeProc,
+      # builtins/proc.cr). def bodies and call-site block literals
+      # (Compiler's other two Value.proc(sproc) sites) pass a=0 (the
+      # default) and stay bare — see SCOPE.md Piece C scope boundary.
+      @chunk.emit(Op::MakeProc, node.line, a: 1_u8, c: proc_idx)
     end
 
     # --- Control flow -------------------------------------------------------

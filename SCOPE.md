@@ -20,19 +20,6 @@ Blocking, or actively causing incorrect behavior in normal use. Ordered
 roughly by dependency, not necessarily by importance — an item lower down
 may unblock ones above it.
 
-- **Piece C — wrap lambdas as a real `Proc` builtin class.** A `Lambda`
-  literal currently compiles to a bare `Value.proc(sproc)`, not wrapped in
-  any `RubyObject`. This is what still allows `dbl(3)` (a local holding a
-  lambda) to be *directly* callable via the VM's own call machinery
-  without going through a real `#call` method — the last piece of the
-  original `dbl`/`def dbl` collision investigation. Needs: (1) a `Proc`
-  `RubyClass` with a native `#call`, mirroring how `Range` was added
-  (`src/adjutant/builtins/range.cr` as the template); (2) `compile_lambda`
-  changed to emit a `Value.robject(Proc-instance)` instead of a bare
-  `Value.proc(sproc)`. Also closes two already-documented side gaps for
-  free: `.class`/`.proc?` not resolving for a bare lambda `Value` (no
-  `builtin_class_for` case for a proc today), and `->(){}.call(...)` not
-  existing as a language feature at all.
 - **Piece D — risk-walking for blocks/lambdas.** `RiskWalker` never walks
   a `BlockNode`'s or `Lambda`'s body at all today — a block passed to
   `Array#each { risky_call }` is completely invisible to static risk
@@ -57,12 +44,19 @@ yet. Promote to `Must Fix` when something starts depending on it.
 - **No true per-instance singleton methods on `RubyObject`.** `Op::DefSingleton`
   (`def self.foo` when `self` is a `RubyObject`, not a `RubyClass`)
   targets the receiver's own *class* instead — `RubyObject` has no
-  singleton-method table of its own. Correct in practice for the one case
-  that matters today (`def self.foo` at top level, where `self` is always
-  `main`) but means the method is callable as `Object.foo`, not via a
-  later bare `foo`. See `DEVELOPMENT.md`'s "self at every level" section
-  and `Op::DefSingleton`'s own comment in `vm.cr`. A real per-instance
-  singleton-method table on `RubyObject` would close this properly.
+  singleton-method table of its own. Observably correct for the one case
+  that matters in practice (`def self.foo` at top level, where `self` is
+  always `main`, the one and only instance of `Object` a script typically
+  has as `self` — see `Interpreter#main`), but means the method becomes
+  callable as `Object.foo` (explicit receiver), not via a later BARE
+  `foo` the way real Ruby's true per-object singleton method would be —
+  found while writing specs for the 2026-07-16 root-scope work (piece
+  B). See `DEVELOPMENT.md`'s "self at every level" section and
+  `Op::DefSingleton`'s own comment in `vm.cr`. A real per-instance
+  singleton-method table on `RubyObject` would close this properly, if
+  it's ever worth the size of that change; genuinely narrow in practice
+  since nothing else routinely calls `def self.foo` on an arbitrary
+  (non-`main`) object today.
 - **No implicit-`self` privacy/visibility model.** Adjutant has no
   `private`/`public`/`protected` at all — a native function or top-level
   `def` (both land on `Object`) is reachable via an explicit receiver on
@@ -78,14 +72,48 @@ yet. Promote to `Must Fix` when something starts depending on it.
   likely present in `parse_until`/anywhere else accepting an optional
   trailing `do` — not verified beyond `while`/`for`.
 - **`Array`/`Hash` as a `Hash` key hashes by reference, not content.**
-  `Value` has no custom `hash(hasher)` for the `array?`/`hash?` cases, so
-  `{[1,2] => "a"}[[1,2]]` (a different but `==`-equal `Array`) won't find
-  the entry. See `ValueOps.equal?`'s own comment (`value_ops.cr`) and
-  `DEVELOPMENT.md`'s "Not yet implemented" list.
-- **String repetition (`"ab" * 3`) not implemented.** `ValueOps.op`
-  (backing `*`) has `Integer`/`Float` cases only.
-- **Symbol-shorthand hash literal syntax (`{k: v}`) not parsed.** Only
-  hash-rocket (`{"k" => v}`) works today.
+  `Value` has no custom `hash(hasher)` override, so a `Hash(Value, Value)`
+  key lookup relies on Crystal's auto-generated struct hash — fine for
+  `Nil`/`Bool`/`Int64`/`Float64`/`String`/`Sym` (all of which Crystal
+  hashes consistently, INCLUDING cross-type for numerics: `5.hash ==
+  5.0.hash` when `5 == 5.0`, confirmed by `hash_spec.cr`'s own passing
+  regression test, not assumed), but an `Array` or `Hash` used AS a key
+  hashes by Crystal's default reference identity, not by the
+  elements/pairs it contains — so `{[1,2] => "a"}[[1,2]]` (a different
+  `Array` object with equal contents) would NOT find `"a"`, even though
+  `ValueOps.equal?([1,2], [1,2])` is `true`. Same root cause as the note
+  in `ValueOps.equal?`'s own comment (`value_ops.cr`) — noted here too
+  since it's the kind of gap easy to rediscover the hard way inside a
+  `Hash`-keyed-by-container script. Fixing this properly would mean
+  giving `Value` a real custom `hash(hasher)` for the `array?`/`hash?`
+  cases specifically (hashing by contents, recursively) — a deliberate,
+  scoped change, not a quick patch, and only matters for the (currently
+  rare) case of a container used as a hash key.
+- **String repetition** (`"ab" * 3`). `ValueOps.op` (the method backing
+  `*`, see `value_ops.cr`) has real `Integer`/`Float` cases but no
+  `String` one — `+`, `==`, and `<`/`<=`/`>`/`>=` all DO already work for
+  strings at the opcode level (see `ValueOps.add`/`.equal?`/`.compare`),
+  so this is narrowly about `*` specifically. Noticed while bootstrapping
+  the `String` builtin class (Phase 4a of base types); out of scope there
+  since that work only wires up native METHODS, not opcodes.
+- **Symbol-shorthand hash literal syntax** (`{k: v}`).
+  `Parser#parse_hash_or_block_brace` only ever calls
+  `expect(TokenKind::HashRocket)` — there's no branch checking for a
+  colon after a bare identifier key, so `{a: 1}` doesn't parse at all
+  today; only `{"a" => 1}` (hash-rocket) does. Noticed while
+  bootstrapping the `Hash` builtin class (Phase 4c of base types), which
+  is otherwise unaffected — every `Hash` method works on however the
+  hash `Value` was constructed. Small parser addition whenever it's
+  worth doing.
+- **Exponential float literals** (`1e10`, `1.5e-3`). `Lexer#scan_number`
+  has no `e`/`E` exponent handling at all — `1e10` lexes as `Integer(1)`
+  followed by a separate identifier `e10`, not a clean parse error.
+  Noticed while bootstrapping the `Float` builtin class (Phase 3 of base
+  types), which is otherwise unaffected — `Float` the class/its methods
+  work fine on any float `Value`, however it was constructed (a plain
+  decimal literal, `to_f`, division, ...); this is purely about the
+  lexer not accepting one particular literal spelling. Small, mechanical
+  fix whenever it's worth doing.
 - **No structured audit-trail export beyond `RiskFlowLog` itself.**
   Nothing turns a `RiskFlowLog` into a saved/replayable session record.
   Carried forward from the original 2026-07-14 handoff, still open.
@@ -104,7 +132,7 @@ yet. Promote to `Must Fix` when something starts depending on it.
   `GVar` but never consumed by the parser — see `DEVELOPMENT.md`'s
   scoping section), heredocs/`%w[]` literals, multi-level closures,
   `Range` for non-`Integer`/non-`succ`-having bound types beyond what's
-  already generic, exponential float literals (`1e10`), `<=>` for
+  already generic, `<=>` for
   `Integer`/`Float`, a shared `Numeric` ancestor, `respond_to?`'s blind
   spot (`x.respond_to?(:to_s)` is `false` even though `x.to_s` works).
 
@@ -113,6 +141,16 @@ yet. Promote to `Must Fix` when something starts depending on it.
 Deliberately out of scope, with the reasoning that closed the door —
 revisit only if the stated reason no longer holds.
 
+- **`&blk`-param capture / block literals as first-class `Proc` values.**
+  Decided 2026-07-18 alongside Piece C's design: only `Lambda`-node output
+  (`->(){}` — Adjutant has no Kernel `lambda { }` function) becomes a
+  real `Proc` object. A `{ }`/`do...end`
+  block passed to a call stays consumable only via implicit `yield`
+  inside that call — it's never bound to a named parameter, never
+  returned, never stored. Real Ruby supports `def foo(&blk)`; Adjutant
+  deliberately doesn't (yet) — narrowing the subset rather than widening
+  it, kept simple until something depends on it. Revisit as a new,
+  separate item if a real script needs to hold and defer-call a block.
 - **`Class.new`/`Module.new`.** Explicit cut from the Object/Class/Module
   design conversation (2026-07-14 arc) — this bootstrap only makes
   `Class`/`Module` exist as real `RubyClass`es for `.class`/`is_a?`/

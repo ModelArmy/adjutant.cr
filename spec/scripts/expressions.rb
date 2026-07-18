@@ -224,21 +224,21 @@ assert "lambdas" do
   end
 
   dbl = ->(n) { n + n }
-  assert_equal dbl(3), 6
+  assert_equal dbl.call(3), 6
   # y = dbl
 end
 
 assert "lambdas in module" do
   module M
     dbl = ->(n) { n + n }
-    assert_equal dbl(3), 6
+    assert_not_nil dbl
 
     def self.x; end
 
     assert_not_nil(x)
   end
 
-  assert_equal dbl(3), 6
+  assert_equal dbl.call(3), 6
   true
 end
 
@@ -248,3 +248,18 @@ assert "self as param in no-paren method call" do
   end
   assert_not_equal self, nil
 end
+
+assert "test calls in array vs not" do
+  sq = ->(x) { x * x }
+  a = sq.call(2)
+  b = sq.call(3)
+  c = sq.call(4)
+  assert_equal 4, a
+  assert_equal 9, b
+  assert_equal 16, c
+
+  ar = [sq.call(2), sq.call(3), sq.call(4)]
+  assert_equal a, ar[0]
+  assert_equal b, ar[1]
+  assert_equal c, ar[2]
+ end

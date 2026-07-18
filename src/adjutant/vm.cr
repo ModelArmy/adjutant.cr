@@ -232,6 +232,7 @@ module Adjutant
     # Can be called from within an execution via a native function.
     protected def invoke(proc : ScriptProc, args : Array(Value), self_val : Value? = nil) : Value
       saved_frames = @frames
+      saved_stack = @stack
       saved_ins_count = @instruction_count
       saved_cur_block = @current_block
       saved_cur_block_locals = @current_block_locals
@@ -241,13 +242,38 @@ module Adjutant
         inherited_self = self_val || f.self_val
         inherited_lexical = proc.lexical_scope || f.lexical_scope
         @frames = [] of Frame
-        # Setup the proc call, and ...
+        # @stack must be isolated too, not just @frames — execute's
+        # Op::Ret pushes its result back onto @stack only `unless
+        # @frames.empty?` (correct for ordinary same-@frames-array
+        # nesting, where the caller's frame is still present after
+        # Op::Ret pops the callee's), but invoke's swapped, single-
+        # frame @frames IS empty immediately after that one frame's
+        # Op::Ret — so the result is popped and never pushed back, and
+        # execute's own `@stack.last? || result` fallback (its actual
+        # return mechanism) then reads whatever the CALLER's stack
+        # happened to have on top instead: stale, not this call's
+        # result. Concretely: sq.call(2) leaves 4 on the shared stack
+        # mid-array-literal-construction; a nested sq.call(3) then
+        # incorrectly returns that leftover 4 instead of its own 9,
+        # since its own Op::Ret result never made it onto the (shared)
+        # stack at all. Swapping @stack the same way @frames already
+        # is gives the nested execute a clean slate whose top really
+        # is its own Op::Ret result, restoring the caller's stack
+        # (with the outer expression's in-progress values intact)
+        # afterward. Found 2026-07-18 via the person's
+        # spec/scripts/expressions.rb repro — direct sequential
+        # `.call`s worked (stack was momentarily balanced between
+        # them), only a compound expression with values still
+        # pending ON the stack (array literal, method args, ...)
+        # around a nested `.call` exposed it.
+        @stack = Array(Value).new(256)
         call_script_proc(proc, args, f.filename, nil, f.locals, self_val: inherited_self,
           lexical_scope: inherited_lexical, lexical_override: true)
         # Let the VM execute the chunk
         result = execute
       ensure
         @frames = saved_frames
+        @stack = saved_stack
         @instruction_count = saved_ins_count
         @current_block = saved_cur_block
         @current_block_locals = saved_cur_block_locals
@@ -695,7 +721,12 @@ module Adjutant
             outer[slot] = val if outer && slot < outer.size
             push(val)
           when Op::MakeProc
-            push(chunk.consts[inst.c])
+            sproc_val = chunk.consts[inst.c]
+            if inst.a == 1_u8
+              push(make_lambda_object(sproc_val.as_proc, sproc_val.label))
+            else
+              push(sproc_val)
+            end
             # --- Class / module ---------------------------------------------
           when Op::GetClass
             push(f.self_val)
@@ -1686,6 +1717,22 @@ module Adjutant
       obj.ivars[@symbols.intern("__min").value] = rstart
       obj.ivars[@symbols.intern("__max").value] = rend
       obj.ivars[@symbols.intern("__exclusive").value] = Value.bool(exclusive)
+      Value.robject(obj, label)
+    end
+
+    # Wraps a ScriptProc (already built by the compiler for a Lambda
+    # node — see compile_lambda) in a real Proc RubyObject. See
+    # builtins/proc.cr and SCOPE.md Piece C: only Lambda-node output
+    # goes through this; call-site block literals and def bodies keep
+    # using the bare sproc Value directly (Op::MakeProc with a=0),
+    # never reach here.
+    private def make_lambda_object(sproc : ScriptProc, label : RiskFlowLabel?) : Value
+      cls = builtin_class_by_name("Proc")
+      unless cls
+        raise runtime_error("Proc class not registered — bootstrap_builtin_classes must run before any lambda literal is evaluated")
+      end
+      obj = RubyObject.new(cls)
+      obj.ivars[@symbols.intern("__sproc").value] = Value.proc(sproc)
       Value.robject(obj, label)
     end
 
