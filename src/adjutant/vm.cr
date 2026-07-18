@@ -970,7 +970,6 @@ module Adjutant
       dispatch_call(name, [recv] + args, safe: false, filename: filename, line: line, has_receiver: true)
     end
 
-    # ameba:disable Metrics/CyclomaticComplexity - Clear steps, better together
     # The display name a native call shows in an error message or a
     # RiskFlowDecisionRequest, for an IMPLICIT-self call specifically.
     # Bare `name`, NOT "ClassName#name" — unlike real explicit-
@@ -983,6 +982,7 @@ module Adjutant
       name
     end
 
+    # ameba:disable Metrics/CyclomaticComplexity - Clear steps, better together
     private def dispatch_call(name : String,
                               args : Array(Value),
                               safe : Bool,
