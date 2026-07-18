@@ -241,3 +241,10 @@ assert "lambdas in module" do
   assert_equal dbl(3), 6
   true
 end
+
+assert "self as param in no-paren method call" do
+  module M
+  assert_not_equal self, nil
+  end
+  assert_not_equal self, nil
+end
