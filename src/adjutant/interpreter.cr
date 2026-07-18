@@ -349,7 +349,21 @@ module Adjutant
       class_cls = RubyClass.new("Class", nil, is_module: false)
       obj_cls = RubyClass.new("Object", nil, is_module: false)
 
+      # Real Ruby: Class.superclass == Module, Module.superclass ==
+      # Object (Object.superclass == BasicObject in real Ruby;
+      # Adjutant has no BasicObject, so Object's superclass stays nil
+      # as the deliberate root). Module's own link was missing
+      # entirely before — Module.superclass was nil, breaking the
+      # chain a module needs to reach Object's methods (see
+      # dispatch_call's implicit-self step: when self is a RubyClass,
+      # e.g. inside a `module M` body, finding a native/Kernel-style
+      # method like `puts` requires walking self.rclass's (M.rclass
+      # == Module's) OWN superclass chain up to Object, not M's own
+      # (modules have no superclass of their own in real Ruby at
+      # all) — that chain was broken at its very first link without
+      # this).
       class_cls.superclass = mod_cls
+      mod_cls.superclass = obj_cls
       obj_cls.rclass = class_cls
       class_cls.rclass = class_cls
       mod_cls.rclass = class_cls

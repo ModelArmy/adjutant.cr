@@ -149,6 +149,58 @@ module Adjutant
         interp.define_native("greet") { |_| Value.string("native") }
         interp.eval("def greet; \"script\"; end\ngreet").as_string.should eq "script"
       end
+
+      it "is callable bare from inside a module body — regression guard" do
+        # The exact regression reported after piece B landed: self
+        # inside `module M; ...; end`'s body is M itself (a
+        # RubyClass), and a module has no superclass of its OWN to
+        # walk (only classes do) — so a native/Kernel-style call
+        # (assert_not_nil, puts, ...) needed self.rclass's (Module's)
+        # OWN chain up to Object, which was broken at its very first
+        # link (Module.superclass was nil — see
+        # core_class_hierarchy_spec.cr's own coverage of the fix).
+        interp, _ = make_interp
+        interp.define_native("assert_not_nil") { |args| Value.bool(!args.first.null?) }
+        src = <<-RUBY
+        module M
+          def self.x; end
+
+          RESULT = assert_not_nil(x)
+        end
+        M::RESULT
+        RUBY
+        # x is a script-defined method returning nil (implicit last
+        # value of an empty body) — assert_not_nil(nil) is false;
+        # what matters here is that the CALL resolves at all, not the
+        # specific true/false result.
+        interp.eval(src).falsy?.should be_true
+      end
+
+      it "is callable bare from inside a class body too" do
+        interp, _ = make_interp
+        interp.define_native("shout") { |args| Value.string(args.first.as_string.upcase) }
+        src = <<-RUBY
+        class Foo
+          RESULT = shout("hi")
+        end
+        Foo::RESULT
+        RUBY
+        interp.eval(src).as_string.should eq "HI"
+      end
+
+      it "a class's own future INSTANCE methods are not reachable bare inside its own body — " \
+         "a real, deliberate distinction (instance methods mean 'available on an instance', " \
+         "not 'available on the class object itself')" do
+        src = <<-RUBY
+        class Foo
+          def bar; "instance method"; end
+          bar
+        end
+        RUBY
+        expect_raises(Adjutant::RuntimeError, /undefined method or variable: bar/) do
+          eval(src)
+        end
+      end
     end
 
     describe "def self.foo at top level" do

@@ -233,9 +233,9 @@ assert "lambdas in module" do
     dbl = ->(n) { n + n }
     assert_equal dbl(3), 6
 
-    def x; end
+    def self.x; end
 
-    assert_not_nil x
+    assert_not_nil(x)
   end
 
   assert_equal dbl(3), 6

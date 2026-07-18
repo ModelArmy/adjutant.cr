@@ -80,3 +80,20 @@ assert "unknown bare names should raise" do
     A.check
   end
 end
+
+assert "single methods self is Class" do
+  class A
+    def self.hello
+      assert_equal(self, A)
+      "hello"
+    end
+
+    def world
+      assert_not_equal(self, A)
+      "world"
+    end
+  end
+
+  A.hello
+  A.new.world
+end

@@ -25,10 +25,21 @@ module Adjutant
       result.null?.should be_true
     end
 
-    it "Module.superclass is nil" do
+    it "Module.superclass is Object, matching real Ruby" do
+      # Previously asserted nil — Module's superclass link was simply
+      # never set in bootstrap_core_hierarchy (an oversight, not a
+      # deliberate simplification like Object.superclass being nil
+      # instead of BasicObject). Real Ruby: Class.superclass ==
+      # Module, Module.superclass == Object. This gap caused a real
+      # regression found in the 2026-07-16/17 root-scope work: a
+      # module body's self is the module itself (a RubyClass), and
+      # implicit-self dispatch for a Kernel-style native call (e.g.
+      # `assert_not_nil` inside `module M; ...; end`) needs to walk
+      # self.rclass's (Module's) own superclass chain up to Object —
+      # broken at its very first link without this.
       interp, _ = make_interp
-      result = interp.eval("Module.superclass")
-      result.null?.should be_true
+      result = interp.eval("Module.superclass == Object")
+      result.truthy?.should be_true
     end
 
     it "Class.class is Class itself — the one genuinely self-referential case" do
@@ -133,6 +144,31 @@ module Adjutant
         class Foo
         end
         Foo.new.is_a?(Object)
+      RUBY
+      result.truthy?.should be_true
+    end
+
+    it "a module object itself is_a? Object, walking Module's own superclass chain" do
+      # Fixed as a side effect of the Module.superclass fix above —
+      # is_a_target? already correctly starts from recv.rclass
+      # (Module, for a module object) and walks ITS superclass chain;
+      # that chain just never reached Object before, since
+      # Module.superclass was nil.
+      interp, _ = make_interp
+      result = interp.eval(<<-RUBY)
+        module M
+        end
+        M.is_a?(Object)
+      RUBY
+      result.truthy?.should be_true
+    end
+
+    it "a class object itself is_a? Object too, via Class -> Module -> Object" do
+      interp, _ = make_interp
+      result = interp.eval(<<-RUBY)
+        class Foo
+        end
+        Foo.is_a?(Object)
       RUBY
       result.truthy?.should be_true
     end

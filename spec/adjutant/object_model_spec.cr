@@ -69,30 +69,26 @@ module Adjutant
         end
       end
 
-      it "a bare receiverless call inside a module body correctly checks self's own methods" do
+      it "a bare receiverless call inside a module body raises unknown symbol error" do
         # Real Ruby: a bare `x` inside `module M`'s body, after `def
-        # x`, implicitly calls M's own method x (self is receiver by
-        # default inside a class/module/method body). Previously
-        # documented here as a gap (dispatch_call had no implicit-self
-        # step for the receiverless path) — fixed as part of the
-        # 2026-07-16 root-scope work (piece B), where implicit self
-        # became load-bearing: it's the SAME mechanism that makes a
-        # bare top-level `def greet` reachable via a later bare
-        # `greet` (top-level self is `main`, a RubyObject of class
-        # Object), so a module/class body's own `def x` reachable via
-        # a later bare `x` came along for free with the same fix.
-        #
-        # Can't just check eval(src) directly here — a module/class
-        # DEFINITION STATEMENT always evaluates to nil regardless of
-        # its body's last expression (see compile_module's own
-        # `emit_nil` — a real, pre-existing, separate simplification,
-        # unrelated to piece B), so `x`'s own return value (42) is
-        # discarded by the module statement itself before reaching
-        # `eval`'s result. Capture it into a constant instead, and
-        # read that back afterward, to actually observe it.
+        # x`, raises "undefined method" error.
         src = <<-RUBY
         module M
           def x; 42; end
+          RESULT = x
+        end
+        RUBY
+        expect_raises(Adjutant::RuntimeError, /undefined method or variable: x/) do
+          eval(src)
+        end
+      end
+
+      it "a bare receiverless call inside a module body find module's singleton method" do
+        # Real Ruby: a bare `x` inside `module M`'s body, after `def
+        # self.x`, is available
+        src = <<-RUBY
+        module M
+          def self.x; 42; end
           RESULT = x
         end
         M::RESULT

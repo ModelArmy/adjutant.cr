@@ -971,6 +971,18 @@ module Adjutant
     end
 
     # ameba:disable Metrics/CyclomaticComplexity - Clear steps, better together
+    # The display name a native call shows in an error message or a
+    # RiskFlowDecisionRequest, for an IMPLICIT-self call specifically.
+    # Bare `name`, NOT "ClassName#name" — unlike real explicit-
+    # receiver dispatch (obj.foo, where the class qualification is
+    # genuinely informative), an implicit-self call looks like a
+    # plain function call in the script itself (`delete_file(...)`,
+    # not `Object#delete_file(...)`) — the display name should match
+    # what's actually in the source, not an internal dispatch detail.
+    private def display_name_for_implicit_self(name : String) : String
+      name
+    end
+
     private def dispatch_call(name : String,
                               args : Array(Value),
                               safe : Bool,
@@ -1061,34 +1073,61 @@ module Adjutant
       # visibility) this piece doesn't attempt to close.
       unless has_receiver
         if self_val && (sym_id = @symbols.lookup(name).try(&.value))
-          self_cls = self_val.as_rclass? || self_val.as_robject?.try(&.rclass)
-          if self_cls
-            if method = self_cls.find_method(sym_id)
+          if obj = self_val.as_robject?
+            # self is an ordinary object (main at top level, or any
+            # instance inside its own method body) — its OWN class's
+            # instance-method chain is exactly what a bare call means
+            # here, same table an explicit `self.foo`/`obj.foo` would
+            # use.
+            cls = obj.rclass
+            if method = cls.find_method(sym_id)
               return call_script_proc(method, args, filename, blk, nil, self_val: self_val, block_outer: blk_outer)
             end
-            if native = self_cls.find_native_method(sym_id)
-              # Bare `name`, NOT "ClassName#name" — unlike real
-              # explicit-receiver dispatch (obj.foo, where the class
-              # qualification is genuinely informative in an error/
-              # risk-flow-decision message), this call looks like a
-              # plain top-level function call in the script itself
-              # (`delete_file(...)`, not `Object#delete_file(...)`) —
-              # the display name a RiskFlowDecisionRequest carries, or
-              # an error message shows, should match what's actually
-              # in the source, not an internal dispatch detail.
-              return call_native(native, args, filename, line, blk, name)
+            if native = cls.find_native_method(sym_id)
+              return call_native(native, args, filename, line, blk, display_name_for_implicit_self(name))
             end
-            # self itself being a RubyClass also means ITS singleton
-            # methods are in implicit-self scope (`def self.foo` at
-            # top level, called bare from later top-level code, or a
-            # class body's own `def self.foo` called bare from
-            # elsewhere in that same body).
-            if self_rclass = self_val.as_rclass?
-              if singleton = self_rclass.find_singleton_method(sym_id)
-                return call_script_proc(singleton, args, filename, blk, nil, self_val: self_val, block_outer: blk_outer)
+          elsif self_rclass = self_val.as_rclass?
+            # self IS a class/module object (inside a class/module
+            # body). Two genuinely different lookups here, not one:
+            #
+            # 1) self_rclass's OWN singleton tables — `def self.foo`
+            #    called bare from elsewhere in the same body (these
+            #    are methods usable ON this class/module object
+            #    itself, exactly what implicit self means here).
+            #
+            # 2) self_rclass.rclass's (Module's, for a `module M`
+            #    body — Class's, for a `class Foo` body) instance-
+            #    method CHAIN, walked up to Object — this is how a
+            #    bare Kernel-style native call (`puts`, or any
+            #    define_native function) resolves inside a class/
+            #    module body in real Ruby: M is itself an INSTANCE of
+            #    Module, and Module < Object (see
+            #    bootstrap_core_hierarchy), so M can call anything
+            #    Object provides, the same way any other object can.
+            #    A module has NO superclass of its own to walk (only
+            #    classes do) — this chain is genuinely different from
+            #    that, and is what was MISSING before, causing a
+            #    regression: a module body couldn't reach ANY native
+            #    function (assert_not_nil, puts, ...) at all.
+            #
+            # self_rclass.find_method/.find_native_method (self's own
+            # INSTANCE tables — i.e. what M.new's instances, or
+            # things that `include M`, would see) are deliberately
+            # NOT checked here — those mean something different
+            # (methods available on instances OF this class), not
+            # methods usable on the class object itself.
+            if singleton = self_rclass.find_singleton_method(sym_id)
+              return call_script_proc(singleton, args, filename, blk, nil, self_val: self_val, block_outer: blk_outer)
+            end
+            if native_singleton = self_rclass.find_native_singleton_method(sym_id)
+              return call_native(native_singleton, args, filename, line, blk, display_name_for_implicit_self(name))
+            end
+            if meta = self_rclass.rclass
+              if method = meta.find_method(sym_id)
+                return call_script_proc(method, args, filename, blk, nil, self_val: self_val, block_outer: blk_outer)
               end
-              if native_singleton = self_rclass.find_native_singleton_method(sym_id)
-                return call_native(native_singleton, args, filename, line, blk, name)
+              if native = meta.find_native_method(sym_id)
+                return call_native(native, args, filename, line, blk, display_name_for_implicit_self(name))
               end
             end
           end
