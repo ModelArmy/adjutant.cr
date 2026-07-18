@@ -69,26 +69,35 @@ module Adjutant
         end
       end
 
-      it "(separate, pre-existing gap — not fixed by this scoping change) a bare " \
-         "receiverless call inside a module body does not implicitly check self's own methods" do
+      it "a bare receiverless call inside a module body correctly checks self's own methods" do
         # Real Ruby: a bare `x` inside `module M`'s body, after `def
         # x`, implicitly calls M's own method x (self is receiver by
-        # default inside a class/module/method body). Adjutant's
-        # dispatch_call has NO implicit-self step for the receiverless
-        # path (has_receiver is only true for an EXPLICIT receiver —
-        # see dispatch_call's step 1.5 gate in vm.cr) — discovered
-        # while writing specs for this scoping fix, but it's a
-        # dispatch gap, not a scoping one, so left as a documented,
-        # separate follow-up rather than folded into this change.
+        # default inside a class/module/method body). Previously
+        # documented here as a gap (dispatch_call had no implicit-self
+        # step for the receiverless path) — fixed as part of the
+        # 2026-07-16 root-scope work (piece B), where implicit self
+        # became load-bearing: it's the SAME mechanism that makes a
+        # bare top-level `def greet` reachable via a later bare
+        # `greet` (top-level self is `main`, a RubyObject of class
+        # Object), so a module/class body's own `def x` reachable via
+        # a later bare `x` came along for free with the same fix.
+        #
+        # Can't just check eval(src) directly here — a module/class
+        # DEFINITION STATEMENT always evaluates to nil regardless of
+        # its body's last expression (see compile_module's own
+        # `emit_nil` — a real, pre-existing, separate simplification,
+        # unrelated to piece B), so `x`'s own return value (42) is
+        # discarded by the module statement itself before reaching
+        # `eval`'s result. Capture it into a constant instead, and
+        # read that back afterward, to actually observe it.
         src = <<-RUBY
         module M
           def x; 42; end
-          x
+          RESULT = x
         end
+        M::RESULT
         RUBY
-        expect_raises(Adjutant::RuntimeError, /undefined method or variable: x/) do
-          eval(src)
-        end
+        eval(src).as_int.should eq 42
       end
 
       it "a nested module's body cannot see its enclosing module's locals" do
@@ -176,8 +185,17 @@ module Adjutant
       end
 
       it "self is restored after the class body, unaffected by the body's last value" do
-        val = eval("class Foo\n1 + 1\nend\nself")
-        val.null?.should be_true
+        # Previously asserted self.null? — only true because top-level
+        # self_val defaulted to Value.nil_value before piece B
+        # (2026-07-16). Now self at top level is `main` (a real
+        # RubyObject of class Object — see Interpreter#main), never
+        # nil, matching real Ruby exactly: self after a class body
+        # ends, back at top level, is main. Op::GetClass/Op::SetClass
+        # correctly save/restore whatever self_val WAS beforehand
+        # (main, here), regardless of the class body's own last
+        # expression value.
+        val = eval("class Foo\n1 + 1\nend\nself.class == Object")
+        val.truthy?.should be_true
       end
 
       it "self is restored correctly across nested class definitions" do
@@ -444,10 +462,24 @@ module Adjutant
         val.as_int.should eq 2_i64
       end
 
-      it "raises for cvar access outside a class context" do
-        expect_raises(RuntimeError, /class variable access outside/) do
-          eval("@@x")
-        end
+      it "@@x at top level is legal, matching real Ruby — defines a cvar on Object " \
+         "(self is main, an instance of Object)" do
+        # Previously asserted this raises — that was itself the bug,
+        # an artifact of top-level self_val defaulting to nil_value
+        # before piece B (2026-07-16). Real Ruby: `@@x = 1` at the
+        # top level of a script IS legal, and defines a class
+        # variable on Object. Adjutant now matches this exactly,
+        # since self at top level is `main` (Interpreter#main, a real
+        # RubyObject of class Object) — cvar_class's
+        # `f.self_val.as_robject?.rclass` branch correctly resolves
+        # to Object, same as it would for any other RubyObject
+        # instance. cvar_class's raise is still real code (see
+        # vm.cr), just no longer reachable via a normal eval call now
+        # that self_val is never genuinely absent for a VM built with
+        # a real Interpreter — only a VM constructed with no
+        # Interpreter at all (not exercised by any spec) still hits
+        # the nil_value default that raise guards against.
+        eval("@@x = 1\n@@x").as_int.should eq 1
       end
     end
 

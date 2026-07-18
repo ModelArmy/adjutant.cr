@@ -257,10 +257,16 @@ module Adjutant
     end
 
     describe "def" do
-      it "compiles a def as MakeProc + SetGlobal at top level" do
+      it "compiles a def as MakeProc + DefMethod at top level, same as inside a class body" do
+        # Previously SetGlobal at top level, a special case — piece B
+        # (2026-07-16) unified this: self at top level is `main`, a
+        # real RubyObject of class Object, so Op::DefMethod's uniform
+        # "def always targets self's class" rule applies everywhere
+        # now, no more @class_depth branch/top-level special case.
         o = ops("def greet()\nend")
         o.should contain(Op::MakeProc)
-        o.should contain(Op::SetGlobal)
+        o.should contain(Op::DefMethod)
+        o.should_not contain(Op::SetGlobal)
       end
 
       it "compiles a def inside a class as DefMethod" do
@@ -303,7 +309,7 @@ module Adjutant
       it "compiles yield with Yield opcode" do
         # yield is in the method body chunk; outer chunk just registers the def
         chunk = compile("def f\nyield 1\nend")
-        chunk.code.map(&.op).should contain(Op::SetGlobal)
+        chunk.code.map(&.op).should contain(Op::DefMethod)
       end
     end
 

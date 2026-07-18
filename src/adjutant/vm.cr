@@ -215,7 +215,16 @@ module Adjutant
     def run(chunk : Chunk, filename : String = "<script>", local_count : Int32 = 0) : Value
       raise RuntimeError.new("Must be fresh VM to run a compiled chunk.", filename) unless @frames.empty?
       main_proc = ScriptProc.new(chunk, "<main>", local_count: local_count)
-      push_frame(main_proc, filename)
+      # self at top level is `main` — a real RubyObject of class
+      # Object, matching real Ruby (see Interpreter#main's own
+      # comment). Falls back to nil_value only for a VM built without
+      # an Interpreter (no Object class exists to construct `main`
+      # from in that configuration) — a top-level `def` in that setup
+      # correctly raises "def outside of a class/module body", same
+      # as it always has, since there's genuinely nothing for it to
+      # attach to.
+      self_val = @interpreter.try { |i| Value.robject(i.main) } || Value.nil_value
+      push_frame(main_proc, filename, self_val: self_val)
       execute
     end
 
@@ -415,25 +424,29 @@ module Adjutant
             gval = @globals[sym.value]?
             if gval && !gval.proc?
               # A plain data global ($foo-style or otherwise pre-set) —
-              # push its value as-is. Not a call attempt.
+              # push its value as-is. Not a call attempt. (@globals now
+              # holds only constants/classes in practice — see the
+              # 2026-07-16 root-scope work — so `gval` here is really
+              # always a RubyClass; this branch is kept general rather
+              # than narrowed, since nothing stops a future feature
+              # from writing a genuine data global here too.)
               push(gval)
             else
-              # Either a global holding a ScriptProc (top-level `def`),
-              # or nothing in @globals at all. Either way this bare
-              # identifier isn't a local variable, so — matching real
-              # Ruby — treat it as an implicit zero-arg method call
-              # attempt and run it through the same dispatch path a
-              # real `name()` call uses. That path already checks
-              # native functions, then global ScriptProcs, then
-              # builtins, and raises NameError (script-catchable) if
-              # none match — so this single call now covers bare
-              # `def`s (worked before), bare native calls like
-              # `read_input` (previously resolved to nil, never
-              # called), and truly undefined identifiers (previously
-              # silently nil, now raises).
+              # Not a resolvable local (checked earlier at compile
+              # time — see compile_identifier), and not a plain data
+              # global either. Matching real Ruby, treat this as an
+              # implicit zero-arg method call attempt: self's own
+              # methods first (a top-level def, now a real method of
+              # Object — see Interpreter#main/dispatch_call's
+              # implicit-self step), then native functions (also on
+              # Object's own native_methods table), then builtins, and
+              # NameError (script-catchable) if none match. `def`s no
+              # longer live in @globals at all — this single
+              # dispatch_call covers them via implicit self, not via
+              # any @globals lookup.
               depth_before = @frames.size
               result = dispatch_call(sym.name, [] of Value, safe: false,
-                filename: f.filename, line: inst.line)
+                filename: f.filename, line: inst.line, self_val: f.self_val)
               push(result) if @frames.size == depth_before
             end
           when Op::SetGlobal
@@ -554,7 +567,7 @@ module Adjutant
 
             depth_before = @frames.size
             result = dispatch_call(sym.name, args, safe, f.filename, inst.line, @current_block, has_receiver,
-              blk_outer: @current_block_locals)
+              blk_outer: @current_block_locals, self_val: f.self_val)
             @current_block = nil
             @current_block_locals = nil
             # If dispatch pushed a new ScriptProc frame, do NOT push the
@@ -725,7 +738,20 @@ module Adjutant
           when Op::DefMethod
             proc_val = pop
             name_sym = chunk.consts[inst.c].as_sym
-            unless owner = f.self_val.as_rclass?
+            # `def` always targets self's CLASS — uniform rule, not two
+            # special cases: inside a class/module body, self IS the
+            # RubyClass directly (define there); anywhere else with a
+            # RubyObject self (top-level main, or `def` nested inside
+            # another method body — both legal in real Ruby, and both
+            # just mean "self at the point this def executes"), target
+            # self's OWN rclass instead. This is what makes a
+            # top-level `def greet` become a real (private, in real
+            # Ruby's terms) method of Object — callable from anywhere,
+            # not a special top-level-only table — matching real
+            # Ruby's actual `main`/Object relationship rather than a
+            # simplification of it.
+            owner = f.self_val.as_rclass? || f.self_val.as_robject?.try(&.rclass)
+            unless owner
               raise runtime_error("def outside of a class/module body", f)
             end
             proc = proc_val.as_proc
@@ -736,7 +762,29 @@ module Adjutant
             recv = pop
             proc_val = pop
             name_sym = chunk.consts[inst.c].as_sym
-            unless owner = recv.as_rclass?
+            # Same fix as Op::DefMethod above: `recv` (self at the
+            # `def self.foo` site) may be a RubyObject (top-level
+            # main, or `def self.foo` written inside an instance
+            # method body), not just a bare RubyClass (the class/
+            # module-body case).
+            #
+            # NOTE — approximation, not a full fix: real Ruby's
+            # `def self.foo` on an INSTANCE defines a true per-object
+            # singleton method (only that one object gets it, not
+            # every instance of its class) — Adjutant has no
+            # per-instance method table on RubyObject at all, only
+            # RubyClass-level ones, so this targets the RECEIVER'S
+            # CLASS instead, meaning every instance of that class
+            # would see the new method, not just `recv`. This
+            # happens to be observably correct for the motivating
+            # case — top-level `def self.greet`, where self is
+            # `main`, the ONE AND ONLY instance of Object a script
+            # typically ever has as self — but is a real, separate
+            # gap from true Ruby fidelity for the general "singleton
+            # method on an arbitrary instance" case. Worth a proper
+            # per-instance singleton table if that ever matters.
+            owner = recv.as_rclass? || recv.as_robject?.try(&.rclass)
+            unless owner
               raise runtime_error("def self.#{name_sym.name} outside of a class/module body", f)
             end
             proc = proc_val.as_proc
@@ -929,7 +977,8 @@ module Adjutant
                               filename : String, line : Int32,
                               blk : ScriptProc? = nil,
                               has_receiver : Bool = false,
-                              blk_outer : Array(Value)? = nil) : Value
+                              blk_outer : Array(Value)? = nil,
+                              self_val : Value? = nil) : Value
       # 1) Safe navigation: skip call if receiver (first arg) is nil
       if safe && !args.empty? && args.first.null?
         return Value.nil_value
@@ -980,21 +1029,87 @@ module Adjutant
         end
       end
 
-      # 2) Check native functions registered via interpreter
-      if interp = @interpreter
-        sym_id = (@symbols.lookup(name).try(&.value)) || -1
-        if native = interp.native_callable(sym_id)
-          return call_native(native, args, filename, line, blk, name)
+      # 2) Implicit self: a bare/receiverless call tries self's OWN
+      # class first — matching real Ruby's actual method resolution
+      # (a bare `greet` inside any body, including top level, tries
+      # `self.greet` before anything else). This is what makes a
+      # top-level `def greet` reachable via a later bare `greet` call:
+      # top-level self is `main` (a RubyObject of class Object — see
+      # Interpreter#main), so `def greet` at top level lands in
+      # Object#methods (see Op::DefMethod), and THIS step is what
+      # finds it again — @globals no longer holds defs at all (see
+      # the 2026-07-16 root-scope work; @globals is constants/classes
+      # only now). This ALSO now covers what used to be a separate
+      # "check native functions registered via interpreter" step:
+      # define_native registers into Object's own native_methods
+      # table (see Interpreter#define_native), the exact table
+      # find_native_method below checks — a genuinely separate step
+      # was redundant with this one, and (worse) didn't respect
+      # has_receiver AT ALL, so ANY receiver (even one with no
+      # inheritance relationship to Object at all — impossible in
+      # practice, since every RubyObject's class ultimately descends
+      # from Object, but the old step didn't even check that much)
+      # could resolve a native function. Note this is NOT the same as
+      # matching real Ruby's private-method visibility rule —
+      # Adjutant has no public/private/protected modifiers at all, so
+      # step 1.5 (explicit-receiver dispatch, above) correctly finds
+      # an inherited native/top-level method via a normal
+      # find_native_method superclass walk, same as any other
+      # inherited method (`Foo.new.some_native_fn` DOES work if Foo <
+      # Object, which every script class is by default) — genuinely
+      # different from real Ruby, and a real, separate gap (method
+      # visibility) this piece doesn't attempt to close.
+      unless has_receiver
+        if self_val && (sym_id = @symbols.lookup(name).try(&.value))
+          self_cls = self_val.as_rclass? || self_val.as_robject?.try(&.rclass)
+          if self_cls
+            if method = self_cls.find_method(sym_id)
+              return call_script_proc(method, args, filename, blk, nil, self_val: self_val, block_outer: blk_outer)
+            end
+            if native = self_cls.find_native_method(sym_id)
+              # Bare `name`, NOT "ClassName#name" — unlike real
+              # explicit-receiver dispatch (obj.foo, where the class
+              # qualification is genuinely informative in an error/
+              # risk-flow-decision message), this call looks like a
+              # plain top-level function call in the script itself
+              # (`delete_file(...)`, not `Object#delete_file(...)`) —
+              # the display name a RiskFlowDecisionRequest carries, or
+              # an error message shows, should match what's actually
+              # in the source, not an internal dispatch detail.
+              return call_native(native, args, filename, line, blk, name)
+            end
+            # self itself being a RubyClass also means ITS singleton
+            # methods are in implicit-self scope (`def self.foo` at
+            # top level, called bare from later top-level code, or a
+            # class body's own `def self.foo` called bare from
+            # elsewhere in that same body).
+            if self_rclass = self_val.as_rclass?
+              if singleton = self_rclass.find_singleton_method(sym_id)
+                return call_script_proc(singleton, args, filename, blk, nil, self_val: self_val, block_outer: blk_outer)
+              end
+              if native_singleton = self_rclass.find_native_singleton_method(sym_id)
+                return call_native(native_singleton, args, filename, line, blk, name)
+              end
+            end
+          end
         end
       end
 
-      # 3) Check globals for a ScriptProc
+      # 3) Check globals for a ScriptProc — legacy fallback only.
+      # @globals no longer holds top-level defs (step 2 above finds
+      # those, via Object#methods) or top-level plain variables (real
+      # locals since the 2026-07-15 scoping fix); nothing in a
+      # currently-parseable script writes a ScriptProc into @globals
+      # anymore. Kept as a defensive fallback rather than removed
+      # outright, same reasoning as emit_store_name's own
+      # SetGlobal fallback. self_val threaded through for the same
+      # reason, even though this path is dead in practice.
       sym = @symbols.lookup(name)
       if sym
         gval = @globals[sym.value]?
         if gval && gval.proc?
           sproc = gval.as_proc.as(ScriptProc)
-          return call_script_proc(sproc, args, filename, blk, nil, block_outer: blk_outer)
+          return call_script_proc(sproc, args, filename, blk, nil, self_val: self_val, block_outer: blk_outer)
         end
       end
 

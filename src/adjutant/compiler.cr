@@ -97,7 +97,6 @@ module Adjutant
       @symbols = symbols
       @chunk = Chunk.new
       @loop_stack = [] of LoopScope
-      @class_depth = 0
       @in_block = false
       @scope = nil.as(CompilerScope?)
     end
@@ -658,10 +657,15 @@ module Adjutant
       if recv = node.receiver
         compile_node(recv)
         @chunk.emit(Op::DefSingleton, node.line, c: sym_idx)
-      elsif @class_depth > 0
-        @chunk.emit(Op::DefMethod, node.line, c: sym_idx)
       else
-        @chunk.emit(Op::SetGlobal, node.line, c: sym_idx)
+        # `def` always targets self's class (see Op::DefMethod) —
+        # true everywhere now, not just "inside a class/module body":
+        # top-level self is `main`, a real RubyObject whose class is
+        # Object, so a bare top-level `def` correctly becomes a method
+        # of Object (matching real Ruby exactly) via the SAME opcode a
+        # class body's `def` uses. No more @class_depth branch/
+        # Op::SetGlobal special case for "am I at top level."
+        @chunk.emit(Op::DefMethod, node.line, c: sym_idx)
       end
     end
 
@@ -677,12 +681,10 @@ module Adjutant
       @chunk.emit(Op::MakeClass, node.line, b: super_idx, c: name_idx) # [old_self, new_class]
       @chunk.emit(Op::SetConstant, node.line, c: name_idx)             # [old_self, new_class]  registers in old_self's scope (or globals at top level)
       @chunk.emit(Op::SetClass, node.line)                             # [old_self]  self := new_class
-      @class_depth += 1
-      with_nested_scope { compile_body(node.body) } # [old_self, body_val]
-      @class_depth -= 1
-      @chunk.emit(Op::Pop, node.line)      # [old_self]  discard body value
-      @chunk.emit(Op::SetClass, node.line) # []  self := old_self (restored)
-      emit_nil(node.line)                  # [nil]  class-def statement's own value
+      with_nested_scope { compile_body(node.body) }                    # [old_self, body_val]
+      @chunk.emit(Op::Pop, node.line)                                  # [old_self]  discard body value
+      @chunk.emit(Op::SetClass, node.line)                             # []  self := old_self (restored)
+      emit_nil(node.line)                                              # [nil]  class-def statement's own value
     end
 
     private def compile_module(node : ModuleNode) : Nil
@@ -692,12 +694,10 @@ module Adjutant
       @chunk.emit(Op::MakeModule, node.line, c: name_idx)  # [old_self, new_module]
       @chunk.emit(Op::SetConstant, node.line, c: name_idx) # [old_self, new_module]
       @chunk.emit(Op::SetClass, node.line)                 # [old_self]  self := new_module
-      @class_depth += 1
-      with_nested_scope { compile_body(node.body) } # [old_self, body_val]
-      @class_depth -= 1
-      @chunk.emit(Op::Pop, node.line)      # [old_self]
-      @chunk.emit(Op::SetClass, node.line) # []  self := old_self (restored)
-      emit_nil(node.line)                  # [nil]
+      with_nested_scope { compile_body(node.body) }        # [old_self, body_val]
+      @chunk.emit(Op::Pop, node.line)                      # [old_self]
+      @chunk.emit(Op::SetClass, node.line)                 # []  self := old_self (restored)
+      emit_nil(node.line)                                  # [nil]
     end
 
     private def compile_lambda(node : Lambda) : Nil

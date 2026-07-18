@@ -159,6 +159,20 @@ module Adjutant
     getter risk_flow_policy : RiskFlowPolicy
     getter on_risk_flow_decision : RiskFlowDecisionRequest -> RiskFlowDecision
 
+    # `self` at the top level of a script — a real RubyObject whose
+    # class is Object, matching real Ruby's actual `main` (not a
+    # simplification of it: a bare top-level `def` genuinely becomes
+    # a method of Object this way — see Op::DefMethod — callable from
+    # ANY object anywhere, not confined to some top-level-only table,
+    # exactly like real Ruby's top-level defs becoming private
+    # instance methods of Object). One `main` per Interpreter, reused
+    # across every `eval` call on it, so top-level defs persist across
+    # eval calls the same way they always have (this is unrelated to,
+    # and unaffected by, the 2026-07-15 fix that made top-level plain
+    # VARIABLES scoped per-eval-call — methods living on Object were
+    # always meant to persist).
+    getter main : RubyObject
+
     def initialize(
       @risk_flow_policy : RiskFlowPolicy,
       @on_risk_flow_decision : RiskFlowDecisionRequest -> RiskFlowDecision,
@@ -171,6 +185,13 @@ module Adjutant
       @globals = {} of Int32 => Value
       @risk_flow_log = RiskFlowLog.new(enabled: risk_flow_tracking)
       bootstrap_core_hierarchy
+      # @main must be assigned here, right after object_class first
+      # becomes valid — NOT after bootstrap_error_classes/
+      # bootstrap_builtin_classes, both of which pass `self` outward
+      # (e.g. `Builtins.bootstrap_range(self)`), and Crystal requires
+      # every non-nilable ivar assigned before `self` escapes the
+      # constructor in any way, not just before it returns.
+      @main = RubyObject.new(object_class)
       bootstrap_error_classes
       bootstrap_builtin_classes
     end
@@ -241,17 +262,25 @@ module Adjutant
     # RiskProfile. Defaults to RiskProfile.none (pure, no side effects),
     # correct for the common case; pass an explicit profile for any
     # function with file, network, process, or environment effects.
+    #
+    # Registers into Object's OWN native_methods table — not a
+    # separate top-level-only table — matching real Ruby, where
+    # Kernel methods (puts, require, ...) are technically private
+    # instance methods reachable from any object. This is what makes
+    # a native function callable via implicit self from anywhere,
+    # the same mechanism a bare top-level `def` uses (see
+    # Op::DefMethod / dispatch_call's implicit-self step).
     def define_native(name : String, risk : RiskProfile = RiskProfile.none,
                       &block : Array(Value), ScriptProc?, NativeCallContext -> Value) : Nil
       sym = @symbols.intern(name)
-      func = NativeFunc.new { |args, blk, ncc| block.call(args, blk, ncc) }
-      native_funcs[sym.value] = NativeCallable.new(func, risk)
+      object_class.define_native_method(sym.value, risk, &block)
     end
 
     # Look up a native callable by symbol ID — called by VM dispatch.
-    # Returns both the function and its RiskProfile.
+    # Returns both the function and its RiskProfile. Delegates to
+    # Object's own native_methods table (see define_native above).
     def native_callable(sym_id : Int32) : NativeCallable?
-      @native_funcs[sym_id]?
+      object_class.native_methods[sym_id]?
     end
 
     # Look up a builtin type's RubyClass by the runtime kind of a Value
@@ -406,10 +435,5 @@ module Adjutant
     end
 
     @globals : Hash(Int32, Value) = {} of Int32 => Value
-    @native_funcs = {} of Int32 => NativeCallable
-
-    private def native_funcs : Hash(Int32, NativeCallable)
-      @native_funcs
-    end
   end
 end
