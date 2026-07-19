@@ -21,112 +21,23 @@ roughly by dependency, not necessarily by importance — an item lower down
 may unblock ones above it.
 
 - **Verify IFC/`RiskFlowLabel` propagation works correctly through
-  lambdas, once D lands.** Raised 2026-07-18 as a tangent during D's
-  design conversation. D is about `RiskWalker`'s STATIC assessment (does
-  a `Lambda`/`BlockNode`'s body get priced at all); this is a separate
-  question about the DYNAMIC label-flow machinery (`RiskFlowLabel`/
-  `RiskFlowLog`, the VM's actual runtime join sites — see `DEVELOPMENT.md`'s
-  IFC section) — does a labeled value that flows INTO a lambda's closure
-  (captured from an outer scope) or is returned FROM a `.call` still
-  carry its label correctly end-to-end? `VM#invoke` (the mechanism both
-  `Proc#call` and native-method block-invocation route through) was
-  already found to have one real bug in this area (the `@stack`
-  isolation issue, fixed 2026-07-18 — see the `Piece C` history above) —
-  worth explicit script-level regression coverage (a labeled value
-  captured by a lambda, called, checked at the sink) rather than
-  assuming label-plumbing is fine just because value-plumbing now is.
-- **Piece D — risk-walking for blocks/lambdas, call arguments, and
-  constant-held lambdas.** `RiskWalker` never walks a `BlockNode`'s or
-  `Lambda`'s body at all today — a block passed to `Array#each {
-  risky_call }` is completely invisible to static risk assessment; only
-  the `each` call itself is priced. **`Call#args` are also never walked
-  at all** (found 2026-07-18, mid-D-design — a plain risky call used as
-  a call ARGUMENT, no lambda/block involved at all, e.g. `puts(delete_
-  file(...))`, is already invisible today; expanded into D rather than
-  scoped separately since it's adjacent code in the same walk_call
-  path). Final design, agreed across the 2026-07-18 conversation
-  (supersedes the original 2026-07-15 note, which didn't yet have the
-  constants-are-assign-once foundation or the args-walking finding):
-  1. **`BlockNode` bodies** (`{ }`/`do...end` attached to a call) fold
-     unconditionally into the risk of the call they're attached to,
-     wrapped `iterated: true` (same shape `walk_iterated` already gives
-     `while`/`for`), walked using the *enclosing* env (closure
-     semantics, not method-only scope) — this part unchanged from the
-     original note. Assessable because `yield` inside the callee's body
-     is a real, immediate, statically-visible invocation contract.
-  2. **Every `Call#args` entry gets walked** (`walk_node(arg, env)`),
-     unconditionally — an argument expression runs synchronously at the
-     call site regardless of what the callee does with its VALUE
-     afterward, so this is safe and certain, same footing as any other
-     expression; no new `RiskNode` shape needed for this part.
-  3. **A `Lambda` LITERAL passed as a call argument** is walked eagerly
-     (same treatment `walk_script_method` gives a `def`'s body — now
-     meaningful since Piece C makes a `Lambda` a real, resolvable
-     `RubyObject` rather than a bare proc `Value`), but its risk is
-     wrapped in a new `RiskDeferred` node (NOT folded unconditionally
-     like a `BlockNode`) — a lambda handed to a callee might never
-     actually be invoked by it (no confirmed `yield`-equivalent contract
-     the way a block has), so folding it in unconditionally would
-     overstate risk. `RiskDeferred` = "this risk was handed off to
-     something that MAY invoke it; we can't confirm whether or when."
-  4. **A `Lambda` stored in a CONSTANT (`F1 = ->(){}`)** is exactly as
-     resolvable as a literal, in two shapes, both possible ONLY because
-     constants are now assign-once (`Op::SetConstant` hardening, same
-     day): (a) `F1` passed as a call argument — same `RiskDeferred`
-     treatment as a literal argument (case 3); (b) **`F1.call(...)`
-     called DIRECTLY** — found 2026-07-18 by the person, a genuinely
-     separate case from (a): `walk_class_receiver_call`
-     (`risk_walker.cr`) currently assumes any `Constant` receiver
-     resolves to a `RubyClass` (`resolve_class` calls `.as_rclass?`,
-     `nil` for anything else) and falls straight to `RiskUnresolved`
-     for a `Proc`-valued constant today — needs a new branch recognizing
-     a `Proc`-valued constant receiver on `.call` and resolving to the
-     lambda's OWN walked-body risk directly, no `RiskDeferred` wrapper
-     needed here (the invocation is confirmed, happening right at this
-     call site, not handed off elsewhere) — same footing as an ordinary
-     resolved call.
-  5. **A `Lambda` in an ordinary (non-constant) VARIABLE** stays
-     explicitly out of scope — genuine aliasing the static walker can't
-     safely resolve (which literal a variable currently holds isn't
-     generally knowable without real data-flow tracking); `.call` on
-     it, or passing it onward, both remain `RiskUnresolved`, same as
-     today.
-  New `RiskNode` shape needed: `RiskDeferred` (`risk_node.cr`) — `child
-  : RiskNode` (what happens IF invoked) + `reason : String`. Named
-  deliberately NOT "maybe"/"conditional" (too easily confused with
-  `RiskChoice`'s branch semantics, where exactly one child is guaranteed
-  to run) — `RiskDeferred` says the risk was handed off to something the
-  walker can't see into, which is the real mechanism, and matches the
-  word the original note already used ("a stored lambda's deferred
-  `.call`").
-  Depends on C landing first (a `Lambda` needs to be a resolvable
-  `RubyObject`, not a bare `Value`, before the walker can memoize/track
-  it the way it does `ScriptProc`s for `def`s). C has landed.
-  **BUG found and fixed 2026-07-18, via the person's own
-  `samples/risk_static_literal_lambda.rb` test script (a real, pre-
-  existing gap, only EXPOSED by D — lambda bodies weren't walked at
-  all before D, hiding it):** `walk_node`'s generic `else` branch
-  treated every bare `Identifier` (`delete_file`, no parens) as a
-  harmless value read with no risk of its own — but the VM's own
-  `Op::GetGlobal` genuinely falls through to an implicit zero-arg
-  method call attempt for any name not already a known local (matching
-  real Ruby's own local-vs-call disambiguation rule — see
-  `compile_identifier`), so a bare risky call was silently invisible to
-  the walker while the equivalent `delete_file()` (with parens) was
-  correctly caught. Fixed: new `walk_identifier`, mirroring the VM's
-  own rule via `env.has_key?(name)` (the walker's own equivalent of the
-  compiler's `scope.resolve_local` check) — an unbound name now
-  resolves via the same `walk_bare_name_call` helper `walk_receiverless_
-  call` already used (extracted so both agree exactly). Fixing this
-  surfaced two more, smaller real gaps in the SAME family (a genuinely-
-  bound name incorrectly falling through to the implicit-call path,
-  a false positive) that had been silently harmless before (nothing
-  read `env` for this purpose) but would have newly misfired once
-  `walk_identifier` existed: `rescue => e`'s exception variable was
-  never added to the rescue body's `env` (`walk_begin`), and neither a
-  `for x in ...` loop's variable(s) nor a `{ |x| ... }` block's own
-  params were ever declared in `walk_iterated`'s `inner_env` (both now
-  fixed via a shared optional `vars` parameter on `walk_iterated`).
+  lambdas.** Raised 2026-07-18 as a tangent during Piece D's design
+  conversation; Piece D (static risk-walking for lambdas/blocks/call
+  args — see `DEVELOPMENT.md`'s `RiskWalker` section) has since landed,
+  so this is no longer blocked, just not yet done. This item is about a
+  separate, DYNAMIC question — the actual runtime label-flow machinery
+  (`RiskFlowLabel`/`RiskFlowLog`, the VM's real join sites — see
+  `DEVELOPMENT.md`'s IFC section), not `RiskWalker`'s static assessment.
+  Does a labeled value that flows INTO a lambda's closure (captured from
+  an outer scope) or is returned FROM a `.call` still carry its label
+  correctly end-to-end? `VM#invoke` (the mechanism both `Proc#call` and
+  native-method block-invocation route through) was already found to
+  have one real bug in this exact area (the `@stack` isolation issue,
+  fixed 2026-07-18 — see `DEVELOPMENT.md`'s note on `VM#invoke`'s stack
+  isolation) — worth explicit script-level regression coverage (a
+  labeled value captured by a lambda, called, checked at the sink)
+  rather than assuming label-plumbing is fine just because
+  value-plumbing now is.
 - **Parser bug — array literal not recognized as a bare (no-paren) call
   argument start.** Found 2026-07-18 by the person while testing (via
   `assert_equal [3, 9, 16], ar` inside `spec/scripts/expressions.rb`).
@@ -151,8 +62,9 @@ may unblock ones above it.
   `some_method [0]`; real Ruby resolves this the same way Adjutant
   should — worth a design check, not just adding the token kind blindly,
   given the parser's own comment about this being a *positive* allowlist
-  specifically to avoid this class of ambiguity). Queued to return to
-  after Piece D, per the person's stated priority — not urgent, real gap.
+  specifically to avoid this class of ambiguity). Was queued to return
+  to after Piece D; D is now done, so this is next up whenever picked
+  back up — not urgent, a real gap.
 
 ## Will Fix
 
