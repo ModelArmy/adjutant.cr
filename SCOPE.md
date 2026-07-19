@@ -35,21 +35,73 @@ may unblock ones above it.
   worth explicit script-level regression coverage (a labeled value
   captured by a lambda, called, checked at the sink) rather than
   assuming label-plumbing is fine just because value-plumbing now is.
-- **Piece D — risk-walking for blocks/lambdas.** `RiskWalker` never walks
-  a `BlockNode`'s or `Lambda`'s body at all today — a block passed to
-  `Array#each { risky_call }` is completely invisible to static risk
-  assessment; only the `each` call itself is priced. Design direction
-  agreed in the 2026-07-15 conversation: walk a `Lambda`'s body eagerly
-  (same treatment `walk_script_method` gives a `def`, once C makes a
-  `Lambda` a first resolvable thing rather than a bare proc `Value`);
-  fold a `BlockNode`'s body into the risk of the call it's attached to,
-  wrapped as `iterated: true` (same shape `walk_iterated` already gives
-  `while`/`for`), using the *enclosing* env (closure semantics), not
-  method-only scope. `yield`/a stored lambda's deferred `.call` stay out
-  of scope — no runtime mechanism calls a stored proc later yet (see C).
+- **Piece D — risk-walking for blocks/lambdas, call arguments, and
+  constant-held lambdas.** `RiskWalker` never walks a `BlockNode`'s or
+  `Lambda`'s body at all today — a block passed to `Array#each {
+  risky_call }` is completely invisible to static risk assessment; only
+  the `each` call itself is priced. **`Call#args` are also never walked
+  at all** (found 2026-07-18, mid-D-design — a plain risky call used as
+  a call ARGUMENT, no lambda/block involved at all, e.g. `puts(delete_
+  file(...))`, is already invisible today; expanded into D rather than
+  scoped separately since it's adjacent code in the same walk_call
+  path). Final design, agreed across the 2026-07-18 conversation
+  (supersedes the original 2026-07-15 note, which didn't yet have the
+  constants-are-assign-once foundation or the args-walking finding):
+  1. **`BlockNode` bodies** (`{ }`/`do...end` attached to a call) fold
+     unconditionally into the risk of the call they're attached to,
+     wrapped `iterated: true` (same shape `walk_iterated` already gives
+     `while`/`for`), walked using the *enclosing* env (closure
+     semantics, not method-only scope) — this part unchanged from the
+     original note. Assessable because `yield` inside the callee's body
+     is a real, immediate, statically-visible invocation contract.
+  2. **Every `Call#args` entry gets walked** (`walk_node(arg, env)`),
+     unconditionally — an argument expression runs synchronously at the
+     call site regardless of what the callee does with its VALUE
+     afterward, so this is safe and certain, same footing as any other
+     expression; no new `RiskNode` shape needed for this part.
+  3. **A `Lambda` LITERAL passed as a call argument** is walked eagerly
+     (same treatment `walk_script_method` gives a `def`'s body — now
+     meaningful since Piece C makes a `Lambda` a real, resolvable
+     `RubyObject` rather than a bare proc `Value`), but its risk is
+     wrapped in a new `RiskDeferred` node (NOT folded unconditionally
+     like a `BlockNode`) — a lambda handed to a callee might never
+     actually be invoked by it (no confirmed `yield`-equivalent contract
+     the way a block has), so folding it in unconditionally would
+     overstate risk. `RiskDeferred` = "this risk was handed off to
+     something that MAY invoke it; we can't confirm whether or when."
+  4. **A `Lambda` stored in a CONSTANT (`F1 = ->(){}`)** is exactly as
+     resolvable as a literal, in two shapes, both possible ONLY because
+     constants are now assign-once (`Op::SetConstant` hardening, same
+     day): (a) `F1` passed as a call argument — same `RiskDeferred`
+     treatment as a literal argument (case 3); (b) **`F1.call(...)`
+     called DIRECTLY** — found 2026-07-18 by the person, a genuinely
+     separate case from (a): `walk_class_receiver_call`
+     (`risk_walker.cr`) currently assumes any `Constant` receiver
+     resolves to a `RubyClass` (`resolve_class` calls `.as_rclass?`,
+     `nil` for anything else) and falls straight to `RiskUnresolved`
+     for a `Proc`-valued constant today — needs a new branch recognizing
+     a `Proc`-valued constant receiver on `.call` and resolving to the
+     lambda's OWN walked-body risk directly, no `RiskDeferred` wrapper
+     needed here (the invocation is confirmed, happening right at this
+     call site, not handed off elsewhere) — same footing as an ordinary
+     resolved call.
+  5. **A `Lambda` in an ordinary (non-constant) VARIABLE** stays
+     explicitly out of scope — genuine aliasing the static walker can't
+     safely resolve (which literal a variable currently holds isn't
+     generally knowable without real data-flow tracking); `.call` on
+     it, or passing it onward, both remain `RiskUnresolved`, same as
+     today.
+  New `RiskNode` shape needed: `RiskDeferred` (`risk_node.cr`) — `child
+  : RiskNode` (what happens IF invoked) + `reason : String`. Named
+  deliberately NOT "maybe"/"conditional" (too easily confused with
+  `RiskChoice`'s branch semantics, where exactly one child is guaranteed
+  to run) — `RiskDeferred` says the risk was handed off to something the
+  walker can't see into, which is the real mechanism, and matches the
+  word the original note already used ("a stored lambda's deferred
+  `.call`").
   Depends on C landing first (a `Lambda` needs to be a resolvable
   `RubyObject`, not a bare `Value`, before the walker can memoize/track
-  it the way it does `ScriptProc`s for `def`s).
+  it the way it does `ScriptProc`s for `def`s). C has landed.
 - **Parser bug — array literal not recognized as a bare (no-paren) call
   argument start.** Found 2026-07-18 by the person while testing (via
   `assert_equal [3, 9, 16], ar` inside `spec/scripts/expressions.rb`).
