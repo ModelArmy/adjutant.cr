@@ -124,7 +124,7 @@ module Adjutant
     SetOuter # pop → frame.outer_locals[c]; push value
 
     # Proc construction
-    MakeProc # push consts[c] (a ScriptProc Value) — used for def and lambda
+    MakeProc # push consts[c] (a ScriptProc Value); a=1: wrap as real Proc RubyObject (lambda literals only — see builtins/proc.cr); a=0 (default): push the bare ScriptProc Value as-is (def bodies, call-site block literals)
   end
 
   # A single encoded instruction.

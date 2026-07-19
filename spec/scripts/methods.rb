@@ -73,27 +73,27 @@ assert "unknown bare names should raise" do
   end
 
   assert_raise NameError do
-    class A
+    class A2
       def self.check; boom; end
     end
 
-    A.check
+    A2.check
   end
 end
 
 assert "single methods self is Class" do
-  class A
+  class A3
     def self.hello
-      assert_equal(self, A)
+      assert_equal(self, A3)
       "hello"
     end
 
     def world
-      assert_not_equal(self, A)
+      assert_not_equal(self, A3)
       "world"
     end
   end
 
-  A.hello
-  A.new.world
+  A3.hello
+  A3.new.world
 end

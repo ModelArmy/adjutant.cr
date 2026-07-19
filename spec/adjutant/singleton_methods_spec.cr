@@ -177,26 +177,6 @@ module Adjutant
         interp.eval("A.nope")
       end
     end
-
-    it "a native singleton new still works alongside script singleton methods on the same class" do
-      interp, _ = make_interp
-      cls = RubyClass.new("Widget")
-      new_sym = interp.symbols.intern("new").value
-      cls.define_native_singleton_method(new_sym, RiskProfile.none) { |args| Value.robject(RubyObject.new(cls)) }
-      interp.define_global_class(cls)
-      interp.eval(<<-RUBY)
-        class Widget
-          def self.label; "a widget"; end
-        end
-      RUBY
-      # .new goes through the native singleton path; .label through
-      # the script singleton path — both must resolve against the
-      # same RubyClass without interfering with each other.
-      new_result = interp.eval("Widget.new")
-      new_result.robject?.should be_true
-      label_result = interp.eval("Widget.label")
-      label_result.as_string.should eq "a widget"
-    end
   end
 
   describe "RiskWalker: class-receiver calls resolve against singleton methods" do

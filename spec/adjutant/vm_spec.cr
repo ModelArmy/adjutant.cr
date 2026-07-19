@@ -589,16 +589,22 @@ module Adjutant
       # — `greet = ->() { ... }` now compiles to a genuine
       # Op::SetLocal, so a bare `greet` afterward is Op::GetLocal (the
       # proc VALUE, unevaluated), never Op::GetGlobal's
-      # call-if-it's-a-ScriptProc path at all. `.call` (Proc#call) is
-      # still not implemented — see the Lambda/Proc design discussion
-      # from the 2026-07-15 session — so this spec checks proc-ness
-      # via the Value directly rather than actually invoking it.
+      # call-if-it's-a-ScriptProc path at all. Asserted via
+      # .robject?/rclass.name, not .proc? — Piece C (SCOPE.md) wraps a
+      # Lambda literal's ScriptProc in a real Proc RubyObject
+      # (builtins/proc.cr), so the local now holds a robject, not a
+      # bare proc-kind Value; `.call` (Proc#call) works too as of that
+      # piece, this spec just checks proc-ness via the Value directly
+      # since that's what it's actually testing (local vs. global
+      # resolution, not Proc#call itself).
       it "does NOT auto-invoke a top-level local variable holding a lambda" do
         src = <<-RUBY
         greet = ->() { "hi" }
         greet
         RUBY
-        eval(src).proc?.should be_true
+        result = eval(src)
+        result.robject?.should be_true
+        result.as_robject.rclass.name.should eq "Proc"
       end
 
       it "a top-level local holding a lambda is a real local, not a global —\
@@ -608,11 +614,8 @@ module Adjutant
         # overwrite the SAME @globals slot the local used. Proven
         # behaviorally (return different, distinguishable values from
         # each) rather than via `.class`/`.proc?` from INSIDE the
-        # script — those have their own separate, pre-existing gaps
-        # for a bare lambda Value (no builtin_class_for case for a
-        # proc; not yet wrapped as a real Proc RubyObject — see the
-        # Lambda/Proc design discussion from the 2026-07-15 session)
-        # that this spec isn't about and shouldn't depend on.
+        # script — deliberately, since those are covered by the
+        # dedicated Proc spec instead and this spec isn't about them.
         src = <<-RUBY
         greet = ->() { "lambda" }
         def greet; "method"; end
@@ -622,12 +625,16 @@ module Adjutant
       end
 
       it "reassigning a local after a same-named def still reads back the local, not the method" do
+        # See the .robject?/rclass.name note on the "does NOT
+        # auto-invoke" spec above — same Piece C reasoning applies here.
         src = <<-RUBY
         def greet; "method"; end
         greet = ->() { "lambda" }
         greet
         RUBY
-        eval(src).proc?.should be_true
+        result = eval(src)
+        result.robject?.should be_true
+        result.as_robject.rclass.name.should eq "Proc"
       end
 
       # Regression coverage for the bug noted in the 2026-07-14
@@ -926,6 +933,107 @@ module Adjutant
         total
         RUBY
         eval(src).as_int.should eq 6
+      end
+    end
+
+    # Op::SetConstant hardening, added 2026-07-18 ahead of Piece D (see
+    # SCOPE.md): real Ruby only WARNS on constant reassignment (still
+    # permits it); Adjutant deliberately makes it a hard error, so a
+    # constant-valued Lambda passed as a call argument can be trusted
+    # to be staticaly resolvable by RiskWalker — nothing else in the
+    # same script could have quietly reassigned it first. Covers both
+    # branches of Op::SetConstant's target-vs-@globals split: a
+    # top-level `FOO = 1` (target is nil — main is a RubyObject, not a
+    # RubyClass, and top-level code has no lexical_scope) and a
+    # constant defined inside a class/module body (target is that
+    # RubyClass, via target.constants) both need the same guard; this
+    # was a real bug in an earlier draft of the fix (the guard was
+    # first written narrowly, only catching @globals-routed
+    # reassignment for rclass-valued — i.e. class-name — constants,
+    # which would have silently let a plain top-level `FOO = 1; FOO =
+    # 2` back through).
+    describe "constants" do
+      it "a plain top-level constant assigned once works normally" do
+        eval("FOO = 1\nFOO").as_int.should eq 1
+      end
+
+      it "reassigning a plain top-level constant raises" do
+        expect_raises(RuntimeError, /already initialized/) do
+          eval("FOO = 1\nFOO = 2")
+        end
+      end
+
+      it "reassigning a constant defined inside a class body raises" do
+        expect_raises(RuntimeError, /already initialized/) do
+          eval(<<-RUBY)
+          class Foo
+            BAR = 1
+            BAR = 2
+          end
+          RUBY
+        end
+      end
+
+      it "the same constant name in two DIFFERENT classes does not collide" do
+        # target.constants is per-RubyClass — Foo::BAR and Baz::BAR are
+        # unrelated slots, confirming the guard checks the right Hash,
+        # not some shared/global one.
+        result = eval(<<-RUBY)
+        class Foo
+          BAR = 1
+        end
+        class Baz
+          BAR = 2
+        end
+        [Foo::BAR, Baz::BAR]
+        RUBY
+        result.as_array.map(&.as_int).should eq [1, 2]
+      end
+
+      it "defining a class once works normally" do
+        eval(<<-RUBY).as_int.should eq 5
+        class Foo
+          def five; 5; end
+        end
+        Foo.new.five
+        RUBY
+      end
+
+      it "reopening (redefining) a class raises rather than silently discarding the first body" do
+        # Previously: Op::MakeClass always allocated a fresh,
+        # disconnected RubyClass and Op::SetConstant just overwrote the
+        # constant slot — `five` from the first body was silently
+        # lost, not a compile/runtime error. See SCOPE.md's "Class/
+        # module reopening" Won't Fix entry for why real reopening
+        # isn't being built instead.
+        expect_raises(RuntimeError, /already initialized/) do
+          eval(<<-RUBY)
+          class Foo
+            def five; 5; end
+          end
+          class Foo
+            def six; 6; end
+          end
+          RUBY
+        end
+      end
+
+      it "reopening a builtin class also raises, same policy" do
+        # Builtin classes (Integer, String, Array, ...) are registered
+        # into the same @globals constant space as script-defined ones
+        # during Interpreter bootstrap (see
+        # Interpreter#define_global_class) — so this is the SAME
+        # SetConstant path and guard, not a special case. Real Ruby's
+        # most common reopening use case (monkey-patching a builtin) is
+        # therefore also a hard error now, consistent with the
+        # deliberate Won't Fix decision, not an oversight.
+        expect_raises(RuntimeError, /already initialized/) do
+          eval(<<-RUBY)
+          class String
+            def shout; upcase; end
+          end
+          RUBY
+        end
       end
     end
   end

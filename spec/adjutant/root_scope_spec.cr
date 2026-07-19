@@ -77,20 +77,23 @@ module Adjutant
 
       it "a bare dbl (no parens) reads back the local, not the method — real Ruby's actual rule " \
          "once a local of that name is in scope" do
-        # No .class/.proc?/.call script-level introspection used here
-        # (all still gaps for a bare lambda Value — see the
-        # still-pending Proc-wrapping piece) — proven instead by the
-        # fact this doesn't raise/doesn't silently call the method:
-        # a bare identifier that resolves to a local is Op::GetLocal,
-        # unconditionally, regardless of a same-named def existing
-        # (see compile_identifier — local resolution never even
-        # LOOKS at whether a method of that name exists).
+        # Proven by the fact this doesn't raise/doesn't silently call
+        # the method: a bare identifier that resolves to a local is
+        # Op::GetLocal, unconditionally, regardless of a same-named def
+        # existing (see compile_identifier — local resolution never
+        # even LOOKS at whether a method of that name exists).
+        # Asserted via .robject?/rclass.name rather than .proc? since
+        # Piece C (SCOPE.md): a Lambda literal now wraps its ScriptProc
+        # in a real Proc RubyObject (builtins/proc.cr), so the local
+        # holds a robject, not a bare proc-kind Value.
         src = <<-RUBY
         dbl = ->(n) { n + n }
         def dbl(n); n * 10; end
         dbl
         RUBY
-        eval(src).proc?.should be_true
+        result = eval(src)
+        result.robject?.should be_true
+        result.as_robject.rclass.name.should eq "Proc"
       end
     end
 
