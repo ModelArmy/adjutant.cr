@@ -20,6 +20,21 @@ Blocking, or actively causing incorrect behavior in normal use. Ordered
 roughly by dependency, not necessarily by importance — an item lower down
 may unblock ones above it.
 
+- **Verify IFC/`RiskFlowLabel` propagation works correctly through
+  lambdas, once D lands.** Raised 2026-07-18 as a tangent during D's
+  design conversation. D is about `RiskWalker`'s STATIC assessment (does
+  a `Lambda`/`BlockNode`'s body get priced at all); this is a separate
+  question about the DYNAMIC label-flow machinery (`RiskFlowLabel`/
+  `RiskFlowLog`, the VM's actual runtime join sites — see `DEVELOPMENT.md`'s
+  IFC section) — does a labeled value that flows INTO a lambda's closure
+  (captured from an outer scope) or is returned FROM a `.call` still
+  carry its label correctly end-to-end? `VM#invoke` (the mechanism both
+  `Proc#call` and native-method block-invocation route through) was
+  already found to have one real bug in this area (the `@stack`
+  isolation issue, fixed 2026-07-18 — see the `Piece C` history above) —
+  worth explicit script-level regression coverage (a labeled value
+  captured by a lambda, called, checked at the sink) rather than
+  assuming label-plumbing is fine just because value-plumbing now is.
 - **Piece D — risk-walking for blocks/lambdas.** `RiskWalker` never walks
   a `BlockNode`'s or `Lambda`'s body at all today — a block passed to
   `Array#each { risky_call }` is completely invisible to static risk
@@ -35,6 +50,32 @@ may unblock ones above it.
   Depends on C landing first (a `Lambda` needs to be a resolvable
   `RubyObject`, not a bare `Value`, before the walker can memoize/track
   it the way it does `ScriptProc`s for `def`s).
+- **Parser bug — array literal not recognized as a bare (no-paren) call
+  argument start.** Found 2026-07-18 by the person while testing (via
+  `assert_equal [3, 9, 16], ar` inside `spec/scripts/expressions.rb`).
+  `assert_equal([3, 9, 16], ar)` (parens) and `assert_equal ar, [3, 9,
+  16]` (array literal as a LATER bare arg) both parse fine — only an
+  array literal as the FIRST token of a bare-call's argument list fails:
+  `parse error: expected RBracket, got Comma`. Root cause:
+  `Parser#arg_follows_no_paren?` (`parser.cr`) is a positive allowlist of
+  token kinds that may start a bare-call argument — `TokenKind::LBracket`
+  (array literal open) is simply missing from it. With `[` unrecognized
+  as an arg start, `assert_equal [3, 9, 16], ar` doesn't get treated as
+  a bare call with args at all; `assert_equal` parses as a plain bare
+  identifier reference on its own, and `[3, 9, 16]` is then parsed
+  separately — landing in `parse_postfix`'s indexing path (`recv[...]`)
+  rather than as a fresh array literal, which is what actually produces
+  the observed `expected RBracket, got Comma` (it's mid-index-expression
+  parse when the second `,` arrives, not mid-array-literal). Likely fix:
+  add `TokenKind::LBracket` to `arg_follows_no_paren?`'s `case`
+  alongside the other opening-delimiter cases — but confirm this doesn't
+  also need a change on the `parse_postfix` side (bare-identifier-then-
+  `[` is legitimately ambiguous with real indexing, e.g. `arr [0]` vs.
+  `some_method [0]`; real Ruby resolves this the same way Adjutant
+  should — worth a design check, not just adding the token kind blindly,
+  given the parser's own comment about this being a *positive* allowlist
+  specifically to avoid this class of ambiguity). Queued to return to
+  after Piece D, per the person's stated priority — not urgent, real gap.
 
 ## Will Fix
 
@@ -156,6 +197,44 @@ revisit only if the stated reason no longer holds.
   `Class`/`Module` exist as real `RubyClass`es for `.class`/`is_a?`/
   `superclass` to work correctly; not meant to be instantiable from
   script.
+- **Class/module reopening (`class Foo; end` written a second time to
+  extend it — real Ruby's monkey-patching mechanism).** Decided
+  2026-07-18 alongside the `Op::SetConstant` reassignment hardening (see
+  `Must Fix` history): today this silently creates a brand-new,
+  disconnected `RubyClass` and discards the first body entirely
+  (`Op::MakeClass` never checks for an existing same-name class) — a
+  real, separate bug, now converted into a loud `Op::SetConstant`
+  redefinition error by that hardening rather than fixed properly (which
+  would mean `Op::MakeClass` detecting and reusing an existing class).
+  **Confirmed concretely by the person, 2026-07-18:** before the
+  `Op::SetConstant` guard existed, reopening a BUILTIN specifically —
+  `class String; def hello; "hello"; end; end` — silently broke every
+  native `String` method (`.upcase` started raising undefined-method)
+  once the constant was reassigned to the fresh, disconnected class,
+  since the native methods only ever lived on the original, now-
+  unreachable one. This is what confirmed a same-shaped existing spec
+  (`singleton_methods_spec.cr`'s "a native singleton new still works
+  alongside script singleton methods on the same class") had always
+  been silently invalid — it only exercised `.new` plus one script
+  method, narrow enough to never surface the breakage; removed outright
+  rather than kept as a documented gap, since the pattern it tested
+  (script-side `class Foo; end` extending an already-existing,
+  host-registered class) isn't coming back — see below.
+  Deliberately not building real reopening support: Adjutant's constants
+  (including class/module names) are now enforced assign-once, and
+  reopening is exactly a second assignment to the same constant — so
+  supporting it would mean carving out a special exemption from that
+  rule specifically for classes/modules, undermining the whole reason
+  the rule exists (constant-valued things, notably `Lambda`s used as
+  call arguments — see Piece D — being staticaly resolvable specifically
+  BECAUSE a constant can't quietly become something else later).
+  Adjutant scripts are LLM-generated, typically ephemeral/narrow in
+  scope even when reused, so the case for real monkey-patching support
+  is weak; failing loudly on an attempt is strictly better than the
+  current silent data loss, and staying without it keeps Adjutant a
+  proper subset of Ruby regardless (declining a feature, not adding
+  divergent behavior). `Class.new`/`Module.new` above is the same
+  family of cut for the same underlying reason.
 - **A per-parameter declarative provenance schema** for
   `declare_sensitivity` (declare provenance at `define_native`
   registration time, instead of the current call-site-driven API).

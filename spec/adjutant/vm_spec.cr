@@ -935,5 +935,106 @@ module Adjutant
         eval(src).as_int.should eq 6
       end
     end
+
+    # Op::SetConstant hardening, added 2026-07-18 ahead of Piece D (see
+    # SCOPE.md): real Ruby only WARNS on constant reassignment (still
+    # permits it); Adjutant deliberately makes it a hard error, so a
+    # constant-valued Lambda passed as a call argument can be trusted
+    # to be staticaly resolvable by RiskWalker — nothing else in the
+    # same script could have quietly reassigned it first. Covers both
+    # branches of Op::SetConstant's target-vs-@globals split: a
+    # top-level `FOO = 1` (target is nil — main is a RubyObject, not a
+    # RubyClass, and top-level code has no lexical_scope) and a
+    # constant defined inside a class/module body (target is that
+    # RubyClass, via target.constants) both need the same guard; this
+    # was a real bug in an earlier draft of the fix (the guard was
+    # first written narrowly, only catching @globals-routed
+    # reassignment for rclass-valued — i.e. class-name — constants,
+    # which would have silently let a plain top-level `FOO = 1; FOO =
+    # 2` back through).
+    describe "constants" do
+      it "a plain top-level constant assigned once works normally" do
+        eval("FOO = 1\nFOO").as_int.should eq 1
+      end
+
+      it "reassigning a plain top-level constant raises" do
+        expect_raises(RuntimeError, /already initialized/) do
+          eval("FOO = 1\nFOO = 2")
+        end
+      end
+
+      it "reassigning a constant defined inside a class body raises" do
+        expect_raises(RuntimeError, /already initialized/) do
+          eval(<<-RUBY)
+          class Foo
+            BAR = 1
+            BAR = 2
+          end
+          RUBY
+        end
+      end
+
+      it "the same constant name in two DIFFERENT classes does not collide" do
+        # target.constants is per-RubyClass — Foo::BAR and Baz::BAR are
+        # unrelated slots, confirming the guard checks the right Hash,
+        # not some shared/global one.
+        result = eval(<<-RUBY)
+        class Foo
+          BAR = 1
+        end
+        class Baz
+          BAR = 2
+        end
+        [Foo::BAR, Baz::BAR]
+        RUBY
+        result.as_array.map(&.as_int).should eq [1, 2]
+      end
+
+      it "defining a class once works normally" do
+        eval(<<-RUBY).as_int.should eq 5
+        class Foo
+          def five; 5; end
+        end
+        Foo.new.five
+        RUBY
+      end
+
+      it "reopening (redefining) a class raises rather than silently discarding the first body" do
+        # Previously: Op::MakeClass always allocated a fresh,
+        # disconnected RubyClass and Op::SetConstant just overwrote the
+        # constant slot — `five` from the first body was silently
+        # lost, not a compile/runtime error. See SCOPE.md's "Class/
+        # module reopening" Won't Fix entry for why real reopening
+        # isn't being built instead.
+        expect_raises(RuntimeError, /already initialized/) do
+          eval(<<-RUBY)
+          class Foo
+            def five; 5; end
+          end
+          class Foo
+            def six; 6; end
+          end
+          RUBY
+        end
+      end
+
+      it "reopening a builtin class also raises, same policy" do
+        # Builtin classes (Integer, String, Array, ...) are registered
+        # into the same @globals constant space as script-defined ones
+        # during Interpreter bootstrap (see
+        # Interpreter#define_global_class) — so this is the SAME
+        # SetConstant path and guard, not a special case. Real Ruby's
+        # most common reopening use case (monkey-patching a builtin) is
+        # therefore also a hard error now, consistent with the
+        # deliberate Won't Fix decision, not an oversight.
+        expect_raises(RuntimeError, /already initialized/) do
+          eval(<<-RUBY)
+          class String
+            def shout; upcase; end
+          end
+          RUBY
+        end
+      end
+    end
   end
 end

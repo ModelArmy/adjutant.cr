@@ -530,9 +530,36 @@ module Adjutant
             sym = chunk.consts[inst.c].as_sym
             val = pop
             target = f.self_val.as_rclass? || f.lexical_scope
+            # Constants are assign-once — real Ruby only WARNS on
+            # reassignment (still permits it); Adjutant deliberately
+            # makes it a hard error instead (2026-07-18, ahead of
+            # Piece D — see SCOPE.md's Must Fix history and the
+            # "Class/module reopening" Won't Fix entry). This is what
+            # makes a constant-valued Lambda (`F1 = ->(){}`) passed as
+            # a call argument staticaly resolvable at all: the walker
+            # can trust that whatever `F1` resolves to during a walk is
+            # what it'll still be at runtime, because nothing else in
+            # the same script could have quietly changed it first.
+            #
+            # Applies uniformly to BOTH branches below: a top-level
+            # `FOO = 5` (no enclosing class/module body) has `target ==
+            # nil` here — main is a RubyObject, not a RubyClass, so
+            # `self_val.as_rclass?` is nil, and top-level code's
+            # lexical_scope is nil too (only a `def`'s own body proc
+            # ever gets lexical_scope assigned — see Op::DefMethod/
+            # Op::DefSingleton) — so it goes through @globals, same as
+            # a top-level `class Foo; end`. A constant defined INSIDE a
+            # class/module body goes through target.constants instead.
+            # Both need the same check; this isn't specific to classes.
             if target
+              if target.constants.has_key?(sym.value)
+                raise runtime_error("constant #{target.name}::#{sym.name} already initialized — Adjutant does not permit constant reassignment (this includes redefining/reopening a class or module)", f)
+              end
               target.constants[sym.value] = val
             else
+              if @globals.has_key?(sym.value)
+                raise runtime_error("constant #{sym.name} already initialized — Adjutant does not permit constant reassignment (this includes redefining/reopening a class or module)", f)
+              end
               @globals[sym.value] = val
             end
             push(val)

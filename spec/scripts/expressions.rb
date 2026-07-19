@@ -34,24 +34,24 @@ assert "Self reference" do
 end
 
 assert "Class method" do
-  class A
+  class A1
     def self.x; 6; end
   end
 
-  A.x == 6
+  A1.x == 6
 end
 
 assert "Class ivar initialization" do
-  class A
+  class A2
     @x = 6
     def self.x; @x; end
   end
 
-  A.x == 6
+  A2.x == 6
 end
 
 assert "Class ivar and cvars" do
-  class A
+  class A3
     @x = 6
     def self.x; @x; end
     def initialize; @x=2; @@x=7; end
@@ -60,11 +60,11 @@ assert "Class ivar and cvars" do
     def self.aax; @@x; end
   end
 
-  (A.x == 6) && (A.new.x == 2) && (A.aax == 7) && (A.aax == A.new.aax)
+  (A3.x == 6) && (A3.new.x == 2) && (A3.aax == 7) && (A3.aax == A3.new.aax)
 end
 
 assert "Object built-in methods" do
-  class A
+  class A4
   end
 
   module M
@@ -72,16 +72,16 @@ assert "Object built-in methods" do
     end
   end
 
-  assert_not_nil(A.new.class)
-  assert_not_nil(A.class)
+  assert_not_nil(A4.new.class)
+  assert_not_nil(A4.class)
 
   assert_not_nil(M::B.new.class)
   assert_not_nil(M::B.class)
 
   assert_not_nil(M.class)
 
-  x = A.new
-  x.is_a? A
+  x = A4.new
+  x.is_a? A4
 end
 
 # ---- TODO: support special constants
@@ -204,17 +204,17 @@ assert "known native global" do
 end
 
 assert "class names should include namespace unless root" do
-  module A
+  module A5
     class B
     end
   end
   class C
   end
 
-  b = A::B.new
+  b = A5::B.new
   c = C.new
 
-  assert_equal b.class.to_s, "A::B"
+  assert_equal b.class.to_s, "A5::B"
   assert_equal c.class.to_s, "C"
 end
 
@@ -225,11 +225,13 @@ assert "lambdas" do
 
   dbl = ->(n) { n + n }
   assert_equal dbl.call(3), 6
-  # y = dbl
+
+  y = dbl
+  assert_equal y.class, Proc
 end
 
 assert "lambdas in module" do
-  module M
+  module M2
     dbl = ->(n) { n + n }
     assert_not_nil dbl
 
@@ -243,7 +245,7 @@ assert "lambdas in module" do
 end
 
 assert "self as param in no-paren method call" do
-  module M
+  module M3
   assert_not_equal self, nil
   end
   assert_not_equal self, nil
@@ -263,3 +265,21 @@ assert "test calls in array vs not" do
   assert_equal b, ar[1]
   assert_equal c, ar[2]
  end
+
+assert "arrays as no-paren params to method call" do
+  ar = [3, 9, 16]
+  assert_equal([3, 9, 16], ar)  # OK
+  assert_equal ar, [3, 9, 16]   # OK
+
+  # --- FIX parser bug
+  # assert_equal [3, 9, 16], ar   # does not parse
+  # ---
+end
+
+assert "Monkey-patching not supported" do
+  assert_raise RuntimeError do
+    class String
+      def hello; "hello"; end
+    end
+  end
+end
