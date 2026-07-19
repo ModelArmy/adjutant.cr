@@ -149,6 +149,117 @@ module Adjutant
       summary.path.none? { |p| p.includes?("unresolved") }.should be_true
     end
 
+    # Found 2026-07-18: fixing walk_identifier (bare names) surfaced
+    # that a class's own sibling methods calling each other bare
+    # (`second` from within `first`, no receiver/parens) fell through
+    # to RiskUnresolved — the ORIGINAL test above only asserted "not
+    # unresolved," not that the real risk value comes through; these
+    # specs close that gap and cover the two related shapes (singleton
+    # siblings, inherited-method resolution).
+    describe "bare implicit-self calls to a class's own methods (found via Piece D testing)" do
+      it "a risky sibling method's tags actually surface through a bare call, not just 'not unresolved'" do
+        interp, _ = make_interp
+        register_risky_module(interp, "delete_fn", RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, severity: Severity::Error))
+        walker = RiskWalker.new(interp)
+        body = risk_walker_test_parse(<<-RUBY)
+          class Svc
+            def first
+              second
+            end
+
+            def second
+              delete_fn()
+            end
+          end
+          Svc.new.first
+        RUBY
+        summary = RiskAggregator.summarize(walker.walk_body(body))
+        summary.tags.should eq Set{RiskTag::DeletesFiles}
+      end
+
+      it "works the same for a chain of THREE bare sibling calls, not just one hop" do
+        interp, _ = make_interp
+        register_risky_module(interp, "delete_fn", RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, severity: Severity::Error))
+        walker = RiskWalker.new(interp)
+        body = risk_walker_test_parse(<<-RUBY)
+          class Svc
+            def a
+              b
+            end
+
+            def b
+              c
+            end
+
+            def c
+              delete_fn()
+            end
+          end
+          Svc.new.a
+        RUBY
+        summary = RiskAggregator.summarize(walker.walk_body(body))
+        summary.tags.should eq Set{RiskTag::DeletesFiles}
+      end
+
+      it "self_class is correctly nil again after returning from a nested class method walk (no context leak)" do
+        # If @current_self_class leaked (not properly restored),
+        # walking Svc's methods first could incorrectly make a LATER,
+        # unrelated top-level bare call resolve against Svc's method
+        # table too.
+        interp, _ = make_interp
+        register_risky_module(interp, "delete_fn", RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, severity: Severity::Error))
+        walker = RiskWalker.new(interp)
+        body = risk_walker_test_parse(<<-RUBY)
+          class Svc
+            def helper
+              1
+            end
+          end
+          Svc.new.helper
+          helper
+        RUBY
+        summary = RiskAggregator.summarize(walker.walk_body(body))
+        # The top-level bare `helper` (no Svc instance in scope here)
+        # must be unresolved — Svc#helper is NOT a top-level def.
+        summary.path.any? { |p| p.includes?("unresolved") }.should be_true
+      end
+
+      it "works for def self.foo calling a sibling def self.bar bare (singleton methods, not just instance)" do
+        interp, _ = make_interp
+        register_risky_module(interp, "delete_fn", RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, severity: Severity::Error))
+        walker = RiskWalker.new(interp)
+        body = risk_walker_test_parse(<<-RUBY)
+          class Svc
+            def self.first
+              second
+            end
+
+            def self.second
+              delete_fn()
+            end
+          end
+          Svc.first
+        RUBY
+        summary = RiskAggregator.summarize(walker.walk_body(body))
+        summary.tags.should eq Set{RiskTag::DeletesFiles}
+      end
+
+      it "a bare call to a method that doesn't exist anywhere in the chain is still honestly unresolved" do
+        interp, _ = make_interp
+        walker = RiskWalker.new(interp)
+        body = risk_walker_test_parse(<<-RUBY)
+          class Svc
+            def first
+              nonexistent_method
+            end
+          end
+          Svc.new.first
+        RUBY
+        summary = RiskAggregator.summarize(walker.walk_body(body))
+        summary.path.any? { |p| p.includes?("unresolved") }.should be_true
+      end
+    end
+
     it "a bare unresolvable call inside a class body (not inside a def) is RiskUnresolved" do
       interp, _ = make_interp
       walker = RiskWalker.new(interp)

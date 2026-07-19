@@ -63,6 +63,35 @@ module Adjutant
     # `CONST = ->(){}` statements are walked.
     @known_constant_lambdas : Hash(String, Lambda)
 
+    # Which RubyClass (if any) the method body CURRENTLY being walked
+    # belongs to — nil for a top-level def or a lambda. Set/restored
+    # around each walk_script_method call, same save-restore pattern as
+    # @in_progress. Needed so a BARE implicit-self call inside an
+    # instance method (`second` called from within `first`, both
+    # methods of the same class — no receiver, no parens) can resolve
+    # against that class's own method table, the same way an explicit
+    # `self.second` or `s.second` already does via resolve_on_class.
+    # Found 2026-07-18, via a pre-existing spec ("a class's own methods
+    # can call each other regardless of definition order") that started
+    # failing once walk_identifier began resolving bare names for real
+    # instead of silently treating every one as a harmless value read —
+    # `second` was ALWAYS meant to resolve here; the old passing test
+    # was passing for the wrong reason (nothing looked at `second` at
+    # all), not because resolution actually worked.
+    @current_self_class : RubyClass?
+
+    # Whether the body currently being walked is a SINGLETON method
+    # (`def self.foo`) rather than an instance method — these resolve
+    # bare sibling calls against genuinely different tables on the same
+    # RubyClass (singleton_methods/native_singleton_methods vs.
+    # methods/native_methods — mirrors the VM's own dispatch_call
+    # branching on self_val.as_robject? vs. .as_rclass?, see vm.cr).
+    # Found 2026-07-18: @current_self_class alone isn't enough —
+    # walk_bare_name_call was only ever checking the INSTANCE tables,
+    # so `def self.first; second; end` (second also a singleton method)
+    # fell through to RiskUnresolved even with self_class correctly set.
+    @current_self_is_singleton : Bool = false
+
     def initialize(@interp : Interpreter)
       @inference = TypeInference.new(@interp)
       @method_cache = {} of ScriptProc => RiskNode
@@ -664,7 +693,7 @@ module Adjutant
       return RiskUnresolved.new("#{cls.name}.#{node.method}", node.line) unless sym
 
       if script_method = cls.find_singleton_method(sym.value)
-        walk_script_method(script_method, node.line)
+        walk_script_method(script_method, node.line, cls, is_singleton: true)
       elsif native = cls.find_native_singleton_method(sym.value)
         RiskLeaf.new(native.risk, "#{cls.name}.#{node.method}", node.line)
       else
@@ -704,17 +733,61 @@ module Adjutant
       walk_bare_name_call(node.method, node.line)
     end
 
+    # self's own class's method chain FIRST — checked before native
+    # functions/top-level defs (see walk_bare_name_call) since a class's
+    # own methods take priority in real Ruby's own implicit-self
+    # resolution (mirrors the VM's dispatch_call: `obj.rclass.find_method`
+    # before anything else). Branches on @current_self_is_singleton
+    # since a singleton method body (`def self.foo`) resolves bare
+    # sibling calls against DIFFERENT tables (singleton_methods/
+    # native_singleton_methods) than an ordinary instance method body
+    # does (methods/native_methods) — found 2026-07-18, `def self.first;
+    # second; end` fell through to RiskUnresolved despite
+    # @current_self_class being set, because this distinction didn't
+    # exist yet. Returns nil (not RiskUnresolved) on a miss, so the
+    # caller can keep falling through its own remaining resolution
+    # steps — nil here doesn't mean "unresolved," it means "not found
+    # on self's own class specifically."
+    private def walk_current_class_bare_call(sym_id : Int32, method : String, line : Int32) : RiskNode?
+      return nil unless cls = @current_self_class
+      if @current_self_is_singleton
+        if script_method = cls.find_singleton_method(sym_id)
+          return walk_script_method(script_method, line, cls, is_singleton: true)
+        end
+        if native = cls.find_native_singleton_method(sym_id)
+          return RiskLeaf.new(native.risk, method, line)
+        end
+      else
+        if script_method = cls.find_method(sym_id)
+          return walk_script_method(script_method, line, cls)
+        end
+        if native = cls.find_native_method(sym_id)
+          return RiskLeaf.new(native.risk, method, line)
+        end
+      end
+      nil
+    end
+
     # Shared by walk_receiverless_call (an explicit `foo()`/`foo x` Call
     # node) and walk_identifier (a bare `foo` that turned out not to be
     # a known local — see walk_identifier's own comment). Both compile
     # to the exact same VM fallback (Op::GetGlobal falling through to
     # dispatch_call for an unresolved bare name — see vm.cr), so both
-    # need the exact same static resolution: self's own methods first,
-    # then native functions, then a top-level def seen so far, else
-    # honestly unresolved.
+    # need the exact same static resolution, in the SAME order the VM's
+    # dispatch_call actually uses: self's own class first (see
+    # walk_current_class_bare_call above — this already subsumes
+    # native-function/top-level-def resolution too for anything
+    # registered on Object, every class's default superclass, via that
+    # helper's own ancestor-chain walk), THEN the walker's own
+    # forward-looking @top_level_procs (defs seen so far in THIS walk
+    # but not yet actually executed/registered anywhere the VM's own
+    # tables would show them), else honestly unresolved.
     private def walk_bare_name_call(method : String, line : Int32) : RiskNode
       sym = @interp.symbols.lookup(method)
       if sym
+        if resolved = walk_current_class_bare_call(sym.value, method, line)
+          return resolved
+        end
         if native = @interp.native_callable(sym.value)
           return RiskLeaf.new(native.risk, method, line)
         end
@@ -782,7 +855,7 @@ module Adjutant
       return RiskUnresolved.new("#{cls.name}##{node.method}", node.line) unless sym
 
       if script_method = cls.find_method(sym.value)
-        walk_script_method(script_method, node.line)
+        walk_script_method(script_method, node.line, cls)
       elsif native = cls.find_native_method(sym.value)
         RiskLeaf.new(native.risk, "#{cls.name}##{node.method}", node.line)
       else
@@ -793,7 +866,7 @@ module Adjutant
     # Walks a ScriptProc's body using only its own param scope — see
     # class-level docs for why caller argument types can't flow in.
     # Memoized per ScriptProc; guarded against recursion.
-    private def walk_script_method(proc : ScriptProc, call_line : Int32) : RiskNode
+    private def walk_script_method(proc : ScriptProc, call_line : Int32, self_class : RubyClass? = nil, is_singleton : Bool = false) : RiskNode
       if cached = @method_cache[proc]?
         return cached
       end
@@ -810,9 +883,24 @@ module Adjutant
       end
 
       @in_progress << proc
+      # Save/restore, not just set — a top-level def's own body must
+      # see self_class as nil (real Ruby: implicit self inside a
+      # method body is that method's OWN defining context, never the
+      # caller's), even if walk_script_method is itself invoked from
+      # inside another method body that set this to non-nil. Passing
+      # self_class explicitly (rather than reading @current_self_class
+      # as "inherited" here) already ensures that; saving the OUTER
+      # value before overwriting, and restoring it after, is what makes
+      # this correctly nest for recursive/mutual class-method calls too.
+      previous_self_class = @current_self_class
+      previous_is_singleton = @current_self_is_singleton
+      @current_self_class = self_class
+      @current_self_is_singleton = is_singleton
       method_env = TypeInference::Env.new
       proc.params.each { |param| method_env[param] = UnknownType.new }
       result = walk_body(ast_body, method_env)
+      @current_self_class = previous_self_class
+      @current_self_is_singleton = previous_is_singleton
       @in_progress.delete(proc)
       @method_cache[proc] = result
       result
