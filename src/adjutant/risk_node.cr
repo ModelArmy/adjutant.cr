@@ -77,4 +77,26 @@ module Adjutant
       super(line)
     end
   end
+
+  # A risk that was handed off to something the walker can't see into —
+  # invocation isn't confirmed, only possible. Piece D (see SCOPE.md):
+  # a `Lambda` literal or constant-held lambda passed as a call
+  # argument is walked (so its body's risk IS known), but whether the
+  # callee actually invokes it is outside the walker's visibility (no
+  # confirmed `yield`-equivalent contract the way a BlockNode has via
+  # `yield`) — folding it in unconditionally, the way a BlockNode's
+  # risk folds into its call, would overstate risk for a lambda that's
+  # merely stored/inspected/never called. Deliberately not named
+  # "maybe"/"conditional": those read as branch semantics, easily
+  # confused with RiskChoice (where exactly one child is guaranteed to
+  # run) — "deferred" says the DECISION of whether this runs has been
+  # handed elsewhere, which is the real mechanism.
+  class RiskDeferred < RiskNode
+    getter child : RiskNode
+    getter reason : String
+
+    def initialize(@child : RiskNode, @reason, line)
+      super(line)
+    end
+  end
 end

@@ -139,5 +139,64 @@ module Adjutant
     it "an empty tree yields no findings" do
       RiskAggregator.all_findings(RiskSequence.new([] of RiskNode, 1)).should be_empty
     end
+
+    # Piece D (SCOPE.md): a lambda handed to a callee as an argument —
+    # whether the callee actually invokes it isn't confirmed, so its
+    # risk is wrapped RiskDeferred rather than folded in unconditionally
+    # the way a RiskSequence child or RiskChoice branch would be.
+    describe "RiskDeferred" do
+      it "summarize uses the child's full severity/reversibility/tags as-is — deferred does not soften it" do
+        risky = leaf(Set{RiskTag::DeletesFiles}, Severity::Error, Reversibility::No, desc: "delete_all")
+        deferred = RiskDeferred.new(risky, "lambda literal passed as argument", 1)
+        summary = RiskAggregator.summarize(deferred)
+        summary.tags.should eq Set{RiskTag::DeletesFiles}
+        summary.severity.should eq Severity::Error
+        summary.reversible.should eq Reversibility::No
+      end
+
+      it "summarize's path is prefixed with the deferred reason" do
+        risky = leaf(Set{RiskTag::DeletesFiles}, Severity::Error, desc: "delete_all")
+        deferred = RiskDeferred.new(risky, "lambda literal passed as argument", 1)
+        summary = RiskAggregator.summarize(deferred)
+        summary.path.first.should eq "deferred: lambda literal passed as argument"
+        summary.path.should contain "delete_all"
+      end
+
+      it "all_findings still surfaces the child's finding, at full severity" do
+        risky = leaf(Set{RiskTag::DeletesFiles}, Severity::Error, desc: "delete_all")
+        deferred = RiskDeferred.new(risky, "lambda literal passed as argument", 1)
+        findings = RiskAggregator.all_findings(deferred)
+        findings.map(&.description).should eq ["delete_all"]
+        findings.first.profile.severity.should eq Severity::Error
+      end
+
+      it "all_findings' branch_path carries the deferred reason, distinguishing it from a Choice branch" do
+        risky = leaf(Set{RiskTag::DeletesFiles}, Severity::Error, desc: "delete_all")
+        deferred = RiskDeferred.new(risky, "lambda literal passed as argument", 1)
+        findings = RiskAggregator.all_findings(deferred)
+        findings.first.branch_path.should eq ["deferred: lambda literal passed as argument"]
+      end
+
+      it "a pure (risk-free) deferred lambda still summarizes to none-equivalent" do
+        deferred = RiskDeferred.new(pure_leaf, "lambda literal passed as argument", 1)
+        summary = RiskAggregator.summarize(deferred)
+        summary.tags.should be_empty
+        summary.severity.should eq Severity::Info
+      end
+
+      it "nested inside a Sequence alongside a confirmed risk, the Sequence still unions both" do
+        # The call site itself (e.g. the argument-passing call) may
+        # have its own confirmed risk, walked as an ordinary Sequence
+        # child, alongside the deferred lambda passed to it — both
+        # should still be visible together.
+        confirmed = leaf(Set{RiskTag::NetworkEgress}, Severity::Warning, desc: "http_post")
+        risky = leaf(Set{RiskTag::DeletesFiles}, Severity::Error, desc: "delete_all")
+        deferred = RiskDeferred.new(risky, "lambda literal passed as argument", 1)
+        seq = RiskSequence.new([confirmed, deferred] of RiskNode, 1)
+        summary = RiskAggregator.summarize(seq)
+        summary.tags.should eq Set{RiskTag::NetworkEgress, RiskTag::DeletesFiles}
+        summary.severity.should eq Severity::Error # the deferred child is still the worst case
+      end
+    end
   end
 end

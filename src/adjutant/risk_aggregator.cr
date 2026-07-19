@@ -63,6 +63,15 @@ module Adjutant
         node.children.flat_map { |child| all_findings(child, iterated || node.iterated?, branch_path) }
       when RiskChoice
         node.children.flat_map { |child| all_findings(child, iterated, branch_path + ["#{node.origin} branch"]) }
+      when RiskDeferred
+        # Included at full severity, same philosophy as RiskUnresolved
+        # outranking everything else (see class docs above) — this
+        # project consistently treats "can't confirm" as a reason to
+        # surface loudly, not a reason to under-report. Tagged via
+        # branch_path so presentation can distinguish "this WILL
+        # happen" from "this MIGHT happen, handed off to a callee we
+        # can't see into" without losing the underlying finding.
+        all_findings(node.child, iterated, branch_path + ["deferred: #{node.reason}"])
       else
         [] of RiskFinding
       end
@@ -88,6 +97,8 @@ module Adjutant
         summarize_sequence(node)
       when RiskChoice
         summarize_choice(node)
+      when RiskDeferred
+        summarize_deferred(node)
       else
         raise "unreachable RiskNode subtype"
       end
@@ -123,6 +134,25 @@ module Adjutant
         worst.severity,
         ["#{node.origin} branch"] + worst.path,
         worst.iterated?,
+      )
+    end
+
+    # The child's full severity/reversibility/tags are used as-is (see
+    # all_findings' RiskDeferred case for why: this project treats
+    # "can't confirm" as a reason to surface loudly, matching how
+    # RiskUnresolved is handled, not a reason to under-report) — only
+    # the path gets a "deferred: <reason>" prefix, so presentation can
+    # tell a human this risk is contingent on a callee actually
+    # invoking what was handed to it, not something that will
+    # definitely run the way an ordinary RiskSequence child does.
+    private def self.summarize_deferred(node : RiskDeferred) : RiskSummary
+      child_summary = summarize(node.child)
+      RiskSummary.new(
+        child_summary.tags,
+        child_summary.reversible,
+        child_summary.severity,
+        ["deferred: #{node.reason}"] + child_summary.path,
+        child_summary.iterated?,
       )
     end
 

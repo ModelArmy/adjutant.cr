@@ -54,12 +54,35 @@ module Adjutant
     # regardless of definition order within the class.
     @known_classes : Hash(String, RubyClass)
 
+    # Constant-name -> the Lambda AST node it was assigned. Same
+    # "seen so far, in walk order" precedent as @top_level_procs/
+    # @known_classes above, and only trustworthy for the same reason
+    # those two are (a name, once bound, doesn't change again) — here
+    # specifically because Op::SetConstant now enforces that at
+    # runtime too (Piece D, SCOPE.md). Populated by walk_assign as
+    # `CONST = ->(){}` statements are walked.
+    @known_constant_lambdas : Hash(String, Lambda)
+
     def initialize(@interp : Interpreter)
       @inference = TypeInference.new(@interp)
       @method_cache = {} of ScriptProc => RiskNode
       @in_progress = Set(ScriptProc).new
+      # Same purpose as @method_cache/@in_progress, keyed by the Lambda
+      # AST node itself rather than a ScriptProc — walk_lambda_body
+      # works from the AST directly (a Lambda literal isn't compiled/
+      # instantiated at walk time the way a def's ScriptProc is).
+      # @in_progress_lambdas matters for real: a bare Lambda literal
+      # can't reference itself (no name exists yet inside its own
+      # body — real Ruby semantics), but a CONSTANT-held lambda's body
+      # calling `.call` on that same constant IS structurally possible
+      # (`F1 = ->() { F1.call }` — F1 exists by the time the body would
+      # run) and needs the same recursion guard walk_script_method
+      # already has for defs.
+      @lambda_cache = {} of Lambda => RiskNode
+      @in_progress_lambdas = Set(Lambda).new
       @top_level_procs = {} of String => ScriptProc
       @known_classes = {} of String => RubyClass
+      @known_constant_lambdas = {} of String => Lambda
       @inference.class_resolver = ->(name : String) { resolve_class(name) }
       @inference.const_path_resolver = ->(node : ConstPath) { resolve_const_path(node) }
     end
@@ -106,6 +129,7 @@ module Adjutant
       when Assign, OpAssign, CondAssign, MultiAssign, IndexAssign
         walk_assignment(node, env)
       when Call       then walk_call(node, env)
+      when Identifier then walk_identifier(node, env)
       when Body       then walk_body(node, env)
       when DefNode    then walk_def(node)
       when ClassNode  then walk_class(node)
@@ -126,7 +150,7 @@ module Adjutant
       when CaseNode      then walk_case(node, env)
       when WhileNode     then walk_iterated(node.body, env, node.line)
       when LoopNode      then walk_iterated(node.body, env, node.line)
-      when ForNode       then walk_iterated(node.body, env, node.line)
+      when ForNode       then walk_iterated(node.body, env, node.line, node.vars)
       when ModifierIf    then walk_modifier_if(node, env)
       when ModifierWhile then walk_modifier_while(node, env)
       when BeginNode     then walk_begin(node, env)
@@ -193,6 +217,20 @@ module Adjutant
       try_result =
         if rescue_body = node.rescue_body
           rescue_env = env.dup
+          # The caught exception, if named (`rescue => e` / `rescue
+          # Foo => e`), is a real local for the rescue body — found
+          # 2026-07-18 alongside walk_identifier: without this, a bare
+          # `e` reference inside the rescue body would now (correctly
+          # for genuinely-unbound names, but wrongly here) resolve as
+          # an implicit zero-arg method call attempt instead of the
+          # local read it actually is. UnknownType since Adjutant has
+          # no way to know the exception's real class here beyond
+          # rescue_class's name (not itself resolved to a RubyClass by
+          # this walker), same imprecision every other untyped binding
+          # already carries.
+          if rescue_var = node.rescue_var
+            rescue_env[rescue_var] = UnknownType.new
+          end
           rescue_risk = walk_body(rescue_body, rescue_env)
           RiskChoice.new([body_risk, rescue_risk] of RiskNode, "rescue", node.line)
         else
@@ -339,6 +377,17 @@ module Adjutant
       value_type = @inference.infer_node(node.value, env)
       if (target = node.target).is_a?(Identifier)
         env[target.name] = value_type
+      elsif target.is_a?(Constant) && (value = node.value).is_a?(Lambda)
+        # CONST = ->(){} — record the binding so a later CONST.call(...)
+        # or some_fn(CONST) can resolve to this exact Lambda node. Only
+        # trustworthy because Op::SetConstant now enforces assign-once
+        # at runtime (see @known_constant_lambdas' own doc comment) —
+        # walk_node above already walked node.value as a bare Lambda
+        # (contributing nothing on its own, per walk_node's else
+        # branch), so this doesn't double-walk the body; the body
+        # itself is only ever actually walked lazily, on first
+        # confirmed resolution, via walk_lambda_body's own cache.
+        @known_constant_lambdas[target.name] = value
       end
       value_risk
     end
@@ -433,25 +482,131 @@ module Adjutant
       RiskChoice.new(branches, "case", node.line)
     end
 
-    private def walk_iterated(body : Body, env : TypeInference::Env, line : Int32) : RiskNode
+    private def walk_iterated(body : Body, env : TypeInference::Env, line : Int32, vars : Array(String) = [] of String) : RiskNode
       inner_env = env.dup
+      # Real local bindings for THIS iteration's body — a `for`
+      # loop's variable(s), or (via walk_call's block-folding) a
+      # block's own params (`{ |x| ... }`). Found 2026-07-18 alongside
+      # walk_identifier: without this, a bare reference to the loop/
+      # block variable inside the body would now (correctly for
+      # genuinely-unbound names, but wrongly here) resolve as an
+      # implicit zero-arg method call attempt instead of the local
+      # read it actually is. UnknownType, same imprecision every other
+      # untyped binding already carries (no declared param/loop-var
+      # types in Adjutant).
+      vars.each { |name| inner_env[name] = UnknownType.new }
       node = walk_body(body, inner_env)
       RiskSequence.new([node.as(RiskNode)], line, iterated: true)
     end
 
     private def walk_call(node : Call, env : TypeInference::Env) : RiskNode
-      receiver = node.receiver
-      case receiver
-      when Nil
-        walk_receiverless_call(node)
-      when Constant
-        walk_class_receiver_call(node, resolve_class(receiver.name), receiver.name)
-      when ConstPath
-        walk_class_receiver_call(node, resolve_const_path(receiver), const_path_name(receiver))
+      # Every argument runs synchronously at THIS call site, regardless
+      # of what the callee does with its value afterward — safe and
+      # certain to fold in unconditionally, same footing as any other
+      # expression in a Sequence. Found 2026-07-18 mid-Piece-D-design
+      # (see SCOPE.md): args were never walked at all before this — a
+      # plain risky call used as an argument (`puts(delete_file(...))`,
+      # no lambda/block involved) was completely invisible.
+      #
+      # A `Lambda` LITERAL argument is a special case among these: its
+      # own definition contributes nothing on its own (same as any
+      # bare Lambda — see walk_node's else branch), but if the callee
+      # is later confirmed to invoke it we can't tell here, so
+      # walk_call_arg wraps a Lambda's walked body in RiskDeferred
+      # rather than returning it plain — see walk_call_arg below.
+      arg_risks = node.args.map { |arg| walk_call_arg(arg, env) }
+
+      resolved = case receiver = node.receiver
+                 when Nil
+                   walk_receiverless_call(node)
+                 when Constant
+                   walk_class_receiver_call(node, resolve_class(receiver.name), receiver.name, receiver.name)
+                 when ConstPath
+                   walk_class_receiver_call(node, resolve_const_path(receiver), const_path_name(receiver), nil)
+                 else
+                   # The receiver expression itself runs unconditionally
+                   # too, before the method it names even dispatches —
+                   # same reasoning as args, just a single expression
+                   # instead of an array of them.
+                   receiver_risk = walk_node(receiver, env)
+                   receiver_type = @inference.infer_node(receiver, env)
+                   RiskSequence.new([receiver_risk, walk_receiver_call(node, receiver_type)], node.line)
+                 end
+
+      # A `{ }`/`do...end` block attached to this call folds into its
+      # result unconditionally (unlike a Lambda argument — see
+      # walk_call_arg): `yield` inside the callee's own body is a real,
+      # statically-visible invocation contract, so unlike a lambda
+      # merely handed off, a block genuinely runs as part of this call
+      # (net Piece D judgment call: the callee might invoke it zero or
+      # many times at runtime, same "can't statically bound how many
+      # times" caveat walk_iterated already carries for while/for — but
+      # "does it run at all" is confirmed here, unlike a passed lambda).
+      # Walked with the ENCLOSING env (real closure semantics — a block
+      # can read/write outer locals) rather than a fresh param-only
+      # scope the way walk_lambda_body gives a Lambda literal.
+      block_risk = node.block.try { |blk| walk_iterated(blk.body, env, blk.line, blk.params.map(&.name)) }
+
+      children = [] of RiskNode
+      children.concat(arg_risks)
+      children << block_risk if block_risk
+      children << resolved
+      return resolved if children.size == 1
+      RiskSequence.new(children, node.line)
+    end
+
+    # Walks a single call argument. An ordinary expression just gets
+    # walk_node'd like any other value-producing expression. A Lambda
+    # LITERAL gets special treatment: its body IS walkable (eagerly, so
+    # the memo is populated and structural errors surface now — same
+    # treatment walk_script_method gives a def's body), but whether the
+    # callee actually invokes it isn't confirmed by anything visible
+    # here (no yield-equivalent contract the way a BlockNode has), so
+    # the walked body is wrapped RiskDeferred rather than folded in
+    # unconditionally. A bare CONSTANT referencing a known lambda
+    # binding (`F1 = ->(){}; apply(F1)`) gets the exact same treatment
+    # as a literal — resolvable only because Op::SetConstant now
+    # enforces assign-once, same reasoning as the CONST.call(...) case
+    # in walk_class_receiver_call, but STILL wrapped RiskDeferred here
+    # (not resolved directly the way CONST.call is): passing F1 as an
+    # argument doesn't confirm the callee invokes it, unlike CONST.call
+    # itself which IS the invocation. A plain (non-constant) variable
+    # holding a lambda is NOT specially handled — falls through to
+    # walk_node like any other expression, correctly RiskUnresolved-ish
+    # via ordinary inference, since which literal a variable currently
+    # holds is real aliasing the walker can't safely resolve.
+    private def walk_call_arg(arg : Node, env : TypeInference::Env) : RiskNode
+      if arg.is_a?(Lambda)
+        RiskDeferred.new(walk_lambda_body(arg), "lambda literal passed as a call argument", arg.line)
+      elsif arg.is_a?(Constant) && (lambda_node = @known_constant_lambdas[arg.name]?)
+        RiskDeferred.new(walk_lambda_body(lambda_node), "constant-held lambda (#{arg.name}) passed as a call argument", arg.line)
       else
-        receiver_type = @inference.infer_node(receiver, env)
-        walk_receiver_call(node, receiver_type)
+        walk_node(arg, env)
       end
+    end
+
+    # Walks a Lambda node's body eagerly, own-param-only scope (mirrors
+    # walk_script_method's treatment of a def body — see class docs:
+    # a proc's own body is walked using ONLY its own param scope, not
+    # the caller's env, since Adjutant has no parameter type
+    # declarations to do better with). Shared by walk_call_arg (Lambda
+    # literal as an argument) and the constant-lambda .call resolution
+    # in walk_class_receiver_call.
+    private def walk_lambda_body(node : Lambda) : RiskNode
+      if cached = @lambda_cache[node]?
+        return cached
+      end
+      if @in_progress_lambdas.includes?(node)
+        return RiskLeaf.new(RiskProfile.none, "<lambda> (recursive call)", node.line)
+      end
+
+      @in_progress_lambdas << node
+      lambda_env = TypeInference::Env.new
+      node.params.each { |param| lambda_env[param.name] = UnknownType.new }
+      result = walk_body(node.body, lambda_env)
+      @in_progress_lambdas.delete(node)
+      @lambda_cache[node] = result
+      result
     end
 
     # Render a ConstPath back to its dotted display form (`M::A`) for
@@ -477,10 +632,32 @@ module Adjutant
     # fallback (script `initialize`) when no native `new` is
     # registered. `display_name` is purely for RiskUnresolved/RiskLeaf
     # labels — resolution itself only depends on `cls`.
-    private def walk_class_receiver_call(node : Call, cls : RubyClass?, display_name : String) : RiskNode
+    private def walk_class_receiver_call(node : Call, cls : RubyClass?, display_name : String, const_name : String?) : RiskNode
       if node.method == "new"
         return walk_constructor_call(node, cls, display_name)
       end
+
+      # CONST.call(...) where CONST is a known constant-held Lambda —
+      # checked before the `unless cls` RiskUnresolved fallback below,
+      # since this is exactly the case that fallback used to swallow
+      # silently: `cls` is nil here (resolve_class's `.as_rclass?`
+      # returns nil for a Proc-valued constant — it isn't a RubyClass
+      # at all), so without this branch every CONST.call(...) would
+      # read as an ordinary unresolved call, indistinguishable from a
+      # truly-unknowable one. Piece D (SCOPE.md), found by the person:
+      # unlike a Lambda passed onward as an ARGUMENT (see walk_call_arg
+      # — wrapped RiskDeferred, since invocation there isn't confirmed),
+      # invocation HERE is certain — `.call` is happening at this exact
+      # call site, not handed off elsewhere — so this resolves directly
+      # to the lambda's own walked-body risk, no RiskDeferred wrapper.
+      # Only `.call` itself is special-cased; any other method name on
+      # a Proc-valued constant (there are none today besides `call`/
+      # `lambda?` — see builtins/proc.cr) still falls through to the
+      # ordinary `unless cls` RiskUnresolved path below, correctly.
+      if node.method == "call" && const_name && (lambda_node = @known_constant_lambdas[const_name]?)
+        return walk_lambda_body(lambda_node)
+      end
+
       return RiskUnresolved.new("#{display_name}.#{node.method}", node.line) unless cls
 
       sym = @interp.symbols.lookup(node.method)
@@ -524,10 +701,22 @@ module Adjutant
     # anywhere in the class" rule that DOES apply inside method bodies
     # (walk_class).
     private def walk_receiverless_call(node : Call) : RiskNode
-      sym = @interp.symbols.lookup(node.method)
+      walk_bare_name_call(node.method, node.line)
+    end
+
+    # Shared by walk_receiverless_call (an explicit `foo()`/`foo x` Call
+    # node) and walk_identifier (a bare `foo` that turned out not to be
+    # a known local — see walk_identifier's own comment). Both compile
+    # to the exact same VM fallback (Op::GetGlobal falling through to
+    # dispatch_call for an unresolved bare name — see vm.cr), so both
+    # need the exact same static resolution: self's own methods first,
+    # then native functions, then a top-level def seen so far, else
+    # honestly unresolved.
+    private def walk_bare_name_call(method : String, line : Int32) : RiskNode
+      sym = @interp.symbols.lookup(method)
       if sym
         if native = @interp.native_callable(sym.value)
-          return RiskLeaf.new(native.risk, node.method, node.line)
+          return RiskLeaf.new(native.risk, method, line)
         end
         # A top-level def already executed via a PRIOR interp.eval
         # call — genuinely pre-existing, same footing as a native
@@ -537,13 +726,31 @@ module Adjutant
         # work), not @globals, so this checks main.rclass directly
         # rather than the removed @globals-ScriptProc lookup.
         if proc = @interp.main.rclass.find_method(sym.value)
-          return walk_script_method(proc, node.line)
+          return walk_script_method(proc, line)
         end
       end
-      if proc = @top_level_procs[node.method]?
-        return walk_script_method(proc, node.line)
+      if proc = @top_level_procs[method]?
+        return walk_script_method(proc, line)
       end
-      RiskUnresolved.new(node.method, node.line)
+      RiskUnresolved.new(method, line)
+    end
+
+    # A bare identifier (`delete_file`, no parens/args/block) is
+    # genuinely ambiguous at parse time — real Ruby's own rule, which
+    # Adjutant's compiler mirrors exactly (see compile_identifier):
+    # a name already bound as a local/param wins; otherwise it's an
+    # IMPLICIT ZERO-ARG METHOD CALL ATTEMPT (Op::GetGlobal falling
+    # through to dispatch_call — see vm.cr). Found 2026-07-18 (via the
+    # person's samples/risk_static_literal_lambda.rb): walk_node's
+    # generic `else` branch previously treated EVERY bare Identifier as
+    # a harmless value read, with no risk of its own — silently
+    # invisible to the walker if the name was actually a risky
+    # no-arg function called without parens. `env` (bindings seen so
+    # far in THIS walk — params, earlier assignments) is the walker's
+    # own equivalent of the compiler's `scope.resolve_local` check.
+    private def walk_identifier(node : Identifier, env : TypeInference::Env) : RiskNode
+      return RiskSequence.new([] of RiskNode, node.line) if env.has_key?(node.name)
+      walk_bare_name_call(node.name, node.line)
     end
 
     private def walk_receiver_call(node : Call, receiver_type : TypeHint) : RiskNode

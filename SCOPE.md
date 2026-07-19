@@ -102,6 +102,31 @@ may unblock ones above it.
   Depends on C landing first (a `Lambda` needs to be a resolvable
   `RubyObject`, not a bare `Value`, before the walker can memoize/track
   it the way it does `ScriptProc`s for `def`s). C has landed.
+  **BUG found and fixed 2026-07-18, via the person's own
+  `samples/risk_static_literal_lambda.rb` test script (a real, pre-
+  existing gap, only EXPOSED by D — lambda bodies weren't walked at
+  all before D, hiding it):** `walk_node`'s generic `else` branch
+  treated every bare `Identifier` (`delete_file`, no parens) as a
+  harmless value read with no risk of its own — but the VM's own
+  `Op::GetGlobal` genuinely falls through to an implicit zero-arg
+  method call attempt for any name not already a known local (matching
+  real Ruby's own local-vs-call disambiguation rule — see
+  `compile_identifier`), so a bare risky call was silently invisible to
+  the walker while the equivalent `delete_file()` (with parens) was
+  correctly caught. Fixed: new `walk_identifier`, mirroring the VM's
+  own rule via `env.has_key?(name)` (the walker's own equivalent of the
+  compiler's `scope.resolve_local` check) — an unbound name now
+  resolves via the same `walk_bare_name_call` helper `walk_receiverless_
+  call` already used (extracted so both agree exactly). Fixing this
+  surfaced two more, smaller real gaps in the SAME family (a genuinely-
+  bound name incorrectly falling through to the implicit-call path,
+  a false positive) that had been silently harmless before (nothing
+  read `env` for this purpose) but would have newly misfired once
+  `walk_identifier` existed: `rescue => e`'s exception variable was
+  never added to the rescue body's `env` (`walk_begin`), and neither a
+  `for x in ...` loop's variable(s) nor a `{ |x| ... }` block's own
+  params were ever declared in `walk_iterated`'s `inner_env` (both now
+  fixed via a shared optional `vars` parameter on `walk_iterated`).
 - **Parser bug — array literal not recognized as a bare (no-paren) call
   argument start.** Found 2026-07-18 by the person while testing (via
   `assert_equal [3, 9, 16], ar` inside `spec/scripts/expressions.rb`).
@@ -134,6 +159,25 @@ may unblock ones above it.
 Real gaps, not currently blocking anything, no active design conversation
 yet. Promote to `Must Fix` when something starts depending on it.
 
+- **`TypeInference#infer_node` has no case for `ArrayLiteral`/`HashLiteral`
+  receivers** (found 2026-07-18 while writing Piece D's specs — pre-
+  existing, not introduced by D). `[1, 2, 3].each { ... }` infers the
+  receiver as `UnknownType`, so `.each` itself resolves as
+  `RiskUnresolved` (tagged `ExecutesCode` — see
+  `RiskAggregator.unresolved_profile`) even though `Array` is a real,
+  known builtin class the walker could in principle resolve directly,
+  the same way `5.to_s` already does (see the passing "a call on a
+  literal-receiver resolves via the builtin class" spec, which only
+  covers a scalar literal, not `ArrayLiteral`/`HashLiteral`). A risky
+  call INSIDE the block still gets folded in correctly (that part IS
+  Piece D's job and works) — this gap only means the outer `.each`/
+  `.map`/etc. call itself contributes a spurious extra `ExecutesCode`
+  tag alongside the real one, union'd in via `RiskSequence`, rather
+  than resolving cleanly to `Array`'s (currently risk-free) native
+  method profile. Likely fix: add `ArrayLiteral`/`HashLiteral` cases to
+  `infer_node` resolving to `KnownType` of `Array`/`Hash` directly
+  (mirrors whatever the scalar-literal cases already do) — small,
+  contained, no design conversation needed.
 - **No true per-instance singleton methods on `RubyObject`.** `Op::DefSingleton`
   (`def self.foo` when `self` is a `RubyObject`, not a `RubyClass`)
   targets the receiver's own *class* instead — `RubyObject` has no
