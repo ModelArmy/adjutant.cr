@@ -50,7 +50,15 @@ module Adjutant::Builtins
     define(cls, interp, "call") do |args, _blk, ncc|
       obj = args.first.as_robject
       sproc = obj.ivars[sproc_sym].as_proc
-      ncc.invoke(sproc, args[1..])
+      # obj.outer_locals is the snapshot taken when this specific
+      # ->(){} literal was evaluated (Op::MakeProc, vm.cr) — the
+      # lambda's true lexical parent scope, regardless of which frame
+      # .call happens to run in now. Without passing it explicitly,
+      # VM#invoke falls back to the CALLING frame's locals, which is
+      # only right when .call happens to run in the same frame that
+      # defined the lambda — see the 2026-07-20 closure-capture bug
+      # (research/IFC_DESIGN.md) this fixes.
+      ncc.invoke(sproc, args[1..], outer_locals: obj.outer_locals)
     end
 
     # `lambda?` always true here: only Lambda-node output ever becomes

@@ -230,7 +230,24 @@ module Adjutant
 
     # Execute a compiled script proc and return the result.
     # Can be called from within an execution via a native function.
-    protected def invoke(proc : ScriptProc, args : Array(Value), self_val : Value? = nil) : Value
+    # `outer_locals`, when given, overrides the outer/closure scope
+    # the invoked proc sees — needed for Proc#call (builtins/proc.cr),
+    # where `proc` is a `->(){}` lambda that may be called arbitrarily
+    # later, from an arbitrarily different frame than the one it was
+    # defined in. Defaults to nil, which falls back to the CURRENT
+    # frame's locals (`f.locals` below) — correct for every other
+    # caller of this method (Array#each/Range#each/Hash#each's `blk`
+    # param, etc.), since those are always a call-site block literal
+    # still being invoked live, in the very frame that wrote it —
+    # there is no defining-frame/calling-frame gap for that case, so
+    # "the current frame's locals" and "the block's true creation-site
+    # locals" are the same array. See RubyObject#outer_locals and
+    # Op::MakeProc's snapshot (vm.cr) for where a Proc's real
+    # closure snapshot is captured, and the 2026-07-20 closure-capture
+    # bug (research/IFC_DESIGN.md) this override fixes for lambdas
+    # specifically.
+    protected def invoke(proc : ScriptProc, args : Array(Value), self_val : Value? = nil,
+                         outer_locals : Array(Value)? = nil) : Value
       saved_frames = @frames
       saved_stack = @stack
       saved_ins_count = @instruction_count
@@ -241,6 +258,7 @@ module Adjutant
         f = current_frame # before replacing @frames
         inherited_self = self_val || f.self_val
         inherited_lexical = proc.lexical_scope || f.lexical_scope
+        effective_outer = outer_locals || f.locals
         @frames = [] of Frame
         # @stack must be isolated too, not just @frames — execute's
         # Op::Ret pushes its result back onto @stack only `unless
@@ -267,7 +285,7 @@ module Adjutant
         # pending ON the stack (array literal, method args, ...)
         # around a nested `.call` exposed it.
         @stack = Array(Value).new(256)
-        call_script_proc(proc, args, f.filename, nil, f.locals, self_val: inherited_self,
+        call_script_proc(proc, args, f.filename, nil, effective_outer, self_val: inherited_self,
           lexical_scope: inherited_lexical, lexical_override: true)
         # Let the VM execute the chunk
         result = execute
@@ -750,7 +768,17 @@ module Adjutant
           when Op::MakeProc
             sproc_val = chunk.consts[inst.c]
             if inst.a == 1_u8
-              push(make_lambda_object(sproc_val.as_proc, sproc_val.label))
+              # Snapshot NOW, while `f` is still the lambda literal's
+              # own creation-site frame — mirrors Op::SetBlock's
+              # snapshot of current_block_locals for ordinary blocks
+              # (see Frame#block_outer_locals's comment). Without
+              # this, .call later would have nothing correct to fall
+              # back on except the CALLING frame's locals, which are
+              # only right by coincidence when .call happens to run
+              # in the same frame the lambda was written in (see the
+              # 2026-07-20 closure-capture bug this fixes,
+              # research/IFC_DESIGN.md).
+              push(make_lambda_object(sproc_val.as_proc, sproc_val.label, f.locals))
             else
               push(sproc_val)
             end
@@ -1753,13 +1781,20 @@ module Adjutant
     # goes through this; call-site block literals and def bodies keep
     # using the bare sproc Value directly (Op::MakeProc with a=0),
     # never reach here.
-    private def make_lambda_object(sproc : ScriptProc, label : RiskFlowLabel?) : Value
+    private def make_lambda_object(sproc : ScriptProc, label : RiskFlowLabel?, outer_locals : Array(Value)?) : Value
       cls = builtin_class_by_name("Proc")
       unless cls
         raise runtime_error("Proc class not registered — bootstrap_builtin_classes must run before any lambda literal is evaluated")
       end
       obj = RubyObject.new(cls)
       obj.ivars[@symbols.intern("__sproc").value] = Value.proc(sproc)
+      # The lambda's true lexical parent scope, captured at THIS
+      # evaluation of the literal (not shared across other
+      # evaluations of the same source lambda, e.g. inside a loop —
+      # each RubyObject instance gets its own snapshot). See
+      # RubyObject#outer_locals's own comment for why this lives here
+      # rather than in ivars.
+      obj.outer_locals = outer_locals
       Value.robject(obj, label)
     end
 

@@ -19,8 +19,14 @@ module Adjutant
     getter line : Int32
 
     # Use this method to yield / call a block from a native
-    # function
-    abstract def invoke(proc : ScriptProc, args : Array(Value)) : Value
+    # function. `outer_locals`, when given, overrides the closure
+    # scope `proc` sees — Proc#call (builtins/proc.cr) is the one
+    # caller that needs this, passing the real snapshot captured at
+    # the lambda literal's own creation time (RubyObject#outer_locals)
+    # rather than relying on the default fallback (see VM#invoke's own
+    # comment on why that default is only correct for a live,
+    # same-frame block invocation, not a stored/later-called lambda).
+    abstract def invoke(proc : ScriptProc, args : Array(Value), outer_locals : Array(Value)? = nil) : Value
 
     # Real Ruby `==` semantics (deep/structural for Array and Hash,
     # identity for RubyObject, value equality for scalars — see
@@ -100,8 +106,8 @@ module Adjutant
     end
 
     # ---- CallContext
-    def invoke(proc : ScriptProc, args : Array(Value)) : Value
-      @vm.invoke(proc, args)
+    def invoke(proc : ScriptProc, args : Array(Value), outer_locals : Array(Value)? = nil) : Value
+      @vm.invoke(proc, args, outer_locals: outer_locals)
     end
 
     def values_equal?(a : Value, b : Value) : Bool

@@ -57,7 +57,11 @@ module Adjutant
     def initialize(@filename : String = "<spec>", @line : Int32 = 0)
     end
 
-    def invoke(proc : ScriptProc, args : Array(Value)) : Value
+    # `outer_locals` accepted and ignored, same as `proc`/`args` here —
+    # this stub never actually invokes anything; it only exists to
+    # satisfy NativeCallContext's interface for direct-NativeCallable
+    # tests that don't exercise real block/lambda invocation.
+    def invoke(proc : ScriptProc, args : Array(Value), outer_locals : Array(Value)? = nil) : Value
       Value.nil_value
     end
 

@@ -219,6 +219,34 @@ Survey of `vm.cr` / `value.cr` on branch `implement-ifc` @ `f2f4f34` found:
   carry the label correctly with zero code changes — `Value` is a struct,
   copied whole, so the label field travels automatically wherever a
   `Value` is moved without being combined with another `Value`.
+
+  **2026-07-20 addendum**: this claim assumes `GetOuter`/`SetOuter`
+  read/write the CORRECT `outer_locals` array to begin with — true for
+  ordinary blocks (`Op::SetBlock` snapshots the defining frame's locals
+  at creation time) but, until this date, NOT true for `->(){}` lambdas
+  called via `Proc#call` from a different frame than the one that
+  defined them. `Op::MakeProc`'s `a=1` branch (lambda literals) took no
+  such snapshot at all; `VM#invoke` (the mechanism `Proc#call` routes
+  through) filled the gap with whichever frame happened to be CALLING
+  `.call` — only correct when that coincided with the defining frame,
+  which every existing spec at the time happened to do. This was a
+  VALUE-level bug (found while scoping the "verify IFC label
+  propagation through lambdas" Must Fix item — see SCOPE.md — a
+  prerequisite question that turned out not to hold yet), not a label
+  one: a labeled value captured into a lambda's closure couldn't be
+  trusted to resolve to the right VALUE at all, let alone retain its
+  label, until this was fixed. Fix: `RubyObject` gained a Proc-only
+  `outer_locals` field, populated by `Op::MakeProc` at the lambda's true
+  creation site (mirroring `Op::SetBlock`'s existing pattern) and passed
+  explicitly into `VM#invoke` by `Proc#call`, overriding the
+  calling-frame fallback that remains correct (and unchanged) for every
+  other `invoke` caller (`Array#each`/`Range#each`/`Hash#each`'s live,
+  same-frame block invocation). Regression spec: `proc_spec.cr`,
+  "closes over its defining frame's local, not the calling frame's,
+  when called later from elsewhere." With this fixed, the free-label-
+  propagation claim above now genuinely holds for lambdas too — the
+  remaining open question is verifying it with a LABELED value
+  specifically (not yet done; see SCOPE.md's Must Fix list).
 - **Missing — every combination/construction site drops the label**
   (status: **implemented, Stage 3**): `exec_binary`'s arithmetic/bitwise/
   comparison helpers (`arith_add`, `arith_op`, `arith_div`, `arith_mod`,
