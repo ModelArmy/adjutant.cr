@@ -251,6 +251,24 @@ module Adjutant
     getter rclass : RubyClass
     getter ivars : Hash(Int32, Value)
 
+    # Closure snapshot for a Proc instance only — the enclosing
+    # frame's locals at the moment a `->(){}` literal was evaluated
+    # (see VM#make_lambda_object, Op::MakeProc's a=1 branch). Nil for
+    # every RubyObject that isn't a Proc.
+    #
+    # Not stored in `ivars` because that Hash is script-visible
+    # instance state and can only hold real `Value`s — there's no
+    # `Value` variant for a raw `Array(Value)` of VM locals, and there
+    # shouldn't be one; this is VM-internal plumbing a script can
+    # never read or assign, exactly like Frame#outer_locals itself
+    # (also a plain, non-Value-wrapped field). A Proc-specific
+    # RubyObject subclass was considered and rejected: nothing else
+    # can construct a RubyObject whose rclass is Proc, so there's no
+    # ambiguity a subtype would guard against — this field is simply
+    # unused (nil) for every other class, the same way `ivars` itself
+    # holds different keys depending on which class populated it.
+    property outer_locals : Array(Value)?
+
     def initialize(@rclass : RubyClass)
       @ivars = {} of Int32 => Value
     end

@@ -105,6 +105,42 @@ module Adjutant
         RUBY
         result.as_int.should eq 9
       end
+
+      # Regression for a closure-capture bug found 2026-07-20 while
+      # investigating the Must Fix "verify IFC label propagation
+      # through lambdas" item (see research/IFC_DESIGN.md and
+      # SCOPE.md). Every existing "closes over an outer local" spec
+      # above (and "can be stored in an array..."/"passed as a plain
+      # argument...") happens to .call the lambda from the SAME frame
+      # it was defined in (top level), so VM#invoke's `outer:
+      # f.locals` — the CALLING frame's locals, not a real snapshot of
+      # the lambda's own creation-site scope — is only accidentally
+      # correct: that caller frame IS the defining frame. Op::MakeProc
+      # (compiler.cr, a=1 branch) never snapshots outer_locals the way
+      # Op::SetBlock does for ordinary blocks (see Frame#
+      # block_outer_locals's own comment on that pattern) — nothing
+      # captures the lambda's true lexical parent scope at all.
+      #
+      # This spec returns a lambda OUT of the frame that defined it
+      # (make_adder's) and calls it from a different frame (top
+      # level) later — the shape every prior spec avoided. If
+      # captured-closure values don't survive a defining-frame/
+      # calling-frame mismatch, `n` resolves against top level's
+      # locals instead of make_adder's, which do not contain n at
+      # all — producing a wrong value (most likely 0, if the slot
+      # happens to be in-bounds but holds an unrelated nil-defaulted
+      # local) rather than a parse or lookup error.
+      it "closes over its defining frame's local, not the calling frame's, when called later from elsewhere" do
+        result = eval(<<-RUBY)
+          def make_adder(n)
+            ->(x) { x + n }
+          end
+
+          add5 = make_adder(5)
+          add5.call(10)
+        RUBY
+        result.as_int.should eq 15
+      end
     end
 
     describe "#lambda?" do

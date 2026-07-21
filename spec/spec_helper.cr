@@ -57,7 +57,15 @@ module Adjutant
     def initialize(@filename : String = "<spec>", @line : Int32 = 0)
     end
 
+    # Both accept and ignore their args — this stub never actually
+    # invokes anything; it only exists to satisfy NativeCallContext's
+    # interface for direct-NativeCallable tests that don't exercise
+    # real block/lambda invocation.
     def invoke(proc : ScriptProc, args : Array(Value)) : Value
+      Value.nil_value
+    end
+
+    def invoke_proc(proc_obj : RubyObject, args : Array(Value)) : Value
       Value.nil_value
     end
 

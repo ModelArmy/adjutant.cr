@@ -18,9 +18,20 @@ module Adjutant
     getter filename : String
     getter line : Int32
 
-    # Use this method to yield / call a block from a native
-    # function
+    # Use this method to yield / call a LIVE call-site block (`{ }`/
+    # `do...end`) from a native function — Array#each/Range#each/
+    # Hash#each's `blk` param, etc. Never use this for a stored `Proc`
+    # value (from a `->(){}` literal) — use `invoke_proc` instead. See
+    # VM#invoke's own comment for why the two are split and can't be
+    # merged back into one optional-param method safely.
     abstract def invoke(proc : ScriptProc, args : Array(Value)) : Value
+
+    # The only correct way to call a stored `Proc` object (as opposed
+    # to a live call-site block — see `invoke` above). Pass the `Proc`
+    # RubyObject itself; its real closure snapshot is pulled from it
+    # internally, so there's no raw outer_locals array for a caller to
+    # forget. See VM#invoke_proc's own comment for the full reasoning.
+    abstract def invoke_proc(proc_obj : RubyObject, args : Array(Value)) : Value
 
     # Real Ruby `==` semantics (deep/structural for Array and Hash,
     # identity for RubyObject, value equality for scalars — see
@@ -102,6 +113,10 @@ module Adjutant
     # ---- CallContext
     def invoke(proc : ScriptProc, args : Array(Value)) : Value
       @vm.invoke(proc, args)
+    end
+
+    def invoke_proc(proc_obj : RubyObject, args : Array(Value)) : Value
+      @vm.invoke_proc(proc_obj, args)
     end
 
     def values_equal?(a : Value, b : Value) : Bool

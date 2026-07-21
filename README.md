@@ -105,6 +105,21 @@ end
 interp.modules.require("agent/io", interp)
 ```
 
+#### What `ncc` gives you
+
+The third block param above (`ncc`) is a `NativeCallContext` — passed to every native function, it's how one reaches back into the VM for things a native function can't safely do standalone (calling back into script code, comparing/ordering `Value`s the same way script operators do, declaring risk on its own arguments). All of it is optional to use — a simple native function like `delete_file` above never touches it.
+
+|Method                                  |Use it for                                                                                                                                                                                                                                                                                     |
+|----------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|`invoke(blk, args)`                     |Calling a **live call-site block** your function received — the `{ }`/`do...end` attached to the call itself (`blk` above; see `times`).                                                                                                                                                       |
+|`invoke_proc(proc_obj, args)`           |Calling a **stored `Proc`** passed to your function as a plain argument (from a `->(){}` literal held in a variable) — not a call-site block. Pass the `Proc` `RubyObject` itself, not an unwrapped script proc; it carries its own closure correctly no matter when or from where you call it.|
+|`values_equal?(a, b)`                   |Real Ruby `==` — needed if your function compares two `Value`s (e.g. a `Hash`-like container checking a key).                                                                                                                                                                                  |
+|`compare(a, b, op)`                     |Real Ruby ordering (`:<`, `:<=`, `:>`, `:>=`) for two `Value`s — needed if your function orders or sorts values it didn't originate.                                                                                                                                                           |
+|`call_method(recv, name, args)`         |Calling a method BY NAME on a `Value` the normal script-dispatch way, when your function needs to invoke a receiver's own method generically rather than assuming a specific native implementation.                                                                                            |
+|`declare_sensitivity(tag, kind, origin)`|Marking your function's OWN argument as risk-sensitive when the risk lives in the literal content passed in, not in a label the caller already attached — see "Risk flow" below.                                                                                                               |
+
+`invoke` vs. `invoke_proc` is the one distinction worth being deliberate about: a call-site block is always invoked while its defining frame is still live, but a stored `Proc` might be called much later, possibly from your native function's own frame — `invoke_proc` is what keeps that `Proc`'s closure correct regardless.
+
 ### 2. Parse the script (without running it)
 
 ```crystal

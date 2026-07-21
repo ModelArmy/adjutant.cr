@@ -326,6 +326,33 @@ module Adjutant
         end
         interp.eval("require \"mylib\"\ntriple(7)").as_int.should eq 21_i64
       end
+
+      # Regression for invoke_proc's non-Proc guard, added 2026-07-20
+      # alongside invoke_proc itself (see README.md's NativeCallContext
+      # table and vm.cr's invoke_proc comment). invoke_proc takes a
+      # caller-supplied RubyObject — unlike invoke's ScriptProc, always
+      # internally sourced from a trusted `blk` param — so a native
+      # function author could plausibly pass the wrong RubyObject by
+      # mistake (an ordinary instance, not a Proc). Without the guard
+      # this would fail with a raw Crystal KeyError (missing __sproc
+      # ivar) or TypeCastError, neither catchable as an
+      # Adjutant::RuntimeError nor informative. This registers a
+      # throwaway native function that deliberately misuses
+      # invoke_proc on a plain object and asserts a proper, clear
+      # RuntimeError instead.
+      it "invoke_proc raises a clear RuntimeError, not a raw Crystal exception, when given a non-Proc RubyObject" do
+        interp, _ = make_interp
+        interp.define_native("misuse_invoke_proc") do |args, _blk, ncc|
+          ncc.invoke_proc(args.first.as_robject, [] of Value)
+        end
+        expect_raises(Adjutant::RuntimeError, /not a Proc/) do
+          interp.eval(<<-RUBY)
+            class Plain
+            end
+            misuse_invoke_proc(Plain.new)
+          RUBY
+        end
+      end
     end
 
     describe "shared symbol table across evals" do

@@ -146,6 +146,34 @@ module Adjutant
         result.as_int.should eq 6
       end
 
+      # Regression companion to proc_spec.cr's lambda closure-capture
+      # fix (2026-07-20, see research/IFC_DESIGN.md's "VM propagation"
+      # section and VM#invoke's own comment). That fix gave stored Proc
+      # values their own real closure snapshot, called via a dedicated
+      # VM#invoke_proc — Array#each's block never goes through that
+      # path at all, it uses the plain VM#invoke a call-site block
+      # literal always has, which always uses the CURRENT frame's
+      # locals. THIS spec exists to confirm that path is still exactly
+      # right, unchanged. Not expected to fail on its own — the spec
+      # above already covers the basic same-frame case — but written
+      # explicitly, with a nested method call in between, since a
+      # native method's block invocation is architecturally guaranteed
+      # same-frame only because Adjutant has no `&blk`-forwarding yet
+      # (see SCOPE.md's Won't Fix); if that ever changes, this is the
+      # spec that should start failing first.
+      it "resolves an outer local from the defining frame even when reached through an intervening method call" do
+        interp, _ = make_interp
+        result = interp.eval(<<-RUBY)
+          def run_each(arr)
+            sum = 0
+            arr.each { |x| sum = sum + x }
+            sum
+          end
+          run_each([10, 20, 30])
+        RUBY
+        result.as_int.should eq 60
+      end
+
       it "returns the receiver itself" do
         interp, _ = make_interp
         result = interp.eval(<<-RUBY)
