@@ -41,24 +41,22 @@ module Adjutant::Builtins
   def self.bootstrap_proc(interp : Adjutant::Interpreter) : Adjutant::RubyClass
     cls = Adjutant::RubyClass.new("Proc")
 
-    sproc_sym = interp.symbols.intern("__sproc").value
-
     # `.(...)` sugar is not implemented (no parser support for it
     # today) — only explicit `.call(...)`. Real Ruby's `.(...)` is
     # just sugar for `.call(...)`; omitting the sugar keeps Adjutant a
     # proper subset without losing any real capability.
     define(cls, interp, "call") do |args, _blk, ncc|
       obj = args.first.as_robject
-      sproc = obj.ivars[sproc_sym].as_proc
-      # obj.outer_locals is the snapshot taken when this specific
-      # ->(){} literal was evaluated (Op::MakeProc, vm.cr) — the
-      # lambda's true lexical parent scope, regardless of which frame
-      # .call happens to run in now. Without passing it explicitly,
-      # VM#invoke falls back to the CALLING frame's locals, which is
-      # only right when .call happens to run in the same frame that
-      # defined the lambda — see the 2026-07-20 closure-capture bug
-      # (research/IFC_DESIGN.md) this fixes.
-      ncc.invoke(sproc, args[1..], outer_locals: obj.outer_locals)
+      # invoke_proc pulls both the wrapped ScriptProc (__sproc) and
+      # the lambda's real closure snapshot (obj.outer_locals, taken by
+      # Op::MakeProc at the lambda's true creation site) off `obj`
+      # itself — see VM#invoke_proc's own comment. This replaced a
+      # manual `ncc.invoke(sproc, args, outer_locals: obj.outer_locals)`
+      # call after the 2026-07-20 closure-capture fix: that shape let
+      # any future native method accepting a Proc arg forget to pass
+      # outer_locals and silently reintroduce the same bug at a new
+      # call site — invoke_proc removes that possibility structurally.
+      ncc.invoke_proc(obj, args[1..])
     end
 
     # `lambda?` always true here: only Lambda-node output ever becomes

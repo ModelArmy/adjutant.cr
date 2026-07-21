@@ -237,13 +237,22 @@ Survey of `vm.cr` / `value.cr` on branch `implement-ifc` @ `f2f4f34` found:
   trusted to resolve to the right VALUE at all, let alone retain its
   label, until this was fixed. Fix: `RubyObject` gained a Proc-only
   `outer_locals` field, populated by `Op::MakeProc` at the lambda's true
-  creation site (mirroring `Op::SetBlock`'s existing pattern) and passed
-  explicitly into `VM#invoke` by `Proc#call`, overriding the
-  calling-frame fallback that remains correct (and unchanged) for every
-  other `invoke` caller (`Array#each`/`Range#each`/`Hash#each`'s live,
-  same-frame block invocation). Regression spec: `proc_spec.cr`,
-  "closes over its defining frame's local, not the calling frame's,
-  when called later from elsewhere." With this fixed, the free-label-
+  creation site (mirroring `Op::SetBlock`'s existing pattern). Calling a
+  stored `Proc` now goes through a dedicated `VM#invoke_proc(proc_obj,
+  args)` (added same day, after review) rather than the general
+  `VM#invoke(proc, args)` blocks use — an interim version instead gave
+  `invoke` a single optional `outer_locals` override param, but that
+  left a live footgun for any FUTURE native method that might accept a
+  stored `Proc` argument and forget to pass the override, silently
+  reintroducing this exact bug at a new call site; splitting into two
+  methods with no shared optional param means there's no raw locals
+  array for a caller to see or forget — `invoke_proc` pulls
+  `proc_obj.outer_locals` itself. `invoke` itself is unchanged from
+  before this whole fix and remains correct for every other caller
+  (`Array#each`/`Range#each`/`Hash#each`'s live, same-frame block
+  invocation). Regression spec: `proc_spec.cr`, "closes over its
+  defining frame's local, not the calling frame's, when called later
+  from elsewhere." With this fixed, the free-label-
   propagation claim above now genuinely holds for lambdas too — the
   remaining open question is verifying it with a LABELED value
   specifically (not yet done; see SCOPE.md's Must Fix list).

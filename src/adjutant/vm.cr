@@ -230,24 +230,76 @@ module Adjutant
 
     # Execute a compiled script proc and return the result.
     # Can be called from within an execution via a native function.
-    # `outer_locals`, when given, overrides the outer/closure scope
-    # the invoked proc sees — needed for Proc#call (builtins/proc.cr),
-    # where `proc` is a `->(){}` lambda that may be called arbitrarily
-    # later, from an arbitrarily different frame than the one it was
-    # defined in. Defaults to nil, which falls back to the CURRENT
-    # frame's locals (`f.locals` below) — correct for every other
-    # caller of this method (Array#each/Range#each/Hash#each's `blk`
-    # param, etc.), since those are always a call-site block literal
-    # still being invoked live, in the very frame that wrote it —
-    # there is no defining-frame/calling-frame gap for that case, so
-    # "the current frame's locals" and "the block's true creation-site
-    # locals" are the same array. See RubyObject#outer_locals and
-    # Op::MakeProc's snapshot (vm.cr) for where a Proc's real
-    # closure snapshot is captured, and the 2026-07-20 closure-capture
-    # bug (research/IFC_DESIGN.md) this override fixes for lambdas
-    # specifically.
-    protected def invoke(proc : ScriptProc, args : Array(Value), self_val : Value? = nil,
-                         outer_locals : Array(Value)? = nil) : Value
+    # Yield / call a live call-site block (`{ }`/`do...end`) from a
+    # native function — Array#each/Range#each/Hash#each's `blk` param,
+    # etc. Always uses the CURRENT frame's locals as the block's outer
+    # scope, which is correct here (not just convenient) because a
+    # `blk : ScriptProc` a native function receives is only ever
+    # invoked synchronously, inside the very call that received it,
+    # while its defining frame is still live on `@frames` — Adjutant
+    # has no `&blk`-param capture or block-forwarding at all (see
+    # SCOPE.md's Won't Fix), so there is no way for this frame to have
+    # gone anywhere by the time this runs. If block-forwarding is ever
+    # added, this assumption needs to be re-examined — don't assume it
+    # still holds. See array_spec.cr's "resolves an outer local...
+    # through an intervening method call" for the regression this is
+    # paired with.
+    #
+    # For a STORED `Proc` value (from a `->(){}` lambda literal,
+    # possibly called long after and from a different frame than the
+    # one that defined it — e.g. Proc#call), use `invoke_proc` instead,
+    # never this method directly: that lambda's real closure snapshot
+    # lives on its own RubyObject (RubyObject#outer_locals, taken by
+    # Op::MakeProc at the lambda's true creation site), not on
+    # whichever frame happens to be calling it now. This method has no
+    # way to accept that snapshot on purpose — the split exists so a
+    # native method calling a Proc can't silently forget to pass it
+    # (see the 2026-07-20 closure-capture bug, research/IFC_DESIGN.md,
+    # and the follow-up conversation on this same VM#invoke that led
+    # to this split).
+    protected def invoke(proc : ScriptProc, args : Array(Value), self_val : Value? = nil) : Value
+      invoke_internal(proc, args, self_val, outer_locals: nil)
+    end
+
+    # The only correct way for a native function to call a stored
+    # `Proc` object (as opposed to a live call-site block — see
+    # `invoke` above). Takes the `Proc` RubyObject itself, not a bare
+    # ScriptProc, specifically so the caller never sees or has to
+    # remember to pass a raw outer_locals array — it's pulled from
+    # `proc_obj.outer_locals` internally, the one place it can't be
+    # forgotten. `Proc#call` (builtins/proc.cr) is the first and, as
+    # of 2026-07-20, only caller; any future native method that
+    # accepts a Proc argument and wants to call it should use this,
+    # not `invoke` + a manually-extracted ScriptProc.
+    #
+    # `proc_obj` must actually be a Proc instance (rclass == Proc) —
+    # anything else has no `__sproc` ivar and would otherwise fail
+    # with a raw Crystal KeyError or TypeCastError, neither of which
+    # is an Adjutant::RuntimeError a script can catch or a native-
+    # method author gets a useful message from. Checked explicitly
+    # rather than left to fail naturally, since this method is called
+    # with a caller-supplied RubyObject (a native function's own
+    # argument), unlike invoke's ScriptProc, which is always sourced
+    # from a trusted internal `blk` param.
+    protected def invoke_proc(proc_obj : RubyObject, args : Array(Value), self_val : Value? = nil) : Value
+      unless proc_obj.rclass == builtin_class_by_name("Proc")
+        raise runtime_error("invoke_proc called with a #{proc_obj.rclass.name}, not a Proc")
+      end
+      sproc = proc_obj.ivars[@symbols.intern("__sproc").value].as_proc
+      invoke_internal(sproc, args, self_val, outer_locals: proc_obj.outer_locals)
+    end
+
+    # Shared machinery for both `invoke` and `invoke_proc` above —
+    # never called directly from outside this file. `outer_locals`,
+    # when given, overrides the outer/closure scope the invoked proc
+    # sees; when nil, falls back to the CURRENT frame's locals. See
+    # `invoke`'s and `invoke_proc`'s own comments for which to use and
+    # why — this method itself doesn't enforce the distinction, its
+    # two public callers do, by construction (only invoke_proc can
+    # supply a non-nil override, since only it has a RubyObject to
+    # pull one from).
+    private def invoke_internal(proc : ScriptProc, args : Array(Value), self_val : Value? = nil,
+                                outer_locals : Array(Value)? = nil) : Value
       saved_frames = @frames
       saved_stack = @stack
       saved_ins_count = @instruction_count

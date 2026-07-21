@@ -18,15 +18,20 @@ module Adjutant
     getter filename : String
     getter line : Int32
 
-    # Use this method to yield / call a block from a native
-    # function. `outer_locals`, when given, overrides the closure
-    # scope `proc` sees — Proc#call (builtins/proc.cr) is the one
-    # caller that needs this, passing the real snapshot captured at
-    # the lambda literal's own creation time (RubyObject#outer_locals)
-    # rather than relying on the default fallback (see VM#invoke's own
-    # comment on why that default is only correct for a live,
-    # same-frame block invocation, not a stored/later-called lambda).
-    abstract def invoke(proc : ScriptProc, args : Array(Value), outer_locals : Array(Value)? = nil) : Value
+    # Use this method to yield / call a LIVE call-site block (`{ }`/
+    # `do...end`) from a native function — Array#each/Range#each/
+    # Hash#each's `blk` param, etc. Never use this for a stored `Proc`
+    # value (from a `->(){}` literal) — use `invoke_proc` instead. See
+    # VM#invoke's own comment for why the two are split and can't be
+    # merged back into one optional-param method safely.
+    abstract def invoke(proc : ScriptProc, args : Array(Value)) : Value
+
+    # The only correct way to call a stored `Proc` object (as opposed
+    # to a live call-site block — see `invoke` above). Pass the `Proc`
+    # RubyObject itself; its real closure snapshot is pulled from it
+    # internally, so there's no raw outer_locals array for a caller to
+    # forget. See VM#invoke_proc's own comment for the full reasoning.
+    abstract def invoke_proc(proc_obj : RubyObject, args : Array(Value)) : Value
 
     # Real Ruby `==` semantics (deep/structural for Array and Hash,
     # identity for RubyObject, value equality for scalars — see
@@ -106,8 +111,12 @@ module Adjutant
     end
 
     # ---- CallContext
-    def invoke(proc : ScriptProc, args : Array(Value), outer_locals : Array(Value)? = nil) : Value
-      @vm.invoke(proc, args, outer_locals: outer_locals)
+    def invoke(proc : ScriptProc, args : Array(Value)) : Value
+      @vm.invoke(proc, args)
+    end
+
+    def invoke_proc(proc_obj : RubyObject, args : Array(Value)) : Value
+      @vm.invoke_proc(proc_obj, args)
     end
 
     def values_equal?(a : Value, b : Value) : Bool
