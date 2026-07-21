@@ -24,20 +24,55 @@ may unblock ones above it.
   lambdas.** Raised 2026-07-18 as a tangent during Piece D's design
   conversation; Piece D (static risk-walking for lambdas/blocks/call
   args — see `DEVELOPMENT.md`'s `RiskWalker` section) has since landed,
-  so this is no longer blocked, just not yet done. This item is about a
-  separate, DYNAMIC question — the actual runtime label-flow machinery
+  so this was no longer blocked. This item is about a separate,
+  DYNAMIC question — the actual runtime label-flow machinery
   (`RiskFlowLabel`/`RiskFlowLog`, the VM's real join sites — see
   `DEVELOPMENT.md`'s IFC section), not `RiskWalker`'s static assessment.
   Does a labeled value that flows INTO a lambda's closure (captured from
   an outer scope) or is returned FROM a `.call` still carry its label
-  correctly end-to-end? `VM#invoke` (the mechanism both `Proc#call` and
-  native-method block-invocation route through) was already found to
-  have one real bug in this exact area (the `@stack` isolation issue,
-  fixed 2026-07-18 — see `DEVELOPMENT.md`'s note on `VM#invoke`'s stack
-  isolation) — worth explicit script-level regression coverage (a
-  labeled value captured by a lambda, called, checked at the sink)
-  rather than assuming label-plumbing is fine just because
-  value-plumbing now is.
+  correctly end-to-end?
+
+  **2026-07-20 (`#17`, merged): a real, separate, VALUE-level
+  closure-capture bug was found and fixed first, underneath this
+  question** (not an IFC bug — plain values, no labels involved — but
+  it made the label question unanswerable until fixed, since a lambda's
+  closure didn't reliably capture the right VALUE at all, let alone
+  that value's label). A `->(){}` literal's `Op::MakeProc` never
+  snapshotted its defining frame's locals the way `Op::SetBlock` already
+  does for ordinary blocks — `VM#invoke` (what `Proc#call` routed
+  through at the time) fell back to whichever frame happened to be
+  CALLING `.call`, correct only by coincidence when that was the same
+  frame the lambda was written in. Every existing `proc_spec.cr` closure
+  spec happened to `.call` from the defining frame, so this went
+  uncaught until a lambda was returned out of one frame
+  (`make_adder(n) { ->(x){x+n} }`) and called from another. Fixed by
+  giving `RubyObject` a Proc-only `outer_locals : Array(Value)?` field,
+  populated by `Op::MakeProc` at the lambda's true creation site.
+
+  Calling a stored `Proc` was then split into its own method,
+  `VM#invoke_proc(proc_obj, args)`, separate from the pre-existing
+  `VM#invoke(proc, args)` blocks use — an interim version instead gave
+  `invoke` a single optional `outer_locals` override param, but that
+  left a live footgun for any FUTURE native method accepting a stored
+  `Proc` argument that forgot to pass the override, silently
+  reintroducing the same bug at a new call site; the two-method split
+  removes that possibility structurally (`invoke_proc` pulls
+  `proc_obj.outer_locals` itself, nothing for a caller to forget).
+  `invoke_proc` also guards against being passed a non-Proc
+  `RubyObject`, raising a proper `Adjutant::RuntimeError` instead of a
+  raw Crystal `KeyError`/`TypeCastError`. `README.md` gained a
+  `NativeCallContext` reference table so this whole surface
+  (`invoke`/`invoke_proc`/`values_equal?`/`compare`/`call_method`/
+  `declare_sensitivity`) is discoverable by native-integration authors,
+  not just readable from `interpreter.cr`. Full detail:
+  `research/IFC_DESIGN.md`'s "VM propagation" section and
+  `DEVELOPMENT.md`'s `VM#invoke`/`VM#invoke_proc` entry.
+
+  **Now unblocked and narrowed to the original question**: with closure
+  capture itself correct, still needs explicit script-level regression
+  coverage that a LABELED value captured by a lambda (or returned from
+  `.call`) carries its label correctly end-to-end through the
+  `outer_locals`/`invoke_proc` path just fixed — not yet written.
 - **Parser bug — array literal not recognized as a bare (no-paren) call
   argument start.** Found 2026-07-18 by the person while testing (via
   `assert_equal [3, 9, 16], ar` inside `spec/scripts/expressions.rb`).
