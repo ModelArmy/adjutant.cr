@@ -253,9 +253,20 @@ Survey of `vm.cr` / `value.cr` on branch `implement-ifc` @ `f2f4f34` found:
   invocation). Regression spec: `proc_spec.cr`, "closes over its
   defining frame's local, not the calling frame's, when called later
   from elsewhere." With this fixed, the free-label-
-  propagation claim above now genuinely holds for lambdas too — the
-  remaining open question is verifying it with a LABELED value
-  specifically (not yet done; see SCOPE.md's Must Fix list).
+  propagation claim above now genuinely holds for lambdas too —
+  confirmed directly by `risk_flow_propagation_spec.cr`'s "lambdas and
+  Proc#call" describe block (a labeled value captured across the same
+  defining-frame/calling-frame gap, a lambda's own computed result
+  surviving `.call`'s return, join-across-two-tainted-values inside a
+  lambda body, and an unlabeled-stays-unlabeled negative case), and
+  once more at the policy-enforcement layer via a hand-run
+  `samples/run_script.cr` script (a constant-held lambda passed as an
+  argument into a second method and called from there — the
+  `RiskFlowPolicyError` still fired and was rescuable exactly as
+  expected). This closes the "verify IFC label propagation through
+  lambdas" Must Fix item — see SCOPE.md, where the entry itself has
+  since been removed per this project's "remove on landing, don't
+  leave a done marker" convention.
 - **Missing — every combination/construction site drops the label**
   (status: **implemented, Stage 3**): `exec_binary`'s arithmetic/bitwise/
   comparison helpers (`arith_add`, `arith_op`, `arith_div`, `arith_mod`,

@@ -247,5 +247,91 @@ module Adjutant
         interp.risk_flow_log.events.should be_empty
       end
     end
+
+    # Closes the "verify IFC label propagation through lambdas" Must
+    # Fix item (SCOPE.md) — the dynamic-label counterpart to the
+    # 2026-07-20 VALUE-level closure-capture fix (#17,
+    # research/IFC_DESIGN.md's "VM propagation" section). That fix
+    # made a lambda's closure resolve to the right VALUE regardless of
+    # which frame calls it; these specs confirm a LABELED value
+    # specifically still carries its label correctly through the same
+    # paths — capture into a closure (GetOuter/SetOuter, "free
+    # propagation" per the design doc, since Value is a struct copied
+    # whole) and a lambda body's own result flowing back out through
+    # `.call` (VM#invoke_proc, unrelated to exec_binary's join logic
+    # tested elsewhere in this file — a lambda's return value is
+    # whatever its body's last expression evaluates to, propagated by
+    # the ordinary rules already covered above, not a special path of
+    # its own).
+    describe "lambdas and Proc#call" do
+      it "a label survives capture into a lambda's closure and a same-frame .call" do
+        interp, _ = make_tainted_interp
+        result = interp.eval(<<-RUBY)
+          secret = tainted("/etc/passwd")
+          wrap = ->() { secret }
+          wrap.call
+        RUBY
+        label = result.label.not_nil!
+        label.sensitivity.should eq Sensitivity::High
+        label.tags.first.origin.should eq "/etc/passwd"
+      end
+
+      it "a label survives a lambda returned out of its defining frame and .call'd from elsewhere" do
+        # Same shape as proc_spec.cr's "closes over its defining
+        # frame's local..." regression (the VALUE-level version of
+        # this exact test) — a lambda captures a labeled local, is
+        # returned out of the function that defined it, and is called
+        # later from a completely different frame (top level).
+        interp, _ = make_tainted_interp
+        result = interp.eval(<<-RUBY)
+          def make_wrapper
+            secret = tainted("/etc/passwd")
+            ->() { secret }
+          end
+
+          wrap = make_wrapper
+          wrap.call
+        RUBY
+        label = result.label.not_nil!
+        label.sensitivity.should eq Sensitivity::High
+        label.tags.first.origin.should eq "/etc/passwd"
+      end
+
+      it "a label on a lambda's own computed result survives .call's return, not just a bare captured value" do
+        interp, _ = make_tainted_interp
+        result = interp.eval(<<-RUBY)
+          add_taint = ->() { tainted("/etc/shadow") + 1 }
+          add_taint.call
+        RUBY
+        label = result.label.not_nil!
+        label.sensitivity.should eq Sensitivity::High
+        label.tags.first.origin.should eq "/etc/shadow"
+      end
+
+      it "a labeled value captured by a lambda still joins correctly with another tainted value inside the lambda body" do
+        interp, _ = make_tainted_interp
+        result = interp.eval(<<-RUBY)
+          def make_combiner
+            a = tainted("/etc/passwd")
+            ->() { a + tainted("/etc/shadow") }
+          end
+          make_combiner.call
+        RUBY
+        label = result.label.not_nil!
+        label.tags.size.should eq 2
+      end
+
+      it "an unlabeled value captured by a lambda stays unlabeled through .call" do
+        interp, _ = make_tainted_interp
+        result = interp.eval(<<-RUBY)
+          def make_wrapper
+            plain = 42
+            ->() { plain }
+          end
+          make_wrapper.call
+        RUBY
+        result.label.should be_nil
+      end
+    end
   end
 end
