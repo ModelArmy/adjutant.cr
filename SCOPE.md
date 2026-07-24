@@ -20,33 +20,8 @@ Blocking, or actively causing incorrect behavior in normal use. Ordered
 roughly by dependency, not necessarily by importance — an item lower down
 may unblock ones above it.
 
-- **Parser bug — array literal not recognized as a bare (no-paren) call
-  argument start.** Found 2026-07-18 by the person while testing (via
-  `assert_equal [3, 9, 16], ar` inside `spec/scripts/expressions.rb`).
-  `assert_equal([3, 9, 16], ar)` (parens) and `assert_equal ar, [3, 9,
-  16]` (array literal as a LATER bare arg) both parse fine — only an
-  array literal as the FIRST token of a bare-call's argument list fails:
-  `parse error: expected RBracket, got Comma`. Root cause:
-  `Parser#arg_follows_no_paren?` (`parser.cr`) is a positive allowlist of
-  token kinds that may start a bare-call argument — `TokenKind::LBracket`
-  (array literal open) is simply missing from it. With `[` unrecognized
-  as an arg start, `assert_equal [3, 9, 16], ar` doesn't get treated as
-  a bare call with args at all; `assert_equal` parses as a plain bare
-  identifier reference on its own, and `[3, 9, 16]` is then parsed
-  separately — landing in `parse_postfix`'s indexing path (`recv[...]`)
-  rather than as a fresh array literal, which is what actually produces
-  the observed `expected RBracket, got Comma` (it's mid-index-expression
-  parse when the second `,` arrives, not mid-array-literal). Likely fix:
-  add `TokenKind::LBracket` to `arg_follows_no_paren?`'s `case`
-  alongside the other opening-delimiter cases — but confirm this doesn't
-  also need a change on the `parse_postfix` side (bare-identifier-then-
-  `[` is legitimately ambiguous with real indexing, e.g. `arr [0]` vs.
-  `some_method [0]`; real Ruby resolves this the same way Adjutant
-  should — worth a design check, not just adding the token kind blindly,
-  given the parser's own comment about this being a *positive* allowlist
-  specifically to avoid this class of ambiguity). Was queued to return
-  to after Piece D; D is now done, so this is next up whenever picked
-  back up — not urgent, a real gap.
+Empty as of 2026-07-21 — see `Will Fix`/`Won't Fix` below for what's
+outstanding.
 
 ## Will Fix
 
