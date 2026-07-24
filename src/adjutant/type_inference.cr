@@ -7,10 +7,11 @@ module Adjutant
   # minimal pass, not full Hindley-Milner. Scope, deliberately:
   #
   #   - Literals with a real builtin RubyClass today (IntLiteral →
-  #     Integer) resolve to KnownType. Literals whose builtin isn't
-  #     implemented yet (String, Array, ...) fall through to
-  #     UnknownType until those land — see BUILTIN_CLASS_NAMES below,
-  #     which is the single place to extend as more builtins exist.
+  #     Integer, ArrayLiteral → Array, HashLiteral → Hash) resolve to
+  #     KnownType. Literals whose builtin isn't implemented yet
+  #     (String, ...) fall through to UnknownType until those land —
+  #     see BUILTIN_CLASS_NAMES below, which is the single place to
+  #     extend as more builtins exist.
   #   - `ClassName.new(...)` resolves to KnownType({ClassName}) — a
   #     real, cheap win: constructor calls are syntactically obvious
   #     without any return-type declarations existing in the language.

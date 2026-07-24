@@ -28,25 +28,6 @@ outstanding.
 Real gaps, not currently blocking anything, no active design conversation
 yet. Promote to `Must Fix` when something starts depending on it.
 
-- **`TypeInference#infer_node` has no case for `ArrayLiteral`/`HashLiteral`
-  receivers** (found 2026-07-18 while writing Piece D's specs — pre-
-  existing, not introduced by D). `[1, 2, 3].each { ... }` infers the
-  receiver as `UnknownType`, so `.each` itself resolves as
-  `RiskUnresolved` (tagged `ExecutesCode` — see
-  `RiskAggregator.unresolved_profile`) even though `Array` is a real,
-  known builtin class the walker could in principle resolve directly,
-  the same way `5.to_s` already does (see the passing "a call on a
-  literal-receiver resolves via the builtin class" spec, which only
-  covers a scalar literal, not `ArrayLiteral`/`HashLiteral`). A risky
-  call INSIDE the block still gets folded in correctly (that part IS
-  Piece D's job and works) — this gap only means the outer `.each`/
-  `.map`/etc. call itself contributes a spurious extra `ExecutesCode`
-  tag alongside the real one, union'd in via `RiskSequence`, rather
-  than resolving cleanly to `Array`'s (currently risk-free) native
-  method profile. Likely fix: add `ArrayLiteral`/`HashLiteral` cases to
-  `infer_node` resolving to `KnownType` of `Array`/`Hash` directly
-  (mirrors whatever the scalar-literal cases already do) — small,
-  contained, no design conversation needed.
 - **No true per-instance singleton methods on `RubyObject`.** `Op::DefSingleton`
   (`def self.foo` when `self` is a `RubyObject`, not a `RubyClass`)
   targets the receiver's own *class* instead — `RubyObject` has no
