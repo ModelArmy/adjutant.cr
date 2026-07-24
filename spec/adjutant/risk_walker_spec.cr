@@ -51,6 +51,34 @@ module Adjutant
       summary.tags.should be_empty
     end
 
+    # Closes the "TypeInference#infer_node has no case for
+    # ArrayLiteral/HashLiteral receivers" Will Fix item (SCOPE.md) —
+    # this is the actual reported symptom: `[1, 2, 3].each { }`
+    # previously inferred its receiver as UnknownType (TypeInference had
+    # no ArrayLiteral case), so `.each` resolved as RiskUnresolved
+    # (tagged ExecutesCode, Severity::Error) even though there's nothing
+    # actually unresolvable about calling a method on a literal array —
+    # same certainty `5.to_s` above already had. See
+    # type_inference_spec.cr for the narrower TypeInference-level
+    # coverage of the same fix.
+    it "a call on an array-literal receiver resolves via the builtin class, not as unresolved" do
+      interp, _ = make_interp
+      walker = RiskWalker.new(interp)
+      body = risk_walker_test_parse("[1, 2, 3].each { |x| x }")
+      summary = RiskAggregator.summarize(walker.walk_body(body))
+      summary.severity.should eq Severity::Info
+      summary.path.first.should_not contain "unresolved"
+    end
+
+    it "a call on a hash-literal receiver resolves via the builtin class, not as unresolved" do
+      interp, _ = make_interp
+      walker = RiskWalker.new(interp)
+      body = risk_walker_test_parse(%({"a" => 1}.each { |k, v| k }))
+      summary = RiskAggregator.summarize(walker.walk_body(body))
+      summary.severity.should eq Severity::Info
+      summary.path.first.should_not contain "unresolved"
+    end
+
     it "a call through a var assigned from a known constructor resolves" do
       interp, _ = make_interp
       interp.eval(<<-RUBY)
@@ -515,13 +543,15 @@ module Adjutant
         summary = RiskAggregator.summarize(walker.walk_body(body))
         # Not asserting `tags eq {DeletesFiles}` — .to_s on delete_fn()'s
         # result is separately RiskUnresolved (delete_fn has no known
-        # return type; TypeInference has no ArrayLiteral/general
-        # native-function-return-type resolution, a real, PRE-EXISTING
-        # gap unrelated to Piece D), which correctly contributes its
-        # own ExecutesCode tag (see RiskAggregator.unresolved_profile).
-        # What THIS spec is actually about — the receiver expression
-        # itself not being silently dropped — only needs DeletesFiles
-        # to be PRESENT, not the tag set to be exactly that.
+        # return type at all — TypeInference has no general native-
+        # function-return-type resolution; unrelated to the
+        # ArrayLiteral/HashLiteral literal-receiver gap fixed
+        # 2026-07-21, since delete_fn()'s result isn't a literal),
+        # which correctly contributes its own ExecutesCode tag (see
+        # RiskAggregator.unresolved_profile). What THIS spec is
+        # actually about — the receiver expression itself not being
+        # silently dropped — only needs DeletesFiles to be PRESENT,
+        # not the tag set to be exactly that.
         summary.tags.should contain RiskTag::DeletesFiles
       end
     end
@@ -540,12 +570,12 @@ module Adjutant
           [1, 2, 3].each { |x| delete_fn() }
         RUBY
         summary = RiskAggregator.summarize(walker.walk_body(body))
-        # Same reasoning as the receiver-expression spec above: `.each`
-        # on an ArrayLiteral receiver is separately RiskUnresolved
-        # (TypeInference has no ArrayLiteral case at all — a real,
-        # pre-existing gap, not something Piece D touches), contributing
-        # its own ExecutesCode tag on top of the block's DeletesFiles.
-        # This spec is only about the block's risk not being dropped.
+        # Prior to 2026-07-21, `.each` on an ArrayLiteral receiver was
+        # separately RiskUnresolved (TypeInference had no ArrayLiteral
+        # case), contributing its own ExecutesCode tag on top of the
+        # block's DeletesFiles — fixed, see type_inference_spec.cr.
+        # Asserting `contain`, not exact tag-set equality, since this
+        # spec is only about the block's own risk not being dropped.
         summary.tags.should contain RiskTag::DeletesFiles
       end
 
@@ -566,8 +596,11 @@ module Adjutant
           [1, 2, 3].each { |x| safe_fn() }
         RUBY
         summary = RiskAggregator.summarize(walker.walk_body(body))
-        # Same ArrayLiteral-receiver caveat as above — asserting
-        # inclusion, not exact equality.
+        # Asserting inclusion, not exact tag-set equality — the
+        # ArrayLiteral-receiver gap this comment used to caveat around
+        # was fixed 2026-07-21 (type_inference_spec.cr), but the
+        # `contain` shape is kept since this spec's actual point is the
+        # risky call OUTSIDE the block, not the receiver.
         summary.tags.should contain RiskTag::DeletesFiles
       end
     end
@@ -759,11 +792,17 @@ module Adjutant
           [1, 2, 3].each { |x| x }
         RUBY
         summary = RiskAggregator.summarize(walker.walk_body(body))
-        # `.each` on an ArrayLiteral receiver is separately unresolved
-        # (see SCOPE.md's Will Fix — pre-existing, unrelated gap), but
-        # the block param `x` itself must NOT contribute a second,
-        # spurious unresolved-call finding on top of that.
-        summary.path.count(&.includes?("unresolved")).should eq 1
+        # Originally written expecting exactly 1 "unresolved" entry —
+        # `.each` on an ArrayLiteral receiver was unresolved at the
+        # time (SCOPE.md's Will Fix item, since fixed 2026-07-21 — see
+        # type_inference_spec.cr/the "array-literal receiver resolves"
+        # spec above), plus zero false positives from the block param
+        # `x` itself. With the receiver now resolving cleanly, the
+        # correct count is 0, not 1 — updating the assertion to match
+        # is the right fix here, not a sign this spec's actual intent
+        # (a block param must never spuriously count as an unresolved
+        # call) has changed.
+        summary.path.count(&.includes?("unresolved")).should eq 0
       end
     end
   end

@@ -31,10 +31,12 @@ module Adjutant
   #     nearest-term need (resolving `f = File.new; f.read`) requires.
   class TypeInference
     # AST-literal-node-name → builtin RubyClass name. Extend this as
-    # more builtins land (String, Array, ...) — everything else about
-    # the pass stays the same.
+    # more builtins land (String, ...) — everything else about the
+    # pass stays the same.
     BUILTIN_CLASS_NAMES = {
-      IntLiteral => "Integer",
+      IntLiteral   => "Integer",
+      ArrayLiteral => "Array",
+      HashLiteral  => "Hash",
     }
 
     alias Env = Hash(String, TypeHint)
@@ -113,12 +115,14 @@ module Adjutant
 
     private def infer_simple(node : Node, env : Env) : TypeHint
       case node
-      when IntLiteral then known_builtin(IntLiteral)
-      when Identifier then env[node.name]? || UnknownType.new
-      when Assign     then infer_assign(node, env)
-      when Call       then infer_call(node, env)
-      when Body       then infer_body(node, env)[0]
-      else                 UnknownType.new
+      when IntLiteral   then known_builtin(IntLiteral)
+      when ArrayLiteral then known_builtin(ArrayLiteral)
+      when HashLiteral  then known_builtin(HashLiteral)
+      when Identifier   then env[node.name]? || UnknownType.new
+      when Assign       then infer_assign(node, env)
+      when Call         then infer_call(node, env)
+      when Body         then infer_body(node, env)[0]
+      else                   UnknownType.new
       end
     end
 

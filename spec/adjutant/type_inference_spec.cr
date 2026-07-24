@@ -40,6 +40,40 @@ module Adjutant
       type.as(KnownType).classes.should eq Set{interp.get_global("Integer").as_rclass}
     end
 
+    # Closes the "TypeInference#infer_node has no case for
+    # ArrayLiteral/HashLiteral receivers" Will Fix item (SCOPE.md, found
+    # 2026-07-18 while writing Piece D's specs) — `[1, 2, 3].each { }`
+    # previously inferred its receiver as UnknownType, so `.each` itself
+    # resolved as RiskUnresolved (tagged ExecutesCode) purely from a
+    # missing case here, not from any real ambiguity — an array literal
+    # is always exactly `Array`, same certainty an int literal already
+    # had. See risk_walker_spec.cr for the RiskWalker-level regression
+    # (the actual symptom this was reported against).
+    it "an array literal infers as Array" do
+      interp, _ = make_interp
+      inference = TypeInference.new(interp)
+      body = type_inference_test_parse("[1, 2, 3]")
+      type, _ = inference.infer_body(body, TypeInference::Env.new)
+      type.as(KnownType).classes.should eq Set{interp.get_global("Array").as_rclass}
+    end
+
+    it "a hash literal infers as Hash" do
+      interp, _ = make_interp
+      inference = TypeInference.new(interp)
+      body = type_inference_test_parse(%({"a" => 1}))
+      type, _ = inference.infer_body(body, TypeInference::Env.new)
+      type.as(KnownType).classes.should eq Set{interp.get_global("Hash").as_rclass}
+    end
+
+    it "a local var assigned an array literal is Known through later reads" do
+      interp, _ = make_interp
+      inference = TypeInference.new(interp)
+      body = type_inference_test_parse("x = [1, 2, 3]\nx")
+      type, env = inference.infer_body(body, TypeInference::Env.new)
+      type.as(KnownType).classes.should eq Set{interp.get_global("Array").as_rclass}
+      env["x"].as(KnownType).classes.should eq Set{interp.get_global("Array").as_rclass}
+    end
+
     it "a local var assigned an int literal is Known through later reads" do
       interp, _ = make_interp
       inference = TypeInference.new(interp)
