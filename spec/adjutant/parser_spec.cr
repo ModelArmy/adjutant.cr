@@ -226,13 +226,113 @@ module Adjutant
       end
 
       it "parses indexing" do
-        node = parse_expr("arr[0]")
+        # `arr` must be established as a known local first — bare
+        # `identifier [expr]` with no prior assignment parses as a
+        # CALL with an array-literal argument instead, matching real
+        # Ruby (see the "identifier vs. index disambiguation" describe
+        # block below for the dedicated coverage of that rule).
+        node = parse("arr = []\narr[0]").stmts.last
         node.should be_a(Index)
       end
 
       it "parses index assignment" do
-        node = parse_expr("arr[0] = 1")
+        node = parse("arr = []\narr[0] = 1").stmts.last
         node.should be_a(IndexAssign)
+      end
+    end
+
+    describe "identifier vs. index disambiguation (`name [expr]`)" do
+      # Real Ruby's own parse-time rule, confirmed via a series of
+      # `irb` experiments 2026-07-21 (see parser.cr's @local_scopes
+      # comment for the full trace): a name already established as a
+      # local in the currently-open scope ALWAYS means indexing from
+      # that point on, regardless of what it holds at runtime; an
+      # unestablished name ALWAYS means a bare call, even one that
+      # turns out at runtime not to resolve to any real method either
+      # — that failure happens later (VM name_error), not here. This
+      # was the root cause of the SCOPE.md parser bug (`assert_equal
+      # [3, 9, 16], ar` — `assert_equal` was never assigned, so `[`
+      # must start a bare call argument, not index `assert_equal`
+      # itself).
+      it "treats `name [expr]` as indexing once `name` is a known local" do
+        node = parse("x = [1,2,3]\nx [0]").stmts.last
+        node.should be_a(Index)
+      end
+
+      it "treats `name [expr]` as a call with an array-literal argument when `name` is not a known local" do
+        node = parse("assert_equal [3, 9, 16], ar").stmts.first
+        node.should be_a(Call)
+        call = node.as(Call)
+        call.method.should eq "assert_equal"
+        call.args.size.should eq 2
+        call.args.first.should be_a(ArrayLiteral)
+      end
+
+      it "a `def` body does not see an outer local for this purpose (fresh scope)" do
+        node = parse(<<-RUBY).stmts.last.as(DefNode).body.stmts.last
+          x = [1,2,3]
+          def f
+            x [0]
+          end
+        RUBY
+        node.should be_a(Call)
+      end
+
+      it "a block DOES see an outer local for this purpose (inherits, not fresh)" do
+        node = parse(<<-RUBY).stmts.last.as(Call).block.not_nil!.body.stmts.last
+          x = [1,2,3]
+          [1].each { x [0] }
+        RUBY
+        node.should be_a(Index)
+      end
+
+      it "a lambda DOES see an outer local for this purpose (inherits, not fresh)" do
+        node = parse(<<-RUBY).stmts.last.as(Lambda).body.stmts.last
+          x = [1,2,3]
+          ->() { x [0] }
+        RUBY
+        node.should be_a(Index)
+      end
+
+      it "a def parameter counts as a known local inside that def's body" do
+        node = parse(<<-RUBY).stmts.first.as(DefNode).body.stmts.last
+          def f(x)
+            x [0]
+          end
+        RUBY
+        node.should be_a(Index)
+      end
+
+      it "a block parameter counts as a known local inside that block's body" do
+        node = parse("[1,2,3].each { |x| x [0] }").stmts.first.as(Call).block.not_nil!.body.stmts.last
+        node.should be_a(Index)
+      end
+
+      it "a name assigned inside a block does not leak out to the enclosing scope" do
+        node = parse(<<-RUBY).stmts.last
+          [1].each { y = [1,2,3] }
+          y [0]
+        RUBY
+        node.should be_a(Call)
+      end
+
+      it "a for-loop variable counts as a known local, including after the loop (no new scope)" do
+        node = parse(<<-RUBY).stmts.last
+          for x in [1,2,3]
+          end
+          x [0]
+        RUBY
+        node.should be_a(Index)
+      end
+
+      it "a rescue-bound variable counts as a known local, including after the begin/end (no new scope)" do
+        node = parse(<<-RUBY).stmts.last
+          begin
+          rescue => e
+          end
+          e [0]
+        RUBY
+        node.should be_a(Index)
       end
     end
 

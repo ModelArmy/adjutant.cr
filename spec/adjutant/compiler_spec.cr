@@ -248,11 +248,16 @@ module Adjutant
       end
 
       it "compiles index access with GetIndex" do
-        ops("arr[0]").should contain(Op::GetIndex)
+        # `arr` must be a known local first, or `arr[0]` parses as a
+        # bare call (see parser_spec.cr's "identifier vs. index
+        # disambiguation" describe block and parser.cr's
+        # @local_scopes comment) — matches real Ruby's own parse-time
+        # rule, fixed 2026-07-21.
+        ops("arr = []\narr[0]").should contain(Op::GetIndex)
       end
 
       it "compiles index assignment with SetIndex" do
-        ops("arr[0] = 1").should contain(Op::SetIndex)
+        ops("arr = []\narr[0] = 1").should contain(Op::SetIndex)
       end
     end
 
