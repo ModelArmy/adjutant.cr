@@ -564,6 +564,8 @@ flowchart LR
 
 `TypeHint` (`type_hint.cr`) mirrors `RiskNode`'s sum-type reasoning: a local var reassigned a different known type in each branch of an `if`/`case` is a real union, not an inference failure — only genuinely untraceable values (params, unresolved call returns) are `UnknownType`. Loops merge the same way, treating "ran 0 times" vs. "ran once" as a 2-way branch.
 
+`BUILTIN_CLASS_NAMES` is the extension point for the `Lit --> Known` edge above — a flat map from AST literal-node class to its builtin `RubyClass` name, consulted by `known_builtin`. `IntLiteral`/`Integer` was the only entry until 2026-07-21, when `ArrayLiteral`/`Array` and `HashLiteral`/`Hash` were added (closing a SCOPE.md Will Fix item — `[1, 2, 3].each { }` previously inferred its receiver as `UnknownType`, so `RiskWalker` fell back to `RiskUnresolved` for the call itself, purely from a missing map entry, not any real ambiguity — an array or hash literal's class is exactly as certain as an int literal's). `String` remains unentered as of this writing. No other part of the pass needed to change for this — `RiskWalker`'s own resolution (`walk_known_receiver_call`/`resolve_on_class`) was already generic over any `KnownType`, regardless of which class it named.
+
 #### RiskWalker
 
 `RiskWalker` (`risk_walker.cr`) builds the actual `RiskNode` tree from a parsed `Body`, using `TypeInference` to resolve each `Call`'s receiver. The walker never runs `interp.eval` — it only parses and walks, so it must discover `def`/`class`/`module` declarations itself as it goes, rather than relying on the interpreter's already-executed globals.

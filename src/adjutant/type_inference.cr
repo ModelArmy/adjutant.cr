@@ -7,10 +7,11 @@ module Adjutant
   # minimal pass, not full Hindley-Milner. Scope, deliberately:
   #
   #   - Literals with a real builtin RubyClass today (IntLiteral →
-  #     Integer) resolve to KnownType. Literals whose builtin isn't
-  #     implemented yet (String, Array, ...) fall through to
-  #     UnknownType until those land — see BUILTIN_CLASS_NAMES below,
-  #     which is the single place to extend as more builtins exist.
+  #     Integer, ArrayLiteral → Array, HashLiteral → Hash) resolve to
+  #     KnownType. Literals whose builtin isn't implemented yet
+  #     (String, ...) fall through to UnknownType until those land —
+  #     see BUILTIN_CLASS_NAMES below, which is the single place to
+  #     extend as more builtins exist.
   #   - `ClassName.new(...)` resolves to KnownType({ClassName}) — a
   #     real, cheap win: constructor calls are syntactically obvious
   #     without any return-type declarations existing in the language.
@@ -31,10 +32,12 @@ module Adjutant
   #     nearest-term need (resolving `f = File.new; f.read`) requires.
   class TypeInference
     # AST-literal-node-name → builtin RubyClass name. Extend this as
-    # more builtins land (String, Array, ...) — everything else about
-    # the pass stays the same.
+    # more builtins land (String, ...) — everything else about the
+    # pass stays the same.
     BUILTIN_CLASS_NAMES = {
-      IntLiteral => "Integer",
+      IntLiteral   => "Integer",
+      ArrayLiteral => "Array",
+      HashLiteral  => "Hash",
     }
 
     alias Env = Hash(String, TypeHint)
@@ -113,12 +116,14 @@ module Adjutant
 
     private def infer_simple(node : Node, env : Env) : TypeHint
       case node
-      when IntLiteral then known_builtin(IntLiteral)
-      when Identifier then env[node.name]? || UnknownType.new
-      when Assign     then infer_assign(node, env)
-      when Call       then infer_call(node, env)
-      when Body       then infer_body(node, env)[0]
-      else                 UnknownType.new
+      when IntLiteral   then known_builtin(IntLiteral)
+      when ArrayLiteral then known_builtin(ArrayLiteral)
+      when HashLiteral  then known_builtin(HashLiteral)
+      when Identifier   then env[node.name]? || UnknownType.new
+      when Assign       then infer_assign(node, env)
+      when Call         then infer_call(node, env)
+      when Body         then infer_body(node, env)[0]
+      else                   UnknownType.new
       end
     end
 
