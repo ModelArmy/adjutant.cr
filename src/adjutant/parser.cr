@@ -24,6 +24,67 @@ module Adjutant
     # literal `do` is ambiguous with a loop construct's own `do`.
     @no_do_block = false
 
+    # Tracks, per open scope, which bare names have been established as
+    # locals so far in the CURRENT parse — used only to disambiguate
+    # `name [expr]` (no dot, no explicit call syntax) between indexing
+    # an existing local (`Index` node) and a bare call taking an
+    # array-literal first argument (`Call` node). This mirrors real
+    # Ruby's own parse-time rule exactly (confirmed via a series of
+    # `irb` experiments — a local variable name, once assigned or bound
+    # as a parameter, ALWAYS wins `name [x]` as indexing from that point
+    # on in the same visible scope, regardless of what the variable
+    # holds at runtime; an unassigned name always parses as a call,
+    # even if it turns out at runtime to not be a real method either —
+    # see `arg_follows_no_paren?`'s own comment for the resulting `[`
+    # branch and 2026-07-21's design conversation).
+    #
+    # Deliberately NOT the same thing as `CompilerScope` (compiler.cr) —
+    # this is a much shallower, syntax-only echo of it, existing a full
+    # phase earlier, purely to answer "is this name known as a local
+    # yet" during parsing. It does not need to be fully correct in
+    # every exotic case `CompilerScope` handles (that's out of scope —
+    # see SCOPE.md); it only needs to answer this one narrow question
+    # the same way Ruby's own parser does.
+    #
+    # A `def` body gets a FRESH, empty scope (`def` does not close over
+    # outer locals in Ruby — confirmed the same way `compile_lambda`'s
+    # non-inheriting `def` scope already works, DEVELOPMENT.md's
+    # scoping section). A block/lambda body INHERITS the enclosing
+    # scope's names (blocks/lambdas DO close over outer locals) — done
+    # by pushing a COPY of the current top set, not a live reference,
+    # since nothing needs writes inside the block to propagate back out
+    # (a block assigning a NEW name shouldn't make that name suddenly
+    # known outside it either — matches Ruby). A `for`-loop variable or
+    # a `rescue var` binding registers directly into the CURRENT scope
+    # instead of pushing a new one at all — neither opens a new scope in
+    # Ruby (confirmed: a for-loop's variable is readable after the loop
+    # ends, same as a rescue-bound variable after the `begin/end`).
+    @local_scopes = [Set(String).new]
+
+    private def push_local_scope(inherit : Bool) : Nil
+      @local_scopes.push(inherit ? @local_scopes.last.dup : Set(String).new)
+    end
+
+    private def pop_local_scope : Nil
+      @local_scopes.pop
+    end
+
+    private def register_local(name : String) : Nil
+      @local_scopes.last << name
+    end
+
+    private def known_local?(name : String) : Bool
+      @local_scopes.last.includes?(name)
+    end
+
+    # Only a bare `Identifier` LHS introduces a new local name — `@ivar
+    # = x`, `arr[0] = x`, `obj.attr = x` etc. are all valid assignment
+    # targets too but none of them make a NEW bare name resolvable as a
+    # local afterward.
+    private def register_local_if_identifier(lhs : Node) : Nil
+      register_local(lhs.name) if lhs.is_a?(Identifier)
+    end
+
     def initialize(source : IO, filename : String = "<input>")
       @lexer = Lexer.new(source, filename)
       @current = @lexer.next_token
@@ -168,16 +229,24 @@ module Adjutant
       when TokenKind::Eq
         advance
         rhs = parse_multi_rhs
+        # Registered AFTER rhs parses, not before — matches real Ruby's
+        # own `x = x` behavior (an as-yet-unassigned `x` on the RHS of
+        # its own first assignment is still a bare call/undefined-name
+        # reference, not a read of a not-yet-existing local; see the
+        # local-tracking design comment near @local_scopes above).
+        register_local_if_identifier(lhs)
         Assign.new(lhs, rhs, l, c)
       when TokenKind::PlusEq, TokenKind::MinusEq, TokenKind::StarEq,
            TokenKind::SlashEq, TokenKind::PercentEq
         op = advance.kind
         base_op = compound_base_op(op)
         rhs = parse_expression(0)
+        register_local_if_identifier(lhs)
         OpAssign.new(base_op, lhs, rhs, l, c)
       when TokenKind::OrAssign, TokenKind::AndAssign
         op = advance.kind
         rhs = parse_expression(0)
+        register_local_if_identifier(lhs)
         CondAssign.new(op, lhs, rhs, l, c)
       else
         lhs
@@ -421,6 +490,35 @@ module Adjutant
       elsif block_follows_no_paren?
         blk = parse_block
         Call.new(nil, name, [] of Node, blk, false, l, c)
+      elsif at_kind?(TokenKind::LBracket)
+        # `name [expr]` — genuinely ambiguous between indexing an
+        # existing local (`Index` node, handled by parse_postfix once
+        # we fall through to a bare Identifier below) and a bare call
+        # taking an array literal as its first argument (`Call` node
+        # with an ArrayLiteral arg). Real Ruby's parser resolves this
+        # itself: a name that was already established as a local
+        # ALWAYS means indexing from that point on, regardless of what
+        # it holds at runtime; an unestablished name ALWAYS means a
+        # call, even if no such method actually exists either — it
+        # just fails at runtime instead of at parse time (confirmed via
+        # a series of `irb` experiments, incl. `c = 5; c [1]` → 0 via
+        # Integer#[], `d = true; d [1]` → NoMethodError not a parse
+        # error, and `totally_undefined [1,2,3]` → NoMethodError for
+        # 'totally_undefined', proving it parsed as a CALL even though
+        # no such method or variable exists — see 2026-07-21's design
+        # conversation for the full trace). `known_local?` (see
+        # @local_scopes above) is this parser's own lightweight,
+        # syntax-only echo of that same rule.
+        if known_local?(name)
+          Identifier.new(name, l, c) # falls through to parse_postfix's own LBracket handling as indexing
+        else
+          args = [parse_expression(0)] of Node
+          while match(TokenKind::Comma)
+            args << parse_expression(0)
+          end
+          blk = parse_block if block_follows_no_paren?
+          Call.new(nil, name, args, blk, false, l, c)
+        end
       elsif arg_follows_no_paren?
         # bare call: `puts x`, `raise "msg"`, etc.
         args = [parse_expression(0)] of Node
@@ -445,7 +543,18 @@ module Adjutant
     # terminators are never mistaken for argument starts.
     #
     # Allowed: literals, identifiers, constants, variables, unary prefix
-    # operators (-, !, ~), opening delimiters, and keyword literals.
+    # operators (-, !, ~), opening delimiters (including `[`, an array
+    # literal), and keyword literals.
+    #
+    # `LBracket` is safe to allow unconditionally HERE — unlike
+    # `parse_identifier_or_call`'s own `name [...]` case (handled by its
+    # own dedicated known_local? branch above `arg_follows_no_paren?`'s
+    # call there, precisely BECAUSE that one case is genuinely
+    # ambiguous), this method is only ever reached from `raise`/`super`
+    # (parse_raise, parse_super) — both keyword tokens, never possibly a
+    # variable name, so `raise [1,2,3]`/`super [1,2,3]` can only ever
+    # mean "call with an array-literal argument," no indexing
+    # interpretation is even grammatically possible.
     private def arg_follows_no_paren? : Bool
       case current_kind
       when TokenKind::Integer, TokenKind::Float,
@@ -453,7 +562,7 @@ module Adjutant
            TokenKind::Symbol, TokenKind::KwSelf,
            TokenKind::KwNil, TokenKind::KwTrue, TokenKind::KwFalse,
            TokenKind::Bang, TokenKind::Tilde,
-           TokenKind::LParen,
+           TokenKind::LParen, TokenKind::LBracket,
            TokenKind::Identifier, TokenKind::Constant
         true
       when TokenKind::Minus
@@ -488,19 +597,24 @@ module Adjutant
 
     private def parse_block : BlockNode
       l, c = line, col
+      push_local_scope(inherit: true)
       if at_kind?(TokenKind::KwDo)
         advance
         params = parse_block_params
+        params.each { |param| register_local(param.name) }
         skip_newlines
         body = parse_body_until(TokenKind::KwEnd)
         expect(TokenKind::KwEnd)
+        pop_local_scope
         BlockNode.new(params, body, l, c)
       else
         expect(TokenKind::LBrace)
         params = parse_block_params
+        params.each { |param| register_local(param.name) }
         skip_newlines
         body = parse_body_until(TokenKind::RBrace)
         expect(TokenKind::RBrace)
+        pop_local_scope
         BlockNode.new(params, body, l, c)
       end
     end
@@ -592,15 +706,18 @@ module Adjutant
         name_tok = @current
         advance
       end
+      push_local_scope(inherit: false)
       params = [] of Param
       if at_kind?(TokenKind::LParen)
         advance
         params = parse_param_list
         expect(TokenKind::RParen)
       end
+      params.each { |param| register_local(param.name) }
       skip_terminators
       body = parse_body_until(TokenKind::KwEnd)
       expect(TokenKind::KwEnd)
+      pop_local_scope
       DefNode.new(name_tok.lexeme, recv, params, body, l, c)
     end
 
@@ -656,7 +773,9 @@ module Adjutant
         advance
       end
       skip_terminators
+      push_local_scope(inherit: false)
       body = parse_body_until(TokenKind::KwEnd)
+      pop_local_scope
       expect(TokenKind::KwEnd)
       ClassNode.new(name, superclass, body, l, c)
     end
@@ -667,19 +786,23 @@ module Adjutant
       name = @current.lexeme
       advance
       skip_terminators
+      push_local_scope(inherit: false)
       body = parse_body_until(TokenKind::KwEnd)
+      pop_local_scope
       expect(TokenKind::KwEnd)
       ModuleNode.new(name, body, l, c)
     end
 
     private def parse_lambda(l : Int32, c : Int32) : Lambda
       expect(TokenKind::Arrow)
+      push_local_scope(inherit: true)
       params = [] of Param
       if at_kind?(TokenKind::LParen)
         advance
         params = parse_param_list
         expect(TokenKind::RParen)
       end
+      params.each { |param| register_local(param.name) }
       skip_newlines
       body = if at_kind?(TokenKind::LBrace)
                advance
@@ -692,6 +815,7 @@ module Adjutant
                expect(TokenKind::KwEnd)
                b
              end
+      pop_local_scope
       Lambda.new(params, body, l, c)
     end
 
@@ -793,6 +917,11 @@ module Adjutant
       ensure
         @no_do_block = false
       end
+      # Registered into the CURRENT scope, not a new one — a for-loop
+      # does not open its own scope in Ruby (the loop variable is a
+      # real local, readable after the loop ends too), unlike a block
+      # or lambda's `|x|` params.
+      vars.each { |v| register_local(v) }
       skip_terminators
       if at_kind?(TokenKind::KwDo)
         advance
@@ -950,6 +1079,11 @@ module Adjutant
           advance
         end
         skip_terminators
+        # Registered into the CURRENT scope, not a new one — a rescue
+        # clause does not open its own scope in Ruby (same reasoning
+        # as the for-loop variable above; a rescue-bound variable
+        # remains a real local after the whole begin/rescue/end too).
+        rescue_var.try { |v| register_local(v) }
         rescue_body = parse_body_until_any(TokenKind::KwEnsure, TokenKind::KwEnd, TokenKind::KwEnd)
       end
       if match(TokenKind::KwEnsure)

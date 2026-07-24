@@ -271,9 +271,13 @@ assert "arrays as no-paren params to method call" do
   assert_equal([3, 9, 16], ar)  # OK
   assert_equal ar, [3, 9, 16]   # OK
 
-  # --- FIX parser bug
-  # assert_equal [3, 9, 16], ar   # does not parse
-  # ---
+  # Fixed 2026-07-21 — see parser.cr's @local_scopes/known_local?
+  # comment and parse_identifier_or_call's LBracket branch. `ar` was
+  # already assigned above, but `assert_equal` itself was never
+  # assigned anywhere, so it's not a known local — parses as a call
+  # taking the array literal as its first bare argument, same as real
+  # Ruby.
+  assert_equal [3, 9, 16], ar
 end
 
 assert "Monkey-patching not supported" do
