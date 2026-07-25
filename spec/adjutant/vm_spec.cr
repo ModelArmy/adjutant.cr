@@ -79,8 +79,34 @@ module Adjutant
         eval(%("hello" + " world")).as_string.should eq "hello world"
       end
 
-      it "negates an integer" do
+      it "evaluates a negative integer literal" do
+        # Name updated 2026-07-25 — `-7` no longer literally negates
+        # anything at runtime (it's a fused negative IntLiteral, see
+        # compiler_spec.cr's "fused literal, not Unary+Neg" spec); this
+        # assertion itself is unaffected either way.
         eval("-7").as_int.should eq -7_i64
+      end
+
+      # End-to-end regression for the exact bug the person found
+      # (2026-07-25, via mruby's spec/scripts/mruby/float.rb fixture):
+      # `-0.0.to_s` used to raise "cannot negate 0.0 (String)" — .to_s
+      # ran FIRST (on positive 0.0), THEN negation was attempted on
+      # the resulting String. Now correctly groups as `(-0.0).to_s`.
+      it "groups unary minus with an adjacent numeric literal before postfix, not after" do
+        eval("-0.0.to_s").as_string.should eq "-0.0"
+      end
+
+      it "still attempts to negate a call's RESULT when the minus target is not a literal (raises for a non-numeric result, matching Op::Neg's existing behavior)" do
+        # `n` is a variable, not a literal, so this remains
+        # Unary(Minus, Call(...)) — negating n.to_s's RESULT, not
+        # fusing with anything. Adjutant's Op::Neg only accepts
+        # Integer/Float (see the "cannot negate" runtime_error in
+        # vm.cr) — there's no per-type -@ dispatch the way modern Ruby
+        # has (Ruby's own String#-@ would actually make -(a.to_s) NOT
+        # raise, just return a frozen copy — Adjutant deliberately
+        # doesn't replicate that nuance, matching Op::Neg's existing,
+        # narrower numeric-only contract, unchanged by this fix).
+        expect_raises(RuntimeError, /cannot negate/) { eval("n = 0.0\n-n.to_s") }
       end
 
       # Fixed 2026-07-25 (SCOPE.md's "Unary + is entirely unsupported"

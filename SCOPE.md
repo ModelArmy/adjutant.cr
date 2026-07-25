@@ -20,55 +20,8 @@ Blocking, or actively causing incorrect behavior in normal use. Ordered
 roughly by dependency, not necessarily by importance — an item lower down
 may unblock ones above it.
 
-- **Unary minus on a NEGATIVE-NUMERIC-LITERAL binds looser than postfix
-  `.method`, when it should bind tighter for a literal specifically.**
-  Found 2026-07-25 by the person while running mruby's
-  `spec/scripts/mruby/float.rb` fixture (`-0.0.to_s` → `cannot negate
-  0.0 (String)`, i.e. `to_s` ran first, THEN negation was attempted on
-  its `String` result). Root cause: `Parser#parse_unary`'s
-  `TokenKind::Minus` branch (`parser.cr`) does `Unary.new(op,
-  parse_unary, l, c)` — recursing into `parse_unary` directly, whose own
-  `else` branch is `parse_postfix(parse_primary)`. For `-0.0.to_s`, the
-  recursive call parses `0.0.to_s` as a complete postfix chain FIRST
-  (`Call(FloatLiteral(0.0), "to_s")`), and only then does the outer
-  `Unary(Minus, ...)` wrap the whole thing — negating the call's
-  result, not the literal before the call runs.
-
-  Confirmed via Ruby core's own bug tracker (bugs.ruby-lang.org/issues/
-  19583, closed as "not a bug," explicitly authoritative on this exact
-  question) that this is NOT a general "unary minus should bind tighter
-  than postfix" rule — that would be WRONG and would incorrectly change
-  `-a.to_s` (`a` a variable) too, which real Ruby parses as `-(a.to_s)`,
-  matching Adjutant's current (correct-for-that-case) behavior. The
-  actual rule, quoting a Ruby core dev directly on that thread: "`-2`
-  is a literal[;] `- 2` is a function call of `-@`[,] and `-@` doesn't
-  have preference over function call." I.e. `-` immediately preceding a
-  bare numeric literal token fuses into a single NEGATIVE-LITERAL node
-  at parse time (not a `Unary` wrapping anything) — precedence doesn't
-  even enter into it for that specific shape, since there's no separate
-  unary-minus AST node at all once fused; postfix chaining then applies
-  to that fused literal, giving `(-0.0).to_s` the correct grouping "for
-  free." For every other unary-minus target (a variable, a call result,
-  a parenthesized expression), today's `Unary`-wraps-postfix behavior
-  is already correct and must NOT change.
-
-  Design implication, not yet fully scoped: needs a check in
-  `parse_unary`'s `TokenKind::Minus` branch — specifically, when the
-  very next token is `TokenKind::Integer`/`TokenKind::Float` (i.e. the
-  minus is immediately adjacent to a numeric literal, not some other
-  expression), parse a fused negative-literal node (or equivalently,
-  parse the literal and negate its VALUE at parse/compile time, then
-  apply `parse_postfix` to THAT), rather than the general `Unary.new(op,
-  parse_unary, ...)` path. Needs a real design conversation before
-  implementation — in particular, whether "immediately adjacent" should
-  be about token adjacency (no whitespace) or purely about "next token
-  is a bare numeric literal" regardless of spacing (Ruby's own rule,
-  per the bug thread, is about the token being a literal, not about
-  whitespace — `- 2` with a space is EXPLICITLY called out as the
-  function-call form, i.e. whitespace DOES matter to Ruby's own lexer
-  here, unlike the `identifier [expr]` disambiguation fixed 2026-07-21,
-  which turned out to NOT be whitespace-sensitive at all — these are
-  two different rules and shouldn't be assumed to share a mechanism).
+Empty as of 2026-07-25 — see `Will Fix`/`Won't Fix` below for what's
+outstanding.
 
 ## Will Fix
 

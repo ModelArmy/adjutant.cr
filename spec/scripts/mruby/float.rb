@@ -256,22 +256,20 @@ assert('Float#to_s') do
 #   assert_equal("-Infinity", (-Float::INFINITY).to_s)
 #   assert_equal("NaN", Float::NAN.to_s)
   assert_equal("0.0", 0.0.to_s)
-
-  # --- FIX precence bug
-  # assert_equal("-0.0", -0.0.to_s)
+  assert_equal("-0.0", -0.0.to_s)
   assert_equal("-0.0", (-0.0).to_s)
-  # ---
 
-  # assert_equal("-3.25", -3.25.to_s)
-  # assert_equal("50.0", 50.0.to_s)
-  # assert_equal("0.0125", 0.0125.to_s)
-  # assert_equal("-0.0125", -0.0125.to_s)
-  # assert_equal("1.0e-10", 0.0000000001.to_s)
-  # assert_equal("-1.0e-10", -0.0000000001.to_s)
-  # assert_equal("1.0e+20", 1e20.to_s)
-  # assert_equal("-1.0e+20", -1e20.to_s)
-  # assert_equal("100000.0", 100000.0.to_s)
-  # assert_equal("-100000.0", -100000.0.to_s)
+  assert_equal("-3.25", -3.25.to_s)
+  assert_equal("50.0", 50.0.to_s)
+  assert_equal("0.0125", 0.0125.to_s)
+  assert_equal("-0.0125", -0.0125.to_s)
+  assert_equal("1.0e-10", 0.0000000001.to_s)
+  assert_equal("-1.0e-10", -0.0000000001.to_s)
+  assert_equal("1.0e+20", 1e20.to_s)
+  assert_equal("-1.0e+20", -1e20.to_s)
+  assert_equal("100000.0", 100000.0.to_s)
+  assert_equal("-100000.0", -100000.0.to_s)
+
 #   if uses_float
 #     assert_equal("1.0e+08", 100000000.0.to_s)
 #     assert_equal("-1.0e+08", -100000000.0.to_s)

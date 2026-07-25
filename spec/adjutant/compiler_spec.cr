@@ -40,8 +40,31 @@ module Adjutant
         chunk.consts.first.as_int.should eq 42_i64
       end
 
-      it "compiles a negative integer via unary minus" do
+      it "compiles a negative NUMERIC LITERAL as a fused literal, not Unary+Neg" do
+        # Changed 2026-07-25 (SCOPE.md's "Unary minus on a
+        # NEGATIVE-NUMERIC-LITERAL binds looser than postfix" fix) —
+        # `-7` immediately adjacent (no space) to a numeric literal now
+        # fuses into a single negative IntLiteral at parse time
+        # (parser.cr's parse_unary), matching Ruby's own tUMINUS_NUM
+        # lexer-level mechanism, rather than compiling to a separate
+        # Op::Neg over a positive constant. Same runtime value, simpler
+        # bytecode (one Const, not Const+Neg) — and, more importantly,
+        # this is what makes `-0.0.to_s` group as `(-0.0).to_s` instead
+        # of `-(0.0.to_s)` (see the "does not compile Op::Neg" spec
+        # right below, and vm_spec.cr's coverage of the actual
+        # to_s-grouping bug this was found from).
         chunk = compile("-7")
+        chunk.code.map(&.op).should_not contain(Op::Neg)
+        chunk.consts.first.as_int.should eq -7_i64
+      end
+
+      it "still compiles Unary+Neg for a non-literal unary-minus target" do
+        # Every unary-minus target that ISN'T an immediately-adjacent
+        # numeric literal — a variable, a call result, a parenthesized
+        # expression, or even a literal WITH a space after the `-` —
+        # is unaffected by the fusion above and still goes through the
+        # ordinary Unary/Op::Neg path.
+        chunk = compile("x = 7\n-x")
         chunk.code.map(&.op).should contain(Op::Neg)
       end
 

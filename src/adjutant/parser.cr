@@ -346,8 +346,39 @@ module Adjutant
         op = advance.kind
         Unary.new(op, parse_unary, l, c)
       when TokenKind::Minus
-        op = advance.kind
-        Unary.new(op, parse_unary, l, c)
+        minus_l, minus_c = line, col
+        advance
+        # Fuse `-` with an IMMEDIATELY ADJACENT (no space) numeric
+        # literal into a single negative-literal node, rather than the
+        # general Unary-wraps-postfix path below. This is NOT a general
+        # "unary minus binds tighter than postfix" rule — it would be
+        # WRONG to apply this whenever the operand happens to be a
+        # literal AST-node-shape; it specifically requires no
+        # whitespace between the `-` and the digit, mirroring Ruby's
+        # actual lexer-level `tUMINUS_NUM` token (confirmed empirically
+        # 2026-07-25: `-0.0.to_s` → "-0.0" (fused), `- 0.0.to_s` → the
+        # unary-operator-on-a-call form). Column adjacency
+        # (`current.column == minus_c + 1`, since `-` is always exactly
+        # one character) is used as the no-space proxy, since tokens
+        # don't carry a dedicated whitespace-preceding flag. Every
+        # other unary-minus target (a variable, a call result, a
+        # parenthesized expression, OR a numeric literal with a space
+        # after the `-`) still goes through the ordinary
+        # Unary-wraps-postfix path below, unchanged — see SCOPE.md's
+        # entry on this fix for the full research trail (Ruby core bug
+        # #19583, parse.y's own tUMINUS_NUM grammar rule).
+        if (current_kind == TokenKind::Integer || current_kind == TokenKind::Float) && col == minus_c + 1
+          lit_tok = advance
+          negated_lexeme = "-" + lit_tok.lexeme
+          literal = if lit_tok.kind == TokenKind::Integer
+                      IntLiteral.new(negated_lexeme, minus_l, minus_c)
+                    else
+                      FloatLiteral.new(negated_lexeme, minus_l, minus_c)
+                    end
+          parse_postfix(literal)
+        else
+          Unary.new(TokenKind::Minus, parse_unary, minus_l, minus_c)
+        end
       when TokenKind::Plus
         # Same precedence tier as Bang (real Ruby: `!`, `~`, unary `+`
         # are all the single highest-precedence tier — see
