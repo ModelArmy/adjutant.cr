@@ -45,6 +45,7 @@ module Testing
       define_assert(interp)
       define_assert_equal(interp)
       define_assert_not_equal(interp)
+      define_assert_float(interp)
       define_assert_false(interp)
       define_assert_true(interp)
       define_assert_nil(interp)
@@ -67,6 +68,33 @@ module Testing
         else
           record(desc, false, "no block given", ncc)
         end
+        Adjutant::Value.bool(true)
+      end
+    end
+
+    FLOAT_TOLERANCE = 1e-5
+
+    private def define_assert_float(interp)
+      interp.define_native("assert_float") do |args, _blk, ncc|
+        # expected
+        e = args[0]?.try(&.as_float) || nil
+        # actual
+        a = args[1]?.try(&.as_float) || nil
+
+        msg = nil
+        ok = false
+        if e && a
+          if e.finite? && a.finite? && (n = (e - a).abs) > FLOAT_TOLERANCE
+            msg = "expected |#{e} - #{a}| (#{n}) to be <= #{FLOAT_TOLERANCE}."
+          elsif (e.infinite? || a.infinite?) && e != a || e.nan? && !a.nan? || !e.nan? && a.nan?
+            msg = "expected #{a} to be #{e}."
+          else
+            ok = true
+          end
+        else
+          msg = "expected two float arguments: e=#{e}, a=#{a}"
+        end
+        record("assert_equal", ok, msg, ncc)
         Adjutant::Value.bool(true)
       end
     end

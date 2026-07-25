@@ -71,6 +71,15 @@ module Adjutant
       @pos + 1 < @source.size ? @source[@pos + 1] : '\0'
     end
 
+    # General n-ahead lookahead, needed for exponent scanning
+    # (`e`/`E`, optional `+`/`-`, then a digit — up to 2 characters
+    # ahead of the `e` itself). `peek_next` (offset 1) is kept as-is
+    # since it's already used elsewhere and reads slightly clearer at
+    # its one-ahead call sites.
+    private def peek_at(offset : Int32) : Char
+      @pos + offset < @source.size ? @source[@pos + offset] : '\0'
+    end
+
     private def advance : Char
       c = @source[@pos]
       @pos += 1
@@ -255,6 +264,34 @@ module Adjutant
       make_token(TokenKind::GVar, lexeme_from(start), line, col)
     end
 
+    # Continues a run of ASCII digits, allowing a single `_` wherever
+    # it sits strictly between two digits. IMPORTANT: at every real
+    # call site (scan_number's initial call, and after consuming `.`
+    # or `e`/sign for the fractional/exponent parts), the FIRST digit
+    # of the run has already been consumed by the caller before this
+    # runs — @pos is already sitting one character past it. This
+    # method must therefore check for a trailing `_`+digit FIRST,
+    # before requiring `current_char` itself to be a fresh digit —
+    # checking `current_char.ascii_number?` as a loop's leading
+    # condition (as an earlier version of this method did) fails
+    # immediately in the common case where current_char is already the
+    # SECOND digit or beyond, silently consuming nothing and leaving
+    # the rest of the run (e.g. "_000_000" after an already-consumed
+    # leading "1") for the next token entirely — caught via a failing
+    # spec (pairs("1_000_000") — see lexer_spec.cr), not by
+    # inspection.
+    private def scan_digit_run : Nil
+      while !at_end? && current_char.ascii_number?
+        advance
+      end
+      while current_char == '_' && peek_next.ascii_number?
+        advance # consume '_'
+        while !at_end? && current_char.ascii_number?
+          advance
+        end
+      end
+    end
+
     # ameba:disable Metrics/CyclomaticComplexity
     private def scan_number(start : Int32, line : Int32, col : Int32) : Token
       if @source[start] == '0' && (current_char == 'x' || current_char == 'X')
@@ -265,19 +302,39 @@ module Adjutant
         return make_token(TokenKind::Integer, lexeme_from(start), line, col)
       end
 
-      while !at_end? && current_char.ascii_number?
-        advance
-      end
+      scan_digit_run
+
+      is_float = false
 
       if current_char == '.' && peek_next.ascii_number?
         advance
-        while !at_end? && current_char.ascii_number?
-          advance
-        end
-        return make_token(TokenKind::Float, lexeme_from(start), line, col)
+        scan_digit_run
+        is_float = true
       end
 
-      make_token(TokenKind::Integer, lexeme_from(start), line, col)
+      # Exponent — `e`/`E`, optional `+`/`-`, then at least one digit.
+      # Valid with OR without a preceding `.` (`1e20` is a bare integer
+      # digit run immediately followed by an exponent — no decimal
+      # point anywhere — and is still a Float in real Ruby, confirmed
+      # via Ruby's own literals doc: `1234e-2` is listed as one of
+      # three equivalent Float-literal forms for the same value,
+      # alongside `12.34` and `1.234E1`). This is why exponent
+      # scanning is unconditional here rather than nested inside the
+      # `is_float` branch above — the ONLY thing that makes a numeric
+      # literal a Float is having a `.` OR an exponent, not needing
+      # both.
+      if current_char == 'e' || current_char == 'E'
+        offset = 1
+        offset += 1 if peek_at(offset) == '+' || peek_at(offset) == '-'
+        if peek_at(offset).ascii_number?
+          advance # consume e/E
+          advance if current_char == '+' || current_char == '-'
+          scan_digit_run
+          is_float = true
+        end
+      end
+
+      make_token(is_float ? TokenKind::Float : TokenKind::Integer, lexeme_from(start), line, col)
     end
 
     private def scan_string(quote : Char, start : Int32, line : Int32, col : Int32) : Token

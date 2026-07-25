@@ -27,16 +27,16 @@ assert('Literals Numerical', '8.7.6.2') do
   # assert_equal 999, 0d999 # TODO: 0dNNN decimal literals
   # assert_equal 999, 0D999
   # decimal separator
-  # assert_equal 10000000, 10_000_000 # TODO: decimal separators
-  # assert_equal       10, 1_0
+  assert_equal 10000000, 10_000_000
+  assert_equal       10, 1_0
   # integer with exponent
-  # assert_equal 10.0, 1e1 # TODO: Exponential literals
-  # assert_equal(0.1, 1e-1)
-  # assert_equal 10.0, 1e+1
+  assert_equal 10.0, 1e1
+  assert_equal(0.1, 1e-1)
+  assert_equal 10.0, 1e+1
   # float with exponent
-  # assert_equal 10.0, 1.0e1
-  # assert_equal(0.1, 1.0e-1)
-  # assert_equal 10.0, 1.0e+1
+  assert_equal 10.0, 1.0e1
+  assert_equal(0.1, 1.0e-1)
+  assert_equal 10.0, 1.0e+1
 end
 
 assert('Literals Strings Single Quoted', '8.7.6.3.2') do

@@ -734,7 +734,7 @@ module Adjutant
             case
             when v.int?   then push(Value.int(-v.as_int))
             when v.float? then push(Value.float(-v.as_float))
-            else               raise runtime_error("cannot negate #{v}", f)
+            else               raise runtime_error("cannot negate #{v} (#{v.raw.class})", f)
             end
           when Op::BitNot
             v = pop

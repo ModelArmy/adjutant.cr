@@ -101,6 +101,41 @@ module Adjutant
       it "scans a hex literal" do
         pairs("0xFF").should eq [{TokenKind::Integer, "0xFF"}]
       end
+
+      # Underscore separators, added 2026-07-21 alongside float exponent
+      # support (see SCOPE.md's "Float literals don't support exponent
+      # notation or underscore separators" entry — same Lexer#
+      # scan_digit_run mechanism serves both integer and float
+      # literals, since Ruby's own grammar allows underscores in both).
+      it "scans a decimal integer with underscore separators" do
+        pairs("1_000_000").should eq [{TokenKind::Integer, "1_000_000"}]
+      end
+
+      it "does not consume a trailing underscore as part of the integer" do
+        # Real Ruby rejects a trailing underscore (`1000_` is a syntax
+        # error) — Adjutant doesn't need to raise a specific error for
+        # this shape, but the LEXER must not silently absorb the `_`
+        # into the number; scan_digit_run leaves it behind because it's
+        # not followed by a digit, so it becomes its own (likely
+        # nonsensical, parse-error-producing) token instead.
+        pairs("100_").should eq [{TokenKind::Integer, "100"}, {TokenKind::Identifier, "_"}]
+      end
+
+      it "does not consume a doubled underscore as part of the integer" do
+        pairs("1__000").should eq [{TokenKind::Integer, "1"}, {TokenKind::Identifier, "__000"}]
+      end
+
+      it "does not consume a leading underscore as part of the integer" do
+        # `_1000` lexes as a single identifier token, same as real
+        # Ruby (a leading underscore makes it a valid local-variable-
+        # style identifier, not a number at all) — scan_number is never
+        # even entered here since the lexer's own dispatch on the
+        # first character routes '_' to identifier scanning, not
+        # number scanning; included here for completeness of the
+        # underscore-shape coverage, not because scan_number itself is
+        # exercised.
+        pairs("_1000").should eq [{TokenKind::Identifier, "_1000"}]
+      end
     end
 
     describe "float literals" do
@@ -110,6 +145,53 @@ module Adjutant
 
       it "does not treat 3.. as float" do
         kinds("3..").should eq [TokenKind::Integer, TokenKind::RangeIncl]
+      end
+
+      # Exponent notation, added 2026-07-21 (see SCOPE.md's "Float
+      # literals don't support exponent notation or underscore
+      # separators" entry). Shapes below are drawn directly from
+      # mruby's test/t/float.rb and Ruby's own literals doc (which
+      # lists `12.34`, `1234e-2`, and `1.234E1` as three equivalent
+      # forms of the same value).
+      it "scans a float with a lowercase exponent and no sign" do
+        pairs("1e20").should eq [{TokenKind::Float, "1e20"}]
+      end
+
+      it "scans a float with an uppercase exponent" do
+        pairs("1.234E1").should eq [{TokenKind::Float, "1.234E1"}]
+      end
+
+      it "scans a float with a negative exponent, with a decimal point" do
+        pairs("1.0e-400").should eq [{TokenKind::Float, "1.0e-400"}]
+      end
+
+      it "scans a float with a negative exponent, no decimal point at all" do
+        # This is the case that most needed scan_number restructured —
+        # a bare digit run immediately followed by an exponent, with NO
+        # `.` anywhere, is still a Float in real Ruby (1234e-2 from
+        # Ruby's own literals doc). The old implementation could only
+        # ever reach TokenKind::Float through the `.`-then-digits
+        # branch.
+        pairs("1234e-2").should eq [{TokenKind::Float, "1234e-2"}]
+      end
+
+      it "scans a float with a positive exponent sign" do
+        pairs("4e+38").should eq [{TokenKind::Float, "4e+38"}]
+      end
+
+      it "scans a float with underscore separators in the exponent's mantissa" do
+        pairs("1_000.5").should eq [{TokenKind::Float, "1_000.5"}]
+      end
+
+      it "does not treat a bare 'e' with no following digit as an exponent" do
+        # `1e` with nothing (or a non-digit) after the e is not a valid
+        # exponent — must not consume the `e` into the number at all,
+        # leaving it to lex separately (as the start of an identifier).
+        pairs("1e").should eq [{TokenKind::Integer, "1"}, {TokenKind::Identifier, "e"}]
+      end
+
+      it "does not treat 'e' followed by a sign with no digit as an exponent" do
+        pairs("1e+").should eq [{TokenKind::Integer, "1"}, {TokenKind::Identifier, "e"}, {TokenKind::Plus, "+"}]
       end
     end
 

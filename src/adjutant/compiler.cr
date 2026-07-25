@@ -235,14 +235,32 @@ module Adjutant
     end
 
     private def compile_int(node : IntLiteral) : Nil
-      raw = node.value
+      # Same underscore-stripping need as compile_float below, and for
+      # the same reason: Lexer#scan_digit_run allows a single `_`
+      # between two digits for INTEGER literals too, not just float
+      # ones (matches Ruby's own grammar — `1_000` is a plain Integer)
+      # — but String#to_i64 defaults to underscore: false, so a raw
+      # `"1_000".to_i64` would raise. Stripped here rather than passing
+      # `underscore: true` to to_i64/to_i64(16), to keep this symmetric
+      # with compile_float's approach and avoid a second underscore
+      # rule living in two different places.
+      raw = node.value.delete('_')
       n = raw.starts_with?("0x") || raw.starts_with?("0X") ? raw[2..].to_i64(16) : raw.to_i64
       idx = @chunk.add_const(Value.int(n))
       @chunk.emit(Op::Const, node.line, c: idx)
     end
 
     private def compile_float(node : FloatLiteral) : Nil
-      idx = @chunk.add_const(Value.float(node.value.to_f64))
+      # Underscores are valid in the lexeme (Lexer#scan_digit_run
+      # allows a single `_` strictly between two digits, matching
+      # Ruby's actual literal grammar) but Crystal's String#to_f64 has
+      # no underscore support at all (unlike String#to_i, which does)
+      # — must strip them here or `to_f64` raises on a lexeme like
+      # "1_000.5". By the time a FloatLiteral reaches the compiler the
+      # lexer has already validated underscore placement (trailing/
+      # doubled underscores never make it into the lexeme in the first
+      # place), so a blind strip is safe — no re-validation needed.
+      idx = @chunk.add_const(Value.float(node.value.delete('_').to_f64))
       @chunk.emit(Op::Const, node.line, c: idx)
     end
 
