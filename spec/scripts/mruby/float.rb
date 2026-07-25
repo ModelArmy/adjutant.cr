@@ -257,8 +257,10 @@ assert('Float#to_s') do
 #   assert_equal("NaN", Float::NAN.to_s)
   assert_equal("0.0", 0.0.to_s)
 
-  # assert_equal("-0.0", -0.0.to_s) # WHOA! FIX precedence bug
+  # --- FIX precence bug
+  # assert_equal("-0.0", -0.0.to_s)
   assert_equal("-0.0", (-0.0).to_s)
+  # ---
 
   # assert_equal("-3.25", -3.25.to_s)
   # assert_equal("50.0", 50.0.to_s)

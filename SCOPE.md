@@ -20,8 +20,86 @@ Blocking, or actively causing incorrect behavior in normal use. Ordered
 roughly by dependency, not necessarily by importance — an item lower down
 may unblock ones above it.
 
-Empty as of 2026-07-21 — see `Will Fix`/`Won't Fix` below for what's
-outstanding.
+- **Unary minus on a NEGATIVE-NUMERIC-LITERAL binds looser than postfix
+  `.method`, when it should bind tighter for a literal specifically.**
+  Found 2026-07-25 by the person while running mruby's
+  `spec/scripts/mruby/float.rb` fixture (`-0.0.to_s` → `cannot negate
+  0.0 (String)`, i.e. `to_s` ran first, THEN negation was attempted on
+  its `String` result). Root cause: `Parser#parse_unary`'s
+  `TokenKind::Minus` branch (`parser.cr`) does `Unary.new(op,
+  parse_unary, l, c)` — recursing into `parse_unary` directly, whose own
+  `else` branch is `parse_postfix(parse_primary)`. For `-0.0.to_s`, the
+  recursive call parses `0.0.to_s` as a complete postfix chain FIRST
+  (`Call(FloatLiteral(0.0), "to_s")`), and only then does the outer
+  `Unary(Minus, ...)` wrap the whole thing — negating the call's
+  result, not the literal before the call runs.
+
+  Confirmed via Ruby core's own bug tracker (bugs.ruby-lang.org/issues/
+  19583, closed as "not a bug," explicitly authoritative on this exact
+  question) that this is NOT a general "unary minus should bind tighter
+  than postfix" rule — that would be WRONG and would incorrectly change
+  `-a.to_s` (`a` a variable) too, which real Ruby parses as `-(a.to_s)`,
+  matching Adjutant's current (correct-for-that-case) behavior. The
+  actual rule, quoting a Ruby core dev directly on that thread: "`-2`
+  is a literal[;] `- 2` is a function call of `-@`[,] and `-@` doesn't
+  have preference over function call." I.e. `-` immediately preceding a
+  bare numeric literal token fuses into a single NEGATIVE-LITERAL node
+  at parse time (not a `Unary` wrapping anything) — precedence doesn't
+  even enter into it for that specific shape, since there's no separate
+  unary-minus AST node at all once fused; postfix chaining then applies
+  to that fused literal, giving `(-0.0).to_s` the correct grouping "for
+  free." For every other unary-minus target (a variable, a call result,
+  a parenthesized expression), today's `Unary`-wraps-postfix behavior
+  is already correct and must NOT change.
+
+  Design implication, not yet fully scoped: needs a check in
+  `parse_unary`'s `TokenKind::Minus` branch — specifically, when the
+  very next token is `TokenKind::Integer`/`TokenKind::Float` (i.e. the
+  minus is immediately adjacent to a numeric literal, not some other
+  expression), parse a fused negative-literal node (or equivalently,
+  parse the literal and negate its VALUE at parse/compile time, then
+  apply `parse_postfix` to THAT), rather than the general `Unary.new(op,
+  parse_unary, ...)` path. Needs a real design conversation before
+  implementation — in particular, whether "immediately adjacent" should
+  be about token adjacency (no whitespace) or purely about "next token
+  is a bare numeric literal" regardless of spacing (Ruby's own rule,
+  per the bug thread, is about the token being a literal, not about
+  whitespace — `- 2` with a space is EXPLICITLY called out as the
+  function-call form, i.e. whitespace DOES matter to Ruby's own lexer
+  here, unlike the `identifier [expr]` disambiguation fixed 2026-07-21,
+  which turned out to NOT be whitespace-sensitive at all — these are
+  two different rules and shouldn't be assumed to share a mechanism).
+- **Unary `+` is entirely unsupported — parse error.** Found 2026-07-25
+  by the person (`+1`, `+n` both fail: `parse error: ... unexpected
+  token Plus ("+")`). Confirmed via Ruby's own precedence doc
+  (docs.ruby-lang.org/en/3.3/syntax/precedence_rdoc.html) that unary
+  `+` is a real, documented operator — same precedence TIER as `!` and
+  `~` (the highest tier, above `**`, above unary `-`), explicitly
+  listed as being "for `+1`" alongside unary `-`'s `-1`. Root cause:
+  `Parser#parse_unary`'s `case current_kind` (`parser.cr`) has branches
+  for `TokenKind::Bang`, `TokenKind::Minus`, `TokenKind::Tilde`,
+  `TokenKind::KwNot` — no `TokenKind::Plus` branch at all, so a leading
+  `+` falls through to `parse_primary` via the `else` branch, which
+  doesn't expect to start on a `Plus` token.
+
+  Confirmed via `compile_unary` (`compiler.cr`) that the VM/compiler
+  side needs NO new opcode: its `case node.op` already has no
+  `TokenKind::Plus` branch, so a `Unary(Plus, expr)` node would
+  silently fall through and emit nothing beyond `compile_node(expr)` —
+  i.e. the operand's value is left on the stack completely unchanged,
+  which happens to BE the semantically correct behavior for numeric
+  unary `+` (a documented no-op) purely as a side effect of the `case`
+  having no matching branch, not by deliberate design. Likely fix is
+  therefore parser-only: add a `TokenKind::Plus` branch to
+  `parse_unary` mirroring the existing `Bang`/`Tilde` branches
+  (`Unary.new(op, parse_unary, l, c)`) — no literal-fusion needed,
+  unlike unary minus above, and no compiler change needed either, given
+  the fallback-to-no-op behavior already matches what's wanted. Worth
+  a small design check on whether `+` on a NON-numeric operand
+  (`+"str"`, `+nil`) should raise (real Ruby: `+` on most non-Numeric
+  types is a real `NoMethodError`, e.g. `String` has no `+@` — needs
+  confirming Adjutant doesn't silently accept `+"str"` as a no-op where
+  real Ruby would raise) before treating this as fully done.
 
 ## Will Fix
 
