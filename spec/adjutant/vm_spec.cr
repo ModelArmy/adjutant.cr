@@ -83,6 +83,37 @@ module Adjutant
         eval("-7").as_int.should eq -7_i64
       end
 
+      # Fixed 2026-07-25 (SCOPE.md's "Unary + is entirely unsupported"
+      # entry). Unlike unary minus, unary + is a genuine numeric no-op
+      # in real Ruby (confirmed via Ruby's own precedence doc and
+      # Ruby core discussion of the operator) — Op::Pos pushes the
+      # SAME value back unchanged rather than reconstructing it,
+      # specifically so it doesn't reproduce Op::Neg's separate,
+      # pre-existing label-dropping behavior (Value.int(-v.as_int) with
+      # no label arg defaults to label: nil — out of scope to fix here,
+      # noted for the record, not touched by this spec).
+      it "applies unary plus to an integer as a no-op" do
+        eval("+7").as_int.should eq 7_i64
+      end
+
+      it "applies unary plus to a float as a no-op" do
+        eval("+7.5").as_float.should be_close(7.5, 1e-10)
+      end
+
+      it "applies unary plus to a variable, not just a literal" do
+        # The person's own reported repro shape — `+n` where `n` is a
+        # local, not `+1` a bare literal. Unlike unary minus, unary +
+        # needs NO literal-fusion special case at all (there's no
+        # "positive literal" AST node in Ruby), so this should already
+        # work identically to the bare-literal case above once
+        # parse_unary has a TokenKind::Plus branch at all.
+        eval("n = 1\n+n").as_int.should eq 1_i64
+      end
+
+      it "raises applying unary plus to a non-numeric value" do
+        expect_raises(RuntimeError, /cannot apply unary \+/) { eval(%(+"str")) }
+      end
+
       it "raises on divide by zero" do
         expect_raises(RuntimeError) { eval("1 / 0") }
       end

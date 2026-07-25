@@ -165,6 +165,15 @@ module Adjutant
         node = parse_expr("!x")
         node.as(Unary).op.should eq TokenKind::Bang
       end
+
+      # Fixed 2026-07-25 (SCOPE.md's "Unary + is entirely unsupported"
+      # entry) — previously a parse error (`unexpected token Plus`)
+      # since parse_unary had no TokenKind::Plus case at all.
+      it "parses unary plus" do
+        node = parse_expr("+x")
+        node.should be_a(Unary)
+        node.as(Unary).op.should eq TokenKind::Plus
+      end
     end
 
     describe "ternary" do

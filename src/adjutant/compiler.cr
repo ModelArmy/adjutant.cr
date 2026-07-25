@@ -438,6 +438,7 @@ module Adjutant
       case node.op
       when TokenKind::Bang  then @chunk.emit(Op::Not, node.line)
       when TokenKind::Minus then @chunk.emit(Op::Neg, node.line)
+      when TokenKind::Plus  then @chunk.emit(Op::Pos, node.line)
       when TokenKind::Tilde then @chunk.emit(Op::BitNot, node.line)
       end
     end

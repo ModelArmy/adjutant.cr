@@ -93,6 +93,7 @@ module Adjutant
     # Unary
     Not
     Neg
+    Pos
     BitNot
 
     # Comparison

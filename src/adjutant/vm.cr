@@ -736,6 +736,28 @@ module Adjutant
             when v.float? then push(Value.float(-v.as_float))
             else               raise runtime_error("cannot negate #{v} (#{v.raw.class})", f)
             end
+          when Op::Pos
+            # Mirrors Op::Neg's exact int?/float?/else-raise shape —
+            # Adjutant has no per-type +@/-@ overload mechanism (no
+            # user-defined class can define its own unary + or -; both
+            # are hardcoded VM opcodes, not method dispatch), so unlike
+            # real Ruby (where +@ is per-type — String defines it as a
+            # real no-op/thaw since 2.3, Array does NOT define it at
+            # all and raises NoMethodError) there's no type registry to
+            # consult here. Numeric unary + is a genuine no-op in real
+            # Ruby too (see docs.ruby-lang.org/en/3.3/syntax/
+            # precedence_rdoc.html's own unary-+ example, and Ruby
+            # core's own "There is an operator in Ruby that does
+            # nothing" framing) — push the SAME value back unchanged
+            # rather than reusing Neg's negation, and raise on anything
+            # that isn't Integer/Float, matching what Op::Neg already
+            # does for consistency across Adjutant's two numeric unary
+            # operators.
+            v = pop
+            case
+            when v.int?, v.float? then push(v)
+            else                       raise runtime_error("cannot apply unary + to #{v} (#{v.raw.class})", f)
+            end
           when Op::BitNot
             v = pop
             raise runtime_error("~ requires Integer", f) unless v.int?

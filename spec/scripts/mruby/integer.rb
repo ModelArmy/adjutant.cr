@@ -7,16 +7,20 @@ assert('Integer', '15.2.8') do
   assert_equal Class, Integer.class
 end
 
-# assert('Integer#+', '15.2.8.3.1') do
-#   a = 1+1
-#   b = 1+1.0 if Object.const_defined?(:Float)
+# --- TODO missing Object methods; e.g. const_defined?
+# --- TODO proper TypeError on maths ops
+assert('Integer#+', '15.2.8.3.1') do
+  a = 1+1
+  # b = 1+1.0 if Object.const_defined?(:Float)
 
-#   assert_equal 2, a
-#   assert_equal 2.0, b if Object.const_defined?(:Float)
+  assert_equal 2, a
+  # assert_equal 2.0, b if Object.const_defined?(:Float)
 
-#   assert_raise(TypeError){ 0+nil }
-#   assert_raise(TypeError){ 1+nil }
-# end
+  # assert_raise(TypeError){ 0+nil }
+  # assert_raise(TypeError){ 1+nil }
+  assert_raise { 0+nil }
+  assert_raise { 1+nil }
+end
 
 # assert('Integer#-', '15.2.8.3.2') do
 #   a = 2-1

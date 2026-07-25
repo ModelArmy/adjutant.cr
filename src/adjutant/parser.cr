@@ -348,6 +348,18 @@ module Adjutant
       when TokenKind::Minus
         op = advance.kind
         Unary.new(op, parse_unary, l, c)
+      when TokenKind::Plus
+        # Same precedence tier as Bang (real Ruby: `!`, `~`, unary `+`
+        # are all the single highest-precedence tier — see
+        # docs.ruby-lang.org/en/3.3/syntax/precedence_rdoc.html). NOT
+        # given the same literal-fusion treatment TokenKind::Minus
+        # gets elsewhere for `-<literal>`: there's no such thing as a
+        # "positive literal" AST node in Ruby (`+1` is just `1`'s
+        # ordinary parse, with a real but no-op-for-numerics unary `+`
+        # wrapped around it) — this is a genuinely simpler case than
+        # unary minus, not a smaller version of the same fix.
+        op = advance.kind
+        Unary.new(op, parse_unary, l, c)
       when TokenKind::Tilde
         op = advance.kind
         Unary.new(op, parse_unary, l, c)

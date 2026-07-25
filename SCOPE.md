@@ -69,37 +69,6 @@ may unblock ones above it.
   here, unlike the `identifier [expr]` disambiguation fixed 2026-07-21,
   which turned out to NOT be whitespace-sensitive at all — these are
   two different rules and shouldn't be assumed to share a mechanism).
-- **Unary `+` is entirely unsupported — parse error.** Found 2026-07-25
-  by the person (`+1`, `+n` both fail: `parse error: ... unexpected
-  token Plus ("+")`). Confirmed via Ruby's own precedence doc
-  (docs.ruby-lang.org/en/3.3/syntax/precedence_rdoc.html) that unary
-  `+` is a real, documented operator — same precedence TIER as `!` and
-  `~` (the highest tier, above `**`, above unary `-`), explicitly
-  listed as being "for `+1`" alongside unary `-`'s `-1`. Root cause:
-  `Parser#parse_unary`'s `case current_kind` (`parser.cr`) has branches
-  for `TokenKind::Bang`, `TokenKind::Minus`, `TokenKind::Tilde`,
-  `TokenKind::KwNot` — no `TokenKind::Plus` branch at all, so a leading
-  `+` falls through to `parse_primary` via the `else` branch, which
-  doesn't expect to start on a `Plus` token.
-
-  Confirmed via `compile_unary` (`compiler.cr`) that the VM/compiler
-  side needs NO new opcode: its `case node.op` already has no
-  `TokenKind::Plus` branch, so a `Unary(Plus, expr)` node would
-  silently fall through and emit nothing beyond `compile_node(expr)` —
-  i.e. the operand's value is left on the stack completely unchanged,
-  which happens to BE the semantically correct behavior for numeric
-  unary `+` (a documented no-op) purely as a side effect of the `case`
-  having no matching branch, not by deliberate design. Likely fix is
-  therefore parser-only: add a `TokenKind::Plus` branch to
-  `parse_unary` mirroring the existing `Bang`/`Tilde` branches
-  (`Unary.new(op, parse_unary, l, c)`) — no literal-fusion needed,
-  unlike unary minus above, and no compiler change needed either, given
-  the fallback-to-no-op behavior already matches what's wanted. Worth
-  a small design check on whether `+` on a NON-numeric operand
-  (`+"str"`, `+nil`) should raise (real Ruby: `+` on most non-Numeric
-  types is a real `NoMethodError`, e.g. `String` has no `+@` — needs
-  confirming Adjutant doesn't silently accept `+"str"` as a no-op where
-  real Ruby would raise) before treating this as fully done.
 
 ## Will Fix
 

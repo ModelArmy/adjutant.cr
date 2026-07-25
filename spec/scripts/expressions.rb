@@ -288,10 +288,8 @@ assert "Monkey-patching not supported" do
   end
 end
 
-# --- FIX missing unary + support
-# assert "unary plus" do
-#   assert_equal 1, +1
-#   n = 1
-#   assert_equal 1, +n
-# end
-# ---
+assert "unary plus" do
+  assert_equal 1, +1
+  n = 1
+  assert_equal 1, +n
+end
