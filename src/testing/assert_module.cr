@@ -74,6 +74,7 @@ module Testing
 
     FLOAT_TOLERANCE = 1e-5
 
+    # ameba:disable Metrics/CyclomaticComplexity - Code is clear
     private def define_assert_float(interp)
       interp.define_native("assert_float") do |args, _blk, ncc|
         # expected
