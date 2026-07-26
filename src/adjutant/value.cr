@@ -45,12 +45,20 @@ module Adjutant
       new(b, label)
     end
 
-    def self.int(i : Int64, label : RiskFlowLabel? = nil) : Value
-      new(i, label)
+    def self.int(i : Int, label : RiskFlowLabel? = nil) : Value
+      new(i.to_i64, label)
+    end
+
+    def self.int(f : Float, label : RiskFlowLabel? = nil) : Value
+      new(f.to_i64, label)
     end
 
     def self.float(f : Float64, label : RiskFlowLabel? = nil) : Value
       new(f, label)
+    end
+
+    def self.float(i : Int, label : RiskFlowLabel? = nil) : Value
+      new(i.to_f64, label)
     end
 
     def self.string(s : String, label : RiskFlowLabel? = nil) : Value

@@ -77,6 +77,21 @@ module Adjutant
       @local_scopes.last.includes?(name)
     end
 
+    # True when @current (expected to be a Minus token, not yet
+    # consumed) has NO whitespace between it and @next — i.e. the
+    # operator is hugging its operand (`-1`, `-x`), not a spaced-out
+    # binary operator (`- 1`, `- x`). Uses the parser's existing
+    # one-token lookahead buffer (`@next`, populated by `advance` —
+    # see the constructor and `advance` itself), so this never needs
+    # to consume anything to check. Column arithmetic stands in for a
+    # dedicated whitespace flag, same technique as the minus-literal-
+    # fusion fix: `@current`'s own column plus its length (always 1 for
+    # Minus) should exactly equal where `@next` starts, if there's
+    # nothing — no space — between them.
+    private def operand_immediately_follows? : Bool
+      @next.column == @current.column + @current.lexeme.size
+    end
+
     # Only a bare `Identifier` LHS introduces a new local name — `@ivar
     # = x`, `arr[0] = x`, `obj.attr = x` etc. are all valid assignment
     # targets too but none of them make a NEW bare name resolvable as a
@@ -346,6 +361,49 @@ module Adjutant
         op = advance.kind
         Unary.new(op, parse_unary, l, c)
       when TokenKind::Minus
+        minus_l, minus_c = line, col
+        advance
+        # Fuse `-` with an IMMEDIATELY ADJACENT (no space) numeric
+        # literal into a single negative-literal node, rather than the
+        # general Unary-wraps-postfix path below. This is NOT a general
+        # "unary minus binds tighter than postfix" rule — it would be
+        # WRONG to apply this whenever the operand happens to be a
+        # literal AST-node-shape; it specifically requires no
+        # whitespace between the `-` and the digit, mirroring Ruby's
+        # actual lexer-level `tUMINUS_NUM` token (confirmed empirically
+        # 2026-07-25: `-0.0.to_s` → "-0.0" (fused), `- 0.0.to_s` → the
+        # unary-operator-on-a-call form). Column adjacency
+        # (`current.column == minus_c + 1`, since `-` is always exactly
+        # one character) is used as the no-space proxy, since tokens
+        # don't carry a dedicated whitespace-preceding flag. Every
+        # other unary-minus target (a variable, a call result, a
+        # parenthesized expression, OR a numeric literal with a space
+        # after the `-`) still goes through the ordinary
+        # Unary-wraps-postfix path below, unchanged — see SCOPE.md's
+        # entry on this fix for the full research trail (Ruby core bug
+        # #19583, parse.y's own tUMINUS_NUM grammar rule).
+        if (current_kind == TokenKind::Integer || current_kind == TokenKind::Float) && col == minus_c + 1
+          lit_tok = advance
+          negated_lexeme = "-" + lit_tok.lexeme
+          literal = if lit_tok.kind == TokenKind::Integer
+                      IntLiteral.new(negated_lexeme, minus_l, minus_c)
+                    else
+                      FloatLiteral.new(negated_lexeme, minus_l, minus_c)
+                    end
+          parse_postfix(literal)
+        else
+          Unary.new(TokenKind::Minus, parse_unary, minus_l, minus_c)
+        end
+      when TokenKind::Plus
+        # Same precedence tier as Bang (real Ruby: `!`, `~`, unary `+`
+        # are all the single highest-precedence tier — see
+        # docs.ruby-lang.org/en/3.3/syntax/precedence_rdoc.html). NOT
+        # given the same literal-fusion treatment TokenKind::Minus
+        # gets elsewhere for `-<literal>`: there's no such thing as a
+        # "positive literal" AST node in Ruby (`+1` is just `1`'s
+        # ordinary parse, with a real but no-op-for-numerics unary `+`
+        # wrapped around it) — this is a genuinely simpler case than
+        # unary minus, not a smaller version of the same fix.
         op = advance.kind
         Unary.new(op, parse_unary, l, c)
       when TokenKind::Tilde
@@ -509,27 +567,73 @@ module Adjutant
         # conversation for the full trace). `known_local?` (see
         # @local_scopes above) is this parser's own lightweight,
         # syntax-only echo of that same rule.
-        if known_local?(name)
-          Identifier.new(name, l, c) # falls through to parse_postfix's own LBracket handling as indexing
-        else
-          args = [parse_expression(0)] of Node
-          while match(TokenKind::Comma)
-            args << parse_expression(0)
-          end
-          blk = parse_block if block_follows_no_paren?
-          Call.new(nil, name, args, blk, false, l, c)
-        end
+        known_local?(name) ? Identifier.new(name, l, c) : parse_bare_call_args(name, l, c)
+      elsif at_kind?(TokenKind::Minus) && operand_immediately_follows?
+        # `name -expr` — genuinely ambiguous between a BINARY operator
+        # (`n - 1`, `a - b`) and the start of a bare call's first
+        # argument (`eq -1, -1`).
+        #
+        # known_local? (the disambiguator that already correctly
+        # resolves the `name [expr]` ambiguity above) does NOT work
+        # here — tried first, then caught via a failing pre-existing
+        # spec before shipping: `a + b` (this method's Plus sibling,
+        # same underlying issue, parked as its own SCOPE.md item rather
+        # than fixed alongside this) with `a` NOT a known local still
+        # must parse as Binary, not `a(+b)`. Confirmed precisely via
+        # `irb`: `def a; 999; end; def b; 111; end; p a + b` → `1110`
+        # (calls BOTH a and b with zero args, THEN adds) — binary, even
+        # though neither `a` nor `b` is a known local OR literal. Also
+        # `def a; 999; end; p a -1` → `ArgumentError: given 1, expected
+        # 0` — proving THIS specifically parsed as `a(-1)`, a call
+        # taking one argument, even though `a` is a zero-arg method
+        # with no special local-status either. The only structural
+        # difference between the two: `a - b`'s operand is a bare
+        # identifier (space on both sides of `-`); `a -1`'s operand is
+        # a literal IMMEDIATELY ADJACENT to the operator (no space
+        # between `-` and `1`, though there IS a space between `a` and
+        # `-`).
+        #
+        # So the real rule is adjacency, not known_local? — confirmed
+        # via Ruby's own "`-' after local variable or literal is
+        # interpreted as binary operator, even though it seems like
+        # unary operator" warning (bugs.ruby-lang.org), which fires
+        # precisely for the space-before-but-not-after shape and
+        # documents that Ruby's default in that case is BINARY. Checked
+        # here via `operand_immediately_follows?` (column arithmetic,
+        # same technique as the minus-literal-fusion fix a few commits
+        # back) — `eq -1`: space before `-`, none between `-` and `1` →
+        # bare-call start. `n - 1`/`a - b`: space on BOTH sides →
+        # this elsif's own condition is false, so control falls all the
+        # way through to the final `else` below (arg_follows_no_paren?
+        # also still rejects a bare Minus regardless of spacing — see
+        # its own comment) — returning a plain Identifier and letting
+        # parse_expression's own operator-precedence loop see the `-`
+        # as binary, same as any other binary operator following a
+        # variable or call-result reference.
+        parse_bare_call_args(name, l, c)
       elsif arg_follows_no_paren?
         # bare call: `puts x`, `raise "msg"`, etc.
-        args = [parse_expression(0)] of Node
-        while match(TokenKind::Comma)
-          args << parse_expression(0)
-        end
-        blk = parse_block if block_follows_no_paren?
-        Call.new(nil, name, args, blk, false, l, c)
+        parse_bare_call_args(name, l, c)
       else
         Identifier.new(name, l, c)
       end
+    end
+
+    # Shared tail for every bare-(no-paren)-call shape above: parse a
+    # comma-separated argument list via `parse_expression`, then an
+    # optional trailing block. Factored out specifically to reduce
+    # `parse_identifier_or_call`'s cyclomatic complexity (flagged by
+    # Ameba after this method grew a third near-identical branch this
+    # session) — this was pure duplication, not three independent
+    # behaviors, so extracting it is a genuine simplification, not just
+    # a lint workaround.
+    private def parse_bare_call_args(name : String, l : Int32, c : Int32) : Call
+      args = [parse_expression(0)] of Node
+      while match(TokenKind::Comma)
+        args << parse_expression(0)
+      end
+      blk = parse_block if block_follows_no_paren?
+      Call.new(nil, name, args, blk, false, l, c)
     end
 
     private def block_follows_no_paren? : Bool
@@ -566,7 +670,21 @@ module Adjutant
            TokenKind::Identifier, TokenKind::Constant
         true
       when TokenKind::Minus
-        false # REVISIT, can minus ever be valid token after method call name?
+        # Correctly false HERE — Minus is handled entirely by
+        # parse_identifier_or_call's own dedicated, adjacency-aware
+        # branch above (checked BEFORE this method is ever consulted
+        # for that call site), which needs to distinguish `eq -1`
+        # (bare-call start) from `n - 1`/`a - b` (binary) — a
+        # distinction this method has no way to make on its own, since
+        # it only sees a token kind, not the surrounding column/
+        # spacing context. `raise -1` (this method's OTHER call site,
+        # parse_raise) is consequently also not yet supported — `raise`
+        # is a keyword with no such ambiguity to resolve, so it COULD
+        # safely allow Minus unconditionally, but that's a separate,
+        # smaller, not-yet-reported gap, deliberately left alone here
+        # to keep this fix scoped to what was actually asked (see
+        # SCOPE.md).
+        false
       else
         false
       end

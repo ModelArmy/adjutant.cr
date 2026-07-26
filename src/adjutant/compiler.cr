@@ -235,15 +235,146 @@ module Adjutant
     end
 
     private def compile_int(node : IntLiteral) : Nil
-      raw = node.value
+      # Same underscore-stripping need as compile_float below, and for
+      # the same reason: Lexer#scan_digit_run allows a single `_`
+      # between two digits for INTEGER literals too, not just float
+      # ones (matches Ruby's own grammar — `1_000` is a plain Integer)
+      # — but String#to_i64 defaults to underscore: false, so a raw
+      # `"1_000".to_i64` would raise. Stripped here rather than passing
+      # `underscore: true` to to_i64/to_i64(16), to keep this symmetric
+      # with compile_float's approach and avoid a second underscore
+      # rule living in two different places.
+      raw = node.value.delete('_')
       n = raw.starts_with?("0x") || raw.starts_with?("0X") ? raw[2..].to_i64(16) : raw.to_i64
       idx = @chunk.add_const(Value.int(n))
       @chunk.emit(Op::Const, node.line, c: idx)
     end
 
     private def compile_float(node : FloatLiteral) : Nil
-      idx = @chunk.add_const(Value.float(node.value.to_f64))
+      # Underscores are valid in the lexeme (Lexer#scan_digit_run
+      # allows a single `_` strictly between two digits, matching
+      # Ruby's actual literal grammar) but Crystal's String#to_f64 has
+      # no underscore support at all (unlike String#to_i, which does)
+      # — must strip them here or `to_f64` raises on a lexeme like
+      # "1_000.5". By the time a FloatLiteral reaches the compiler the
+      # lexer has already validated underscore placement (trailing/
+      # doubled underscores never make it into the lexeme in the first
+      # place), so a blind strip is safe — no re-validation needed.
+      idx = @chunk.add_const(Value.float(parse_float_lexeme(node.value.delete('_'))))
       @chunk.emit(Op::Const, node.line, c: idx)
+    end
+
+    # Parses a float lexeme, rounding gracefully to a signed 0.0 or
+    # signed Infinity on underflow/overflow instead of raising —
+    # matching IEEE-754's own defined behavior (and mruby's own float
+    # parser, which this was found to diverge from via mruby's test
+    # suite: `1.0e-400`, `9.99e-344`, and
+    # `-92170141183460469231731687303715884105729e-383` must all round
+    # cleanly rather than error). `String#to_f64` raises ArgumentError
+    # on an out-of-Float64-range string; `#to_f64?` (nilable) merely
+    # swallows that into `nil` with NO signal about which direction the
+    # range was exceeded or what the correctly-rounded result should
+    # be (confirmed empirically — asked the person to run `to_f64?` on
+    # exactly these four literals in a real Crystal REPL, since this
+    # can't be observed from this clone-only workspace; all four
+    # returned nil, confirming to_f64? alone isn't enough to implement
+    # this correctly).
+    #
+    # So: compute the TRUE base-10 exponent of the lexeme ourselves,
+    # via plain string/integer arithmetic (no float parsing involved,
+    # so no precision or range concerns of our own) — the exponent of
+    # the most-significant digit, folding in any explicit `e`/`E`
+    # suffix. A 41-digit mantissa with `e-383` isn't actually at
+    # magnitude 1e-383; it's at roughly 9.2e-342 (40 + -383 = -343),
+    # and getting this combination right is the entire point (the
+    # naive "just look at the e-suffix" approach would misjudge this
+    # literal's true magnitude by 40+ orders of magnitude). Compare
+    # against generous, deliberately non-tight bounds around Float64's
+    # actual range (Float64::MAX is ~1.8e308, smallest positive
+    # subnormal is ~5e-324) — ±320/-330 leaves comfortable margin on
+    # both sides so this only ever activates for genuinely, unambiguously
+    # out-of-range literals, never a normal one near the boundary by
+    # coincidence (the exact boundary is still handled correctly
+    # regardless, since anything in the generous safe range still goes
+    # through ordinary `to_f64`, which is exact there).
+    private def parse_float_lexeme(lexeme : String) : Float64
+      # An all-zero mantissa is always exactly 0.0/-0.0 regardless of
+      # its exponent (0 * 10^anything is 0) — checked BEFORE computing
+      # true_decimal_exponent, which would otherwise misjudge
+      # "0.0e400"'s exponent as a huge POSITIVE number (since it treats
+      # an all-zero mantissa the same as a genuine leading zero run,
+      # e.g. "0.00123"'s -3), incorrectly routing it into the overflow
+      # branch below and returning Infinity for a literal that's
+      # mathematically zero. Found by explicitly checking this exact
+      # shape before considering the fix complete, not by inspection.
+      return signed_zero(lexeme) if all_zero_mantissa?(lexeme)
+
+      exp = true_decimal_exponent(lexeme)
+      if -330 <= exp <= 320
+        # Still go through to_f64? here, not a raw to_f64 — the
+        # exponent-range check above is a deliberately approximate
+        # margin (Float64::MAX's true exponent is ~308.25, smallest
+        # positive subnormal's is ~-323.3, neither a round number), NOT
+        # a promise that everything in this range actually fits.
+        # Found by explicitly checking "1.0e309" (true exponent 309,
+        # comfortably inside the +320 margin, but genuinely over
+        # Float64::MAX) and "1.0e-325" (true exponent -325, inside the
+        # -330 margin, but genuinely below the smallest subnormal) —
+        # both would still raise via a raw to_f64 call. On a nil here,
+        # out_of_range_result falls back to the same sign-aware
+        # 0.0-vs-Infinity choice the always-out-of-range branch below
+        # uses, keyed off the SAME already-computed `exp` — a nil in
+        # this branch does NOT always mean overflow (see the -325
+        # case above).
+        lexeme.to_f64? || out_of_range_result(lexeme, exp)
+      else
+        out_of_range_result(lexeme, exp)
+      end
+    end
+
+    private def out_of_range_result(lexeme : String, exp : Int32) : Float64
+      negative = lexeme.starts_with?('-')
+      if exp > 0
+        negative ? -Float64::INFINITY : Float64::INFINITY
+      else
+        signed_zero(lexeme)
+      end
+    end
+
+    private def signed_zero(lexeme : String) : Float64
+      lexeme.starts_with?('-') ? -0.0_f64 : 0.0_f64
+    end
+
+    private def all_zero_mantissa?(lexeme : String) : Bool
+      s = lexeme.starts_with?('-') ? lexeme[1..] : lexeme
+      mantissa, _, _ = s.partition(/[eE]/)
+      mantissa.chars.all? { |char| char == '0' || char == '.' }
+    end
+
+    # The base-10 exponent of the lexeme's most-significant digit,
+    # folding in any explicit `e`/`E` suffix — e.g. "123.45" -> 2
+    # (1.2345 * 10^2), "0.00123" -> -3 (1.23 * 10^-3), "1.0e-400" -> -400,
+    # "92170141183460469231731687303715884105729e-383" -> -343 (a
+    # 41-digit integer part normalizes to exponent 40, combined with
+    # the explicit -383). Pure string/integer arithmetic — no float
+    # parsing, so no range limits of its own to worry about, which is
+    # exactly why this is computed BEFORE deciding whether to trust
+    # to_f64 with the actual parse.
+    private def true_decimal_exponent(lexeme : String) : Int32
+      s = lexeme.starts_with?('-') ? lexeme[1..] : lexeme
+      mantissa, _, exp_part = s.partition(/[eE]/)
+      explicit_exp = exp_part.empty? ? 0 : exp_part.to_i32
+
+      int_part, _, frac_part = mantissa.partition('.')
+      int_part = int_part.lstrip('0')
+      base_exp = if !int_part.empty?
+                   int_part.size - 1
+                 else
+                   stripped = frac_part.lstrip('0')
+                   leading_zeros = frac_part.size - stripped.size
+                   -(leading_zeros + 1)
+                 end
+      base_exp + explicit_exp
     end
 
     private def compile_string(node : StringLiteral) : Nil
@@ -420,6 +551,7 @@ module Adjutant
       case node.op
       when TokenKind::Bang  then @chunk.emit(Op::Not, node.line)
       when TokenKind::Minus then @chunk.emit(Op::Neg, node.line)
+      when TokenKind::Plus  then @chunk.emit(Op::Pos, node.line)
       when TokenKind::Tilde then @chunk.emit(Op::BitNot, node.line)
       end
     end

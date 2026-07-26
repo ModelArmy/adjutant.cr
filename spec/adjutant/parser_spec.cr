@@ -161,9 +161,79 @@ module Adjutant
         node.as(Unary).op.should eq TokenKind::Minus
       end
 
+      # Fixed 2026-07-25 (SCOPE.md's "Unary minus on a
+      # NEGATIVE-NUMERIC-LITERAL binds looser than postfix" entry).
+      # `-` immediately adjacent (no space) to a numeric literal fuses
+      # into a single negative-literal node — NOT a Unary wrapping
+      # anything — confirmed as the correct rule via a series of `irb`
+      # experiments and Ruby's own parse.y grammar (tUMINUS_NUM),
+      # distinct from the general "does unary minus bind tighter than
+      # postfix" question, which it does NOT for anything other than
+      # an immediately-adjacent literal.
+      it "fuses minus with an immediately-adjacent integer literal (no Unary node)" do
+        node = parse_expr("-7")
+        node.should be_a(IntLiteral)
+        node.as(IntLiteral).value.should eq "-7"
+      end
+
+      it "fuses minus with an immediately-adjacent float literal (no Unary node)" do
+        node = parse_expr("-0.0")
+        node.should be_a(FloatLiteral)
+        node.as(FloatLiteral).value.should eq "-0.0"
+      end
+
+      it "applies postfix chaining to the FUSED literal, not to a Unary wrapping a postfix chain" do
+        # This is the actual originally-reported bug shape:
+        # `-0.0.to_s` must group as `(-0.0).to_s`, i.e. a Call whose
+        # RECEIVER is the fused negative FloatLiteral — not a Unary
+        # wrapping a Call on a positive 0.0.
+        node = parse_expr("-0.0.to_s")
+        node.should be_a(Call)
+        call = node.as(Call)
+        call.method.should eq "to_s"
+        call.receiver.should be_a(FloatLiteral)
+        call.receiver.as(FloatLiteral).value.should eq "-0.0"
+      end
+
+      it "does NOT fuse when there is a space between minus and the literal" do
+        # `- 0.0.to_s` must still parse as the general Unary-wraps-
+        # postfix form — `-(0.0.to_s)` — same as `-a.to_s` for a
+        # variable. Confirmed empirically (irb): `- 0.0.to_s` groups
+        # as unary-minus-of-the-call-result, NOT as a fused negative
+        # literal, distinguishing this from the no-space case above by
+        # whitespace alone (matching Ruby's own tUMINUS_NUM adjacency
+        # rule, not a general precedence difference).
+        node = parse_expr("- 0.0.to_s")
+        node.should be_a(Unary)
+        unary = node.as(Unary)
+        unary.op.should eq TokenKind::Minus
+        unary.expr.should be_a(Call)
+      end
+
+      it "does NOT fuse minus with a variable, even with no space" do
+        # `-a.to_s` (a is a variable, not a literal) must remain
+        # Unary(Minus, Call(...)) — negating the call's RESULT, per
+        # Ruby's own documented behavior (bugs.ruby-lang.org/issues/
+        # 19583) — regardless of adjacency, since fusion only ever
+        # applies to a genuine numeric LITERAL token, never an
+        # identifier.
+        node = parse_expr("-a.to_s")
+        node.should be_a(Unary)
+        node.as(Unary).expr.should be_a(Call)
+      end
+
       it "parses not" do
         node = parse_expr("!x")
         node.as(Unary).op.should eq TokenKind::Bang
+      end
+
+      # Fixed 2026-07-25 (SCOPE.md's "Unary + is entirely unsupported"
+      # entry) — previously a parse error (`unexpected token Plus`)
+      # since parse_unary had no TokenKind::Plus case at all.
+      it "parses unary plus" do
+        node = parse_expr("+x")
+        node.should be_a(Unary)
+        node.as(Unary).op.should eq TokenKind::Plus
       end
     end
 
@@ -203,6 +273,77 @@ module Adjutant
         c.method.should eq "puts"
         c.args.size.should eq 1
         c.receiver.should be_nil
+      end
+
+      # Fixed 2026-07-25 (found by the person) — a bare call whose
+      # FIRST argument starts with `-` never got recognized as a call
+      # at all: `eq -1, -1` parsed `eq` as a standalone Identifier,
+      # then `-1, -1` separately, producing an "unexpected token Comma"
+      # parse error once the second `-1`'s comma had nowhere to go.
+      # `eq(-1, -1)` (parens) already worked, confirming the bug was
+      # specific to the no-paren bare-call path.
+      #
+      # This is NOT resolved by known_local? (the disambiguator that
+      # already correctly resolves the `name [expr]` ambiguity) — a
+      # first attempt using known_local? was caught, before shipping,
+      # breaking two pre-existing specs: `a + b` (Plus, not fixed here
+      # — see SCOPE.md) and, by the same flawed logic applied to Minus,
+      # `a - b`/`n - 1` would have broken too, since neither `a` nor
+      # `n` needs to be a known local for these to still mean binary
+      # subtraction. The actual disambiguator, confirmed via `irb`
+      # (`def a; 999; end; p a -1` → `ArgumentError: given 1, expected
+      # 0`, i.e. parsed as `a(-1)`, one argument — even though `a` has
+      # no local-status at all) and Ruby's own "interpreted as binary
+      # operator" warning text: whether `-` is IMMEDIATELY ADJACENT (no
+      # space) to what follows it — `operand_immediately_follows?`,
+      # column arithmetic using the parser's existing one-token
+      # lookahead, same technique as the minus-literal-fusion fix.
+      it "parses a bare call whose first argument is a negative literal" do
+        node = parse_expr("eq -1, -1")
+        node.should be_a(Call)
+        c = node.as(Call)
+        c.method.should eq "eq"
+        c.args.size.should eq 2
+        c.args[0].should be_a(IntLiteral)
+        c.args[0].as(IntLiteral).value.should eq "-1"
+        c.args[1].should be_a(IntLiteral)
+        c.args[1].as(IntLiteral).value.should eq "-1"
+      end
+
+      it "parses a bare call whose first argument is unary-minus on a variable" do
+        # Not just a fused literal — a genuine Unary(Minus, ...) as the
+        # very first argument must also be recognized as starting a
+        # bare call, same fix: `-x` (no space) still counts as
+        # "operand immediately follows," even though `x` isn't a
+        # literal and doesn't fuse with the `-` the way a numeric
+        # literal does.
+        node = parse("x = 5\neq -x, 1").stmts.last
+        node.should be_a(Call)
+        c = node.as(Call)
+        c.args[0].should be_a(Unary)
+        c.args[0].as(Unary).op.should eq TokenKind::Minus
+      end
+
+      it "still parses a bare call with a single negative-literal argument (no comma)" do
+        node = parse_expr("puts -5")
+        node.should be_a(Call)
+        node.as(Call).args.first.should be_a(IntLiteral)
+      end
+
+      # Explicit regression coverage for the exact two shapes that
+      # broke CI in a discarded first (known_local?-based) attempt at
+      # this fix — see the fix's own comment for the full trace of why
+      # adjacency, not known_local?, is the correct disambiguator.
+      it "still parses subtraction as a binary operator, spaced on both sides, regardless of local status" do
+        node = parse_expr("a - b")
+        node.should be_a(Binary)
+        node.as(Binary).op.should eq TokenKind::Minus
+      end
+
+      it "still parses subtraction as a binary operator for a known local specifically" do
+        node = parse("n = 5\nn - 1").stmts.last
+        node.should be_a(Binary)
+        node.as(Binary).op.should eq TokenKind::Minus
       end
 
       it "parses a receiver call" do

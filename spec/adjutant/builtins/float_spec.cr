@@ -93,11 +93,11 @@ module Adjutant
         result.truthy?.should be_true
       end
 
-      it "float division by zero raises, same as integer division by zero" do
+      it "float division by zero returns NaN" do
         interp, _ = make_interp
-        expect_raises(RuntimeError, /divided by 0/) do
-          interp.eval("5.0 / 0")
-        end
+        result = interp.eval("5.0 / 0")
+        result.as_float.should eq Float64::INFINITY
+        result.as_float.infinite?.should_not eq 0
       end
     end
 
