@@ -88,7 +88,6 @@ module Adjutant
       when a.float? || b.float?
         fa = a.int? ? a.as_int.to_f64 : a.as_float
         fb = b.int? ? b.as_int.to_f64 : b.as_float
-        on_error.call("divided by 0") if fb == 0.0
         Value.float(fa / fb)
       else
         on_error.call("type error in division")
