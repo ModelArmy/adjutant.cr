@@ -293,3 +293,17 @@ assert "unary plus" do
   n = 1
   assert_equal 1, +n
 end
+
+# assert "negative no-paren parameter to method" do
+  def eq(a,b); a == b; end
+
+  # eq -1, -1 # parse error: unexpected token Comma
+  # eq +1, -1 # parse error: unexpected token Comma
+  # eq (6/3), 2 # parse error: unexpected token Comma (",")
+  eq(-1, -1)
+  eq 1, -1
+  eq 1, -1, -3
+  eq 1, -1, -3, 4
+  eq(5, 5)
+  eq 5, 5
+# end

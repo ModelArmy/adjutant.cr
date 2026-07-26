@@ -275,6 +275,77 @@ module Adjutant
         c.receiver.should be_nil
       end
 
+      # Fixed 2026-07-25 (found by the person) — a bare call whose
+      # FIRST argument starts with `-` never got recognized as a call
+      # at all: `eq -1, -1` parsed `eq` as a standalone Identifier,
+      # then `-1, -1` separately, producing an "unexpected token Comma"
+      # parse error once the second `-1`'s comma had nowhere to go.
+      # `eq(-1, -1)` (parens) already worked, confirming the bug was
+      # specific to the no-paren bare-call path.
+      #
+      # This is NOT resolved by known_local? (the disambiguator that
+      # already correctly resolves the `name [expr]` ambiguity) — a
+      # first attempt using known_local? was caught, before shipping,
+      # breaking two pre-existing specs: `a + b` (Plus, not fixed here
+      # — see SCOPE.md) and, by the same flawed logic applied to Minus,
+      # `a - b`/`n - 1` would have broken too, since neither `a` nor
+      # `n` needs to be a known local for these to still mean binary
+      # subtraction. The actual disambiguator, confirmed via `irb`
+      # (`def a; 999; end; p a -1` → `ArgumentError: given 1, expected
+      # 0`, i.e. parsed as `a(-1)`, one argument — even though `a` has
+      # no local-status at all) and Ruby's own "interpreted as binary
+      # operator" warning text: whether `-` is IMMEDIATELY ADJACENT (no
+      # space) to what follows it — `operand_immediately_follows?`,
+      # column arithmetic using the parser's existing one-token
+      # lookahead, same technique as the minus-literal-fusion fix.
+      it "parses a bare call whose first argument is a negative literal" do
+        node = parse_expr("eq -1, -1")
+        node.should be_a(Call)
+        c = node.as(Call)
+        c.method.should eq "eq"
+        c.args.size.should eq 2
+        c.args[0].should be_a(IntLiteral)
+        c.args[0].as(IntLiteral).value.should eq "-1"
+        c.args[1].should be_a(IntLiteral)
+        c.args[1].as(IntLiteral).value.should eq "-1"
+      end
+
+      it "parses a bare call whose first argument is unary-minus on a variable" do
+        # Not just a fused literal — a genuine Unary(Minus, ...) as the
+        # very first argument must also be recognized as starting a
+        # bare call, same fix: `-x` (no space) still counts as
+        # "operand immediately follows," even though `x` isn't a
+        # literal and doesn't fuse with the `-` the way a numeric
+        # literal does.
+        node = parse("x = 5\neq -x, 1").stmts.last
+        node.should be_a(Call)
+        c = node.as(Call)
+        c.args[0].should be_a(Unary)
+        c.args[0].as(Unary).op.should eq TokenKind::Minus
+      end
+
+      it "still parses a bare call with a single negative-literal argument (no comma)" do
+        node = parse_expr("puts -5")
+        node.should be_a(Call)
+        node.as(Call).args.first.should be_a(IntLiteral)
+      end
+
+      # Explicit regression coverage for the exact two shapes that
+      # broke CI in a discarded first (known_local?-based) attempt at
+      # this fix — see the fix's own comment for the full trace of why
+      # adjacency, not known_local?, is the correct disambiguator.
+      it "still parses subtraction as a binary operator, spaced on both sides, regardless of local status" do
+        node = parse_expr("a - b")
+        node.should be_a(Binary)
+        node.as(Binary).op.should eq TokenKind::Minus
+      end
+
+      it "still parses subtraction as a binary operator for a known local specifically" do
+        node = parse("n = 5\nn - 1").stmts.last
+        node.should be_a(Binary)
+        node.as(Binary).op.should eq TokenKind::Minus
+      end
+
       it "parses a receiver call" do
         node = parse_expr("foo.bar")
         node.should be_a(Call)

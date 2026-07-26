@@ -127,6 +127,28 @@ module Adjutant
         (1.0 / f).should be < 0
       end
 
+      # End-to-end regression for the exact bug the person found
+      # (2026-07-25): a bare (no-paren) call whose first argument is a
+      # negative literal used to raise a parse error — see
+      # parser_spec.cr's "parses a bare call whose first argument is a
+      # negative literal" for the narrower parser-level coverage and
+      # the full root-cause trace (including the known_local?-based
+      # first attempt that was caught and discarded before shipping).
+      it "calls a bare (no-paren) method whose arguments are negative literals" do
+        result = eval(<<-RUBY)
+          def eq(a, b)
+            a == b
+          end
+          eq -1, -1
+        RUBY
+        result.truthy?.should be_true
+      end
+
+      it "still evaluates subtraction as a binary operator regardless of local status" do
+        eval("a = 10\nb = 3\na - b").as_int.should eq 7_i64
+        eval("n = 5\nn - 1").as_int.should eq 4_i64
+      end
+
       # Fixed 2026-07-25 (SCOPE.md's "Unary + is entirely unsupported"
       # entry). Unlike unary minus, unary + is a genuine numeric no-op
       # in real Ruby (confirmed via Ruby's own precedence doc and
