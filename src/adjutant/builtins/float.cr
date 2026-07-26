@@ -34,6 +34,27 @@ module Adjutant::Builtins
       Adjutant::Value.int(args.first.as_float.to_i64)
     end
 
+    # Define conversion methods that return an int
+    map_self_calc_methods arg_as: float, return_as: int, methods: [floor, ceil, round]
+    map_self_calc_methods arg_as: float, return_as: int, methods: [truncate], crystal_methods: [trunc]
+
+    # Define conversion methods that return a float
+    map_self_calc_methods arg_as: float, return_as: float, methods: [abs]
+
+    # Define conversion methods that return a string
+    map_self_calc_methods arg_as: float, return_as: string, methods: [inspect]
+
+    # Define conversion methods that return a bool
+    map_self_calc_methods arg_as: float, return_as: bool, methods: [finite?, nan?]
+
+    define(cls, interp, "infinite?") do |args|
+      val = args.first.as_float
+      case result = val.infinite?
+      when Int then Adjutant::Value.int(result)
+      else          Adjutant::Value.nil_value
+      end
+    end
+
     define(cls, interp, "to_f") do |args|
       args.first
     end

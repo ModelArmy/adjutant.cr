@@ -132,78 +132,87 @@ assert('Float#==', '15.2.9.3.7') do
   assert_false 3.1 == 3.2
 end
 
-# assert('Float#ceil', '15.2.9.3.8') do
-#   a = 3.123456789.ceil
-#   b = 3.0.ceil
-#   c = -3.123456789.ceil
-#   d = -3.0.ceil
+assert('Float#ceil', '15.2.9.3.8') do
+  a = 3.123456789.ceil
+  b = 3.0.ceil
+  c = -3.123456789.ceil
+  d = -3.0.ceil
 
-#   assert_equal( 4, a)
-#   assert_equal( 3, b)
-#   assert_equal(-3, c)
-#   assert_equal(-3, d)
-# end
+  assert_equal( 4, a)
+  assert_equal( 3, b)
+  assert_equal(-3, c)
+  assert_equal(-3, d)
+end
 
-# assert('Float#finite?', '15.2.9.3.9') do
+
+# --- TODO: missing assertions
+assert('Float#finite?', '15.2.9.3.9') do
 #   assert_predicate 3.123456789, :finite?
 #   assert_not_predicate 1.0 / 0.0, :finite?
-# end
+  assert_true 3.123456789.finite?
+  # assert_false (1.0 / 0.0).finite?
+end
+# ----
 
-# assert('Float#floor', '15.2.9.3.10') do
-#   a = 3.123456789.floor
-#   b = 3.0.floor
-#   c = -3.123456789.floor
-#   d = -3.0.floor
+assert('Float#floor', '15.2.9.3.10') do
+  a = 3.123456789.floor
+  b = 3.0.floor
+  c = -3.123456789.floor
+  d = -3.0.floor
 
-#   assert_equal( 3, a)
-#   assert_equal( 3, b)
-#   assert_equal(-4, c)
-#   assert_equal(-3, d)
-# end
+  assert_equal( 3, a)
+  assert_equal( 3, b)
+  assert_equal(-4, c)
+  assert_equal(-3, d)
+end
 
-# assert('Float#infinite?', '15.2.9.3.11') do
-#   a = 3.123456789.infinite?
-#   b = (1.0 / 0.0).infinite?
-#   c = (-1.0 / 0.0).infinite?
+assert('Float#infinite?', '15.2.9.3.11') do
+  a = 3.123456789.infinite?
+  b = (1.0 / 0.0).infinite?
+  c = (-1.0 / 0.0).infinite?
 
-#   assert_nil a
-#   assert_equal( 1, b)
-#   assert_equal(-1, c)
-# end
+  assert_nil a
+  assert_equal( 1, b)
+  assert_equal(-1, c)
+end
 
-# assert('Float#round', '15.2.9.3.12') do
-#   a = 3.123456789.round
-#   b = 3.5.round
-#   c = 3.4999.round
-#   d = (-3.123456789).round
-#   e = (-3.5).round
-#   f = 12345.67.round(-1)
-#   g = 3.423456789.round(0)
-#   h = 3.423456789.round(1)
-#   i = 3.423456789.round(3)
+# --- TODO: Float#round with parameter
+assert('Float#round', '15.2.9.3.12') do
+  a = 3.123456789.round
+  b = 3.5.round
+  c = 3.4999.round
+  d = (-3.123456789).round
+  e = (-3.5).round
+  # f = 12345.67.round(-1)
+  # g = 3.423456789.round(0)
+  # h = 3.423456789.round(1)
+  # i = 3.423456789.round(3)
 
-#   assert_equal(    3, a)
-#   assert_equal(    4, b)
-#   assert_equal(    3, c)
-#   assert_equal(   -3, d)
-#   assert_equal(   -4, e)
-#   assert_equal(12350, f)
-#   assert_equal(    3, g)
-#   assert_float(  3.4, h)
-#   assert_float(3.423, i)
+  assert_equal(    3, a)
+  assert_equal(    4, b)
+  assert_equal(    3, c)
+  assert_equal(   -3, d)
+  assert_equal(   -4, e)
+  # assert_equal(12350, f)
+  # assert_equal(    3, g)
+  # assert_float(  3.4, h)
+  # assert_float(3.423, i)
 
-#   assert_equal(42.0, 42.0.round(307))
-#   assert_equal(1.0e307, 1.0e307.round(2))
+  # assert_equal(42.0, 42.0.round(307))
+  # assert_equal(1.0e307, 1.0e307.round(2))
 
-#   inf = 1.0/0.0
-#   assert_raise(FloatDomainError){ inf.round }
-#   assert_raise(FloatDomainError){ inf.round(-1) }
-#   assert_equal(inf, inf.round(1))
-#   nan = 0.0/0.0
-#   assert_raise(FloatDomainError){ nan.round }
-#   assert_raise(FloatDomainError){ nan.round(-1) }
-#   assert_predicate(nan.round(1), :nan?)
-# end
+  # --- TODO: specific errors
+  # inf = 1.0/0.0
+  # assert_raise(FloatDomainError){ inf.round }
+  # assert_raise(FloatDomainError){ inf.round(-1) }
+  # assert_equal(inf, inf.round(1))
+  # nan = 0.0/0.0
+  # assert_raise(FloatDomainError){ nan.round }
+  # assert_raise(FloatDomainError){ nan.round(-1) }
+  # assert_predicate(nan.round(1), :nan?)
+  # ---
+end
+# ---
 
 assert('Float#to_f', '15.2.9.3.13') do
   a = 3.123456789
@@ -220,10 +229,10 @@ assert('Float#to_i', '15.2.9.3.14') do
 end
 # ---
 
-# assert('Float#truncate', '15.2.9.3.15') do
-#   assert_equal( 3,  3.123456789.truncate)
-#   assert_equal(-3, -3.1.truncate)
-# end
+assert('Float#truncate', '15.2.9.3.15') do
+  assert_equal( 3,  3.123456789.truncate)
+  assert_equal(-3, -3.1.truncate)
+end
 
 # assert('Float#divmod') do
 #   def check_floats(exp, act)
@@ -242,13 +251,25 @@ end
 #   check_floats [ 3,  0.2],   9.8.divmod(3.2)
 # end
 
-# assert('Float#nan?') do
-#   assert_predicate(0.0/0.0, :nan?)
-#   assert_not_predicate(0.0, :nan?)
-#   assert_not_predicate(1.0/0.0, :nan?)
-#   assert_not_predicate(-1.0/0.0, :nan?)
-# end
-
+# --- TODO: missing assertions
+assert('Float#nan?') do
+  # assert_predicate(0.0/0.0, :nan?)
+  # assert_not_predicate(0.0, :nan?)
+  # assert_not_predicate(1.0/0.0, :nan?)
+  # assert_not_predicate(-1.0/0.0, :nan?)
+  assert_true((0.0/0.0).nan?)
+  assert_not_equal(5, (0.0/0.0))
+  assert_not_equal 5, (0.0/0.0)
+  assert_not_equal 0.0/0.0, 5
+  # --- TODO - parse error
+  # assert_equal (0.0/0.0), 5 # parse error: 264:25: unexpected token Comma (",")
+  # ---
+  assert_false 5.0.nan?
+  # assert_not_predicate(0.0, :nan?)
+  # assert_not_predicate(1.0/0.0, :nan?)
+  # assert_not_predicate(-1.0/0.0, :nan?)
+end
+# ---
 assert('Float#to_s') do
 #   uses_float = 4e38.infinite?  # enable MRB_USE_FLOAT32?
 
@@ -283,10 +304,10 @@ assert('Float#to_s') do
 #   end
 end
 
-# assert('Float#inspect') do
-#   assert_equal("-3.25", -3.25.inspect)
-#   assert_equal("50.0", 50.0.inspect)
-# end
+assert('Float#inspect') do
+  assert_equal("-3.25", -3.25.inspect)
+  assert_equal("50.0", 50.0.inspect)
+end
 
 # assert('Float#eql?') do
 #   assert_operator(5.0, :eql?, 5.0)
@@ -294,17 +315,17 @@ end
 #   assert_not_operator(5.0, :eql?, "5.0")
 # end
 
-# assert('Float#abs') do
-#   f = 1.0
-#   assert_equal(1.0, f.abs)
-#   f = -1.0
-#   assert_equal(1.0, f.abs)
-#   f = 0.0
-#   assert_equal(0.0, f.abs)
-#   # abs(negative zero) should be positive zero
-#   f = -0.0
-#   assert_equal(0.0, f.abs)
-# end
+assert('Float#abs') do
+  f = 1.0
+  assert_equal(1.0, f.abs)
+  f = -1.0
+  assert_equal(1.0, f.abs)
+  f = 0.0
+  assert_equal(0.0, f.abs)
+  # abs(negative zero) should be positive zero
+  f = -0.0
+  assert_equal(0.0, f.abs)
+end
 
 assert('Float literal underflow') do
   # Regression: float literals with exponents below POW10_MIN used to
