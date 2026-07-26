@@ -109,6 +109,24 @@ module Adjutant
         expect_raises(RuntimeError, /cannot negate/) { eval("n = 0.0\n-n.to_s") }
       end
 
+      # End-to-end regression for the exact values the person reported
+      # (2026-07-25, via mruby's float.rb "Float literal underflow"
+      # test) — String#to_f64 raised ArgumentError on all three
+      # (confirmed via the person's own error output:
+      # `Invalid Float64: "-92170141183460469231731687303715884105729e-383"`).
+      # See compiler_spec.cr's "underflow/overflow" describe block for
+      # narrower, more exhaustive coverage of the fix itself (including
+      # two edge cases found while implementing it: an all-zero
+      # mantissa with a huge exponent, and a near-boundary literal the
+      # approximate safety margin alone doesn't catch).
+      it "evaluates the person's exact reported underflow/overflow literals without raising" do
+        eval("1.0e-400").as_float.should eq 0.0
+        eval("9.99e-344").as_float.should eq 0.0
+        f = eval("-92170141183460469231731687303715884105729e-383").as_float
+        f.should eq 0.0
+        (1.0 / f).should be < 0
+      end
+
       # Fixed 2026-07-25 (SCOPE.md's "Unary + is entirely unsupported"
       # entry). Unlike unary minus, unary + is a genuine numeric no-op
       # in real Ruby (confirmed via Ruby's own precedence doc and
