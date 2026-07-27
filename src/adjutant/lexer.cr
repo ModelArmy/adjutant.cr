@@ -20,6 +20,7 @@ module Adjutant
       @column = 1
       @in_interp = false
       @interp_brace_depth = 0
+      @space_before = false
     end
 
     # Convenience constructor for string literals and tests.
@@ -43,7 +44,15 @@ module Adjutant
         return continue_interp_string
       end
 
-      skip_whitespace_and_comments
+      # Set once per token, read by `make_token` for every token scanned
+      # below (including nested calls like `scan_number`/`scan_string`
+      # that each call `make_token` themselves) — an instance variable
+      # rather than a threaded parameter, since threading a single bit
+      # through every `scan_*`/`make_token` call site (30+) would be a
+      # far larger, noisier diff for the same result. Safe as instance
+      # state because it's write-once-then-read within a single
+      # `next_token` call, same lifecycle as `line`/`col`/`start` below.
+      @space_before = skip_whitespace_and_comments
 
       line = @line
       col = @column
@@ -98,23 +107,35 @@ module Adjutant
       true
     end
 
-    private def skip_whitespace_and_comments
+    # Returns true iff at least one whitespace character or comment was
+    # actually consumed — i.e. whether the token about to be scanned is
+    # preceded by space, the fact `next_token` stashes into
+    # `@space_before` for `make_token` to attach to that token. A
+    # comment counts as "space" for this purpose: `x#comment\ny` and
+    # `x y` are equivalent from the parser's point of view (this only
+    # matters within a single line anyway, since a comment always runs
+    # to end-of-line and a real Newline token follows).
+    private def skip_whitespace_and_comments : Bool
+      consumed = false
       loop do
         case current_char
         when ' ', '\t', '\r'
           advance
+          consumed = true
         when '#'
           while !at_end? && current_char != '\n'
             advance
           end
+          consumed = true
         else
           break
         end
       end
+      consumed
     end
 
     private def make_token(kind : TokenKind, lexeme : String, line : Int32, col : Int32) : Token
-      Token.new(kind, lexeme, line, col)
+      Token.new(kind, lexeme, line, col, @space_before)
     end
 
     private def lexeme_from(start : Int32) : String
@@ -124,6 +145,12 @@ module Adjutant
     # Resume scanning the string body after the closing } of an interpolation.
     private def continue_interp_string : Token
       @in_interp = false
+      # Resuming right after the interpolation's closing `}` — never
+      # "preceded by space" in the sense any parser rule cares about,
+      # regardless of whatever `@space_before` was left holding from
+      # the last real `next_token` call (the `}` itself). Set
+      # explicitly rather than left stale.
+      @space_before = false
       line = @line
       col = @column
       start = @pos

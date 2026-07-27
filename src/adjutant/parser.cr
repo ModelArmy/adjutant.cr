@@ -77,19 +77,19 @@ module Adjutant
       @local_scopes.last.includes?(name)
     end
 
-    # True when @current (expected to be a Minus token, not yet
+    # True when @current (expected to be a Minus or Plus token, not yet
     # consumed) has NO whitespace between it and @next — i.e. the
-    # operator is hugging its operand (`-1`, `-x`), not a spaced-out
-    # binary operator (`- 1`, `- x`). Uses the parser's existing
-    # one-token lookahead buffer (`@next`, populated by `advance` —
-    # see the constructor and `advance` itself), so this never needs
-    # to consume anything to check. Column arithmetic stands in for a
-    # dedicated whitespace flag, same technique as the minus-literal-
-    # fusion fix: `@current`'s own column plus its length (always 1 for
-    # Minus) should exactly equal where `@next` starts, if there's
-    # nothing — no space — between them.
+    # operator is hugging its operand (`-1`, `+1`, `-x`), not a
+    # spaced-out binary operator (`- 1`, `+ 1`, `- x`). Uses the
+    # parser's existing one-token lookahead buffer (`@next`, populated
+    # by `advance` — see the constructor and `advance` itself), so this
+    # never needs to consume anything to check. Delegates to
+    # `@next.space_before?` — the lexer now tracks this directly (see
+    # `Token#space_before?`, set by `Lexer#skip_whitespace_and_comments`)
+    # rather than this method reconstructing it from column arithmetic,
+    # which is what an earlier version of this method did.
     private def operand_immediately_follows? : Bool
-      @next.column == @current.column + @current.lexeme.size
+      !@next.space_before?
     end
 
     # Only a bare `Identifier` LHS introduces a new local name — `@ivar
@@ -372,17 +372,18 @@ module Adjutant
         # whitespace between the `-` and the digit, mirroring Ruby's
         # actual lexer-level `tUMINUS_NUM` token (confirmed empirically
         # 2026-07-25: `-0.0.to_s` → "-0.0" (fused), `- 0.0.to_s` → the
-        # unary-operator-on-a-call form). Column adjacency
-        # (`current.column == minus_c + 1`, since `-` is always exactly
-        # one character) is used as the no-space proxy, since tokens
-        # don't carry a dedicated whitespace-preceding flag. Every
-        # other unary-minus target (a variable, a call result, a
+        # unary-operator-on-a-call form). `advance` above already
+        # consumed the `-`, so `@current` is now the literal token
+        # itself — its own `space_before?` (see `Token#space_before?`,
+        # set by the lexer) directly answers "was there space right
+        # before this token," no column arithmetic needed. Every other
+        # unary-minus target (a variable, a call result, a
         # parenthesized expression, OR a numeric literal with a space
         # after the `-`) still goes through the ordinary
         # Unary-wraps-postfix path below, unchanged — see SCOPE.md's
         # entry on this fix for the full research trail (Ruby core bug
         # #19583, parse.y's own tUMINUS_NUM grammar rule).
-        if (current_kind == TokenKind::Integer || current_kind == TokenKind::Float) && col == minus_c + 1
+        if (current_kind == TokenKind::Integer || current_kind == TokenKind::Float) && !@current.space_before?
           lit_tok = advance
           negated_lexeme = "-" + lit_tok.lexeme
           literal = if lit_tok.kind == TokenKind::Integer
@@ -537,12 +538,115 @@ module Adjutant
       end
     end
 
+    # True when @current is a Minus or Plus token that starts a bare
+    # call's first argument rather than a binary operator — i.e. space
+    # BEFORE the operator but NOT after it (`eq -1`, `eq +1`). Extracted
+    # from `parse_identifier_or_call`'s own dispatch chain specifically
+    # to keep that method's cyclomatic complexity under Ameba's
+    # threshold (flagged once this condition grew a second clause,
+    # `@current.space_before?`, alongside `operand_immediately_follows?`
+    # — see this method's own full research trail, moved here
+    # unchanged, for why BOTH conditions are required and not just the
+    # second one).
+    #
+    # Two conditions, not one: `@current.space_before?` (space BEFORE
+    # the operator) AND `operand_immediately_follows?` (no space AFTER
+    # it). An earlier version of this check used only the second
+    # condition, which happened to work for every case this arc's specs
+    # covered (`eq -1`, `a - b`, `n - 1`) but was WRONG for `a-b`/`a+b`
+    # — no space anywhere — which real Ruby parses as ordinary
+    # Binary(a, -, b), not as a bare call `a(-b)`. That gap went
+    # undetected until `spec/scripts/methods.rb`'s `def self.add(a,b);
+    # a+b; end` (an existing test script, not new coverage written for
+    # this fix) failed with "undefined method or variable: a" — `a+b`
+    # was being parsed as `a(+b)`, a bare call passing `+b` as an
+    # argument, so `a` (a real local parameter) was looked up as a
+    # callable instead. Confirmed via real Ruby that `a-b`/`a+b` (no
+    # space at all) is unambiguously binary, same as `a - b`/`a + b`
+    # (space on both sides) — the ONLY shape that means "bare call,
+    # first arg is a signed literal" is space-before-but-not-after,
+    # exactly what both conditions together require.
+    #
+    # known_local? (the disambiguator that already correctly resolves
+    # the `name [expr]` ambiguity in `parse_identifier_or_call`) does
+    # NOT work here — tried first for the Minus case, then caught via a
+    # failing pre-existing spec before shipping: `a + b` with `a` NOT a
+    # known local still must parse as Binary, not `a(+b)`. Confirmed
+    # precisely via `irb`: `def a; 999; end; def b; 111; end; p a + b`
+    # → `1110` (calls BOTH a and b with zero args, THEN adds) — binary,
+    # even though neither `a` nor `b` is a known local OR literal. Also
+    # `def a; 999; end; p a -1` → `ArgumentError: given 1, expected 0`
+    # — proving THIS specifically parsed as `a(-1)`, a call taking one
+    # argument, even though `a` is a zero-arg method with no special
+    # local-status either. The only structural difference between the
+    # two: `a - b`'s operand is a bare identifier (space on both sides
+    # of `-`); `a -1`'s operand is a literal IMMEDIATELY ADJACENT to
+    # the operator (no space between `-` and `1`, though there IS a
+    # space between `a` and `-`). The same structural distinction, and
+    # the same fix, applies to `+` — Ruby's own unary-vs-binary
+    # ambiguity for `+` follows the identical adjacency rule as `-`
+    # (both are covered by the same "space before but not after"
+    # warning class in Ruby's own parser), so this is one rule with two
+    # operators, not two rules — sharing one predicate (rather than
+    # duplicating it per-operator) is itself confirmation that Plus
+    # needed no bespoke logic of its own once the real (adjacency, not
+    # known_local?) rule was found.
+    #
+    # So the real rule is adjacency ON BOTH SIDES, not known_local? —
+    # confirmed via Ruby's own "`-' after local variable or literal is
+    # interpreted as binary operator, even though it seems like unary
+    # operator" warning (bugs.ruby-lang.org), which fires precisely for
+    # the space-before-but-not-after shape and documents that Ruby's
+    # default in that case is BINARY (and, by the same logic Ruby
+    # applies elsewhere, a no-space-at-all shape is unambiguously
+    # binary too — there is no bare-call reading of `a-b` in real Ruby
+    # at all). `eq -1`/`eq +1`: space before the operator, none between
+    # the operator and the literal → bare-call start. `n - 1`/`a -
+    # b`/`a-b`/`a+b`: NOT (space-before AND no-space-after) → this
+    # returns false, so `parse_identifier_or_call` falls all the way
+    # through to its own final `else` (`arg_follows_no_paren?` also
+    # still rejects a bare Minus/Plus regardless of spacing — see its
+    # own comment) — returning a plain Identifier and letting
+    # parse_expression's own operator-precedence loop see the `-`/`+`
+    # as binary, same as any other binary operator following a
+    # variable or call-result reference.
+    private def signed_literal_starts_bare_call? : Bool
+      (at_kind?(TokenKind::Minus) || at_kind?(TokenKind::Plus)) &&
+        @current.space_before? && operand_immediately_follows?
+    end
+
     # Bare identifier — may be a local variable, a bare method call, or
     # a keyword-like call (puts, require handled in parse_statement).
     private def parse_identifier_or_call(l : Int32, c : Int32) : Node
       tok = advance
       name = tok.lexeme
-      if at_kind?(TokenKind::LParen)
+      if at_kind?(TokenKind::LParen) && !@current.space_before?
+        # `name(...)` — no space before `(` means THIS paren is name's
+        # own call-argument-list syntax. Deliberately excludes the
+        # space-before-`(` case (`name (...)`, handled by falling
+        # through to `arg_follows_no_paren?` below, which allows
+        # LParen unconditionally as an argument-start token) — a space
+        # before `(` means the parenthesized expression is the bare
+        # call's first ARGUMENT, not name's own arg-list delimiter.
+        # `eq (6/3), 2` was previously misparsed because this check had
+        # no lookahead beyond "is the current token `(`" at all: it
+        # unconditionally treated ANY following `(` as `eq`'s own
+        # call-syntax, so `parse_call_args_and_block` parsed `6/3` as
+        # arg one, hit the closing `)` (from eq's perspective, the
+        # wrong `)`), then choked on the bare `,` that followed with
+        # nowhere to go. Confirmed via Ruby's own issue tracker
+        # (bugs.ruby-lang.org/issues/20922) that `assert_equal (-1),
+        # minus_one` — the same shape as this bug — is valid, WORKING
+        # Ruby; separately confirmed (ruby-forum.com, "Space before
+        # parentheses leads to syntax error") that a space before `(`
+        # on a call with NO other args and a multi-value paren group
+        # (`additionner (2,7)`) IS a syntax error, because `(2,7)`
+        # isn't a valid single parenthesized expression the way
+        # `(6/3)`/`(-1)` each are — this fix doesn't need to
+        # distinguish those two cases itself, since `(2,7)` already
+        # fails on its own merits once parsed as a bare call's first
+        # argument (a bare tuple isn't a valid expression here either).
+        # See SCOPE.md's entry on this bug for the full research trail.
         args, blk = parse_call_args_and_block
         Call.new(nil, name, args, blk, false, l, c)
       elsif block_follows_no_paren?
@@ -568,48 +672,13 @@ module Adjutant
         # @local_scopes above) is this parser's own lightweight,
         # syntax-only echo of that same rule.
         known_local?(name) ? Identifier.new(name, l, c) : parse_bare_call_args(name, l, c)
-      elsif at_kind?(TokenKind::Minus) && operand_immediately_follows?
-        # `name -expr` — genuinely ambiguous between a BINARY operator
-        # (`n - 1`, `a - b`) and the start of a bare call's first
-        # argument (`eq -1, -1`).
-        #
-        # known_local? (the disambiguator that already correctly
-        # resolves the `name [expr]` ambiguity above) does NOT work
-        # here — tried first, then caught via a failing pre-existing
-        # spec before shipping: `a + b` (this method's Plus sibling,
-        # same underlying issue, parked as its own SCOPE.md item rather
-        # than fixed alongside this) with `a` NOT a known local still
-        # must parse as Binary, not `a(+b)`. Confirmed precisely via
-        # `irb`: `def a; 999; end; def b; 111; end; p a + b` → `1110`
-        # (calls BOTH a and b with zero args, THEN adds) — binary, even
-        # though neither `a` nor `b` is a known local OR literal. Also
-        # `def a; 999; end; p a -1` → `ArgumentError: given 1, expected
-        # 0` — proving THIS specifically parsed as `a(-1)`, a call
-        # taking one argument, even though `a` is a zero-arg method
-        # with no special local-status either. The only structural
-        # difference between the two: `a - b`'s operand is a bare
-        # identifier (space on both sides of `-`); `a -1`'s operand is
-        # a literal IMMEDIATELY ADJACENT to the operator (no space
-        # between `-` and `1`, though there IS a space between `a` and
-        # `-`).
-        #
-        # So the real rule is adjacency, not known_local? — confirmed
-        # via Ruby's own "`-' after local variable or literal is
-        # interpreted as binary operator, even though it seems like
-        # unary operator" warning (bugs.ruby-lang.org), which fires
-        # precisely for the space-before-but-not-after shape and
-        # documents that Ruby's default in that case is BINARY. Checked
-        # here via `operand_immediately_follows?` (column arithmetic,
-        # same technique as the minus-literal-fusion fix a few commits
-        # back) — `eq -1`: space before `-`, none between `-` and `1` →
-        # bare-call start. `n - 1`/`a - b`: space on BOTH sides →
-        # this elsif's own condition is false, so control falls all the
-        # way through to the final `else` below (arg_follows_no_paren?
-        # also still rejects a bare Minus regardless of spacing — see
-        # its own comment) — returning a plain Identifier and letting
-        # parse_expression's own operator-precedence loop see the `-`
-        # as binary, same as any other binary operator following a
-        # variable or call-result reference.
+      elsif signed_literal_starts_bare_call?
+        # `name -expr` / `name +expr` — genuinely ambiguous between a
+        # BINARY operator (`n - 1`, `a - b`, `n + 1`) and the start of a
+        # bare call's first argument (`eq -1, -1`, `eq +1, -1`). See
+        # `signed_literal_starts_bare_call?`'s own comment for the full
+        # research trail (extracted there, unchanged, to keep this
+        # method's cyclomatic complexity under Ameba's threshold).
         parse_bare_call_args(name, l, c)
       elsif arg_follows_no_paren?
         # bare call: `puts x`, `raise "msg"`, etc.
@@ -670,20 +739,21 @@ module Adjutant
            TokenKind::Identifier, TokenKind::Constant
         true
       when TokenKind::Minus
-        # Correctly false HERE — Minus is handled entirely by
+        # Correctly false HERE — Minus (and, since the unary-`+`
+        # fix, Plus too) is handled entirely by
         # parse_identifier_or_call's own dedicated, adjacency-aware
         # branch above (checked BEFORE this method is ever consulted
         # for that call site), which needs to distinguish `eq -1`
         # (bare-call start) from `n - 1`/`a - b` (binary) — a
         # distinction this method has no way to make on its own, since
-        # it only sees a token kind, not the surrounding column/
-        # spacing context. `raise -1` (this method's OTHER call site,
-        # parse_raise) is consequently also not yet supported — `raise`
-        # is a keyword with no such ambiguity to resolve, so it COULD
-        # safely allow Minus unconditionally, but that's a separate,
-        # smaller, not-yet-reported gap, deliberately left alone here
-        # to keep this fix scoped to what was actually asked (see
-        # SCOPE.md).
+        # it only sees a token kind, not the surrounding whitespace
+        # context now captured on `Token#space_before?`. `raise -1`
+        # (this method's OTHER call site, parse_raise) is consequently
+        # also not yet supported — `raise` is a keyword with no such
+        # ambiguity to resolve, so it COULD safely allow Minus (and
+        # Plus) unconditionally, but that's a separate, smaller,
+        # not-yet-reported gap, deliberately left alone here to keep
+        # this fix scoped to what was actually asked (see SCOPE.md).
         false
       else
         false

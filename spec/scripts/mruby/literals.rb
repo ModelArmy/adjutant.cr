@@ -9,7 +9,7 @@ assert('Literals Numerical', '8.7.6.2') do
   # signed and unsigned integer
   assert_equal 1, 1
   assert_equal(-1, -1)
-  # assert_equal(+1, +1) # FIX: +NUM isn't parsed
+  assert_equal(+1, +1)
   # signed and unsigned float
   assert_equal 1.0, 1.0
   assert_equal(-1.0, -1.0)

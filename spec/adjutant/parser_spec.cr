@@ -346,6 +346,55 @@ module Adjutant
         node.as(Binary).op.should eq TokenKind::Minus
       end
 
+      # Found 2026-07-26 via a FAILING PRE-EXISTING test SCRIPT (not a
+      # new spec written for this fix) — `spec/scripts/methods.rb`'s
+      # `def self.add(a,b); a+b; end` raised "undefined method or
+      # variable: a" once the Plus half of this branch shipped. Root
+      # cause: the branch's condition checked ONLY
+      # `operand_immediately_follows?` (no space between the operator
+      # and what follows it) — it never also required space BEFORE the
+      # operator. `a-b`/`a+b` (no space anywhere) satisfies "no space
+      # after" just as much as `eq -1` does, so it was being
+      # misidentified as a bare-call start (`a(-b)`/`a(+b)`) instead of
+      # ordinary Binary(a, -/+, b). This is a real, previously-
+      # unguarded gap in the ORIGINAL Minus-only fix too (not something
+      # the Plus change introduced) — `a-b` was simply never exercised
+      # by any pre-existing spec, unlike `a - b` (spaced) and `eq -1`
+      # (space-before-only), which were. Fixed by requiring BOTH
+      # `@current.space_before?` (space before the operator) AND
+      # `operand_immediately_follows?` (no space after it) — see the
+      # branch's own updated comment for the full trace.
+      it "parses subtraction as a binary operator with no space on either side" do
+        node = parse_expr("a-b")
+        node.should be_a(Binary)
+        node.as(Binary).op.should eq TokenKind::Minus
+      end
+
+      it "parses addition as a binary operator with no space on either side" do
+        node = parse_expr("a+b")
+        node.should be_a(Binary)
+        node.as(Binary).op.should eq TokenKind::Plus
+      end
+
+      it "parses addition as a binary operator, spaced on both sides, regardless of local status" do
+        node = parse_expr("a + b")
+        node.should be_a(Binary)
+        node.as(Binary).op.should eq TokenKind::Plus
+      end
+
+      # Positive coverage for the Plus half of this branch (the parked
+      # `Must Fix` item this session unblocked) — mirrors the
+      # already-covered Minus shape above.
+      it "parses a bare call whose first argument is a positive literal" do
+        node = parse_expr("eq +1, -1")
+        node.should be_a(Call)
+        c = node.as(Call)
+        c.method.should eq "eq"
+        c.args.size.should eq 2
+        c.args[0].should be_a(Unary)
+        c.args[0].as(Unary).op.should eq TokenKind::Plus
+      end
+
       it "parses a receiver call" do
         node = parse_expr("foo.bar")
         node.should be_a(Call)

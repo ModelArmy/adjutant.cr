@@ -27,6 +27,12 @@ actions:
   lint:
     command: bin/ameba src/
     description: Run Crystal source linter (ameba)
-  test:
+  test_specs:
     command: crystal spec -Dtest
-    description: Run all tests
+    description: Run all test specs
+  test_scripts:
+    command: SHARDS_BIN_PATH=bin/debug shards run --debug test_runner
+    description: Run all test scripts
+  test:
+    command: ops test_specs && ops test_scripts && ops lint
+    description: Run all tests, including linting

@@ -20,84 +20,23 @@ Blocking, or actively causing incorrect behavior in normal use. Ordered
 roughly by dependency, not necessarily by importance — an item lower down
 may unblock ones above it.
 
-- **Unary `+` has the same bare-call-vs-binary-operator ambiguity `-`
-  had, not yet fixed.** Found 2026-07-25 by the person, same session as
-  the `eq -1, -1` bug (fixed — see `DEVELOPMENT.md`'s Parser section):
-  `eq +1, -1` also raises a parse error, same root cause, `Plus`
-  specifically. A fix was drafted and shown to work (mirroring the
-  `Minus` fix's `operand_immediately_follows?`-based, adjacency-checked
-  branch) but deliberately NOT shipped — the person asked to park it
-  and finish the `Minus` fix on its own first, since the `Minus` fix
-  alone was judged solid and the `Plus` fix, while probably correct,
-  hadn't been proven out with its own full spec pass yet and this arc
-  had already found and discarded ONE wrong design (a `known_local?`-
-  based version of the `Minus` fix, which broke `a + b`/`a - b` for a
-  non-local `a` — see `DEVELOPMENT.md` for that full trace) before
-  landing on the adjacency-based design that's actually correct.
-
-  This item is ALSO the trigger for a bigger, parked architectural
-  conversation: three real bugs from unparenthesized-call parsing in
-  one session (this one, the `eq -1, -1` fix, and the parenthesized-
-  first-argument bug below) prompted the person to ask whether
-  no-paren calls with arguments are worth supporting at all, versus
-  requiring explicit parens for anything but a zero-arg bare call. The
-  live alternative under discussion, not yet decided: give the LEXER
-  real whitespace/context state (mirroring MRI/mruby's own
-  `EXPR_BEG`/`EXPR_ARG`-style lexer states, which is where Ruby's
-  actual parser resolves ALL of these ambiguities — not in grammar
-  rules) rather than continuing to reconstruct partial, ad-hoc
-  approximations (`known_local?` here, column-adjacency there) after
-  the fact in the parser. Whichever way that conversation goes affects
-  whether this item's fix should even be written the way it's currently
-  drafted (parser-level adjacency check) or superseded by a lexer-level
-  redesign — resolve that conversation BEFORE implementing this, not
-  in parallel.
-- **A bare (no-paren) call whose first argument is itself parenthesized
-  raises a parse error.** Found 2026-07-25 by the person, alongside the
-  Plus/Minus bugs above but a genuinely DIFFERENT mechanism — not the
-  same fix, don't conflate them. `eq (6/3), 2` fails with `unexpected
-  token Comma`. Root cause: `Parser#parse_identifier_or_call`'s VERY
-  FIRST check (`parser.cr`) is `if at_kind?(TokenKind::LParen)` —
-  unconditional, no lookahead beyond "is the current token `(`" — so
-  ANY `(` immediately following an identifier is assumed to start THAT
-  identifier's own parenthesized call-argument-list
-  (`parse_call_args_and_block`), regardless of whether it was actually
-  meant as a grouped sub-expression that happens to be the bare call's
-  first argument. `eq (6/3), 2` gets misread as "`eq`'s own arg-list
-  starts with `(`" — `parse_call_args_and_block` parses `6/3` as arg
-  one, then expects `)` or `,` (for MORE args to `eq`'s own parens), but
-  what follows is `)` closing the (from Adjutant's perspective) wrong
-  thing, then a bare `,` with nowhere to go.
-
-  Confirmed via Ruby's own issue tracker (bugs.ruby-lang.org/issues/
-  20922) that `assert_equal (-1), minus_one` — literally the same shape
-  as this bug report — is valid, WORKING Ruby, specifically documented
-  as the standard workaround for a related "ambiguous first argument"
-  warning; separately confirmed (ruby-forum.com, "Space before
-  parentheses leads to syntax error") that `additionner (2,7)` (a
-  2-required-arg method, space before `(`) IS a syntax error in real
-  Ruby, because `(2,7)` isn't a valid single parenthesized expression —
-  but `(6/3)`/`(-1)` each ARE one. The distinguishing signal is
-  whitespace BEFORE the `(`: `eq(6/3)` (no space) means "this paren is
-  `eq`'s own call-argument-list syntax"; `eq (6/3), 2` (space) means
-  "bare call, first argument happens to be a parenthesized expression."
-
-  Same caveat as the Plus item above: this is a THIRD, distinct
-  whitespace-sensitive parsing rule found this session — different
-  from both the minus-literal-fusion rule (`-0.0` vs `- 0.0`, no
-  local/name concept involved at all) and the unary-operator-vs-binary
-  rule (`n - 1` vs `eq -1`, resolved via adjacency, not known_local? —
-  an earlier draft of THIS scope entry incorrectly said known_local?
-  was the right mechanism for the Minus fix; it wasn't, see
-  `DEVELOPMENT.md`) — so should NOT be assumed to share a mechanism
-  with either. Also blocked on the same parked lexer-state conversation
-  as the Plus item above — resolve that first.
+*(No open items as of 2026-07-26.)*
 
 ## Will Fix
 
 Real gaps, not currently blocking anything, no active design conversation
 yet. Promote to `Must Fix` when something starts depending on it.
 
+- **`raise`/`super` don't get the same space-before-`(` fix
+  `parse_identifier_or_call` got.** Flagged 2026-07-26 while fixing
+  `eq (6/3), 2` (see `Must Fix` history) — `parse_raise` and
+  `parse_super` (`parser.cr`) both still have the identical
+  unconditional `if at_kind?(TokenKind::LParen)` pattern that bug was
+  in, so `raise (x), y`-shaped code would misparse the same way.
+  Deliberately not fixed alongside the reported bug (would have
+  silently widened that session's scope); pick up using
+  `Token#space_before?` the same way `parse_identifier_or_call` does,
+  if ever actually hit.
 - **No true per-instance singleton methods on `RubyObject`.** `Op::DefSingleton`
   (`def self.foo` when `self` is a `RubyObject`, not a `RubyClass`)
   targets the receiver's own *class* instead — `RubyObject` has no

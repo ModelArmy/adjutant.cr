@@ -268,15 +268,8 @@ assert "test calls in array vs not" do
 
 assert "arrays as no-paren params to method call" do
   ar = [3, 9, 16]
-  assert_equal([3, 9, 16], ar)  # OK
-  assert_equal ar, [3, 9, 16]   # OK
-
-  # Fixed 2026-07-21 — see parser.cr's @local_scopes/known_local?
-  # comment and parse_identifier_or_call's LBracket branch. `ar` was
-  # already assigned above, but `assert_equal` itself was never
-  # assigned anywhere, so it's not a known local — parses as a call
-  # taking the array literal as its first bare argument, same as real
-  # Ruby.
+  assert_equal([3, 9, 16], ar)
+  assert_equal ar, [3, 9, 16]
   assert_equal [3, 9, 16], ar
 end
 
@@ -294,16 +287,16 @@ assert "unary plus" do
   assert_equal 1, +n
 end
 
-# assert "negative no-paren parameter to method" do
-  def eq(a,b); a == b; end
+assert "signed no-paren parameter to method" do
+  def eq(a,b); a==b; end
 
-  # eq -1, -1 # parse error: unexpected token Comma
-  # eq +1, -1 # parse error: unexpected token Comma
-  # eq (6/3), 2 # parse error: unexpected token Comma (",")
+  eq -1, -1
+  eq +1, -1
+  eq (6/3), 2
   eq(-1, -1)
   eq 1, -1
   eq 1, -1, -3
   eq 1, -1, -3, 4
   eq(5, 5)
   eq 5, 5
-# end
+end

@@ -13,6 +13,13 @@ module Adjutant
       .map { |t| {t.kind, t.lexeme} }
   end
 
+  # Helper: tokenize and return [kind, space_before?] pairs (excluding EOF)
+  private def self.spacing(source : String) : Array({TokenKind, Bool})
+    Lexer.new(source).tokenize
+      .reject { |t| t.kind == TokenKind::EOF }
+      .map { |t| {t.kind, t.space_before?} }
+  end
+
   describe Lexer do
     describe "EOF and empty input" do
       it "returns EOF for empty source" do
@@ -42,6 +49,119 @@ module Adjutant
 
       it "skips comment but preserves newline after" do
         kinds("# comment\n").should eq [TokenKind::Newline]
+      end
+    end
+
+    # `Token#space_before?`, added alongside the whitespace-sensitive
+    # parser rules it now backs (`eq -1, -1` vs `n - 1`, `-0.0.to_s`
+    # literal fusion, `eq (6/3), 2`) — see parser_spec.cr for the
+    # actual disambiguation behavior these tokens enable. This block
+    # only tests the LEXER's own responsibility: does each token
+    # correctly report whether whitespace (or a comment) immediately
+    # preceded it.
+    describe "space_before? tracking" do
+      it "is false for the very first token in the source" do
+        spacing("foo").should eq [{TokenKind::Identifier, false}]
+      end
+
+      it "is false when a token immediately follows another with no gap" do
+        spacing("a+b").should eq [
+          {TokenKind::Identifier, false},
+          {TokenKind::Plus, false},
+          {TokenKind::Identifier, false},
+        ]
+      end
+
+      it "is true for a token preceded by a single space" do
+        spacing("a + b").should eq [
+          {TokenKind::Identifier, false},
+          {TokenKind::Plus, true},
+          {TokenKind::Identifier, true},
+        ]
+      end
+
+      it "is true regardless of how much whitespace precedes (space run collapses to one bit)" do
+        spacing("a    +\t\tb").should eq [
+          {TokenKind::Identifier, false},
+          {TokenKind::Plus, true},
+          {TokenKind::Identifier, true},
+        ]
+      end
+
+      it "distinguishes space-before-only from space-on-both-sides for a single operator" do
+        # The exact shape parse_identifier_or_call's adjacency check
+        # depends on: space before the operator, none after.
+        spacing("a -1").should eq [
+          {TokenKind::Identifier, false},
+          {TokenKind::Minus, true},
+          {TokenKind::Integer, false},
+        ]
+      end
+
+      it "attributes space-before-a-comment to the token the comment precedes, not the token after the following newline" do
+        # skip_whitespace_and_comments consumes the comment (reporting
+        # `true`) as part of scanning the NEXT token after it — which
+        # is the Newline itself (`#comment` runs up to but does not
+        # consume the `\n`). `b`, scanned on the following call, has
+        # nothing directly before it (the `\n` was its own token, not
+        # whitespace `b` sits inside), so it correctly gets `false` —
+        # same reasoning as the newline-token-boundary test below.
+        spacing("a #comment\nb").should eq [
+          {TokenKind::Identifier, false},
+          {TokenKind::Newline, true},
+          {TokenKind::Identifier, false},
+        ]
+      end
+
+      it "reports the Newline as space-before even when the comment immediately abuts the prior token" do
+        # Isolates the comment branch of skip_whitespace_and_comments
+        # from any literal-whitespace character before it — `a` and
+        # `#` here have no space between them at all, only the comment
+        # itself counts as the "space" that precedes the Newline.
+        spacing("a#comment\nb").should eq [
+          {TokenKind::Identifier, false},
+          {TokenKind::Newline, true},
+          {TokenKind::Identifier, false},
+        ]
+      end
+
+      it "does not mark a token as space-before merely for following a Newline token" do
+        # `\n` is consumed as its own token by next_token's direct
+        # `c == '\n'` check, not absorbed into skip_whitespace_and_comments
+        # the way spaces/tabs/comments are — so it does NOT cause the
+        # following token to report space_before?. This is a real,
+        # deliberate asymmetry (space and comments are "invisible"
+        # separators the lexer swallows; a newline is a token in its
+        # own right), not an oversight — every whitespace-sensitive
+        # parser rule this field backs only cares about same-line
+        # adjacency anyway.
+        spacing("a\nb").should eq [
+          {TokenKind::Identifier, false},
+          {TokenKind::Newline, false},
+          {TokenKind::Identifier, false},
+        ]
+      end
+
+      it "resets per token — space before one token does not leak into the next" do
+        spacing("a + b+c").should eq [
+          {TokenKind::Identifier, false},
+          {TokenKind::Plus, true},
+          {TokenKind::Identifier, true},
+          {TokenKind::Plus, false},
+          {TokenKind::Identifier, false},
+        ]
+      end
+
+      it "is false for a token resumed right after a string interpolation's closing brace" do
+        # continue_interp_string is a separate code path from
+        # next_token's normal skip_whitespace_and_comments call (see
+        # Lexer#continue_interp_string) — this confirms it explicitly
+        # resets @space_before rather than leaking whatever the
+        # closing `}` token happened to carry.
+        tokens = Lexer.new(%("a\#{x} b")).tokenize.reject { |t| t.kind == TokenKind::EOF }
+        string_end = tokens.find { |t| t.kind == TokenKind::StringEnd }
+        string_end.should_not be_nil
+        string_end.not_nil!.space_before?.should be_false
       end
     end
 

@@ -261,9 +261,7 @@ assert('Float#nan?') do
   assert_not_equal(5, (0.0/0.0))
   assert_not_equal 5, (0.0/0.0)
   assert_not_equal 0.0/0.0, 5
-  # --- TODO - parse error
-  # assert_equal (0.0/0.0), 5 # parse error: 264:25: unexpected token Comma (",")
-  # ---
+  assert_not_equal (0.0/0.0), 5
   assert_false 5.0.nan?
   # assert_not_predicate(0.0, :nan?)
   # assert_not_predicate(1.0/0.0, :nan?)
@@ -334,9 +332,7 @@ assert('Float literal underflow') do
   assert_equal 0.0, 1.0e-400
   assert_equal 0.0, 9.99e-344
   assert_equal(-0.0, -92170141183460469231731687303715884105729e-383)
-  # --- FIX: doesn't parse!
-  # assert_equal -0.0, -92170141183460469231731687303715884105729e-383
-  # ---
+  assert_equal -0.0, -92170141183460469231731687303715884105729e-383
   assert_equal Float, -9217014118346046923173168730371588410572992170141183460469231731687303715884105729.5.class
 end
 

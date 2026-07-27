@@ -57,7 +57,7 @@ jobs:
 
       - name: Run test script runner
         if: ${{ runner.os != 'Windows' }}
-        run: 'bin/release/test_runner 2>&1 | grep "0 failed"'
+        run: bin/release/test_runner
 
       # ---- format and lint check on Linux only
 
