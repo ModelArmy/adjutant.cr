@@ -25,6 +25,15 @@ end
 #   assert_equal 'message has changed', changed_re.message
 # end
 
+assert('Exception#message', '15.2.22.5.2') do
+  e = Exception.new('a')
+  assert_equal 'a', e.message
+
+  se = StandardError.new("b")
+  assert_equal 'b', se.message
+
+end
+
 # assert('Exception#message', '15.2.22.5.2') do
 #   e = Exception.exception('a')
 
@@ -46,15 +55,15 @@ end
 # ----
 
 # ---- TODO: FIX assert class name matching
-# assert('NameError', '15.2.31') do
-#   assert_raise(NameError) do
-#     raise NameError.new
-#   end
+assert('NameError', '15.2.31') do
+  assert_raise(NameError) do
+    raise NameError.new
+  end
 
-#   e = NameError.new("msg", "name")
-#   assert_equal "msg", e.message
-#   assert_equal "name", e.name
-# end
+  e = NameError.new("msg", "name")
+  assert_equal "msg", e.message
+  assert_equal "name", e.name
+end
 
 # assert('ScriptError', '15.2.37') do
 #   assert_raise(ScriptError) do
