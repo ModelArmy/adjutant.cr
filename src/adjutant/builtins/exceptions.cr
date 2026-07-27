@@ -27,7 +27,7 @@ module Adjutant::Builtins
     inst = RubyObject.new(cls)
     # skip first arg, should be `cls`
     if msg = args[1]?
-      msg = Value.string(msg.to_s) unless msg.string?
+      msg = Value.string(msg.to_s, msg.label) unless msg.string?
       msg_sym = interp.symbols.intern("message")
       inst.ivars[msg_sym.value] = msg
     end
@@ -63,7 +63,7 @@ module Adjutant::Builtins
 
       # check for name parameter, must be second
       if name = args[2]?
-        name = Value.string(name.to_s) unless name.string?
+        name = Value.string(name.to_s, name.label) unless name.string?
         name_sym = interp.symbols.intern("name")
         inst.ivars[name_sym.value] = name
       end
