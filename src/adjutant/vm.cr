@@ -1573,15 +1573,32 @@ module Adjutant
           Value.new(LabeledArray.new(args.dup, joined_label), nil)
         end
       when "raise"
-        cls, msg = if args.empty?
-                     {builtin_class_by_name("RuntimeError"), "unhandled exception"}
-                   elsif args.first.rclass?
-                     raised_cls = args.first.as_rclass
-                     {raised_cls, args[1]?.try(&.to_s) || raised_cls.name}
-                   else
-                     {builtin_class_by_name("RuntimeError"), args.first.to_s}
-                   end
-        err_val = cls ? make_error_object(cls, msg) : Value.string(msg)
+        cls = nil
+        error_obj = nil
+        msg = if args.empty?
+                cls = builtin_class_by_name("RuntimeError")
+                "unhandled exception"
+              elsif args.first.rclass?
+                # Raised with just a class, so instantiate class with next parameter
+                # e.g. raise NameError, "boo"
+                cls = args.first.as_rclass
+                args[1]?.try(&.to_s) || cls.name
+              elsif (obj = args.first.as_robject?) && obj.instance_of?("Exception")
+                # Raised with instance of Exception/subclass
+                # e.g. raise NameError.new("boo")
+                error_obj = obj # already exception instance
+                obj.to_s
+              else
+                # Raised arbitrary value which we turn into a String
+                cls = builtin_class_by_name("RuntimeError")
+                args.first.to_s
+              end
+        err_val = if error_obj
+                    Value.robject(error_obj)
+                  else
+                    cls ? make_error_object(cls, msg) : Value.string(msg)
+                  end
+        # wrap it in our Runtime error
         raise RuntimeError.new(msg, filename, line, error_value: err_val)
       when "==="
         a = args[0]? || Value.nil_value
@@ -1598,17 +1615,6 @@ module Adjutant
         # Called as a method: args[0] is receiver
         recv = args.first? || Value.nil_value
         Value.bool(recv.null?)
-      when "message"
-        # Called as a method on an error object (or any RubyObject with
-        # a message ivar). Falls back to the class name if unset, or
-        # to_s for non-RubyObject receivers.
-        recv = args.first? || Value.nil_value
-        if obj = recv.as_robject?
-          msg_sym = @symbols.intern("message")
-          obj.ivars[msg_sym.value]? || Value.string(obj.rclass.name)
-        else
-          Value.string(recv.to_s)
-        end
       when "is_a?", "kind_of?"
         # Real Ruby aliases these exactly — same helper, no separate
         # logic. RubyObject receivers walk their own rclass chain;
