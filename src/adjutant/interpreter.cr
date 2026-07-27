@@ -207,7 +207,6 @@ module Adjutant
       # every non-nilable ivar assigned before `self` escapes the
       # constructor in any way, not just before it returns.
       @main = RubyObject.new(object_class)
-      bootstrap_error_classes
       bootstrap_builtin_classes
     end
 
@@ -400,18 +399,9 @@ module Adjutant
     # implemented — this hierarchy exists so `raise`/`.message` work
     # and so that filtering has real classes to check against later.
     private def bootstrap_error_classes : Nil
-      exception = define_builtin_class("Exception")
-      standard_error = define_builtin_class("StandardError", exception)
-      define_builtin_class("RuntimeError", standard_error)
-      define_builtin_class("TypeError", standard_error)
-      define_builtin_class("ArgumentError", standard_error)
-      define_builtin_class("ZeroDivisionError", standard_error)
-      name_error = define_builtin_class("NameError", standard_error)
-      define_builtin_class("NoMethodError", name_error)
-      index_error = define_builtin_class("IndexError", standard_error)
-      define_builtin_class("KeyError", index_error)
-      risk_flow_policy_error = define_builtin_class("RiskFlowPolicyError", standard_error)
-      define_builtin_class("RiskFlowRejectedError", risk_flow_policy_error)
+      Builtins.bootstrap_exception_and_subclasses(self) do |cls|
+        register_builtin_class(cls)
+      end
     end
 
     # Bootstraps every builtin type's RubyClass into `interp`'s globals,
@@ -427,6 +417,7 @@ module Adjutant
     # after the fact, rather than being automatic like it is for the
     # error-class hierarchy.
     private def bootstrap_builtin_classes : Nil
+      bootstrap_error_classes
       register_builtin_class(Builtins.bootstrap_integer(self))
       register_builtin_class(Builtins.bootstrap_float(self))
       register_builtin_class(Builtins.bootstrap_nil_class(self))

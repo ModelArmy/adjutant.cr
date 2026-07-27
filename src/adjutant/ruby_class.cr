@@ -273,6 +273,16 @@ module Adjutant
       @ivars = {} of Int32 => Value
     end
 
+    # Return true if `class_name` matches one of this object's class chain.
+    # Checks superclass chain only. Included modules not yet supported
+    def instance_of?(class_name : String)
+      superclass = rclass
+      while superclass && superclass.name != class_name
+        superclass = superclass.superclass
+      end
+      !superclass.nil?
+    end
+
     def to_s(io : IO) : Nil
       io << "#<" << @rclass.name << ">"
     end

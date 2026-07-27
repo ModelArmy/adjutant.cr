@@ -35,17 +35,17 @@ module Adjutant::Builtins
     end
 
     # Define conversion methods that return an int
-    map_self_calc_methods arg_as: float, return_as: int, methods: [floor, ceil, round]
-    map_self_calc_methods arg_as: float, return_as: int, methods: [truncate], crystal_methods: [trunc]
+    __define_mapped_methods(cls, interp, self_as: float, return_as: int, methods: [floor, ceil, round])
+    __define_mapped_methods(cls, interp, self_as: float, return_as: int, methods: [truncate], crystal_methods: [trunc])
 
     # Define conversion methods that return a float
-    map_self_calc_methods arg_as: float, return_as: float, methods: [abs]
+    __define_mapped_methods(cls, interp, self_as: float, return_as: float, methods: [abs])
 
     # Define conversion methods that return a string
-    map_self_calc_methods arg_as: float, return_as: string, methods: [inspect]
+    __define_mapped_methods(cls, interp, self_as: float, return_as: string, methods: [inspect])
 
     # Define conversion methods that return a bool
-    map_self_calc_methods arg_as: float, return_as: bool, methods: [finite?, nan?]
+    __define_mapped_methods(cls, interp, self_as: float, return_as: bool, methods: [finite?, nan?])
 
     define(cls, interp, "infinite?") do |args|
       val = args.first.as_float
