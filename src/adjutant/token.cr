@@ -185,7 +185,22 @@ module Adjutant
     getter line : Int32
     getter column : Int32
 
-    def initialize(@kind, @lexeme, @line, @column)
+    # True when this token was preceded by whitespace (spaces/tabs) or
+    # a comment, i.e. it does NOT immediately abut the previous token.
+    # This is the one piece of context Adjutant's lexer previously
+    # discarded entirely (see `Lexer#skip_whitespace_and_comments`) that
+    # the parser had to reconstruct after the fact via column
+    # arithmetic for every whitespace-sensitive Ruby-compatibility rule
+    # (`eq -1, -1` vs `n - 1`, `-0.0.to_s` literal fusion, `eq (6/3), 2`
+    # bare-call-with-parenthesized-first-arg). Capturing it once, here,
+    # replaces those bespoke per-callsite column checks with a single
+    # source of truth. Defaults to `false` so every existing
+    # `Token.new(...)` call site (none of which pass this) keeps
+    # compiling unchanged — only call sites that care about spacing
+    # need to pass it explicitly.
+    getter? space_before : Bool
+
+    def initialize(@kind, @lexeme, @line, @column, @space_before = false)
     end
 
     def to_s(io : IO) : Nil
