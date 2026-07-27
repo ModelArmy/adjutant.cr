@@ -27,16 +27,47 @@ may unblock ones above it.
 Real gaps, not currently blocking anything, no active design conversation
 yet. Promote to `Must Fix` when something starts depending on it.
 
+Grouped by capability so adjacent work is easy to spot — within a group,
+still roughly ordered by how cheap/independent the fix is.
+
+### Parser / lexer gaps
+
+Small, mechanical, independent of each other — good candidates for quick
+wins.
+
 - **`raise`/`super` don't get the same space-before-`(` fix
   `parse_identifier_or_call` got.** Flagged 2026-07-26 while fixing
-  `eq (6/3), 2` (see `Must Fix` history) — `parse_raise` and
-  `parse_super` (`parser.cr`) both still have the identical
+  `eq (6/3), 2` (see `DEVELOPMENT.md`'s Parser section) — `parse_raise`
+  and `parse_super` (`parser.cr`) both still have the identical
   unconditional `if at_kind?(TokenKind::LParen)` pattern that bug was
   in, so `raise (x), y`-shaped code would misparse the same way.
   Deliberately not fixed alongside the reported bug (would have
   silently widened that session's scope); pick up using
   `Token#space_before?` the same way `parse_identifier_or_call` does,
   if ever actually hit.
+- **`for`/`while`'s do-ambiguity fix pattern not applied elsewhere.** The
+  `@no_do_block` suppression flag (parser.cr) fixing `for x in a do`/
+  `while cond do` mis-parsing was scoped to those two constructs. The
+  same shape of bug (`block_follows_no_paren?` mis-firing on a bare
+  identifier immediately before a construct's own `do`) was flagged as
+  likely present in `parse_until`/anywhere else accepting an optional
+  trailing `do` — not verified beyond `while`/`for`.
+- **Symbol-shorthand hash literal syntax** (`{k: v}`).
+  `Parser#parse_hash_or_block_brace` only ever calls
+  `expect(TokenKind::HashRocket)` — there's no branch checking for a
+  colon after a bare identifier key, so `{a: 1}` doesn't parse at all
+  today; only `{"a" => 1}` (hash-rocket) does. Noticed while
+  bootstrapping the `Hash` builtin class (Phase 4c of base types), which
+  is otherwise unaffected — every `Hash` method works on however the
+  hash `Value` was constructed. Small parser addition whenever it's
+  worth doing.
+
+### Object model
+
+Both about method visibility/dispatch, but different sizes — the
+singleton-method gap is narrow and self-contained; the privacy model is
+a much larger design.
+
 - **No true per-instance singleton methods on `RubyObject`.** `Op::DefSingleton`
   (`def self.foo` when `self` is a `RubyObject`, not a `RubyClass`)
   targets the receiver's own *class* instead — `RubyObject` has no
@@ -60,13 +91,9 @@ yet. Promote to `Must Fix` when something starts depending on it.
   Kernel methods, which are private. Found while fixing piece B (the
   root-scope work); see `root_scope_spec.cr`'s own test coverage of the
   current (permissive) behavior.
-- **`for`/`while`'s do-ambiguity fix pattern not applied elsewhere.** The
-  `@no_do_block` suppression flag (parser.cr) fixing `for x in a do`/
-  `while cond do` mis-parsing was scoped to those two constructs. The
-  same shape of bug (`block_follows_no_paren?` mis-firing on a bare
-  identifier immediately before a construct's own `do`) was flagged as
-  likely present in `parse_until`/anywhere else accepting an optional
-  trailing `do` — not verified beyond `while`/`for`.
+
+### Data & builtin types
+
 - **`Array`/`Hash` as a `Hash` key hashes by reference, not content.**
   `Value` has no custom `hash(hasher)` override, so a `Hash(Value, Value)`
   key lookup relies on Crystal's auto-generated struct hash — fine for
@@ -92,45 +119,57 @@ yet. Promote to `Must Fix` when something starts depending on it.
   so this is narrowly about `*` specifically. Noticed while bootstrapping
   the `String` builtin class (Phase 4a of base types); out of scope there
   since that work only wires up native METHODS, not opcodes.
-- **Symbol-shorthand hash literal syntax** (`{k: v}`).
-  `Parser#parse_hash_or_block_brace` only ever calls
-  `expect(TokenKind::HashRocket)` — there's no branch checking for a
-  colon after a bare identifier key, so `{a: 1}` doesn't parse at all
-  today; only `{"a" => 1}` (hash-rocket) does. Noticed while
-  bootstrapping the `Hash` builtin class (Phase 4c of base types), which
-  is otherwise unaffected — every `Hash` method works on however the
-  hash `Value` was constructed. Small parser addition whenever it's
-  worth doing.
-- **Exponential float literals** (`1e10`, `1.5e-3`). `Lexer#scan_number`
-  has no `e`/`E` exponent handling at all — `1e10` lexes as `Integer(1)`
-  followed by a separate identifier `e10`, not a clean parse error.
-  Noticed while bootstrapping the `Float` builtin class (Phase 3 of base
-  types), which is otherwise unaffected — `Float` the class/its methods
-  work fine on any float `Value`, however it was constructed (a plain
-  decimal literal, `to_f`, division, ...); this is purely about the
-  lexer not accepting one particular literal spelling. Small, mechanical
-  fix whenever it's worth doing.
+
+### IFC / risk-flow
+
+Carried forward from the original 2026-07-14 handoff — the oldest items,
+undesigned rather than merely unimplemented, more product-shaped than
+bug-shaped. Worth a dedicated design pass rather than picking off
+individually.
+
 - **No structured audit-trail export beyond `RiskFlowLog` itself.**
   Nothing turns a `RiskFlowLog` into a saved/replayable session record.
-  Carried forward from the original 2026-07-14 handoff, still open.
 - **The approval cache** (avoid re-prompting for an already-approved
-  origin→sink flow within one script run) — still not designed. Carried
-  forward from the original 2026-07-14 handoff.
+  origin→sink flow within one script run) — still not designed.
 - **Eager vs. lazy ambiguous-priority policy validation** for
-  `RiskFlowPolicy` — still not decided. Carried forward from the original
-  2026-07-14 handoff.
-- **No real File IO/HTTP native module** — only `SampleModule`'s simulated
-  I/O exists. Carried forward from the original 2026-07-14 handoff.
-- **Older, longer-standing language gaps**, unchanged since the original
-  2026-07-14 handoff and not touched by any session since: assignment-as-
-  real-expression (`c = b = 5` doesn't parse), `include`/mixins, `super`
-  across multiple `rescue` clauses per `begin`, `$globals` (lexed as
-  `GVar` but never consumed by the parser — see `DEVELOPMENT.md`'s
-  scoping section), heredocs/`%w[]` literals, multi-level closures,
-  `Range` for non-`Integer`/non-`succ`-having bound types beyond what's
-  already generic, `<=>` for
-  `Integer`/`Float`, a shared `Numeric` ancestor, `respond_to?`'s blind
-  spot (`x.respond_to?(:to_s)` is `false` even though `x.to_s` works).
+  `RiskFlowPolicy` — still not decided.
+
+### Standard library surface
+
+- **No native File IO/HTTP module — really a scoping question, not a
+  missing-feature bug.** Only `SampleModule`'s simulated I/O exists
+  today. Reframed 2026-07-27 (previously filed as a plain missing-
+  feature item, alongside the IFC items above): the actual open
+  question is which parts of a File/HTTP-shaped stdlib surface are
+  worth exposing at all, given every native method is a deliberate
+  IFC-relevant decision (provenance, sensitivity, risk-flow policy
+  implications — see `declare_sensitivity` and the IFC design arc), not
+  just a Ruby-compatibility checkbox. Needs its own design pass to
+  decide the actual surface (which methods, what they're allowed to
+  touch, how they interact with `RiskFlowPolicy`) before implementation
+  is meaningful — carried forward from the original 2026-07-14 handoff
+  as "no IO," refiled here now that the real blocker (undecided scope,
+  not undecided design mechanics) is clearer.
+
+### Long-standing language gaps
+
+One bundled entry, unchanged since the original 2026-07-14 handoff and
+not touched by any session since — genuinely a backlog rather than
+active work. Worth splitting into individual entries if any one becomes
+a priority; currently untriaged relative to each other.
+
+- assignment-as-real-expression (`c = b = 5` doesn't parse)
+- `include`/mixins
+- `super` across multiple `rescue` clauses per `begin`
+- `$globals` (lexed as `GVar` but never consumed by the parser — see
+  `DEVELOPMENT.md`'s scoping section)
+- heredocs/`%w[]` literals
+- multi-level closures
+- `Range` for non-`Integer`/non-`succ`-having bound types beyond what's
+  already generic
+- `<=>` for `Integer`/`Float`, a shared `Numeric` ancestor
+- `respond_to?`'s blind spot (`x.respond_to?(:to_s)` is `false` even
+  though `x.to_s` works)
 
 ## Won't Fix
 
