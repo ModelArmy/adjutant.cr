@@ -238,7 +238,7 @@ module Adjutant
     # invoked synchronously, inside the very call that received it,
     # while its defining frame is still live on `@frames` — Adjutant
     # has no `&blk`-param capture or block-forwarding at all (see
-    # SCOPE.md's Won't Fix), so there is no way for this frame to have
+    # SCOPE.md's Won't Support), so there is no way for this frame to have
     # gone anywhere by the time this runs. If block-forwarding is ever
     # added, this assumption needs to be re-examined — don't assume it
     # still holds. See array_spec.cr's "resolves an outer local...
@@ -604,7 +604,7 @@ module Adjutant
             # reassignment (still permits it); Adjutant deliberately
             # makes it a hard error instead (2026-07-18, ahead of
             # Piece D — see SCOPE.md's Must Fix history and the
-            # "Class/module reopening" Won't Fix entry). This is what
+            # "Class/module reopening" Won't Support entry). This is what
             # makes a constant-valued Lambda (`F1 = ->(){}`) passed as
             # a call argument staticaly resolvable at all: the walker
             # can trust that whatever `F1` resolves to during a walk is
@@ -922,27 +922,18 @@ module Adjutant
             recv = pop
             proc_val = pop
             name_sym = chunk.consts[inst.c].as_sym
-            # Same fix as Op::DefMethod above: `recv` (self at the
-            # `def self.foo` site) may be a RubyObject (top-level
-            # main, or `def self.foo` written inside an instance
-            # method body), not just a bare RubyClass (the class/
-            # module-body case).
-            #
-            # NOTE — approximation, not a full fix: real Ruby's
-            # `def self.foo` on an INSTANCE defines a true per-object
-            # singleton method (only that one object gets it, not
-            # every instance of its class) — Adjutant has no
-            # per-instance method table on RubyObject at all, only
-            # RubyClass-level ones, so this targets the RECEIVER'S
-            # CLASS instead, meaning every instance of that class
-            # would see the new method, not just `recv`. This
-            # happens to be observably correct for the motivating
-            # case — top-level `def self.greet`, where self is
-            # `main`, the ONE AND ONLY instance of Object a script
-            # typically ever has as self — but is a real, separate
-            # gap from true Ruby fidelity for the general "singleton
-            # method on an arbitrary instance" case. Worth a proper
-            # per-instance singleton table if that ever matters.
+            # `recv` (self at the `def self.foo` site) is either a
+            # RubyClass (class/module-body case) or a RubyObject
+            # (top-level main — the only RubyObject-self case that can
+            # reach here at all, as of 2026-07-27). `def self.foo`
+            # written inside an INSTANCE method body — where self
+            # would be some OTHER RubyObject — is now rejected at
+            # COMPILE time instead, before this opcode is ever emitted
+            # (see `compile_def`'s nested-def guard in compiler.cr,
+            # which also catches the plain-`def` shape of the same
+            # problem — see that guard's own comment for the full
+            # trace, including why an earlier, narrower version of
+            # this check lived here at runtime and why it moved).
             owner = recv.as_rclass? || recv.as_robject?.try(&.rclass)
             unless owner
               raise runtime_error("def self.#{name_sym.name} outside of a class/module body", f)
@@ -1457,6 +1448,17 @@ module Adjutant
     # RubyObject.
     private def construct(cls : RubyClass, args : Array(Value), filename : String, line : Int32, blk : ScriptProc?) : Value
       raise runtime_error("can't instantiate module #{cls.name}") if cls.is_module?
+      if cls.uninstantiable?
+        # `Class.new`/`Module.new` — see RubyClass#uninstantiable? and
+        # Interpreter#bootstrap_core_hierarchy for why these two
+        # specifically are marked this way (not the same thing as
+        # `is_module?` above, which is about ordinary `module Foo; end`
+        # definitions). Before this guard, both fell through to
+        # construct_object below and silently succeeded, producing a
+        # bare, non-functional RubyObject — see SCOPE.md's Won't
+        # Support entry.
+        raise runtime_error("can't instantiate #{cls.name}")
+      end
       if sym_id = @symbols.lookup("new").try(&.value)
         if native_new = cls.find_native_singleton_method(sym_id)
           return call_native(native_new, [Value.rclass(cls)] + args, filename, line, blk, "#{cls.name}.new")

@@ -20,6 +20,16 @@ module Adjutant
     getter constants : Hash(Int32, Value)
     getter? is_module : Bool
 
+    # True only for the two bootstrap RubyClasses representing Class and
+    # Module themselves (see Interpreter#bootstrap_core_hierarchy) —
+    # NOT for an ordinary `module Foo; end` (that's `is_module?`,
+    # already blocked from `.new` on its own terms). `Class`/`Module`
+    # exist purely so `.class`/`is_a?`/`superclass` resolve correctly
+    # for every other RubyClass; they were never meant to be
+    # instantiable from script (see SCOPE.md's `Class.new`/`Module.new`
+    # Won't Support entry). Checked by `VM#construct`.
+    getter? uninstantiable : Bool
+
     # The class OF this class — `Integer.rclass == Class`,
     # `Class.rclass == Class` (the one genuinely self-referential case
     # in the hierarchy). Nilable only to break the bootstrap
@@ -37,7 +47,7 @@ module Adjutant
     # inheritance, and is what constant lookup walks.
     property lexical_parent : RubyClass?
 
-    def initialize(@name : String, @superclass : RubyClass? = nil, @is_module : Bool = false)
+    def initialize(@name : String, @superclass : RubyClass? = nil, @is_module : Bool = false, @uninstantiable : Bool = false)
       @methods = {} of Int32 => ScriptProc
       @native_methods = {} of Int32 => NativeCallable
       @native_singleton_methods = {} of Int32 => NativeCallable

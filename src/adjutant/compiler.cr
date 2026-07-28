@@ -93,12 +93,13 @@ module Adjutant
     MAX_LOOP_DEPTH =         16
     NO_SUPER       = 0xFFFF_u16
 
-    def initialize(symbols : SymbolTable)
+    def initialize(symbols : SymbolTable, def_depth : Int32 = 0)
       @symbols = symbols
       @chunk = Chunk.new
       @loop_stack = [] of LoopScope
       @in_block = false
       @scope = nil.as(CompilerScope?)
+      @def_depth = def_depth
     end
 
     # Compile a full top-level program body. Returns {chunk, local_count}
@@ -122,14 +123,27 @@ module Adjutant
     # Compile a method/block body.
     # Returns {chunk, local_count} — local_count is the number of frame
     # slots the body needs (params + locals defined in the body).
+    #
+    # `def_depth` — how many `def`/lambda bodies this body is already
+    # lexically nested inside, propagated by the CALLER (see
+    # `compile_def`/`compile_lambda`'s own `@def_depth + 1`, and the
+    # two block-compiling call sites' `@def_depth` passthrough) rather
+    # than tracked here, because a nested proc body is compiled by a
+    # BRAND NEW `Compiler` instance (`c = new(symbols, def_depth)`
+    # below) — an ordinary instance ivar on the OUTER compiler
+    # wouldn't be visible to it at all. Read by `compile_def` on the
+    # instance that's about to compile a NESTED `def` node, to reject
+    # it before ever emitting `Op::DefMethod`/`Op::DefSingleton` — see
+    # that method's own comment for why this exists.
     def self.compile_proc(
       body : Body,
       symbols : SymbolTable,
       params : Array(String) = [] of String,
       in_block : Bool = false,
       parent_scope : CompilerScope? = nil,
+      def_depth : Int32 = 0,
     ) : {Chunk, Int32}
-      c = new(symbols)
+      c = new(symbols, def_depth)
       scope = CompilerScope.new(in_block, parent_scope)
       c.scope = scope
       params.each { |param| scope.define(param) }
@@ -714,7 +728,8 @@ module Adjutant
           blk.body, @symbols,
           params: blk_params,
           in_block: true,
-          parent_scope: @scope
+          parent_scope: @scope,
+          def_depth: @def_depth
         )
         sproc = ScriptProc.new(blk_chunk, "<block>", blk_params, blk_locals, true)
         proc_idx = @chunk.add_const(Value.proc(sproc))
@@ -775,11 +790,78 @@ module Adjutant
     end
 
     private def compile_def(node : DefNode) : Nil
+      if @def_depth > 0
+        # Rejects `def`/`def self.foo` lexically nested inside ANOTHER
+        # `def`'s (or lambda's) body — e.g. `def outer; def inner;
+        # end; end` — regardless of receiver. Originally this was
+        # caught (incompletely) at RUNTIME, and only for the `def
+        # self.foo` shape specifically (see the removed guard in
+        # Op::DefSingleton, vm.cr) — reasoning at the time was "a real
+        # per-instance singleton table would let an object's method set
+        # diverge from its class," which is true but named the wrong
+        # mechanism: a PLAIN `def inner` (no `self.`) nested the same
+        # way hits `Op::DefMethod` instead, which was never guarded at
+        # all, and — confirmed empirically by the person, 2026-07-27 —
+        # writes directly into the ENCLOSING CLASS's ordinary instance
+        # method table. That's not a narrower, safer version of the
+        # per-instance-singleton problem; it's the SAME problem
+        # (runtime-conditional method definition, discoverable only by
+        # simulating execution, undermining "an object's callable
+        # surface is knowable from its class alone") reached through a
+        # different, unguarded door — `x.test` permanently added
+        # `nested` to the WHOLE class, visible to every other instance
+        # including ones constructed after the fact.
+        #
+        # So the real boundary was never "singleton vs instance method"
+        # or "which opcode" — it's "does this def execute exactly once,
+        # synchronously, as part of establishing the class" (top level,
+        # or directly inside a class/module body — both fine, both
+        # unaffected by this check) "or does it execute later,
+        # conditionally, as part of calling some OTHER already-defined
+        # method" (not fine, rejected here). Checked at COMPILE time
+        # now rather than runtime — strictly earlier and more complete:
+        # every case the old runtime check caught is a def lexically
+        # nested this way by construction (self can only BE a non-main
+        # RubyObject inside another method's own body to begin with),
+        # so this check is a superset, not a narrower replacement.
+        #
+        # `@def_depth` is propagated through `compile_proc` (see that
+        # method's own comment) rather than tracked as a simple ivar,
+        # because a nested proc body compiles via a BRAND NEW `Compiler`
+        # instance — ivar state on this instance wouldn't reach it.
+        raise CompileError.new(
+          "defining a method (`def#{node.receiver ? " self." : " "}#{node.name}`) " \
+          "inside another method's body is not supported — a method " \
+          "definition can only appear at the top level of a script or " \
+          "directly inside a class/module body, not somewhere that runs " \
+          "conditionally or more than once.",
+          node.line, node.column
+        )
+      end
+      if blk_param = node.params.find(&.block_param?)
+        # `&blk` param capture is a deliberate Won't Support decision
+        # (see SCOPE.md) — a `{ }`/`do...end` block passed to a call
+        # stays reachable only via implicit `yield` inside that same
+        # call; it never becomes a value a script can hold, pass
+        # around, or defer-call. Rejected HERE, at compile time, rather
+        # than left to silently bind nothing (which is what happened
+        # before this guard: `blk` inside the method body was just
+        # always `nil`, so `blk.call` failed with a generic, confusing
+        # "undefined method or variable: call" instead of a clear
+        # explanation of what's actually unsupported and why).
+        raise CompileError.new(
+          "block parameter capture (`&#{blk_param.name}`) is not supported — " \
+          "a block passed to this method can only be used via `yield`, not " \
+          "bound to a name.",
+          blk_param.line, blk_param.column
+        )
+      end
       params = node.params.map(&.name)
       body_chunk, local_count = Compiler.compile_proc(
         node.body, @symbols,
         params: params,
-        in_block: false
+        in_block: false,
+        def_depth: @def_depth + 1
       )
       sproc = ScriptProc.new(body_chunk, node.name, params, local_count, false,
         ast_body: node.body, ast_params: node.params)
@@ -838,7 +920,17 @@ module Adjutant
         node.body, @symbols,
         params: params,
         in_block: true,
-        parent_scope: @scope
+        parent_scope: @scope,
+        # Incremented, not propagated unchanged — a lambda IS a real,
+        # first-class `Proc` value a script can store and invoke later,
+        # arbitrarily many times (see the a=1 comment below) — same
+        # "runs conditionally, possibly repeatedly" category as a def
+        # body for compile_def's nested-def guard, not the same
+        # category as an ordinary block (which can only run
+        # synchronously via `yield`, during the one call that received
+        # it — see the two OTHER compile_proc call sites, which
+        # propagate @def_depth unchanged instead).
+        def_depth: @def_depth + 1
       )
       sproc = ScriptProc.new(lam_chunk, "<lambda>", params, local_count, true)
       proc_idx = @chunk.add_const(Value.proc(sproc))
@@ -950,7 +1042,8 @@ module Adjutant
         node.body, @symbols,
         params: node.vars,
         in_block: true,
-        parent_scope: @scope
+        parent_scope: @scope,
+        def_depth: @def_depth
       )
       sproc = ScriptProc.new(blk_chunk, "<block>", node.vars, blk_locals, true)
       proc_idx = @chunk.add_const(Value.proc(sproc))

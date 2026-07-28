@@ -159,7 +159,7 @@ module Adjutant
       # explicitly, with a nested method call in between, since a
       # native method's block invocation is architecturally guaranteed
       # same-frame only because Adjutant has no `&blk`-forwarding yet
-      # (see SCOPE.md's Won't Fix); if that ever changes, this is the
+      # (see SCOPE.md's Won't Support); if that ever changes, this is the
       # spec that should start failing first.
       it "resolves an outer local from the defining frame even when reached through an intervening method call" do
         interp, _ = make_interp
