@@ -356,11 +356,17 @@ module Adjutant
     # runtime, optionally from a block) are explicitly out of scope —
     # see DEVELOPMENT.md's "Forbidden and out-of-scope features". This
     # bootstrap only needs Class/Module to EXIST as real RubyClasses
-    # for `.class`/`is_a?`/`ancestors` to work correctly; it does not
-    # make them instantiable from script.
+    # for `.class`/`is_a?`/`ancestors` to work correctly; they're not
+    # meant to be instantiable from script. Until 2026-07-27 that was
+    # only true by convention — nothing actually stopped `Class.new`/
+    # `Module.new` from falling through to the generic
+    # construct_object path and silently succeeding, producing a bare,
+    # non-functional object. `uninstantiable: true` here now makes
+    # `VM#construct` raise a clear error instead (see RubyClass#
+    # uninstantiable? and construct's own guard).
     private def bootstrap_core_hierarchy : Nil
-      mod_cls = RubyClass.new("Module", nil, is_module: false)
-      class_cls = RubyClass.new("Class", nil, is_module: false)
+      mod_cls = RubyClass.new("Module", nil, is_module: false, uninstantiable: true)
+      class_cls = RubyClass.new("Class", nil, is_module: false, uninstantiable: true)
       obj_cls = RubyClass.new("Object", nil, is_module: false)
 
       # Real Ruby: Class.superclass == Module, Module.superclass ==

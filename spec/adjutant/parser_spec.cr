@@ -550,6 +550,23 @@ module Adjutant
         node.as(DefNode).params.first.splat?.should be_true
       end
 
+      # Moved here from spec/scripts/keyword_params_callsite.rb
+      # (2026-07-27) — test_runner's assert framework can't intercept a
+      # ParseError at all (interp.eval parses the WHOLE file before
+      # executing anything, so a parse error aborts the file before any
+      # assertion machinery even loads); a spec using expect_raises
+      # directly is the only way to actually assert on this. Def-site
+      # keyword param DECLARATION (`def greet(name:)`) parses fine (see
+      # `parse_param`'s Colon branch) — this is specifically about
+      # keyword-argument syntax at the CALL SITE, which
+      # `parse_call_args_and_block` has no handling for at all (see
+      # SCOPE.md's Must Fix entry on argument binding).
+      it "does not yet parse keyword-argument syntax at a call site" do
+        expect_raises(ParseError, /Colon/) do
+          parse_expr(%(greet(name: "Ruby")))
+        end
+      end
+
       it "parses a def with body" do
         node = parse_expr("def double(x)\nx * 2\nend")
         body = node.as(DefNode).body

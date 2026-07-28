@@ -57,14 +57,14 @@ may unblock ones above it.
     silently drops which operand was the problem).
   - Keyword-argument CALL syntax (`greet(name: "Ruby")`) doesn't even
     PARSE — `parse_call_args_and_block` has no `name:` handling at all,
-    confirmed via `spec/scripts/keyword_params_callsite.rb` (`expected
-    RParen, got Colon`). Keyword param DECLARATION at the def site
-    (`def greet(name:)`) does parse and compile, and can still be
-    called positionally today (see `spec/scripts/
-    keyword_params_defsite.rb`) — but there's no way to actually invoke
-    it AS a keyword argument, so real keyword-style calls are blocked
-    twice over (parse failure at the call site, silent non-binding even
-    if that parse gap were closed).
+    confirmed via `parser_spec.cr`'s "does not yet parse keyword-argument
+    syntax at a call site" (`expected RParen, got Colon`). Keyword param
+    DECLARATION at the def site (`def greet(name:)`) does parse and
+    compile, and can still be called positionally today (see
+    `spec/scripts/keyword_params_defsite.rb`) — but there's no way to
+    actually invoke it AS a keyword argument, so real keyword-style
+    calls are blocked twice over (parse failure at the call site, silent
+    non-binding even if that parse gap were closed).
 
   Distinct from `&blk`-param capture (`Won't Support`, now actively
   rejected at compile time as of this same session) — `&blk` is a
@@ -233,10 +233,17 @@ revisit only if the stated reason no longer holds.
   raised a generic "undefined method or variable: call", with no hint
   that `&blk` itself was the real problem). Now rejected immediately at
   compile time, with a message naming the construct — see `compile_def`
-  in `compiler.cr`. Verified via `spec/scripts/block_param_capture.rb`
-  (expects a file-level compile error) and
-  `spec/scripts/yield_unaffected_by_blk_guard.rb` (confirms ordinary
-  `yield`, a separate mechanism, is untouched by the guard).
+  in `compiler.cr`. Verified via `compiler_spec.cr`'s "rejects &blk
+  param capture at compile time" (plus a sibling regression check
+  confirming ordinary `yield`, a separate mechanism, is untouched by the
+  guard) — moved there from a `spec/scripts/` probe script 2026-07-27,
+  since `test_runner`'s assert framework can't intercept a
+  `CompileError`/`ParseError` at all (both abort the whole file before
+  any assertion machinery loads; only a spec using `expect_raises`
+  directly can assert on one). The raised message itself deliberately
+  does NOT reference `SCOPE.md` or any other file in this repo — it's
+  end-user/LLM-facing, and a repo-internal doc path means nothing to
+  either audience; it states only that the construct isn't supported.
 - **`Class.new`/`Module.new`.** Explicit cut from the Object/Class/Module
   design conversation (2026-07-14 arc) — this bootstrap only makes
   `Class`/`Module` exist as real `RubyClass`es for `.class`/`is_a?`/
@@ -288,54 +295,77 @@ revisit only if the stated reason no longer holds.
   proper subset of Ruby regardless (declining a feature, not adding
   divergent behavior). `Class.new`/`Module.new` above is the same
   family of cut for the same underlying reason.
-- **No true per-instance singleton methods on `RubyObject`.** Moved here
-  from `Will Fix` 2026-07-27, alongside a real correction to how the gap
-  was understood. `Op::DefSingleton` (`def self.foo` when `self` is a
-  `RubyObject`, not a `RubyClass`) targets the receiver's own *class*
-  instead of the receiver itself — `RubyObject` has no singleton-method
-  table of its own. Originally believed (and briefly, incorrectly,
-  described elsewhere in this session) to mean the method "leaks" onto
-  every instance of that class. **Empirically confirmed otherwise, via
-  `spec/scripts/singleton_instance_methods.rb`:** `Op::DefSingleton`
-  writes into the CLASS's own singleton-method table, which only a
-  `RubyClass`-receiver call (`A.foo`) ever consults (see
-  `dispatch_call`'s `recv.rclass?` branch in `vm.cr`) — an instance
-  call (`a.foo`) only ever consults the class's ordinary INSTANCE method
-  tables, never its singleton table. So `class A; def test; def
-  self.hello; end; end; end` does NOT make `hello` callable on `a`, on
-  `b`, on any other instance, or even on the SAME instance that ran
-  `test` — confirmed by running the script (`a.hello`/`b.hello`/a
-  freshly-constructed `c.hello` all raise identically) plus a follow-up
-  assertion the person added directly confirming `A.hello` (explicit
-  class receiver) becomes callable only after `.test` runs. So the real
-  behavior is: `def self.foo` inside an instance method body silently
-  creates an unrelated CLASS-level method, invisible to every instance
-  including the one `self` pointed at — not a leak to siblings, a
-  differently-scoped method nobody asked for.
+- **Defining a method (`def` or `def self.foo`) nested inside another
+  method's own body — runtime-conditional method definition.** This
+  entry started narrower (2026-07-27, moved here from `Will Fix` as "no
+  true per-instance singleton methods on `RubyObject`") and was
+  generalized twice in the same session as the real shape of the
+  problem became clearer — worth reading in sequence, since each step
+  corrected something about the step before it, not just narrowed scope:
+
+  1. **Original framing:** `Op::DefSingleton` (`def self.foo` when
+     `self` is a `RubyObject`, not a `RubyClass`) targets the
+     receiver's own *class* instead of the receiver itself. Believed to
+     mean the method "leaks" onto every instance of that class.
+  2. **Corrected via `spec/scripts/singleton_instance_methods.rb`
+     (now moved into `compiler_spec.cr`, see below):** that's wrong —
+     `Op::DefSingleton` writes into the class's SINGLETON table, which
+     only a `RubyClass`-receiver call (`A.foo`) ever consults, never an
+     instance call (`a.foo`). So `class A; def test; def self.hello;
+     end; end; end` doesn't leak to siblings — it creates a
+     class-level method invisible to `a`, `b`, or any instance,
+     reachable only as `A.hello`. Fixed at the time with a runtime
+     guard in `Op::DefSingleton`, comparing the receiver against
+     `main` specifically.
+  3. **Generalized again, same session, prompted by the person's own
+     follow-up test script:** that runtime guard only ever covered the
+     `def self.foo` shape. A PLAIN `def nested` (no `self.`), nested
+     the exact same way inside `test`, hits `Op::DefMethod` instead —
+     never guarded at all — and writes directly into the class's
+     ORDINARY instance method table. Confirmed concretely: `x.test`
+     (where `test` contains a nested `def nested`) made `nested`
+     callable on `x`, on a second pre-existing instance `y`, AND on
+     instances constructed after `test` ran — a real leak to every
+     instance, this time genuinely, not the misdiagnosis from step 1.
+     This proved the real boundary was never "singleton vs instance
+     method" or "which opcode" at all — it's whether a `def` executes
+     exactly once, synchronously, as part of establishing the class
+     (top level, or directly inside a class/module body) versus later,
+     conditionally, as part of calling some other already-defined
+     method. Both `Op::DefMethod` and `Op::DefSingleton` need the same
+     answer to that question, not two different mechanisms.
+
+  **Actively blocked as of 2026-07-27, final version:** moved out of
+  `vm.cr` entirely and into `Compiler#compile_def` as a COMPILE-time
+  check — `@def_depth`, incremented for `def` and lambda bodies
+  (genuinely deferred/callable-later contexts), propagated unchanged
+  through block bodies (which can only run synchronously via `yield` in
+  Adjutant, never stored — see the `&blk` entry above), threaded through
+  `compile_proc` since a nested proc body compiles via a brand-new
+  `Compiler` instance that wouldn't otherwise see it. Any `def`/`def
+  self.foo` node compiled while `@def_depth > 0` is rejected outright,
+  regardless of receiver — strictly earlier and more complete than the
+  runtime version it replaced (every case that one caught is, by
+  construction, also caught by this one, since `self` can only BE a
+  non-`main` `RubyObject` inside another method's own body to begin
+  with). An ordinary top-level `def`, `def self.foo`, or a `def`
+  directly inside a `class`/`module` body are all still completely
+  unaffected. Verified via `compiler_spec.cr`'s nested-def specs
+  (covering the `def self.foo` shape, the plain-`def` shape, a
+  def-inside-a-lambda shape, and regression checks for both unaffected
+  cases). Like the other entries in this section, the raised error text
+  doesn't reference `SCOPE.md` or any repo-internal doc.
+
   Decided 2026-07-27, prompted by the person's own `irb` trace of real
-  Ruby's actual per-instance semantics: real per-instance dynamism
-  (an object's method set diverging from its class and from its
-  siblings, discoverable only by simulating execution) undermines the
-  same property the class-reopening decision above protects — that an
-  object's callable surface is knowable from its class alone. Same
-  family of cut, same underlying reason, as class/module reopening and
-  `Class.new`/`Module.new` above. This also means the CURRENT
-  behavior — silently creating an inaccessible class-level method
-  instead of either real per-instance scoping OR a clear error — is
-  itself a bug to close, not a documented approximation to keep.
-  **Actively blocked as of 2026-07-27, same session:** `Op::DefSingleton`
-  (`vm.cr`) now checks whether the receiver is `main` specifically (the
-  one well-supported case — see `Interpreter#main`) versus any other
-  `RubyObject`; the latter raises a clear error instead of silently
-  writing into the class's singleton table. An ordinary top-level
-  `def self.foo` and any `def self.foo` inside a `class`/`module` body
-  (receiver is a `RubyClass`, not a `RubyObject`, in that case — always
-  unaffected) both continue to work exactly as before. Verified via
-  `spec/scripts/singleton_instance_methods.rb`. Making the REST of this
-  section's items fail loudly too was tracked as a general goal here;
-  as of this same session, `&blk` and `Class.new`/`Module.new` above are
-  also done — class/module reopening already was. This section is fully
-  enforced as of 2026-07-27.
+  Ruby's actual per-instance singleton-method semantics: runtime-
+  conditional method definition — an object's or a class's method set
+  changing as a side effect of calling some unrelated method, rather
+  than being fixed once the class is established — undermines the same
+  property the class-reopening decision above protects: that an
+  object's callable surface is knowable from its class alone, not from
+  simulating execution. Same family of cut, same underlying reason, as
+  class/module reopening and `Class.new`/`Module.new` above. This
+  section is fully enforced as of 2026-07-27.
 - **A per-parameter declarative provenance schema** for
   `declare_sensitivity` (declare provenance at `define_native`
   registration time, instead of the current call-site-driven API).

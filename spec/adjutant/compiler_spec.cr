@@ -372,6 +372,82 @@ module Adjutant
         o = ops("class Foo\ndef bar\nend\nend")
         o.should contain(Op::DefMethod)
       end
+
+      # Moved here from spec/scripts/block_param_capture.rb (2026-07-27)
+      # — same reason as the keyword-argument call-site spec in
+      # parser_spec.cr: test_runner's assert framework can't intercept a
+      # CompileError either (same file-level, parse/compile-before-any-
+      # execution blast radius as a ParseError) — expect_raises directly
+      # against the compiler is the only way to actually assert on this.
+      # `&blk` capture is a deliberate Won't Support decision (see
+      # SCOPE.md) — this confirms it's rejected immediately at compile
+      # time now, not left to silently bind nothing.
+      it "rejects &blk param capture at compile time" do
+        expect_raises(CompileError, /block parameter capture/) do
+          compile("def foo(&blk)\nend")
+        end
+      end
+
+      it "does not reject an ordinary block-consuming def that uses yield" do
+        # Regression check for the guard above — yield doesn't declare
+        # &blk as a param at all, so it must be completely unaffected.
+        o = ops("def foo\nyield 1\nend")
+        o.should contain(Op::DefMethod)
+      end
+
+      # Moved/expanded here from spec/scripts/singleton_instance_methods.rb
+      # (2026-07-27) — same reason as the &blk specs above: the guard
+      # this file originally verified moved from a runtime check (only
+      # `def self.foo`, only catchable via assert_raise during
+      # execution) to a compile-time one covering BOTH `def self.foo`
+      # AND plain `def foo` nested inside another method's body — see
+      # compile_def's own comment for the full trace, including how the
+      # person's own follow-up test script (`X5`/`nested`) proved the
+      # original runtime-only, receiver-specific guard was incomplete:
+      # a PLAIN `def` nested the same way was never caught at all, and
+      # silently added a real instance method to the whole class,
+      # visible to every other instance including ones constructed
+      # after the fact.
+      it "rejects def self.foo nested inside another method's body" do
+        expect_raises(CompileError, /inside another method's body/) do
+          compile("class A\ndef test\ndef self.hello\nend\nend\nend")
+        end
+      end
+
+      it "rejects a plain def (no self.) nested inside another method's body" do
+        # The shape the person's own X5/nested script exposed — this is
+        # the one the ORIGINAL runtime-only guard never caught at all.
+        expect_raises(CompileError, /inside another method's body/) do
+          compile("class A\ndef test\ndef nested\nend\nend\nend")
+        end
+      end
+
+      it "rejects a nested def even without an enclosing class (top-level def inside a def)" do
+        expect_raises(CompileError, /inside another method's body/) do
+          compile("def outer\ndef inner\nend\nend")
+        end
+      end
+
+      it "rejects a def nested inside a lambda body" do
+        expect_raises(CompileError, /inside another method's body/) do
+          compile("f = ->() { def inner\nend }")
+        end
+      end
+
+      it "still allows an ordinary def directly inside a class body" do
+        # Regression check — the overwhelmingly common case must stay
+        # completely unaffected.
+        o = ops("class A\ndef test\nend\nend")
+        o.should contain(Op::DefMethod)
+      end
+
+      it "still allows an ordinary top-level def self.foo (self == main)" do
+        # Regression check — main's own singleton-style methods (the
+        # one well-supported RubyObject-self case) are unaffected;
+        # @def_depth is 0 here since this def isn't nested in anything.
+        o = ops("def self.greet\nend")
+        o.should contain(Op::DefSingleton)
+      end
     end
 
     describe "class and module" do

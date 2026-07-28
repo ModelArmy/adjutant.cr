@@ -19,7 +19,7 @@ module Adjutant::Builtins
   # Value representation — RubyObject#ivars is Hash(Int32, Value), and
   # Value.proc(sproc) already exists as a constructible variant (it's
   # exactly what def bodies and call-site block literals still use
-  # directly, unwrapped — see SCOPE.md's Won't Fix entry on block
+  # directly, unwrapped — see SCOPE.md's Won't Support entry on block
   # capture). Proc is just the first case where that variant also gets
   # a RubyObject shell around it.
   #

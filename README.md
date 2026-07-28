@@ -280,6 +280,17 @@ A rejected call (from a matched `Reject` rule, or an `Ask` your callback answere
 
 Risk flow tracks explicit data flow only (assignment, arithmetic, string/array/hash construction) — not implicit flow through control structure (see [`research/IFC_DESIGN.md`](./research/IFC_DESIGN.md) for why this scope was chosen deliberately). There's no approval cache yet, so an `Ask` for the same origin repeats every time it's reached within one script run.
 
+## Unsupported language features
+
+Adjutant is a deliberate *subset* of Ruby, not a work-in-progress full implementation — a few constructs are permanently unsupported by design, not just "not yet built." Each one fails with a clear compile-time or runtime error naming the construct, not a silent wrong result:
+
+- **Class/module reopening** (`class Foo; end` written a second time to extend it) — Adjutant's constants are assign-once; this is the same rule applied to class/module names.
+- **`Class.new` / `Module.new`**
+- **Defining a method (`def` or `def self.foo`) nested inside another method's own body** — a method definition can only appear at the top level of a script or directly inside a class/module body.
+- **`&blk` parameter capture** — a block passed to a call is only usable via `yield` inside that same call; it can't be bound to a name, stored, or passed around.
+
+See [SCOPE.md](./SCOPE.md)'s `Won't Support` section for the full reasoning behind each.
+
 ## Development
 
 See [DEVELOPMENT.md](./DEVELOPMENT.md) for how to build, run the samples, and understand the internals. See [`research/IFC_DESIGN.md`](./research/IFC_DESIGN.md) for the risk flow design's full reasoning trail.
