@@ -45,12 +45,15 @@ full registry across all letters lives in
 restating the reasoning, so each fact lives in exactly one place.
 
 **Status note (2026-07-28):** the diagnostic system these codes key into
-now exists, and **U001 and U004 are wired to it** — their errors carry a
-structured `Diagnostic`, render with the offending source line and carets,
-and draw their wording from the catalog rather than the raise site. The
-remaining codes are allocated but not yet emitted: those errors still
-carry a hand-written message and no code. Each entry records its current
-enforcement state explicitly.
+now exists, and **every enforced entry below — U001 through U004 — is
+wired to it.** Their errors carry a structured `Diagnostic`, render with
+the offending source line, and draw their wording from the catalog rather
+than the raise site. U001 and U004 are caught by the compiler and get
+carets; U002 and U003 are caught by the VM, which records a line but no
+column, so those render the source line without a caret row.
+
+U005–U007 emit nothing specific to them at all — see their entries and
+`SCOPE.md`'s `Must Fix`.
 
 ---
 
@@ -102,7 +105,8 @@ and not needed by anything driving the base-types work.
 
 **Instead:** declare the class literally with `class Foo; end`.
 
-**Enforcement — active since 2026-07-27, runtime.** Until then nothing
+**Enforcement — active since 2026-07-27, runtime; migrated to a
+structured `U002` diagnostic 2026-07-28.** Until then nothing
 enforced this: `Class.new`/`Module.new` fell through to the generic
 `construct_object` path and silently succeeded, producing a bare,
 non-functional object with no name and no meaningful way to define methods
@@ -135,11 +139,13 @@ the practical consequence for host integration: a native `new` (or any
 code first defines it via `class Foo; end`, in that same definition.
 
 **Enforcement — active since 2026-07-18, runtime, via the constant rule
-rather than a dedicated check.** `Op::MakeClass` always allocates a fresh,
-disconnected `RubyClass` for every `class Foo; end` it compiles, with no
-reuse-if-already-exists check, so the reassignment guard in
-`Op::SetConstant` is what converts a reopen into a loud error instead of
-silent data loss.
+rather than a dedicated check; migrated to a structured `U003` diagnostic
+2026-07-28, which is also when reopening stopped sharing one message with
+ordinary constant reassignment (now R001).** `Op::MakeClass` always
+allocates a fresh, disconnected `RubyClass` for every `class Foo; end` it
+compiles, with no reuse-if-already-exists check, so the reassignment guard
+in `Op::SetConstant` is what converts a reopen into a loud error instead
+of silent data loss.
 
 **Confirmed concretely by the person, 2026-07-18:** before that guard
 existed, reopening a *builtin* — `class String; def hello; "hello"; end;

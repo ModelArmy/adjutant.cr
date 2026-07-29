@@ -149,14 +149,30 @@ module Adjutant
     # predate the typed-error hierarchy bootstrap.
     getter error_value : Value?
 
+    # The host-facing structured report, when this raise site has been
+    # migrated. Deliberately distinct from `error_value`: that is the
+    # object a SCRIPT rescues and must keep Ruby's semantics under the
+    # proper-subset mandate, while a Diagnostic is a report ABOUT the
+    # failure for whoever is reading the output.
+    getter diagnostic : Diagnostic?
+
     def initialize(message : String, @filename = "<script>", @line = 0, cause = nil, @error_value = nil)
+      @diagnostic = nil
       super(message, cause)
     end
 
     def initialize(message : String, frame : Frame, cause = nil, @error_value = nil)
       @filename = frame.filename
       @line = frame.line
+      @diagnostic = nil
       super(message, cause)
+    end
+
+    def initialize(diagnostic : Diagnostic, frame : Frame, cause = nil, @error_value = nil)
+      @diagnostic = diagnostic
+      @filename = frame.filename
+      @line = frame.line
+      super(diagnostic.to_line, cause)
     end
   end
 
@@ -622,13 +638,13 @@ module Adjutant
             # class/module body goes through target.constants instead.
             # Both need the same check; this isn't specific to classes.
             if target
-              if target.constants.has_key?(sym.value)
-                raise runtime_error("constant #{target.name}::#{sym.name} already initialized — Adjutant does not permit constant reassignment (this includes redefining/reopening a class or module)", f)
+              if existing = target.constants[sym.value]?
+                raise constant_reassignment(existing, val, "#{target.name}::#{sym.name}", f)
               end
               target.constants[sym.value] = val
             else
-              if @globals.has_key?(sym.value)
-                raise runtime_error("constant #{sym.name} already initialized — Adjutant does not permit constant reassignment (this includes redefining/reopening a class or module)", f)
+              if existing = @globals[sym.value]?
+                raise constant_reassignment(existing, val, sym.name, f)
               end
               @globals[sym.value] = val
             end
@@ -1456,7 +1472,13 @@ module Adjutant
         # definitions). Before this guard, both fell through to
         # construct_object below and silently succeeded, producing a
         # bare, non-functional RubyObject — see UNSUPPORTED.md, U002.
-        raise runtime_error("can't instantiate #{cls.name}")
+        raise runtime_diagnostic(
+          Diagnostic.new(
+            code: "U002",
+            primary: frame_span(current_frame),
+            data: {"class" => cls.name}
+          )
+        )
       end
       if sym_id = @symbols.lookup("new").try(&.value)
         if native_new = cls.find_native_singleton_method(sym_id)
@@ -1806,6 +1828,55 @@ module Adjutant
       cls = builtin_class_by_name("RuntimeError")
       err_val = cls ? make_error_object(cls, msg) : nil
       RuntimeError.new(msg, frame, cause, error_value: err_val)
+    end
+
+    # Same as runtime_error, but carries a structured Diagnostic for
+    # the host alongside the script-visible error object.
+    #
+    # The script-visible object gets the diagnostic's SUMMARY only —
+    # not the code, the "why", or the "help". A script that rescues
+    # this and prints `e.message` should see an ordinary Ruby-shaped
+    # sentence; the code and the explanation are for whoever is reading
+    # the interpreter's output, and a script has no use for either.
+    #
+    # Spans here carry a line and no column: `Frame` doesn't record
+    # one. The renderer quotes the source line and omits the caret row.
+    private def runtime_diagnostic(diag : Diagnostic, frame : Frame = current_frame, cause = nil) : RuntimeError
+      cls = builtin_class_by_name("RuntimeError")
+      err_val = cls ? make_error_object(cls, diag.summary) : nil
+      RuntimeError.new(diag, frame, cause, error_value: err_val)
+    end
+
+    # Span for a failure the VM detected, from the frame it happened
+    # in. Line only — see runtime_diagnostic.
+    private def frame_span(frame : Frame) : Span
+      Span.new(line: frame.line, filename: frame.filename)
+    end
+
+    # Constants are assign-once, and that single rule catches two
+    # genuinely different mistakes. Reporting them as one — which the
+    # message here used to do, mentioning class reopening even to a
+    # script that had just written `FOO = 1` twice — makes each case
+    # read as noise to whoever hit the other one.
+    #
+    #   - Both values are classes/modules: this is `class Foo; end`
+    #     written twice, i.e. reopening. A deliberately unsupported
+    #     construct (U003), and the reader needs to know it is never
+    #     coming rather than that some constant rule fired.
+    #   - Otherwise: an ordinary constant reassigned (R001). The
+    #     assign-once rule working as intended, and a normal fault to
+    #     fix in the script.
+    private def constant_reassignment(existing : Value, replacement : Value,
+                                      name : String, frame : Frame) : RuntimeError
+      reopening = !existing.as_rclass?.nil? && !replacement.as_rclass?.nil?
+      runtime_diagnostic(
+        Diagnostic.new(
+          code: reopening ? "U003" : "R001",
+          primary: frame_span(frame),
+          data: {"name" => name}
+        ),
+        frame
+      )
     end
 
     # Same shape as runtime_error, but tags the script-visible error

@@ -50,22 +50,30 @@ reporting.
 
 ## R — Runtime
 
-*None migrated yet.*
+|Code|Fault                                         |Raised by|Placeholders|
+|----|----------------------------------------------|---------|------------|
+|R001|Constant reassigned after its first assignment|VM       |`name`      |
+
+R001 and U003 come from the same assign-once guard and are told apart by
+what is being reassigned: two classes means a reopen (U003, a construct
+that is never coming), anything else means an ordinary constant being
+written twice (R001, a fault to fix in the script). Reporting both as one
+error made each read as noise to whoever hit the other.
 
 ## U — Deliberately unsupported
 
 Full reasoning, alternatives, and enforcement history for each of these
 is in [UNSUPPORTED.md](./UNSUPPORTED.md) under the matching code.
 
-|Code|Construct                                 |Raised by     |Placeholders      |
-|----|------------------------------------------|--------------|------------------|
-|U001|`&blk` parameter capture                  |Compiler      |`param`, `method` |
-|U002|`Class.new` / `Module.new`                |VM            |*not yet migrated*|
-|U003|Class/module reopening                    |VM            |*not yet migrated*|
-|U004|Method definition nested in another method|Compiler      |`definition`      |
-|U005|Dynamic dispatch by computed name         |*not enforced*|—                 |
-|U006|`eval` / `instance_eval`                  |*not enforced*|—                 |
-|U007|Reflection into native internals          |*not enforced*|—                 |
+|Code|Construct                                 |Raised by     |Placeholders     |
+|----|------------------------------------------|--------------|-----------------|
+|U001|`&blk` parameter capture                  |Compiler      |`param`, `method`|
+|U002|`Class.new` / `Module.new`                |VM            |`class`          |
+|U003|Class/module reopening                    |VM            |`name`           |
+|U004|Method definition nested in another method|Compiler      |`definition`     |
+|U005|Dynamic dispatch by computed name         |*not enforced*|—                |
+|U006|`eval` / `instance_eval`                  |*not enforced*|—                |
+|U007|Reflection into native internals          |*not enforced*|—                |
 
 U005–U007 are documented exclusions that nothing currently rejects by
 name; see `SCOPE.md`'s `Must Fix` entry.

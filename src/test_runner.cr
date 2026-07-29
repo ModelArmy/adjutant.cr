@@ -63,7 +63,7 @@ module Testing
         error = describe_error(interp, e, "compile error", path)
         cause = e
       rescue e : Adjutant::RuntimeError
-        error = "runtime error: #{e.line}: #{e.message}"
+        error = describe_error(interp, e, "runtime error", path)
         cause = e
       end
 
@@ -80,7 +80,7 @@ module Testing
     # one-line form otherwise. Plain text rather than Markdown: this
     # goes to a terminal, and the fences would be noise.
     private def describe_error(interp : Adjutant::Interpreter,
-                               error : Adjutant::ParseError | Adjutant::CompileError,
+                               error : Adjutant::ParseError | Adjutant::CompileError | Adjutant::RuntimeError,
                                kind : String,
                                path : String) : String
       rendered = interp.render_error(
@@ -89,7 +89,14 @@ module Testing
         path
       )
       return rendered if rendered
-      "#{kind}: #{error.line}:#{error.column}: #{error.message}"
+      # RuntimeError records a filename and line but no column, unlike
+      # the parse/compile errors — position fidelity differs by phase
+      # in the fallback exactly as it does in a rendered diagnostic.
+      if error.is_a?(Adjutant::RuntimeError)
+        "#{kind}: #{error.filename}:#{error.line}: #{error.message}"
+      else
+        "#{kind}: #{error.line}:#{error.column}: #{error.message}"
+      end
     end
 
     def print_summary(results : Array(FileResult))

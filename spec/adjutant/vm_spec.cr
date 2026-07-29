@@ -1130,7 +1130,13 @@ module Adjutant
         # lost, not a compile/runtime error. See UNSUPPORTED.md's U003,
         # class/module reopening, for why real reopening isn't being
         # built instead.
-        expect_raises(RuntimeError, /already initialized/) do
+        # Reports as U003 (reopening) rather than the generic
+        # constant-reassignment fault: both come from the same
+        # assign-once guard, but a reader who reopened a class needs to
+        # know that construct is never coming, not that some constant
+        # rule fired. Asserting on the code, which is stable, rather
+        # than the wording, which is not.
+        error = expect_raises(RuntimeError) do
           eval(<<-RUBY)
           class Foo
             def five; 5; end
@@ -1140,6 +1146,7 @@ module Adjutant
           end
           RUBY
         end
+        error.diagnostic.not_nil!.code.should eq("U003")
       end
 
       it "reopening a builtin class also raises, same policy" do
@@ -1152,13 +1159,37 @@ module Adjutant
         # therefore also a hard error now, consistent with the
         # deliberate scope decision (UNSUPPORTED.md, U003), not an
         # oversight.
-        expect_raises(RuntimeError, /already initialized/) do
+        error = expect_raises(RuntimeError) do
           eval(<<-RUBY)
           class String
             def shout; upcase; end
           end
           RUBY
         end
+        error.diagnostic.not_nil!.code.should eq("U003")
+      end
+
+      it "distinguishes an ordinary constant reassignment from a reopen" do
+        # Same guard, two different problems — the message used to
+        # conflate them, telling a script that had merely written
+        # `FOO = 1` twice about redefining classes.
+        error = expect_raises(RuntimeError) do
+          eval("FOO = 1\nFOO = 2")
+        end
+        error.diagnostic.not_nil!.code.should eq("R001")
+      end
+
+      it "reports U002 for Class.new, with a line but no column" do
+        # First VM-raised diagnostic: Frame records a line and no
+        # column, so this is the real exercise of the renderer's
+        # line-only degradation rather than a synthetic one.
+        error = expect_raises(RuntimeError) do
+          eval("x = Class.new")
+        end
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("U002")
+        diag.primary.column.should be_nil
+        diag.data["class"].should eq("Class")
       end
     end
   end

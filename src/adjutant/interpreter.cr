@@ -304,7 +304,7 @@ module Adjutant
     # (`diagnostic` is nil), so callers can fall back to `message`
     # rather than special-casing which raise sites have been converted
     # yet.
-    def render_error(error : ParseError | CompileError,
+    def render_error(error : ParseError | CompileError | RuntimeError,
                      format : DiagnosticRenderer::Format = DiagnosticRenderer::Format::Markdown,
                      filename : String? = nil) : String?
       diag = error.diagnostic

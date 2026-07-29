@@ -80,6 +80,36 @@ module Adjutant
               "runtime, assign a lambda to a local or a constant instead " \
               "and call it with `.call`."
       ),
+      "U002" => Entry.new(
+        code: "U002",
+        summary: "`{class}` cannot be instantiated",
+        why: "`Class` and `Module` exist so that `.class`, `is_a?`, and " \
+             "`superclass` report the truth about an object. They are not " \
+             "themselves constructible: a class built at runtime would " \
+             "have no name and no way to define methods on it.",
+        help: "Declare the class literally instead, with `class Foo; end`."
+      ),
+      "U003" => Entry.new(
+        code: "U003",
+        summary: "`{name}` is already defined, and classes cannot be reopened",
+        why: "A class or module name is a constant, and constants are " \
+             "assign-once. Reopening would mean pointing `{name}` at " \
+             "something new, which is exactly what that rule prevents — " \
+             "it is what lets the value behind a constant be trusted " \
+             "without running the script first.",
+        help: "Define `{name}` once, with all of its methods in that one " \
+              "body."
+      ),
+      "R001" => Entry.new(
+        code: "R001",
+        summary: "constant `{name}` is already initialized",
+        why: "Constants in Adjutant are assign-once. Real Ruby only warns " \
+             "here and lets the assignment through; Adjutant makes it an " \
+             "error, so that whatever a constant holds can be trusted " \
+             "without running the script first.",
+        help: "Use a different constant, or a local variable if the value " \
+              "is meant to change."
+      ),
     }
 
     # Unknown codes render as themselves rather than raising. A
