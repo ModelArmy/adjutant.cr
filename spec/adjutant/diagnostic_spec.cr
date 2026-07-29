@@ -174,6 +174,54 @@ module Adjutant
     end
   end
 
+  describe "internal diagnostics" do
+    internal = Diagnostic.new(
+      code: "I001",
+      primary: Span.new(line: 1),
+      data: {"opcode" => "97"}
+    )
+
+    it "is flagged internal by its code letter" do
+      internal.internal?.should be_true
+      Diagnostic.new(code: "U001", primary: Span.new(line: 1)).internal?.should be_false
+    end
+
+    it "tells the reader nothing needs fixing on their end" do
+      # The point of the I series: every other letter implies there is
+      # something to change in the script, and for these there isn't.
+      out = DiagnosticRenderer.new.render(internal, DiagnosticRenderer::Format::PlainText)
+      out.should contain("bug in Adjutant")
+      out.should contain(DiagnosticRenderer::DEFAULT_REPORT_URL)
+    end
+
+    it "carries no help line, only the report footer" do
+      ErrorCatalog["I001"].help.should be_nil
+    end
+
+    it "points at a host-supplied URL when one is set" do
+      # Adjutant is embedded — an integrator's users should report to
+      # the integrator, not upstream.
+      renderer = DiagnosticRenderer.new(nil, "https://example.test/bugs")
+      out = renderer.render(internal, DiagnosticRenderer::Format::PlainText)
+      out.should contain("https://example.test/bugs")
+      out.should_not contain(DiagnosticRenderer::DEFAULT_REPORT_URL)
+    end
+
+    it "is reachable through the interpreter's own property" do
+      interp = Interpreter.new(
+        risk_flow_policy: TEST_REJECT_ALL_POLICY,
+        on_risk_flow_decision: TEST_UNEXPECTED_ASK_CALLBACK,
+      )
+      interp.report_url.should eq(DiagnosticRenderer::DEFAULT_REPORT_URL)
+      interp.report_url = "https://harness.test/report"
+      error = CompileError.new(
+        Diagnostic.new(code: "I005", primary: Span.new(line: 1), data: {"node" => "Foo"})
+      )
+      interp.render_error(error, DiagnosticRenderer::Format::PlainText)
+        .not_nil!.should contain("https://harness.test/report")
+    end
+  end
+
   describe "ERRORS.md consistency" do
     # error_catalog.cr is authoritative; ERRORS.md documents it for
     # readers. Two artifacts holding the same facts is exactly the

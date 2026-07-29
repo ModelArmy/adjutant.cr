@@ -299,6 +299,12 @@ module Adjutant
     # from a trusted internal `blk` param.
     protected def invoke_proc(proc_obj : RubyObject, args : Array(Value), self_val : Value? = nil) : Value
       unless proc_obj.rclass == builtin_class_by_name("Proc")
+        # NOT an internal (`I`) diagnostic, despite looking like a type
+        # invariant: `Interpreter#invoke_proc` is a public host API, so a
+        # host can reach this by passing the wrong Value. Telling an
+        # integrator "this is a bug in Adjutant, please report it" would
+        # send them upstream to report their own mistake. Deferred until
+        # there is a category for host-API misuse.
         raise runtime_error("invoke_proc called with a #{proc_obj.rclass.name}, not a Proc")
       end
       sproc = proc_obj.ivars[@symbols.intern("__sproc").value].as_proc
@@ -487,7 +493,11 @@ module Adjutant
     end
 
     private def pop : Value
-      raise runtime_error("stack underflow") if @stack.size <= current_frame.stack_base
+      if @stack.size <= current_frame.stack_base
+        raise runtime_diagnostic(
+          Diagnostic.new(code: "I003", primary: frame_span(current_frame))
+        )
+      end
       @stack.pop
     end
 
@@ -989,10 +999,10 @@ module Adjutant
 
             # --- Exception handling ---------------------------------------
           when Op::Try
-            raise runtime_error("internal error: unpatched Try target", f) if inst.c == Chunk::NO_TARGET
+            raise internal_diagnostic("I002", {"target" => "Try"}, f) if inst.c == Chunk::NO_TARGET
             f.handlers.push(HandlerEntry.new(rescue_ip: inst.c.to_i))
           when Op::SetEnsure
-            raise runtime_error("internal error: unpatched SetEnsure target", f) if inst.c == Chunk::NO_TARGET
+            raise internal_diagnostic("I002", {"target" => "SetEnsure"}, f) if inst.c == Chunk::NO_TARGET
             if inst.b == 1_u16
               # Same construct as the immediately-preceding Try — add
               # the ensure target to the entry it just pushed, rather
@@ -1046,7 +1056,7 @@ module Adjutant
           when Op::GetMethodName
             push(Value.string(f.proc.name))
           else
-            raise runtime_error("unknown opcode: #{inst.op}", f)
+            raise internal_diagnostic("I001", {"opcode" => inst.op.to_s}, f)
           end
         rescue ex : RuntimeError
           # Clear any stale pending re-raise up front: a genuinely new
@@ -1847,6 +1857,16 @@ module Adjutant
       RuntimeError.new(diag, frame, cause, error_value: err_val)
     end
 
+    # Shorthand for the internal (`I`) diagnostics raised from inside
+    # the dispatch loop, which all have the same shape: a code, a
+    # couple of substitutions, and the frame in hand.
+    private def internal_diagnostic(code : String, data : Hash(String, String), frame : Frame) : RuntimeError
+      runtime_diagnostic(
+        Diagnostic.new(code: code, primary: frame_span(frame), data: data),
+        frame
+      )
+    end
+
     # Span for a failure the VM detected, from the frame it happened
     # in. Line only — see runtime_diagnostic.
     private def frame_span(frame : Frame) : Span
@@ -1918,7 +1938,15 @@ module Adjutant
                                   label : RiskFlowLabel?) : Value
       cls = builtin_class_by_name("Range")
       unless cls
-        raise runtime_error("Range class not registered — bootstrap_builtin_classes must run before any Range literal is evaluated")
+        raise runtime_diagnostic(
+          Diagnostic.new(
+            code: "I004",
+            primary: frame_span(current_frame),
+            data: {
+              "class" => "Range",
+            }
+          )
+        )
       end
       obj = RubyObject.new(cls)
       obj.ivars[@symbols.intern("__min").value] = rstart
@@ -1936,7 +1964,15 @@ module Adjutant
     private def make_lambda_object(sproc : ScriptProc, label : RiskFlowLabel?, outer_locals : Array(Value)?) : Value
       cls = builtin_class_by_name("Proc")
       unless cls
-        raise runtime_error("Proc class not registered — bootstrap_builtin_classes must run before any lambda literal is evaluated")
+        raise runtime_diagnostic(
+          Diagnostic.new(
+            code: "I004",
+            primary: frame_span(current_frame),
+            data: {
+              "class" => "Proc",
+            }
+          )
+        )
       end
       obj = RubyObject.new(cls)
       obj.ivars[@symbols.intern("__sproc").value] = Value.proc(sproc)

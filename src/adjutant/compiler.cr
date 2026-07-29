@@ -251,7 +251,13 @@ module Adjutant
       when ModifierIf     then compile_modifier_if(node)
       when ModifierWhile  then compile_modifier_while(node)
       else
-        raise CompileError.new("unknown node type: #{node.class}", node.line, node.column)
+        raise CompileError.new(
+          Diagnostic.new(
+            code: "I005",
+            primary: Span.new(line: node.line, column: node.column),
+            data: {"node" => node.class.to_s}
+          )
+        )
       end
     end
 

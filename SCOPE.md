@@ -169,6 +169,20 @@ Quality-of-diagnostic gaps in the `Diagnostic`/`ErrorCatalog` system
 (see [ERRORS.md](./ERRORS.md)). None affect correctness — every one is
 "the error is right, but says less than it could."
 
+- **No category for host-API misuse, so those errors have nowhere good
+  to go.** Found 2026-07-28 while migrating internal invariants: a check
+  like `Interpreter#invoke_proc` receiving a non-`Proc` looks like an
+  internal type invariant, but `invoke_proc` is public host API, so an
+  embedding host reaches it by passing the wrong `Value`. It can't be an
+  `I` code, whose footer would tell an integrator to report their own bug
+  upstream; it isn't a script fault either, so `R` fits badly. Left as an
+  unmigrated plain message for now.
+
+  Worth deciding once there are two or three such sites rather than one —
+  candidates are a new letter (the reader's action is "fix your
+  integration", genuinely distinct from the existing five) or folding
+  them into `R` and accepting the imprecision.
+
 - **`@def_depth` counts nesting but doesn't record what the enclosing
   scope was, so U004 can't name it.** Added 2026-07-28 while migrating
   U004 to a diagnostic. The guard in `Compiler#compile_def` fires on

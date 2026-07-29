@@ -93,6 +93,36 @@ is in [UNSUPPORTED.md](./UNSUPPORTED.md) under the matching code.
 U005–U007 are documented exclusions that nothing currently rejects by
 name; see `SCOPE.md`'s `Must Fix` entry.
 
+## I — Internal
+
+Adjutant is at fault, not the script. A reader who sees one of these has
+nothing to fix in their own code.
+
+|Code|Invariant violated                               |Raised by|Placeholders|
+|----|-------------------------------------------------|---------|------------|
+|I001|VM read an opcode it has no case for             |VM       |`opcode`    |
+|I002|Forward jump target never backpatched            |VM       |`target`    |
+|I003|Value stack underflowed its frame base           |VM       |—           |
+|I004|Builtin class used before bootstrap registered it|VM       |`class`     |
+|I005|Compiler has no case for an AST node             |Compiler |`node`      |
+
+These carry no `help`. There is nothing the reader can do to their script,
+and a suggestion would send them editing code that was never at fault —
+so renderers append a report footer instead, pointing at
+`Interpreter#report_url`. Their `why` is written for whoever ends up
+DEBUGGING Adjutant from a pasted report, not for the person who hit it.
+
+Not every internal-looking check belongs here. A type invariant reachable
+through a public host API — `Interpreter#invoke_proc` given a non-`Proc`,
+for instance — is the integrating host's bug, not Adjutant's, and this
+footer would send them upstream to report their own mistake. Those stay
+out of the `I` series.
+
+`report_url` defaults to this project's issue tracker and is a property a
+host can set. Adjutant is embedded: if an agent harness ships it, that
+harness's users should report to whoever ships the harness — they can
+triage and forward — rather than to a project they have never heard of.
+
 ## F — Risk flow
 
 *None migrated yet.*

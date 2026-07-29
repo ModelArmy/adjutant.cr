@@ -676,6 +676,8 @@ Hosts should reach diagnostics through the interpreter rather than assembling th
 
 VM-raised diagnostics keep the structured report separate from the script-visible error object: `RuntimeError#error_value` is what a script `rescue`s and carries only the diagnostic's summary, in ordinary Ruby-shaped prose. The code, the "why", and the "help" are for whoever reads the interpreter's output — a script has no use for them, and putting Adjutant-specific structure into a rescuable object would diverge from Ruby for no gain.
 
+The `I` series is treated differently from every other letter: those errors mean Adjutant is broken, not the script. They carry no `help`, because there is nothing the reader can do to their own code and a suggestion would send them editing something that was never at fault. Renderers append a report footer instead, pointing at `Interpreter#report_url` — a property, defaulting upstream, that a host should repoint at wherever ITS users report problems. Their `why` is written for whoever debugs Adjutant from a pasted report, not for the person who hit it.
+
 No colour is emitted anywhere, deliberately: the primary reader is an LLM under an agent harness, where ANSI escapes are noise in a captured log, and carets don't need colour to work.
 
 `SourceMap` retains script source keyed by filename. Nothing changed about how source is read — `Lexer` already slurped the whole IO into a string for peek/backtrack — it was simply discarded once tokens existed. Keyed by filename because `require` evals further files, so a diagnostic's file isn't always the top-level script's.

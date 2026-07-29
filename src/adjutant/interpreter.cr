@@ -180,6 +180,12 @@ module Adjutant
     # the top-level script.
     getter sources : SourceMap = SourceMap.new
 
+    # Where a reader is told to report an internal (`I`-series) error.
+    # Defaults upstream; a host embedding Adjutant should point this at
+    # wherever ITS users should report problems, since those users have
+    # no relationship with this project.
+    property report_url : String = DiagnosticRenderer::DEFAULT_REPORT_URL
+
     # `self` at the top level of a script — a real RubyObject whose
     # class is Object, matching real Ruby's actual `main` (not a
     # simplification of it: a bare top-level `def` genuinely becomes
@@ -309,7 +315,7 @@ module Adjutant
                      filename : String? = nil) : String?
       diag = error.diagnostic
       return nil unless diag
-      DiagnosticRenderer.new(sources).render(diag, format, filename)
+      DiagnosticRenderer.new(sources, report_url).render(diag, format, filename)
     end
 
     # Called by VM when a script issues `require "path"`.

@@ -95,6 +95,20 @@ module Adjutant
       end
     end
 
+    # True for the `I` series: something went wrong inside Adjutant
+    # itself, not in the script.
+    #
+    # The distinction changes what the reader should DO, which is why
+    # it's worth encoding rather than leaving to prose. For every other
+    # letter there is something to fix in the script; for this one
+    # there is nothing, and a `help` addressed to a script author would
+    # be actively misleading — it invites someone to spend time editing
+    # code that was never the problem. Renderers append a report
+    # footer instead of a help line.
+    def internal? : Bool
+      code.starts_with?("I")
+    end
+
     # Every span, primary first. Renderers walk this in order.
     def spans : Array(Span)
       [primary] + secondary

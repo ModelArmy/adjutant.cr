@@ -24,7 +24,16 @@ module Adjutant
       PlainText
     end
 
-    def initialize(@sources : SourceMap? = nil)
+    # Where a reader should report an `I`-series diagnostic.
+    #
+    # Adjutant is embedded, so this has to be overridable: if an agent
+    # harness ships Adjutant, its users should report to whoever ships
+    # the harness — they can triage and forward — not to a project the
+    # user has never heard of. Defaulting upstream and letting the host
+    # change it beats every integrator patching this catalog.
+    DEFAULT_REPORT_URL = "https://github.com/ModelArmy/adjutant.cr/issues/new"
+
+    def initialize(@sources : SourceMap? = nil, @report_url : String = DEFAULT_REPORT_URL)
     end
 
     # `default_filename` fills in a span whose own filename is nil —
@@ -54,6 +63,11 @@ module Adjutant
         if help = diag.help
           io << "\n**Help:** " << help << '\n'
         end
+        if diag.internal?
+          io << "\n**This is a bug in Adjutant, not in your script.** "
+          io << "Nothing above needs fixing on your end. Please copy this "
+          io << "entire report and file it at " << @report_url << '\n'
+        end
       end
     end
 
@@ -68,6 +82,12 @@ module Adjutant
         end
         if help = diag.help
           io << "help: " << help << '\n'
+        end
+        if diag.internal?
+          io << "\nThis is a bug in Adjutant, not in your script. Nothing\n"
+          io << "above needs fixing on your end. Please copy this entire\n"
+          io << "report and file it at:\n"
+          io << "  " << @report_url << '\n'
         end
       end
     end

@@ -56,6 +56,52 @@ module Adjutant
     end
 
     ENTRIES = {
+      # --- I: internal invariant violations -------------------------
+      #
+      # These mean Adjutant is broken, not the script. None carries a
+      # `help`: there is nothing the reader can do to their own code,
+      # and offering a suggestion would send them editing a script
+      # that was never at fault. Renderers append a report footer
+      # instead — see `Diagnostic#internal?`.
+      #
+      # `why` here is aimed at whoever ends up DEBUGGING Adjutant, not
+      # at the person who hit it: it should say enough for a
+      # maintainer reading a pasted report to know where to look.
+      "I001" => Entry.new(
+        code: "I001",
+        summary: "internal: unknown opcode {opcode}",
+        why: "The VM read an instruction it has no case for. Either the " \
+             "compiler emitted an opcode the VM doesn't implement, or the " \
+             "bytecode was corrupted between compilation and execution."
+      ),
+      "I002" => Entry.new(
+        code: "I002",
+        summary: "internal: unpatched {target} jump target",
+        why: "A forward jump was emitted with a placeholder target that " \
+             "was never backpatched once its destination became known. " \
+             "The compiler finished without resolving it."
+      ),
+      "I003" => Entry.new(
+        code: "I003",
+        summary: "internal: value stack underflow",
+        why: "An instruction popped more values than its frame had " \
+             "pushed. The compiler emitted bytecode whose stack effect " \
+             "doesn't balance — this is not something a script can cause."
+      ),
+      "I004" => Entry.new(
+        code: "I004",
+        summary: "internal: builtin class `{class}` is not registered",
+        why: "A literal needed its builtin class, but bootstrap had not " \
+             "registered it yet. `bootstrap_builtin_classes` must run " \
+             "before any script code is evaluated."
+      ),
+      "I005" => Entry.new(
+        code: "I005",
+        summary: "internal: no compiler case for AST node {node}",
+        why: "The parser produced a node the compiler has no branch for. " \
+             "Usually a new node type added to the AST and to the parser " \
+             "without a matching case in the compiler."
+      ),
       # No `why`/`help`: P001 stands in for every `expect` failure the
       # parser can have — a missing `)`, a missing `,`, a missing
       # `then`. Any explanation general enough to cover all of them
