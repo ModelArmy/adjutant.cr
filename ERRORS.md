@@ -42,7 +42,22 @@ reporting.
 
 ## P — Syntax
 
-*None migrated yet.*
+|Code|Problem                               |Raised by|Placeholders                    |
+|----|--------------------------------------|---------|--------------------------------|
+|P001|Expected one token, found another     |Parser   |`expected`, `found`             |
+|P002|Token can't begin an expression       |Parser   |`found`                         |
+|P003|A block construct is missing its `end`|Parser   |`construct`, `found`, `expected`|
+
+P001 has no "why" or "help" on purpose: it stands in for every `expect`
+failure the parser can have — a missing `)`, a missing `,`, a missing
+`then` — and any explanation general enough to cover all of them would be
+too vague to act on. The span labels carry the specifics instead.
+
+P003 exists because missing-`end` is the one syntax error with something
+general worth saying, and because its caret alone is misleading: the
+parser gives up wherever it ran out of input, which for a missing `end` is
+usually the bottom of the file, nowhere near the construct that lost it.
+P003 adds a secondary span pointing at the innermost construct still open.
 
 ## C — Static semantics
 

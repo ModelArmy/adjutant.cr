@@ -56,6 +56,33 @@ module Adjutant
     end
 
     ENTRIES = {
+      # No `why`/`help`: P001 stands in for every `expect` failure the
+      # parser can have — a missing `)`, a missing `,`, a missing
+      # `then`. Any explanation general enough to cover all of them
+      # would be too vague to act on, and the span labels already say
+      # what was wanted and where. A syntax error that DOES have
+      # something general worth saying gets its own code instead —
+      # see P003.
+      "P001" => Entry.new(
+        code: "P001",
+        summary: "expected {expected}, found {found}"
+      ),
+      "P002" => Entry.new(
+        code: "P002",
+        summary: "{found} can't start an expression here"
+      ),
+      "P003" => Entry.new(
+        code: "P003",
+        summary: "`{construct}` is missing its `end`",
+        why: "Every `def`, `class`, `module`, `if`, `unless`, `while`, " \
+             "`until`, `for`, `case`, `begin`, `loop`, and `do` block is " \
+             "closed by a matching `end`. The parser read to {found} " \
+             "still looking for the one that closes this `{construct}`.",
+        help: "Add the missing `end`, or check whether an `end` further " \
+              "down closes the wrong construct — an `end` that arrives " \
+              "too early closes the innermost block, and everything after " \
+              "it then belongs to the wrong place."
+      ),
       "U001" => Entry.new(
         code: "U001",
         summary: "block parameter capture (`&{param}`) is not supported",

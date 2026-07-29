@@ -113,6 +113,17 @@ module Adjutant
       register_local(lhs.name) if lhs.is_a?(Identifier)
     end
 
+    # A block-forming construct the parser is currently inside, with
+    # the position of the keyword that opened it.
+    #
+    # Exists so a missing `end` can point at the construct that was
+    # never closed, rather than only at wherever the parser gave up.
+    # Those are usually far apart and the second one is nearly useless
+    # on its own: `expected KwEnd, got EOF` at the last line of a file
+    # says nothing about which of the twelve `def`s above it lost its
+    # `end`.
+    record OpenBlock, kind : String, line : Int32, column : Int32
+
     def initialize(source : IO, filename : String = "<input>")
       @lexer = Lexer.new(source, filename)
       @current = @lexer.next_token
@@ -169,9 +180,107 @@ module Adjutant
       @next.kind
     end
 
+    # Constructs currently open, innermost last. Pushed by
+    # `open_block`, popped by `close_block` — deliberately NOT popped
+    # on the error path, since an abandoned entry is exactly the
+    # information a missing-`end` diagnostic needs.
+    @open_blocks = [] of OpenBlock
+
+    private def open_block(kind : String, line : Int32, column : Int32) : Nil
+      @open_blocks << OpenBlock.new(kind, line, column)
+    end
+
+    # Consumes the `end` that closes the innermost open construct.
+    private def close_block : Token
+      tok = expect(TokenKind::KwEnd)
+      @open_blocks.pop?
+      tok
+    end
+
     private def expect(kind : TokenKind) : Token
-      raise ParseError.new("expected #{kind}, got #{@current.kind} (#{@current.lexeme.inspect})", @current.line, @current.column) unless at_kind?(kind)
+      raise unexpected_token(kind) unless at_kind?(kind)
       advance
+    end
+
+    # The diagnostic for "we needed X and found Y".
+    #
+    # When the thing we needed was an `end`, the caret alone is close to
+    # useless: it lands wherever the parser gave up, which for a missing
+    # `end` is the bottom of the file, nowhere near the construct that
+    # actually lost it. So that case adds a secondary span pointing at
+    # the innermost construct still open — the one that swallowed
+    # everything after it.
+    private def unexpected_token(expected : TokenKind) : ParseError
+      span = Span.new(
+        line: @current.line,
+        column: @current.column,
+        length: caret_width(@current),
+        label: "expected #{describe_kind(expected)}"
+      )
+      data = {
+        "expected" => describe_kind(expected),
+        "found"    => describe_token(@current),
+      }
+
+      # A missing `end` we can attribute to a specific open construct
+      # is a different diagnostic, not a variant of this one: it has a
+      # real explanation to offer, where P001 in general does not.
+      if expected == TokenKind::KwEnd && (open = @open_blocks.last?)
+        data["construct"] = open.kind
+        return ParseError.new(
+          Diagnostic.new(
+            code: "P003",
+            primary: span,
+            secondary: [Span.new(
+              line: open.line,
+              column: open.column,
+              length: open.kind.size,
+              label: "this `#{open.kind}` is never closed"
+            )],
+            data: data
+          )
+        )
+      end
+
+      ParseError.new(
+        Diagnostic.new(code: "P001", primary: span, data: data)
+      )
+    end
+
+    # EOF has no text, so a caret would have nothing to sit under —
+    # one column is the honest width there.
+    private def caret_width(token : Token) : Int32
+      token.kind == TokenKind::EOF ? 1 : Math.max(1, token.lexeme.size)
+    end
+
+    # Token kinds are internal enum names (`KwEnd`, `LParen`); a script
+    # author never wrote either. Render what they would have typed.
+    #
+    # A lookup table rather than a `case`: the mapping is data, and as
+    # a `case` it was a 14-branch method that only ever grows as more
+    # kinds earn a friendly name.
+    KIND_DESCRIPTIONS = {
+      TokenKind::KwEnd    => "`end`",
+      TokenKind::KwDo     => "`do`",
+      TokenKind::KwThen   => "`then`",
+      TokenKind::KwIn     => "`in`",
+      TokenKind::LParen   => "`(`",
+      TokenKind::RParen   => "`)`",
+      TokenKind::LBrace   => "`{`",
+      TokenKind::RBrace   => "`}`",
+      TokenKind::LBracket => "`[`",
+      TokenKind::RBracket => "`]`",
+      TokenKind::Comma    => "`,`",
+      TokenKind::EOF      => "end of file",
+      TokenKind::Newline  => "a line break",
+    }
+
+    private def describe_kind(kind : TokenKind) : String
+      KIND_DESCRIPTIONS[kind]? || "`#{kind}`"
+    end
+
+    private def describe_token(token : Token) : String
+      token.kind == TokenKind::EOF ? "end of file" : "`#{token.lexeme}`"
     end
 
     private def match(kind : TokenKind) : Bool
@@ -555,7 +664,18 @@ module Adjutant
       when TokenKind::KwRaise
         parse_raise(l, c)
       else
-        raise ParseError.new("unexpected token #{current_kind} (#{@current.lexeme.inspect})", l, c)
+        raise ParseError.new(
+          Diagnostic.new(
+            code: "P002",
+            primary: Span.new(
+              line: l,
+              column: c,
+              length: caret_width(@current),
+              label: "not valid here"
+            ),
+            data: {"found" => describe_token(@current)}
+          )
+        )
       end
     end
 
@@ -808,12 +928,13 @@ module Adjutant
       l, c = line, col
       push_local_scope(inherit: true)
       if at_kind?(TokenKind::KwDo)
+        open_block("do", line, col)
         advance
         params = parse_block_params
         params.each { |param| register_local(param.name) }
         skip_newlines
         body = parse_body_until(TokenKind::KwEnd)
-        expect(TokenKind::KwEnd)
+        close_block
         pop_local_scope
         BlockNode.new(params, body, l, c)
       else
@@ -900,6 +1021,7 @@ module Adjutant
 
     private def parse_def : DefNode
       l, c = line, col
+      open_block("def", l, c)
       expect(TokenKind::KwDef)
       recv = nil
       name_tok = @current
@@ -925,7 +1047,7 @@ module Adjutant
       params.each { |param| register_local(param.name) }
       skip_terminators
       body = parse_body_until(TokenKind::KwEnd)
-      expect(TokenKind::KwEnd)
+      close_block
       pop_local_scope
       DefNode.new(name_tok.lexeme, recv, params, body, l, c)
     end
@@ -972,6 +1094,7 @@ module Adjutant
 
     private def parse_class : ClassNode
       l, c = line, col
+      open_block("class", l, c)
       expect(TokenKind::KwClass)
       name = @current.lexeme
       advance
@@ -985,12 +1108,13 @@ module Adjutant
       push_local_scope(inherit: false)
       body = parse_body_until(TokenKind::KwEnd)
       pop_local_scope
-      expect(TokenKind::KwEnd)
+      close_block
       ClassNode.new(name, superclass, body, l, c)
     end
 
     private def parse_module : ModuleNode
       l, c = line, col
+      open_block("module", l, c)
       expect(TokenKind::KwModule)
       name = @current.lexeme
       advance
@@ -998,7 +1122,7 @@ module Adjutant
       push_local_scope(inherit: false)
       body = parse_body_until(TokenKind::KwEnd)
       pop_local_scope
-      expect(TokenKind::KwEnd)
+      close_block
       ModuleNode.new(name, body, l, c)
     end
 
@@ -1019,9 +1143,10 @@ module Adjutant
                expect(TokenKind::RBrace)
                b
              else
+               open_block("do", line, col)
                expect(TokenKind::KwDo)
                b = parse_body_until(TokenKind::KwEnd)
-               expect(TokenKind::KwEnd)
+               close_block
                b
              end
       pop_local_scope
@@ -1032,6 +1157,7 @@ module Adjutant
 
     private def parse_if : IfNode
       l, c = line, col
+      open_block("if", l, c)
       expect(TokenKind::KwIf)
       cond = parse_expression(0)
       skip_terminators
@@ -1049,12 +1175,13 @@ module Adjutant
         skip_terminators
         else_branch = parse_body_until(TokenKind::KwEnd)
       end
-      expect(TokenKind::KwEnd)
+      close_block
       IfNode.new(cond, then_branch, elsifs, else_branch, l, c)
     end
 
     private def parse_unless : UnlessNode
       l, c = line, col
+      open_block("unless", l, c)
       expect(TokenKind::KwUnless)
       cond = parse_expression(0)
       skip_terminators
@@ -1064,12 +1191,13 @@ module Adjutant
         skip_terminators
         else_branch = parse_body_until(TokenKind::KwEnd)
       end
-      expect(TokenKind::KwEnd)
+      close_block
       UnlessNode.new(cond, then_branch, else_branch, l, c)
     end
 
     private def parse_while(until_loop : Bool) : WhileNode
       l, c = line, col
+      open_block("while", l, c)
       advance
       @no_do_block = true
       cond = begin
@@ -1088,7 +1216,7 @@ module Adjutant
         skip_terminators
       end
       body = parse_body_until(TokenKind::KwEnd)
-      expect(TokenKind::KwEnd)
+      close_block
       WhileNode.new(cond, body, until_loop, l, c)
     end
 
@@ -1096,11 +1224,14 @@ module Adjutant
       l, c = line, col
       expect(TokenKind::KwLoop)
       skip_terminators
-      # loop do ... end or loop { ... }
+      # loop do ... end or loop { ... }. Only the `do` form is closed
+      # by an `end`, so only it is tracked — a `{ }` form can't produce
+      # a missing-`end` diagnostic.
       if at_kind?(TokenKind::KwDo)
+        open_block("loop", l, c)
         advance
         body = parse_body_until(TokenKind::KwEnd)
-        expect(TokenKind::KwEnd)
+        close_block
       else
         expect(TokenKind::LBrace)
         body = parse_body_until(TokenKind::RBrace)
@@ -1111,6 +1242,7 @@ module Adjutant
 
     private def parse_for : ForNode
       l, c = line, col
+      open_block("for", l, c)
       expect(TokenKind::KwFor)
       vars = [] of String
       vars << @current.lexeme
@@ -1137,12 +1269,13 @@ module Adjutant
         skip_terminators
       end
       body = parse_body_until(TokenKind::KwEnd)
-      expect(TokenKind::KwEnd)
+      close_block
       ForNode.new(vars, iter, body, l, c)
     end
 
     private def parse_case : CaseNode
       l, c = line, col
+      open_block("case", l, c)
       expect(TokenKind::KwCase)
       subject = at_any?(TokenKind::Newline, TokenKind::Semi) ? nil : parse_expression(0)
       skip_terminators
@@ -1164,7 +1297,7 @@ module Adjutant
         skip_terminators
         else_branch = parse_body_until(TokenKind::KwEnd)
       end
-      expect(TokenKind::KwEnd)
+      close_block
       CaseNode.new(subject, whens, else_branch, l, c)
     end
 
@@ -1262,6 +1395,7 @@ module Adjutant
 
     private def parse_begin : BeginNode
       l, c = line, col
+      open_block("begin", l, c)
       expect(TokenKind::KwBegin)
       skip_terminators
       body = parse_body_until_any(TokenKind::KwRescue, TokenKind::KwEnsure, TokenKind::KwEnd)
@@ -1299,7 +1433,7 @@ module Adjutant
         skip_terminators
         ensure_body = parse_body_until(TokenKind::KwEnd)
       end
-      expect(TokenKind::KwEnd)
+      close_block
       BeginNode.new(body, rescue_class, rescue_var, rescue_body, ensure_body, l, c)
     end
 
