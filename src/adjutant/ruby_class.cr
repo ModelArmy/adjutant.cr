@@ -26,8 +26,8 @@ module Adjutant
     # already blocked from `.new` on its own terms). `Class`/`Module`
     # exist purely so `.class`/`is_a?`/`superclass` resolve correctly
     # for every other RubyClass; they were never meant to be
-    # instantiable from script (see SCOPE.md's `Class.new`/`Module.new`
-    # Won't Support entry). Checked by `VM#construct`.
+    # instantiable from script (see UNSUPPORTED.md's U002,
+    # `Class.new`/`Module.new`). Checked by `VM#construct`.
     getter? uninstantiable : Bool
 
     # The class OF this class — `Integer.rclass == Class`,

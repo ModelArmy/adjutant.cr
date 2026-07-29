@@ -53,8 +53,8 @@ assert('Class#new', '15.2.3.3.3') do
     # Original mruby test declared `def initialize(args, &block)` and
     # checked both an args-only and an args-and-block path — but block
     # capture never actually worked here (`block` was always `nil`
-    # regardless of whether a block was passed, see SCOPE.md's `&blk`
-    # Won't Support entry), and the args-and-block path was already
+    # regardless of whether a block was passed, see UNSUPPORTED.md's
+    # U001, `&blk` capture), and the args-and-block path was already
     # commented out below as broken. Pruned to just `args`, now that
     # `&block` is a compile-time error (2026-07-27) rather than a
     # silent no-op — this test only ever exercised the args-only path

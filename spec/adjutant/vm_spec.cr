@@ -1127,9 +1127,9 @@ module Adjutant
         # Previously: Op::MakeClass always allocated a fresh,
         # disconnected RubyClass and Op::SetConstant just overwrote the
         # constant slot — `five` from the first body was silently
-        # lost, not a compile/runtime error. See SCOPE.md's "Class/
-        # module reopening" Won't Support entry for why real reopening
-        # isn't being built instead.
+        # lost, not a compile/runtime error. See UNSUPPORTED.md's U003,
+        # class/module reopening, for why real reopening isn't being
+        # built instead.
         expect_raises(RuntimeError, /already initialized/) do
           eval(<<-RUBY)
           class Foo
@@ -1150,7 +1150,8 @@ module Adjutant
         # SetConstant path and guard, not a special case. Real Ruby's
         # most common reopening use case (monkey-patching a builtin) is
         # therefore also a hard error now, consistent with the
-        # deliberate Won't Support decision, not an oversight.
+        # deliberate scope decision (UNSUPPORTED.md, U003), not an
+        # oversight.
         expect_raises(RuntimeError, /already initialized/) do
           eval(<<-RUBY)
           class String

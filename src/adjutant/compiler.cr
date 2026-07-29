@@ -839,10 +839,10 @@ module Adjutant
         )
       end
       if blk_param = node.params.find(&.block_param?)
-        # `&blk` param capture is a deliberate Won't Support decision
-        # (see SCOPE.md) — a `{ }`/`do...end` block passed to a call
-        # stays reachable only via implicit `yield` inside that same
-        # call; it never becomes a value a script can hold, pass
+        # `&blk` param capture is a deliberate scope decision
+        # (see UNSUPPORTED.md, U001) — a `{ }`/`do...end` block passed
+        # to a call stays reachable only via implicit `yield` inside
+        # that same call; it never becomes a value a script can hold, pass
         # around, or defer-call. Rejected HERE, at compile time, rather
         # than left to silently bind nothing (which is what happened
         # before this guard: `blk` inside the method body was just

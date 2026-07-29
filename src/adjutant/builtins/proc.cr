@@ -19,7 +19,7 @@ module Adjutant::Builtins
   # Value representation — RubyObject#ivars is Hash(Int32, Value), and
   # Value.proc(sproc) already exists as a constructible variant (it's
   # exactly what def bodies and call-site block literals still use
-  # directly, unwrapped — see SCOPE.md's Won't Support entry on block
+  # directly, unwrapped — see UNSUPPORTED.md's U001, on block
   # capture). Proc is just the first case where that variant also gets
   # a RubyObject shell around it.
   #
@@ -63,8 +63,8 @@ module Adjutant::Builtins
     # a Proc instance (see scope boundary above), so there is currently
     # no non-lambda Proc for this to distinguish from. Included now
     # rather than left out, since real Ruby's Proc always has it and a
-    # future block-capture piece (if ever added — see SCOPE.md Won't
-    # Fix) would set this to false on that path, not need to add the
+    # future block-capture piece (if ever added — see UNSUPPORTED.md,
+    # U001) would set this to false on that path, not need to add the
     # method itself.
     define(cls, interp, "lambda?") do |_args|
       Adjutant::Value.bool(true)
