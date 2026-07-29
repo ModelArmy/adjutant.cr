@@ -163,6 +163,35 @@ wins.
   hash `Value` was constructed. Small parser addition whenever it's
   worth doing.
 
+### Error reporting
+
+Quality-of-diagnostic gaps in the `Diagnostic`/`ErrorCatalog` system
+(see [ERRORS.md](./ERRORS.md)). None affect correctness — every one is
+"the error is right, but says less than it could."
+
+- **`@def_depth` counts nesting but doesn't record what the enclosing
+  scope was, so U004 can't name it.** Added 2026-07-28 while migrating
+  U004 to a diagnostic. The guard in `Compiler#compile_def` fires on
+  `@def_depth > 0`, which is enough to know a `def` is nested inside
+  *something* deferred but not whether that something was a `def` or a
+  lambda, nor its name. The message therefore says "inside another
+  method's body" generically, where it could say "inside method
+  `foo`" and point a secondary span at `foo`'s own definition —
+  materially more useful when the two are far apart in a long file, or
+  when the nesting was accidental.
+
+  The fix is to make `@def_depth` a small stack of
+  `{kind, name, line, column}` rather than an `Int32`, threaded
+  through `compile_proc` the same way the counter already is. Depth
+  then becomes the stack's size, so the existing guard condition is
+  unchanged. Deliberately deferred when U004 was migrated: it turns a
+  counter into a data structure across every `compile_proc` call site,
+  which is a wider change than the migration it would have ridden
+  along inside.
+
+  Would also give U004 its first real use of a secondary span, which
+  nothing exercises yet.
+
 ### Object model
 
 The privacy/visibility model below is the one open item in this group —

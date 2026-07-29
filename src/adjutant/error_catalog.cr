@@ -66,6 +66,20 @@ module Adjutant
         help: "Run the block with `yield` inside `{method}`, or take a " \
               "lambda as an ordinary parameter and call it with `.call`."
       ),
+      "U004" => Entry.new(
+        code: "U004",
+        summary: "`{definition}` cannot be nested inside another method's body",
+        why: "A method definition has to run exactly once, as part of " \
+             "establishing a class — at the top level of a script, or " \
+             "directly inside a `class`/`module` body. Nested inside " \
+             "another method, it would instead run each time that method " \
+             "was called, so which methods an object responds to would " \
+             "depend on what had already been called on it.",
+        help: "Move `{definition}` to the top level, or directly inside the " \
+              "`class`/`module` body. If the behaviour needs to vary at " \
+              "runtime, assign a lambda to a local or a constant instead " \
+              "and call it with `.call`."
+      ),
     }
 
     # Unknown codes render as themselves rather than raising. A

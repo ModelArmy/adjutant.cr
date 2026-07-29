@@ -808,6 +808,19 @@ module Adjutant
       @scope = outer
     end
 
+    # How the definition was written, for diagnostics: `def foo`,
+    # `def self.foo`, `def obj.foo`. Reconstructed rather than sliced
+    # out of the source, since the compiler has no access to it.
+    private def def_signature(node : DefNode) : String
+      prefix =
+        case recv = node.receiver
+        when SelfNode   then "self."
+        when Identifier then "#{recv.name}."
+        else                 ""
+        end
+      "def #{prefix}#{node.name}"
+    end
+
     private def compile_def(node : DefNode) : Nil
       if @def_depth > 0
         # Rejects `def`/`def self.foo` lexically nested inside ANOTHER
@@ -849,12 +862,24 @@ module Adjutant
         # because a nested proc body compiles via a BRAND NEW `Compiler`
         # instance — ivar state on this instance wouldn't reach it.
         raise CompileError.new(
-          "defining a method (`def#{node.receiver ? " self." : " "}#{node.name}`) " \
-          "inside another method's body is not supported — a method " \
-          "definition can only appear at the top level of a script or " \
-          "directly inside a class/module body, not somewhere that runs " \
-          "conditionally or more than once.",
-          node.line, node.column
+          Diagnostic.new(
+            code: "U004",
+            primary: Span.new(
+              line: node.line,
+              # `parse_def` records its position before consuming `def`,
+              # so the column is the keyword. The caret covers just the
+              # keyword rather than reaching to the method name:
+              # `DefNode` has no end position, and reconstructing the
+              # width from `def ` plus the name would assume exactly
+              # one space, which `def  foo` breaks. Three characters
+              # that are always right beat a longer span that is
+              # usually right.
+              column: node.column,
+              length: 3,
+              label: "not allowed here"
+            ),
+            data: {"definition" => def_signature(node)}
+          )
         )
       end
       if blk_param = node.params.find(&.block_param?)

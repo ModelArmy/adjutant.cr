@@ -62,7 +62,7 @@ is in [UNSUPPORTED.md](./UNSUPPORTED.md) under the matching code.
 |U001|`&blk` parameter capture                  |Compiler      |`param`, `method` |
 |U002|`Class.new` / `Module.new`                |VM            |*not yet migrated*|
 |U003|Class/module reopening                    |VM            |*not yet migrated*|
-|U004|Method definition nested in another method|Compiler      |*not yet migrated*|
+|U004|Method definition nested in another method|Compiler      |`definition`      |
 |U005|Dynamic dispatch by computed name         |*not enforced*|—                 |
 |U006|`eval` / `instance_eval`                  |*not enforced*|—                 |
 |U007|Reflection into native internals          |*not enforced*|—                 |

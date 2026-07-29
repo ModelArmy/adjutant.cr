@@ -45,12 +45,12 @@ full registry across all letters lives in
 restating the reasoning, so each fact lives in exactly one place.
 
 **Status note (2026-07-28):** the diagnostic system these codes key into
-now exists, and **U001 is the first entry wired to it end to end** — its
-error carries a structured `Diagnostic`, renders with the offending source
-line and carets beneath the `&blk`, and draws its wording from the catalog
-rather than the raise site. Every other code below is allocated but not
-yet emitted: those errors still carry a hand-written message and no code.
-Each entry records its current enforcement state explicitly.
+now exists, and **U001 and U004 are wired to it** — their errors carry a
+structured `Diagnostic`, render with the offending source line and carets,
+and draw their wording from the catalog rather than the raise site. The
+remaining codes are allocated but not yet emitted: those errors still
+carry a hand-written message and no code. Each entry records its current
+enforcement state explicitly.
 
 ---
 
@@ -207,7 +207,8 @@ corrected the step before it rather than merely narrowing it:
    `Op::DefMethod` and `Op::DefSingleton` need the same answer, not two
    different mechanisms.
 
-**Enforcement — active since 2026-07-27, compile time, final version.**
+**Enforcement — active since 2026-07-27, compile time, final version;
+migrated to a structured `U004` diagnostic 2026-07-28.**
 Moved out of `vm.cr` entirely into `Compiler#compile_def`: a `@def_depth`
 counter, incremented for `def` and lambda bodies (genuinely
 deferred/callable-later contexts), propagated unchanged through block

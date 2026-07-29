@@ -453,6 +453,32 @@ module Adjutant
         end
       end
 
+      it "carries a U004 diagnostic naming how the def was written" do
+        # Asserting on the code, not the prose — the code is the stable
+        # identity, so rewording the catalog can't break this.
+        error = expect_raises(CompileError) do
+          compile("class A\ndef test\ndef nested\nend\nend\nend")
+        end
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("U004")
+        diag.data["definition"].should eq("def nested")
+        # Line 3 is the inner def; the column is the `def` keyword,
+        # since parse_def records its position before consuming it.
+        diag.primary.line.should eq(3)
+        diag.primary.column.should eq(1)
+        diag.primary.length.should eq(3)
+      end
+
+      it "reports the def self.foo shape distinctly from a plain def" do
+        # Both shapes hit the same guard, so the diagnostic has to
+        # reconstruct which one was actually written — the compiler
+        # has no access to the source text to slice it out of.
+        error = expect_raises(CompileError) do
+          compile("class A\ndef test\ndef self.nested\nend\nend\nend")
+        end
+        error.diagnostic.not_nil!.data["definition"].should eq("def self.nested")
+      end
+
       it "still allows an ordinary def directly inside a class body" do
         # Regression check — the overwhelmingly common case must stay
         # completely unaffected.
