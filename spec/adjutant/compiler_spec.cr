@@ -379,9 +379,9 @@ module Adjutant
       # CompileError either (same file-level, parse/compile-before-any-
       # execution blast radius as a ParseError) — expect_raises directly
       # against the compiler is the only way to actually assert on this.
-      # `&blk` capture is a deliberate Won't Support decision (see
-      # SCOPE.md) — this confirms it's rejected immediately at compile
-      # time now, not left to silently bind nothing.
+      # `&blk` capture is a deliberate scope decision (see
+      # UNSUPPORTED.md, U001) — this confirms it's rejected immediately
+      # at compile time now, not left to silently bind nothing.
       it "rejects &blk param capture at compile time" do
         expect_raises(CompileError, /block parameter capture/) do
           compile("def foo(&blk)\nend")

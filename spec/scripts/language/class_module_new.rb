@@ -1,8 +1,8 @@
 require "assert"
 
 # Was a probe script (2026-07-27) confirming Class.new/Module.new
-# silently succeeded despite SCOPE.md's Won't Support entry claiming
-# otherwise. As of 2026-07-27, that's fixed: RubyClass#uninstantiable?
+# silently succeeded despite the documented exclusion (now
+# UNSUPPORTED.md's U002) claiming otherwise. As of 2026-07-27, that's fixed: RubyClass#uninstantiable?
 # (set for Class/Module specifically at bootstrap, see
 # Interpreter#bootstrap_core_hierarchy) makes VM#construct raise a
 # clear error instead of falling through to the generic

@@ -1,12 +1,16 @@
 # Scope
 
-Persistent record of outstanding work and deliberate non-goals. Updated as
-part of any session that adds, resolves, or reprioritizes an item — this
-file is the source of truth for "what's left," not the handoff document,
-which only carries context on how to work, not the item list itself.
+Persistent record of outstanding work. Updated as part of any session that
+adds, resolves, or reprioritizes an item — this file is the source of
+truth for "what's left," not the handoff document, which only carries
+context on how to work, not the item list itself.
 
-An item lives in exactly one of the three sections below. Moving an item
-between sections (e.g. `Will Fix` → `Must Fix` once it starts blocking
+Deliberate non-goals are **not** tracked here; they live in
+[UNSUPPORTED.md](./UNSUPPORTED.md). See the closing section for the
+distinction.
+
+An item lives in exactly one of the two sections below. Moving an item
+between them (e.g. `Will Fix` → `Must Fix` once it starts blocking
 something) is itself a real edit — leave a one-line note in the entry
 about when/why the priority changed, rather than silently re-filing it.
 
@@ -22,9 +26,10 @@ may unblock ones above it.
 
 - **Default parameter values, splat collection, and keyword arguments
   don't actually work at runtime — only required positional params do.**
-  Found 2026-07-27 while auditing `SCOPE.md`'s `Won't Support` list for
-  whether each item fails loudly (it doesn't directly belong to that
-  list — this is a correctness bug in a feature meant to work, not a
+  Found 2026-07-27 while auditing the deliberate-non-goals list (then
+  `SCOPE.md`'s `Won't Support` section, now
+  [UNSUPPORTED.md](./UNSUPPORTED.md)) for whether each item fails loudly
+  (it doesn't belong to that list — this is a correctness bug in a feature meant to work, not a
   deliberate cut — but the audit is what surfaced it). `Param` (`ast.cr`)
   correctly parses and carries `default`, `splat?`, and `kwarg?` for
   every param shape (`parser_spec.cr` already covers all three at the
@@ -66,9 +71,9 @@ may unblock ones above it.
     calls are blocked twice over (parse failure at the call site, silent
     non-binding even if that parse gap were closed).
 
-  Distinct from `&blk`-param capture (`Won't Support`, now actively
-  rejected at compile time as of this same session) — `&blk` is a
-  deliberate cut; this is a bug in functionality that's supposed to
+  Distinct from `&blk`-param capture ([UNSUPPORTED.md](./UNSUPPORTED.md),
+  U001 — actively rejected at compile time as of that same session) —
+  `&blk` is a deliberate cut; this is a bug in functionality that's supposed to
   work and currently silently doesn't. Fixing this properly means
   giving `VM#call_script_proc` (or an equivalent prologue emitted by
   the compiler) real per-param logic: evaluate `default` when a slot
@@ -78,6 +83,45 @@ may unblock ones above it.
   the call-site parser gap above is also closed. Three sub-problems,
   likely one coordinated fix given they share the same binding
   mechanism.
+
+- **`send`/`method_missing`/`eval`/reflection are declared unsupported but
+  almost certainly aren't enforced.** Added 2026-07-28, while extracting
+  [UNSUPPORTED.md](./UNSUPPORTED.md) — U005 (dynamic dispatch by computed
+  method name: `send`, `public_send`, `method_missing`, `define_method`),
+  U006 (`eval`/`instance_eval`), and U007 (reflection into native
+  internals: FFI, `ObjectSpace`-style introspection) have been documented
+  exclusions since the risk-model design, but unlike U001–U004 nothing
+  appears to reject them by name. The expectation — believed, not yet
+  confirmed empirically — is that these names are simply undefined, so a
+  script using one gets a generic undefined-method error that never says
+  the construct is deliberately excluded and never will be.
+
+  That is precisely the failure shape the 2026-07-27 audit removed from
+  U001–U004: it doesn't silently do the wrong thing, but it does leave the
+  reader (a human, or an LLM that generated the call) with no way to tell
+  "this doesn't exist yet" apart from "this will never exist." These three
+  are the *permanent* kind, so a misleading message here is worse than
+  elsewhere — an LLM's natural next move on undefined-method is to retry
+  with a variation, and every variation will fail the same way.
+
+  Two steps, in order:
+  1. **Verify.** Run a probe for each construct and record what actually
+     happens today. Belongs in `spec/scripts/language/` if it fails at
+     runtime, or in a `.cr` spec with `expect_raises` if it fails at parse
+     or compile time — see the `test_runner` constraint noted against
+     U001's enforcement history (a `ParseError`/`CompileError` aborts the
+     whole script file before any assertion machinery loads, so
+     `assert_raise` can never observe one).
+  2. **Remediate** whatever isn't already loud, following the U001–U004
+     pattern: reject as early as the construct is detectable, name the
+     construct, and say nothing about this repo's internals in the
+     message. `send` and friends are detectable at compile time from the
+     literal `Call#method` name; `eval`/`instance_eval` likewise.
+
+  Sequencing note: this is a natural first consumer of the `U`-code
+  diagnostic work, since all three want the same message shape and none
+  of them has a legacy message to preserve. Worth doing after that lands
+  rather than writing messages twice.
 
 ## Will Fix
 
@@ -122,8 +166,9 @@ wins.
 ### Object model
 
 The privacy/visibility model below is the one open item in this group —
-per-instance singleton methods, previously listed here, moved to
-`Won't Support` 2026-07-27 (see below).
+per-instance singleton methods, previously listed here, became a
+deliberate non-goal 2026-07-27 — see [UNSUPPORTED.md](./UNSUPPORTED.md),
+U004, which generalised it to nested method definition of any shape.
 
 - **No implicit-`self` privacy/visibility model.** Adjutant has no
   `private`/`public`/`protected` at all — a native function or top-level
@@ -212,174 +257,16 @@ a priority; currently untriaged relative to each other.
 - `respond_to?`'s blind spot (`x.respond_to?(:to_s)` is `false` even
   though `x.to_s` works)
 
-## Won't Support
+## Deliberate non-goals
 
-Deliberately out of scope, with the reasoning that closed the door —
-revisit only if the stated reason no longer holds.
+Constructs and design decisions that are permanently out of scope no
+longer live here — they moved to [UNSUPPORTED.md](./UNSUPPORTED.md) on
+2026-07-28 (the section was called `Won't Support`, and `Won't Fix` before
+that). They were extracted because they are a normative reference rather
+than a work queue: nothing in that list is ever "done," and it accounted
+for nearly half of this file while describing work that will never happen.
 
-- **`&blk`-param capture / block literals as first-class `Proc` values.**
-  Decided 2026-07-18 alongside Piece C's design: only `Lambda`-node output
-  (`->(){}` — Adjutant has no Kernel `lambda { }` function) becomes a
-  real `Proc` object. A `{ }`/`do...end`
-  block passed to a call stays consumable only via implicit `yield`
-  inside that call — it's never bound to a named parameter, never
-  returned, never stored. Real Ruby supports `def foo(&blk)`; Adjutant
-  deliberately doesn't (yet) — narrowing the subset rather than widening
-  it, kept simple until something depends on it. Revisit as a new,
-  separate item if a real script needs to hold and defer-call a block.
-  **Actively blocked as of 2026-07-27:** until then, `def foo(&blk)`
-  compiled fine and silently bound `blk` to `nil` — a script only
-  discovered the gap if/when it tried to actually use `blk` (`blk.call`
-  raised a generic "undefined method or variable: call", with no hint
-  that `&blk` itself was the real problem). Now rejected immediately at
-  compile time, with a message naming the construct — see `compile_def`
-  in `compiler.cr`. Verified via `compiler_spec.cr`'s "rejects &blk
-  param capture at compile time" (plus a sibling regression check
-  confirming ordinary `yield`, a separate mechanism, is untouched by the
-  guard) — moved there from a `spec/scripts/` probe script 2026-07-27,
-  since `test_runner`'s assert framework can't intercept a
-  `CompileError`/`ParseError` at all (both abort the whole file before
-  any assertion machinery loads; only a spec using `expect_raises`
-  directly can assert on one). The raised message itself deliberately
-  does NOT reference `SCOPE.md` or any other file in this repo — it's
-  end-user/LLM-facing, and a repo-internal doc path means nothing to
-  either audience; it states only that the construct isn't supported.
-- **`Class.new`/`Module.new`.** Explicit cut from the Object/Class/Module
-  design conversation (2026-07-14 arc) — this bootstrap only makes
-  `Class`/`Module` exist as real `RubyClass`es for `.class`/`is_a?`/
-  `superclass` to work correctly; not meant to be instantiable from
-  script. **Actively blocked as of 2026-07-27:** until then, nothing
-  actually enforced this — `Class.new`/`Module.new` fell through to the
-  generic `construct_object` path and silently succeeded, producing a
-  bare, non-functional object (no name, no ability to define methods on
-  it meaningfully). `RubyClass` gained an `uninstantiable?` flag, set
-  for `Class`/`Module` specifically at bootstrap (see
-  `Interpreter#bootstrap_core_hierarchy`), checked by `VM#construct`,
-  which now raises a clear error instead. Verified via
-  `spec/scripts/class_module_new.rb`.
-- **Class/module reopening (`class Foo; end` written a second time to
-  extend it — real Ruby's monkey-patching mechanism).** Decided
-  2026-07-18 alongside the `Op::SetConstant` reassignment hardening (see
-  `Must Fix` history): today this silently creates a brand-new,
-  disconnected `RubyClass` and discards the first body entirely
-  (`Op::MakeClass` never checks for an existing same-name class) — a
-  real, separate bug, now converted into a loud `Op::SetConstant`
-  redefinition error by that hardening rather than fixed properly (which
-  would mean `Op::MakeClass` detecting and reusing an existing class).
-  **Confirmed concretely by the person, 2026-07-18:** before the
-  `Op::SetConstant` guard existed, reopening a BUILTIN specifically —
-  `class String; def hello; "hello"; end; end` — silently broke every
-  native `String` method (`.upcase` started raising undefined-method)
-  once the constant was reassigned to the fresh, disconnected class,
-  since the native methods only ever lived on the original, now-
-  unreachable one. This is what confirmed a same-shaped existing spec
-  (`singleton_methods_spec.cr`'s "a native singleton new still works
-  alongside script singleton methods on the same class") had always
-  been silently invalid — it only exercised `.new` plus one script
-  method, narrow enough to never surface the breakage; removed outright
-  rather than kept as a documented gap, since the pattern it tested
-  (script-side `class Foo; end` extending an already-existing,
-  host-registered class) isn't coming back — see below.
-  Deliberately not building real reopening support: Adjutant's constants
-  (including class/module names) are now enforced assign-once, and
-  reopening is exactly a second assignment to the same constant — so
-  supporting it would mean carving out a special exemption from that
-  rule specifically for classes/modules, undermining the whole reason
-  the rule exists (constant-valued things, notably `Lambda`s used as
-  call arguments — see Piece D — being staticaly resolvable specifically
-  BECAUSE a constant can't quietly become something else later).
-  Adjutant scripts are LLM-generated, typically ephemeral/narrow in
-  scope even when reused, so the case for real monkey-patching support
-  is weak; failing loudly on an attempt is strictly better than the
-  current silent data loss, and staying without it keeps Adjutant a
-  proper subset of Ruby regardless (declining a feature, not adding
-  divergent behavior). `Class.new`/`Module.new` above is the same
-  family of cut for the same underlying reason.
-- **Defining a method (`def` or `def self.foo`) nested inside another
-  method's own body — runtime-conditional method definition.** This
-  entry started narrower (2026-07-27, moved here from `Will Fix` as "no
-  true per-instance singleton methods on `RubyObject`") and was
-  generalized twice in the same session as the real shape of the
-  problem became clearer — worth reading in sequence, since each step
-  corrected something about the step before it, not just narrowed scope:
-
-  1. **Original framing:** `Op::DefSingleton` (`def self.foo` when
-     `self` is a `RubyObject`, not a `RubyClass`) targets the
-     receiver's own *class* instead of the receiver itself. Believed to
-     mean the method "leaks" onto every instance of that class.
-  2. **Corrected via `spec/scripts/singleton_instance_methods.rb`
-     (now moved into `compiler_spec.cr`, see below):** that's wrong —
-     `Op::DefSingleton` writes into the class's SINGLETON table, which
-     only a `RubyClass`-receiver call (`A.foo`) ever consults, never an
-     instance call (`a.foo`). So `class A; def test; def self.hello;
-     end; end; end` doesn't leak to siblings — it creates a
-     class-level method invisible to `a`, `b`, or any instance,
-     reachable only as `A.hello`. Fixed at the time with a runtime
-     guard in `Op::DefSingleton`, comparing the receiver against
-     `main` specifically.
-  3. **Generalized again, same session, prompted by the person's own
-     follow-up test script:** that runtime guard only ever covered the
-     `def self.foo` shape. A PLAIN `def nested` (no `self.`), nested
-     the exact same way inside `test`, hits `Op::DefMethod` instead —
-     never guarded at all — and writes directly into the class's
-     ORDINARY instance method table. Confirmed concretely: `x.test`
-     (where `test` contains a nested `def nested`) made `nested`
-     callable on `x`, on a second pre-existing instance `y`, AND on
-     instances constructed after `test` ran — a real leak to every
-     instance, this time genuinely, not the misdiagnosis from step 1.
-     This proved the real boundary was never "singleton vs instance
-     method" or "which opcode" at all — it's whether a `def` executes
-     exactly once, synchronously, as part of establishing the class
-     (top level, or directly inside a class/module body) versus later,
-     conditionally, as part of calling some other already-defined
-     method. Both `Op::DefMethod` and `Op::DefSingleton` need the same
-     answer to that question, not two different mechanisms.
-
-  **Actively blocked as of 2026-07-27, final version:** moved out of
-  `vm.cr` entirely and into `Compiler#compile_def` as a COMPILE-time
-  check — `@def_depth`, incremented for `def` and lambda bodies
-  (genuinely deferred/callable-later contexts), propagated unchanged
-  through block bodies (which can only run synchronously via `yield` in
-  Adjutant, never stored — see the `&blk` entry above), threaded through
-  `compile_proc` since a nested proc body compiles via a brand-new
-  `Compiler` instance that wouldn't otherwise see it. Any `def`/`def
-  self.foo` node compiled while `@def_depth > 0` is rejected outright,
-  regardless of receiver — strictly earlier and more complete than the
-  runtime version it replaced (every case that one caught is, by
-  construction, also caught by this one, since `self` can only BE a
-  non-`main` `RubyObject` inside another method's own body to begin
-  with). An ordinary top-level `def`, `def self.foo`, or a `def`
-  directly inside a `class`/`module` body are all still completely
-  unaffected. Verified via `compiler_spec.cr`'s nested-def specs
-  (covering the `def self.foo` shape, the plain-`def` shape, a
-  def-inside-a-lambda shape, and regression checks for both unaffected
-  cases). Like the other entries in this section, the raised error text
-  doesn't reference `SCOPE.md` or any repo-internal doc.
-
-  Decided 2026-07-27, prompted by the person's own `irb` trace of real
-  Ruby's actual per-instance singleton-method semantics: runtime-
-  conditional method definition — an object's or a class's method set
-  changing as a side effect of calling some unrelated method, rather
-  than being fixed once the class is established — undermines the same
-  property the class-reopening decision above protects: that an
-  object's callable surface is knowable from its class alone, not from
-  simulating execution. Same family of cut, same underlying reason, as
-  class/module reopening and `Class.new`/`Module.new` above. This
-  section is fully enforced as of 2026-07-27.
-- **A per-parameter declarative provenance schema** for
-  `declare_sensitivity` (declare provenance at `define_native`
-  registration time, instead of the current call-site-driven API).
-  Rejected during the original IFC design arc — Ruby's dynamic arity
-  (variadic functions, optional args, role-depends-on-other-args
-  patterns) has no fixed positional contract a schema could describe
-  reliably.
-- **Adjutant should never generate end-user-facing prompt text itself**
-  (for i18n reasons) — the agent-facing API for consuming a
-  `RiskFlowDecisionRequest` stays documentation/samples, not new core
-  API surface. Decided during the original IFC design arc.
-- **Wildcard-counting or array-order-as-priority for `RiskFlowPolicy`
-  pattern specificity.** Both considered and rejected during the
-  original IFC design arc — hostnames get more specific reading left,
-  paths reading right; no single syntax-driven specificity rule
-  generalizes across both. `priority` is an explicit field instead, with
-  a hard error (`AmbiguousRiskFlowPolicyError`) on an unresolved tie.
+If you are deciding whether something belongs there or here: an item in
+this file is expected to leave it, by being fixed. An entry in
+`UNSUPPORTED.md` leaves only if the reasoning that closed the door stops
+holding, which is a design conversation in its own right.

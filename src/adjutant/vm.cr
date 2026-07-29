@@ -238,7 +238,7 @@ module Adjutant
     # invoked synchronously, inside the very call that received it,
     # while its defining frame is still live on `@frames` — Adjutant
     # has no `&blk`-param capture or block-forwarding at all (see
-    # SCOPE.md's Won't Support), so there is no way for this frame to have
+    # UNSUPPORTED.md, U001), so there is no way for this frame to have
     # gone anywhere by the time this runs. If block-forwarding is ever
     # added, this assumption needs to be re-examined — don't assume it
     # still holds. See array_spec.cr's "resolves an outer local...
@@ -603,8 +603,8 @@ module Adjutant
             # Constants are assign-once — real Ruby only WARNS on
             # reassignment (still permits it); Adjutant deliberately
             # makes it a hard error instead (2026-07-18, ahead of
-            # Piece D — see SCOPE.md's Must Fix history and the
-            # "Class/module reopening" Won't Support entry). This is what
+            # Piece D — see SCOPE.md's Must Fix history and
+            # UNSUPPORTED.md's U003, class/module reopening). This is what
             # makes a constant-valued Lambda (`F1 = ->(){}`) passed as
             # a call argument staticaly resolvable at all: the walker
             # can trust that whatever `F1` resolves to during a walk is
@@ -1455,8 +1455,7 @@ module Adjutant
         # `is_module?` above, which is about ordinary `module Foo; end`
         # definitions). Before this guard, both fell through to
         # construct_object below and silently succeeded, producing a
-        # bare, non-functional RubyObject — see SCOPE.md's Won't
-        # Support entry.
+        # bare, non-functional RubyObject — see UNSUPPORTED.md, U002.
         raise runtime_error("can't instantiate #{cls.name}")
       end
       if sym_id = @symbols.lookup("new").try(&.value)
