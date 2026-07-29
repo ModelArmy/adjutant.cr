@@ -61,7 +61,12 @@ P003 adds a secondary span pointing at the innermost construct still open.
 
 ## C — Static semantics
 
-*None migrated yet.*
+Parsed successfully, but rejected before it could run.
+
+|Code|Problem                               |Raised by|Placeholders|
+|----|--------------------------------------|---------|------------|
+|C001|Left-hand side of `=` isn't assignable|Compiler |`target`    |
+|C002|`redo` used outside any loop          |Compiler |—           |
 
 ## R — Runtime
 
@@ -74,6 +79,22 @@ what is being reassigned: two classes means a reopen (U003, a construct
 that is never coming), anything else means an ordinary constant being
 written twice (R001, a fault to fix in the script). Reporting both as one
 error made each read as noise to whoever hit the other.
+
+## L — Limits
+
+The script is valid; it is just larger than something Adjutant is prepared
+to handle. Separate from `R` because the reader's move differs — not "this
+is wrong" but "this is too much".
+
+|Code|Limit reached                               |Raised by|Placeholders|
+|----|--------------------------------------------|---------|------------|
+|L001|Loops nested past the compiler's fixed depth|Compiler |`limit`     |
+
+Whether a limit is host-adjustable varies, and the `help` has to be honest
+about it. `ExecutionLimits` exposes `instruction_limit` and
+`call_depth_limit` for a host to raise; L001's ceiling is a fixed
+compile-time constant guarding a compile-time structure, so its help says
+to restructure the script rather than implying a setting exists.
 
 ## U — Deliberately unsupported
 

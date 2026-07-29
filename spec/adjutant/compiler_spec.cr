@@ -453,6 +453,43 @@ module Adjutant
         end
       end
 
+      it "names what the unassignable target actually was" do
+        # AST class names (`Call`, `IntLiteral`) mean nothing to a script
+        # author, so the diagnostic renders what they wrote.
+        error = expect_raises(CompileError) do
+          compile("foo() = 1")
+        end
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("C001")
+        diag.data["target"].should eq("a method call")
+        # Was hardcoded to column 0 before the migration, which is not a
+        # column any source position can have.
+        diag.primary.column.not_nil!.should be > 0
+      end
+
+      it "rejects redo outside any loop as C002" do
+        error = expect_raises(CompileError) do
+          compile("redo")
+        end
+        error.diagnostic.not_nil!.code.should eq("C002")
+      end
+
+      it "reports the nesting limit, and its actual value, as L001" do
+        # A limit rather than a fault: the script is valid, just too
+        # deeply nested. The limit is interpolated so the message can't
+        # drift from the constant.
+        source = String.build do |io|
+          17.times { |i| io << "while x#{i}\n" }
+          17.times { io << "end\n" }
+        end
+        error = expect_raises(CompileError) do
+          compile(source)
+        end
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("L001")
+        diag.data["limit"].should eq("16")
+      end
+
       it "carries a U004 diagnostic naming how the def was written" do
         # Asserting on the code, not the prose — the code is the stable
         # identity, so rewording the catalog can't break this.

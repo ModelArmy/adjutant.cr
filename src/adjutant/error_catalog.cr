@@ -56,6 +56,42 @@ module Adjutant
     end
 
     ENTRIES = {
+      # --- C: static semantic errors --------------------------------
+      "C001" => Entry.new(
+        code: "C001",
+        summary: "cannot assign to {target}",
+        why: "The left-hand side of `=` has to name somewhere a value can " \
+             "be stored: a local, an instance or class variable, a " \
+             "constant, or an index like `a[0]`.",
+        help: "Assign to a name or an index instead. If you meant to " \
+              "compare rather than assign, use `==`."
+      ),
+      "C002" => Entry.new(
+        code: "C002",
+        summary: "`redo` outside a loop",
+        why: "`redo` restarts the current iteration of the loop it appears " \
+             "in, so it has no meaning where there is no loop to restart.",
+        help: "Move the `redo` inside a `while`, `until`, `loop`, or `for` " \
+              "body, or remove it."
+      ),
+
+      # --- L: limits reached ----------------------------------------
+      #
+      # The script is valid; it is just larger than something Adjutant
+      # is prepared to handle. Distinct from `R` because the reader's
+      # move is different: not "this is wrong" but "this is too much".
+      # Where the ceiling is host-configurable the help says so — and
+      # where it is not, it must not pretend otherwise.
+      "L001" => Entry.new(
+        code: "L001",
+        summary: "loops nested more than {limit} deep",
+        why: "Adjutant compiles at most {limit} levels of nested loop. " \
+             "This is a fixed limit in the compiler, not a setting — the " \
+             "loop stack it guards is a compile-time structure.",
+        help: "Extract the inner loops into methods and call them, which " \
+              "resets the nesting at each call."
+      ),
+
       # --- I: internal invariant violations -------------------------
       #
       # These mean Adjutant is broken, not the script. None carries a

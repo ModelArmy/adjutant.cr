@@ -688,7 +688,19 @@ module Adjutant
         compile_node(target.index)
         @chunk.emit(Op::SetIndex, line)
       else
-        raise CompileError.new("invalid assignment target: #{target.class}", line, 0)
+        raise CompileError.new(
+          Diagnostic.new(
+            code: "C001",
+            primary: Span.new(
+              line: target.line,
+              # Was hardcoded to column 0, which is not a real column —
+              # the target node has known its own position all along.
+              column: target.column,
+              label: "not assignable"
+            ),
+            data: {"target" => describe_node(target)}
+          )
+        )
       end
     end
 
@@ -812,6 +824,53 @@ module Adjutant
       @scope = CompilerScope.new(is_block: false, parent: nil, starting_slot: start)
       yield
       @scope = outer
+    end
+
+    # Three sites guard the same limit, so the diagnostic is built in
+    # one place rather than repeated.
+    private def loop_too_deep(node : Node) : CompileError
+      CompileError.new(
+        Diagnostic.new(
+          code: "L001",
+          primary: Span.new(
+            line: node.line,
+            column: node.column,
+            label: "nesting limit reached here"
+          ),
+          data: {"limit" => MAX_LOOP_DEPTH.to_s}
+        )
+      )
+    end
+
+    # What the author wrote, for an unassignable target. AST class
+    # names are internal (`IntegerLit`, `CallNode`) and mean nothing to
+    # a script author, so the common cases get named in their terms.
+    # Keyed on the class objects, not on class-NAME strings: this way
+    # the compiler checks them, so renaming or removing an AST class
+    # breaks the build rather than silently degrading every affected
+    # diagnostic to the generic wording. A lookup rather than a `case`
+    # keeps it to one branch — as a `case` this was sixteen type tests
+    # and over Ameba's complexity threshold.
+    NODE_DESCRIPTIONS = Hash(Node.class, String){
+      Call          => "a method call",
+      IntLiteral    => "a number",
+      FloatLiteral  => "a number",
+      StringLiteral => "a string",
+      InterpString  => "a string",
+      SymbolLiteral => "a symbol",
+      ArrayLiteral  => "an array literal",
+      HashLiteral   => "a hash literal",
+      RangeLiteral  => "a range",
+      NilLiteral    => "`nil`",
+      BoolLiteral   => "`true`/`false`",
+      SelfNode      => "`self`",
+      Binary        => "the result of an expression",
+      Unary         => "the result of an expression",
+      Ternary       => "the result of an expression",
+    }
+
+    private def describe_node(node : Node) : String
+      NODE_DESCRIPTIONS[node.class]? || "this expression"
     end
 
     # How the definition was written, for diagnostics: `def foo`,
@@ -1049,7 +1108,7 @@ module Adjutant
     end
 
     private def compile_while(node : WhileNode) : Nil
-      raise CompileError.new("loop nesting too deep", node.line, node.column) if @loop_stack.size >= MAX_LOOP_DEPTH
+      raise loop_too_deep(node) if @loop_stack.size >= MAX_LOOP_DEPTH
       loop_start = @chunk.pos
       scope = LoopScope.new(loop_start)
       @loop_stack.push(scope)
@@ -1071,7 +1130,7 @@ module Adjutant
     end
 
     private def compile_loop(node : LoopNode) : Nil
-      raise CompileError.new("loop nesting too deep", node.line, node.column) if @loop_stack.size >= MAX_LOOP_DEPTH
+      raise loop_too_deep(node) if @loop_stack.size >= MAX_LOOP_DEPTH
       loop_start = @chunk.pos
       scope = LoopScope.new(loop_start)
       scope.body_pos = loop_start
@@ -1202,7 +1261,19 @@ module Adjutant
     end
 
     private def compile_redo(node : RedoNode) : Nil
-      raise CompileError.new("redo outside loop", node.line, node.column) if @loop_stack.empty?
+      if @loop_stack.empty?
+        raise CompileError.new(
+          Diagnostic.new(
+            code: "C002",
+            primary: Span.new(
+              line: node.line,
+              column: node.column,
+              length: 4,
+              label: "no loop to restart"
+            )
+          )
+        )
+      end
       @chunk.emit(Op::Jump, node.line, c: @loop_stack.last.body_pos.to_u32)
     end
 
@@ -1365,7 +1436,7 @@ module Adjutant
     end
 
     private def compile_modifier_while(node : ModifierWhile) : Nil
-      raise CompileError.new("loop nesting too deep", node.line, node.column) if @loop_stack.size >= MAX_LOOP_DEPTH
+      raise loop_too_deep(node) if @loop_stack.size >= MAX_LOOP_DEPTH
       loop_start = @chunk.pos
       scope = LoopScope.new(loop_start)
       scope.body_pos = loop_start
