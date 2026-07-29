@@ -8,6 +8,12 @@ module Adjutant
   class Lexer
     getter filename : String
 
+    # The full source text, already read eagerly in the constructor.
+    # Exposed so `SourceMap` can retain it for diagnostic rendering —
+    # previously it was dropped once tokens were produced, leaving
+    # nothing to quote by the time anything failed.
+    getter source : String
+
     # Primary constructor - reads the IO eagerly into a String.
     # Random access (peek, backtrack, lexeme slicing) requires the full
     # source in memory; true streaming would add complexity for no gain

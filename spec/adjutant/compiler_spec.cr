@@ -388,6 +388,25 @@ module Adjutant
         end
       end
 
+      it "carries a U001 diagnostic spanning the whole `&blk`" do
+        # Asserting on the CODE rather than the prose: the code is the
+        # stable identity, so rewording the message can't break this,
+        # and the span is what a caret row is drawn from.
+        error = expect_raises(CompileError) do
+          compile("def foo(&blk)\nend")
+        end
+        diag = error.diagnostic
+        diag.should_not be_nil
+        diag = diag.not_nil!
+        diag.code.should eq("U001")
+        diag.primary.line.should eq(1)
+        # Column 9 is the `&`, not the name — parse_param records the
+        # position before consuming the sigil.
+        diag.primary.column.should eq(9)
+        diag.primary.length.should eq(4)
+        diag.data["method"].should eq("foo")
+      end
+
       it "does not reject an ordinary block-consuming def that uses yield" do
         # Regression check for the guard above — yield doesn't declare
         # &blk as a param at all, so it must be completely unaffected.

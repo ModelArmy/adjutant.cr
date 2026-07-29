@@ -1,13 +1,32 @@
 require "./ast"
 require "./bytecode"
+require "./diagnostic"
 
 module Adjutant
   class CompileError < Exception
     getter line : Int32
     getter column : Int32
 
+    # Present only for raise sites migrated to the diagnostic system.
+    # Nil means this error predates that migration and carries just a
+    # message — the two forms coexist deliberately, so converting the
+    # ~70 raise sites can happen incrementally instead of as one
+    # unreviewable change.
+    getter diagnostic : Diagnostic?
+
     def initialize(message : String, @line, @column)
+      @diagnostic = nil
       super("#{message} (line #{line}, col #{column})")
+    end
+
+    # `message` stays a readable one-liner so existing rescuers and
+    # specs keep working; anything wanting the source snippet renders
+    # `diagnostic` through `DiagnosticRenderer`.
+    def initialize(diagnostic : Diagnostic)
+      @diagnostic = diagnostic
+      @line = diagnostic.primary.line
+      @column = diagnostic.primary.column || 0
+      super(diagnostic.to_line)
     end
   end
 
@@ -850,10 +869,23 @@ module Adjutant
         # "undefined method or variable: call" instead of a clear
         # explanation of what's actually unsupported and why).
         raise CompileError.new(
-          "block parameter capture (`&#{blk_param.name}`) is not supported — " \
-          "a block passed to this method can only be used via `yield`, not " \
-          "bound to a name.",
-          blk_param.line, blk_param.column
+          Diagnostic.new(
+            code: "U001",
+            primary: Span.new(
+              line: blk_param.line,
+              column: blk_param.column,
+              # `&` plus the name. `parse_param` captures the position
+              # BEFORE consuming the `&`, so the column already points
+              # at the sigil and the span covers exactly what the
+              # author wrote.
+              length: blk_param.name.size + 1,
+              label: "not usable as a value"
+            ),
+            data: {
+              "param"  => blk_param.name,
+              "method" => node.name,
+            }
+          )
         )
       end
       params = node.params.map(&.name)

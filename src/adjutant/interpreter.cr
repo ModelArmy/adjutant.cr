@@ -174,6 +174,12 @@ module Adjutant
     getter risk_flow_policy : RiskFlowPolicy
     getter on_risk_flow_decision : RiskFlowDecisionRequest -> RiskFlowDecision
 
+    # Source of every script this interpreter has parsed, keyed by
+    # filename. Populated by `eval`/`compile`, including files pulled
+    # in by `require`, whose diagnostics name a different file than
+    # the top-level script.
+    getter sources : SourceMap = SourceMap.new
+
     # `self` at the top level of a script — a real RubyObject whose
     # class is Object, matching real Ruby's actual `main` (not a
     # simplification of it: a bare top-level `def` genuinely becomes
@@ -235,7 +241,12 @@ module Adjutant
 
     # Parse, compile, and execute from an IO stream.
     def eval(io : IO, filename : String = "<eval>") : Value
-      body = Parser.new(io, filename).parse
+      parser = Parser.new(io, filename)
+      # Registered BEFORE parsing, so a ParseError can be rendered
+      # with its source line too — not just the errors from later
+      # phases.
+      sources.register(filename, parser.source)
+      body = parser.parse
       chunk, local_count = Compiler.compile(body, @symbols)
       vm = make_vm
       result = vm.run(chunk, filename, local_count)
@@ -248,9 +259,26 @@ module Adjutant
     end
 
     def compile(io : IO, filename : String = "<compile>") : Chunk
-      body = Parser.new(io, filename).parse
+      parser = Parser.new(io, filename)
+      sources.register(filename, parser.source)
+      body = parser.parse
       chunk, _local_count = Compiler.compile(body, @symbols)
       chunk
+    end
+
+    # Render a diagnostic-carrying error as text, with the offending
+    # source line and carets where position information allows.
+    #
+    # Returns nil when the error predates the diagnostic migration
+    # (`diagnostic` is nil), so callers can fall back to `message`
+    # rather than special-casing which raise sites have been converted
+    # yet.
+    def render_error(error : ParseError | CompileError,
+                     format : DiagnosticRenderer::Format = DiagnosticRenderer::Format::Markdown,
+                     filename : String? = nil) : String?
+      diag = error.diagnostic
+      return nil unless diag
+      DiagnosticRenderer.new(sources).render(diag, format, filename)
     end
 
     # Called by VM when a script issues `require "path"`.

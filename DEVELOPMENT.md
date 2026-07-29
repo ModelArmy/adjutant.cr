@@ -669,6 +669,24 @@ Two things worth calling out beyond node coverage:
 
 A worked example: `samples/assess_script.cr` parses a script file (never running it) and prints both `RiskAggregator.summarize`'s worst-case path and every `RiskAggregator.all_findings` entry; `samples/scripts/risky_example.rb` exercises the `if`/`while`/def-discovery paths together.
 
+## Error reporting
+
+Errors are structured data, rendered late — not strings built at the raise site.
+
+A `Diagnostic` (`diagnostic.cr`) carries a **code**, one or more **spans**, and a `data` hash of substitutions. It carries no prose at all: the summary, the "why", and the "help" line are looked up in `ErrorCatalog` (`error_catalog.cr`) by code, with `{placeholder}`s filled from `data`. `DiagnosticRenderer` (`diagnostic_renderer.cr`) turns one into Markdown or plain text, quoting the offending source line from a `SourceMap` and drawing carets beneath the span.
+
+The code's letter encodes the **kind** of problem (`P` syntax, `C` static semantics, `R` runtime, `U` deliberately unsupported, `F` risk flow), never the subsystem that raised it — enforcement moves between phases, and an identifier that changes under refactoring can't serve as a translation key or a spec assertion. See [ERRORS.md](./ERRORS.md).
+
+Three consequences worth knowing before adding a raise site:
+
+- **Position fidelity differs by phase, and spans are nullable to match.** The parser has line, column, and a lexeme size; the compiler has `Node#line`/`#column` but no end position; the VM has a line and no column at all. A renderer degrades cleanly — no column means no caret row, no length means a one-character caret — so a phase can emit diagnostics now and gain precision later without changing anything else.
+- **`Span#filename` is nullable too**, for a different reason: the compiler is never told what file it is compiling. Nil means "the unit being compiled," and the renderer resolves it from a filename the caller supplies.
+- **Migration is incremental by design.** `ParseError` and `CompileError` each have an optional `diagnostic`; nil means that raise site still carries a hand-written message. `Interpreter#render_error` returns nil for those, so a consumer falls back rather than special-casing which sites have been converted. `test_runner` does exactly this.
+
+No colour is emitted anywhere, deliberately: the primary reader is an LLM under an agent harness, where ANSI escapes are noise in a captured log, and carets don't need colour to work.
+
+`SourceMap` retains script source keyed by filename. Nothing changed about how source is read — `Lexer` already slurped the whole IO into a string for peek/backtrack — it was simply discarded once tokens existed. Keyed by filename because `require` evals further files, so a diagnostic's file isn't always the top-level script's.
+
 ## Unsupported and out-of-scope features
 
 Some Ruby-like features are intentionally excluded — either because they'd break static risk assessment, or because they're a deliberate scoping cut. Both kinds are documented in [UNSUPPORTED.md](./UNSUPPORTED.md), with the reasoning that closed the door on each, what to write instead, and whether the construct currently fails loudly. Anyone tempted to add one of these should read that first.

@@ -1,14 +1,27 @@
 require "./token"
 require "./lexer"
 require "./ast"
+require "./diagnostic"
 
 module Adjutant
   class ParseError < Exception
     getter line : Int32
     getter column : Int32
 
+    # See `CompileError#diagnostic` — nil for raise sites not yet
+    # migrated to the diagnostic system.
+    getter diagnostic : Diagnostic?
+
     def initialize(message : String, @line, @column)
+      @diagnostic = nil
       super("#{message} (line #{line}, col #{column})")
+    end
+
+    def initialize(diagnostic : Diagnostic)
+      @diagnostic = diagnostic
+      @line = diagnostic.primary.line
+      @column = diagnostic.primary.column || 0
+      super(diagnostic.to_line)
     end
   end
 
@@ -104,6 +117,14 @@ module Adjutant
       @lexer = Lexer.new(source, filename)
       @current = @lexer.next_token
       @next = @lexer.next_token
+    end
+
+    # Delegates to the lexer, which read the whole IO up front. Safe
+    # to call immediately after construction — which matters, because
+    # a caller must be able to register the source BEFORE `parse`, or
+    # a ParseError would be the one error with nothing to quote.
+    def source : String
+      @lexer.source
     end
 
     # Convenience constructor for string literals and tests.

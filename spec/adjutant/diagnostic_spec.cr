@@ -1,0 +1,162 @@
+require "../spec_helper"
+
+module Adjutant
+  describe ErrorCatalog do
+    it "interpolates placeholders from a diagnostic's data" do
+      out = ErrorCatalog.interpolate("a {x} and {y}", {"x" => "1", "y" => "2"})
+      out.should eq("a 1 and 2")
+    end
+
+    it "leaves an unsupplied placeholder verbatim rather than blanking it" do
+      # A visible `{y}` says the diagnostic was built wrong. Emitting
+      # an empty string would produce a grammatical sentence that had
+      # quietly lost the detail the reader needed.
+      out = ErrorCatalog.interpolate("a {x} and {y}", {"x" => "1"})
+      out.should eq("a 1 and {y}")
+    end
+
+    it "returns a self-describing entry for an unknown code" do
+      # The reporting path must not raise: an exception while building
+      # an error report replaces a bad message with no message.
+      ErrorCatalog["Z999"].summary.should contain("Z999")
+    end
+
+    it "reports the placeholders a code actually uses" do
+      ErrorCatalog.placeholders("U001").should eq(["method", "param"])
+    end
+  end
+
+  describe Diagnostic do
+    it "draws its wording from the catalog, not the raise site" do
+      diag = Diagnostic.new(
+        code: "U001",
+        primary: Span.new(line: 1, column: 9, length: 4),
+        data: {"param" => "blk", "method" => "foo"}
+      )
+      diag.summary.should contain("`&blk`")
+      # `why`/`help` are nilable — the catalog allows a summary-only
+      # entry — so they need unwrapping before a String matcher.
+      diag.why.not_nil!.should contain("yield")
+      diag.help.not_nil!.should contain("foo")
+    end
+
+    it "renders a one-line form carrying the code" do
+      diag = Diagnostic.new(
+        code: "U001",
+        primary: Span.new(line: 3, column: 9),
+        data: {"param" => "blk", "method" => "foo"}
+      )
+      diag.to_line.should contain("[U001]")
+      diag.to_line.should contain("line 3, col 9")
+    end
+
+    it "omits the column from the one-line form when there isn't one" do
+      diag = Diagnostic.new(code: "U001", primary: Span.new(line: 3))
+      diag.to_line.should contain("line 3")
+      diag.to_line.should_not contain("col")
+    end
+  end
+
+  describe DiagnosticRenderer do
+    source = "def foo(&blk)\nend\n"
+
+    make_renderer = -> {
+      sources = SourceMap.new
+      sources.register("script.rb", source)
+      DiagnosticRenderer.new(sources)
+    }
+
+    diag = Diagnostic.new(
+      code: "U001",
+      primary: Span.new(line: 1, column: 9, length: 4, label: "not usable as a value"),
+      data: {"param" => "blk", "method" => "foo"}
+    )
+
+    it "renders the source line with carets under the offending span" do
+      out = make_renderer.call.render(diag, DiagnosticRenderer::Format::PlainText, "script.rb")
+      out.should contain("1 | def foo(&blk)")
+      # Eight spaces then four carets — under `&blk`, column 9, width 4.
+      out.should contain("  |         ^^^^")
+    end
+
+    it "falls back to a filename supplied by the caller" do
+      # The compiler is never told which file it is compiling, so a
+      # span's filename is nil and the renderer resolves it.
+      out = make_renderer.call.render(diag, DiagnosticRenderer::Format::PlainText, "script.rb")
+      out.should contain("script.rb:1:9")
+    end
+
+    it "renders without a snippet when the source was never registered" do
+      out = DiagnosticRenderer.new.render(diag, DiagnosticRenderer::Format::PlainText, "script.rb")
+      out.should contain("script.rb:1:9")
+      out.should_not contain("def foo")
+    end
+
+    it "omits the caret row when no column is known" do
+      # The VM has line but no column; it must still be able to
+      # report, just with less precision.
+      line_only = Diagnostic.new(
+        code: "U001",
+        primary: Span.new(line: 1),
+        data: {"param" => "blk", "method" => "foo"}
+      )
+      out = make_renderer.call.render(line_only, DiagnosticRenderer::Format::PlainText, "script.rb")
+      out.should contain("1 | def foo(&blk)")
+      out.should_not contain("^")
+    end
+
+    it "emits Markdown with a fenced snippet and labelled sections" do
+      out = make_renderer.call.render(diag, DiagnosticRenderer::Format::Markdown, "script.rb")
+      out.should contain("**error[U001]:")
+      out.should contain("```text")
+      out.should contain("**Why:**")
+      out.should contain("**Help:**")
+    end
+
+    it "lengthens the fence past any backtick run in the source" do
+      # Script source can contain backticks; a fixed three-backtick
+      # fence would close early and collapse the layout.
+      sources = SourceMap.new
+      sources.register("t.rb", "x = \"```\"\n")
+      out = DiagnosticRenderer.new(sources).render(
+        Diagnostic.new(code: "U001", primary: Span.new(line: 1, column: 1)),
+        DiagnosticRenderer::Format::Markdown,
+        "t.rb"
+      )
+      out.should contain("````text")
+    end
+  end
+
+  describe SourceMap do
+    it "returns nil for an unregistered file or out-of-range line" do
+      map = SourceMap.new
+      map.register("a.rb", "one\ntwo\n")
+      map.line("a.rb", 2).should eq("two")
+      map.line("a.rb", 9).should be_nil
+      map.line("missing.rb", 1).should be_nil
+      map.line(nil, 1).should be_nil
+    end
+  end
+
+  describe "ERRORS.md consistency" do
+    # error_catalog.cr is authoritative; ERRORS.md documents it for
+    # readers. Two artifacts holding the same facts is exactly the
+    # drift this project has been removing from its docs, so the
+    # duplication is machine-checked rather than left to convention.
+    it "documents every code in the catalog" do
+      doc = File.read(File.join(__DIR__, "..", "..", "ERRORS.md"))
+      ErrorCatalog.codes.each do |code|
+        doc.should contain(code)
+      end
+    end
+
+    it "documents every placeholder each code uses" do
+      doc = File.read(File.join(__DIR__, "..", "..", "ERRORS.md"))
+      ErrorCatalog.codes.each do |code|
+        ErrorCatalog.placeholders(code).each do |name|
+          doc.should contain("`#{name}`")
+        end
+      end
+    end
+  end
+end

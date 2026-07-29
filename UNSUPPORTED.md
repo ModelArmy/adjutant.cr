@@ -44,10 +44,13 @@ full registry across all letters lives in
 [ERRORS.md](./ERRORS.md); `U` rows there link back here rather than
 restating the reasoning, so each fact lives in exactly one place.
 
-**Status note (2026-07-28):** the codes below are allocated, but not yet
-emitted — the error-reporting redesign that introduces them is designed,
-not shipped. Today's messages name the construct but carry no code. Each
-entry records its current enforcement state explicitly.
+**Status note (2026-07-28):** the diagnostic system these codes key into
+now exists, and **U001 is the first entry wired to it end to end** — its
+error carries a structured `Diagnostic`, renders with the offending source
+line and carets beneath the `&blk`, and draws its wording from the catalog
+rather than the raise site. Every other code below is allocated but not
+yet emitted: those errors still carry a hand-written message and no code.
+Each entry records its current enforcement state explicitly.
 
 ---
 
@@ -71,7 +74,8 @@ U004's check.
 **Instead:** call the block with `yield`, or pass a lambda as an ordinary
 parameter.
 
-**Enforcement — active since 2026-07-27, compile time.** Until then,
+**Enforcement — active since 2026-07-27, compile time; migrated to a
+structured `U001` diagnostic 2026-07-28.** Until then,
 `def foo(&blk)` compiled fine and silently bound `blk` to `nil`; a script
 only discovered the gap if it later tried to use `blk`, where `blk.call`
 raised a generic "undefined method or variable: call" with no hint that
