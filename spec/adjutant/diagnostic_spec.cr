@@ -138,6 +138,42 @@ module Adjutant
     end
   end
 
+  describe "Interpreter source registration" do
+    it "registers source on parse, so a later phase's diagnostic can quote it" do
+      # The gap this closes: a host that built an Adjutant::Parser
+      # itself got diagnostics with a position but no snippet — the
+      # feature silently not working rather than visibly failing.
+      interp = Interpreter.new(
+        risk_flow_policy: TEST_REJECT_ALL_POLICY,
+        on_risk_flow_decision: TEST_UNEXPECTED_ASK_CALLBACK,
+      )
+      body = interp.parse("def foo(&blk)\nend", "script.rb")
+      interp.sources.line("script.rb", 1).should eq("def foo(&blk)")
+
+      # The U001 rejection happens at compile, AFTER parse — the point
+      # of registering early is that it is quotable anyway.
+      error = expect_raises(CompileError) { interp.eval(body, "script.rb") }
+      rendered = interp.render_error(
+        error,
+        DiagnosticRenderer::Format::PlainText,
+        "script.rb"
+      )
+      rendered.not_nil!.should contain("1 | def foo(&blk)")
+      rendered.not_nil!.should contain("^^^^")
+    end
+
+    it "returns nil from render_error for an unmigrated raise site" do
+      # Lets a host fall back on `message` instead of tracking which
+      # raise sites have been converted.
+      interp = Interpreter.new(
+        risk_flow_policy: TEST_REJECT_ALL_POLICY,
+        on_risk_flow_decision: TEST_UNEXPECTED_ASK_CALLBACK,
+      )
+      legacy = CompileError.new("something old", 1, 1)
+      interp.render_error(legacy).should be_nil
+    end
+  end
+
   describe "ERRORS.md consistency" do
     # error_catalog.cr is authoritative; ERRORS.md documents it for
     # readers. Two artifacts holding the same facts is exactly the

@@ -683,6 +683,8 @@ Three consequences worth knowing before adding a raise site:
 - **`Span#filename` is nullable too**, for a different reason: the compiler is never told what file it is compiling. Nil means "the unit being compiled," and the renderer resolves it from a filename the caller supplies.
 - **Migration is incremental by design.** `ParseError` and `CompileError` each have an optional `diagnostic`; nil means that raise site still carries a hand-written message. `Interpreter#render_error` returns nil for those, so a consumer falls back rather than special-casing which sites have been converted. `test_runner` does exactly this.
 
+Hosts should reach diagnostics through the interpreter rather than assembling the pieces themselves: `interp.parse` registers source and returns a `Body`, `interp.eval(body, filename)` runs an already-assessed one, and `interp.render_error` renders a diagnostic-carrying error or returns nil for a raise site not yet migrated. Driving `Adjutant::Parser` directly still works but skips registration, producing diagnostics with a position and no snippet — working, but visibly worse, with nothing to indicate why.
+
 No colour is emitted anywhere, deliberately: the primary reader is an LLM under an agent harness, where ANSI escapes are noise in a captured log, and carets don't need colour to work.
 
 `SourceMap` retains script source keyed by filename. Nothing changed about how source is read — `Lexer` already slurped the whole IO into a string for peek/backtrack — it was simply discarded once tokens existed. Keyed by filename because `require` evals further files, so a diagnostic's file isn't always the top-level script's.

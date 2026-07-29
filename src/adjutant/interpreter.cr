@@ -234,6 +234,31 @@ module Adjutant
       @globals[sym.value]? || Value.nil_value
     end
 
+    # Parse a script to an AST without compiling or running it.
+    #
+    # This is the entry point for the assess-then-decide workflow: a
+    # host that wants to run `RiskWalker` over a script before choosing
+    # whether to execute it needs the `Body`, not a result.
+    #
+    # Prefer this over constructing a `Parser` directly. Both parse
+    # identically, but this registers the source first, so a diagnostic
+    # raised by ANY later phase can quote the offending line. A host
+    # that goes straight to `Parser` gets diagnostics with a location
+    # and an explanation but no source snippet — the failure is silent
+    # and looks like the feature simply not working.
+    def parse(source : String, filename : String = "<parse>") : Body
+      parse(IO::Memory.new(source), filename)
+    end
+
+    # ditto, from an IO stream.
+    def parse(io : IO, filename : String = "<parse>") : Body
+      parser = Parser.new(io, filename)
+      # Registered BEFORE parsing, so a ParseError gets a snippet too —
+      # not only the errors from phases that run after parsing.
+      sources.register(filename, parser.source)
+      parser.parse
+    end
+
     # Parse, compile, and execute a source string.
     def eval(source : String, filename : String = "<eval>") : Value
       eval(IO::Memory.new(source), filename)
@@ -241,16 +266,25 @@ module Adjutant
 
     # Parse, compile, and execute from an IO stream.
     def eval(io : IO, filename : String = "<eval>") : Value
-      parser = Parser.new(io, filename)
-      # Registered BEFORE parsing, so a ParseError can be rendered
-      # with its source line too — not just the errors from later
-      # phases.
-      sources.register(filename, parser.source)
-      body = parser.parse
+      eval(parse(io, filename), filename)
+    end
+
+    # Compile and execute an already-parsed script.
+    #
+    # Completes the assess-then-decide workflow: `parse`, walk the
+    # `Body` for risk, decide, then execute THAT body — with no second
+    # parse, and no window in which the text could differ from what was
+    # assessed.
+    #
+    # `filename` is required, unlike the other overloads. A `Body` does
+    # not record which file it came from, and defaulting would key VM
+    # frames and diagnostics to a name the source was never registered
+    # under — losing snippets precisely when something has gone wrong.
+    # Pass the same name given to `parse`.
+    def eval(body : Body, filename : String) : Value
       chunk, local_count = Compiler.compile(body, @symbols)
       vm = make_vm
-      result = vm.run(chunk, filename, local_count)
-      result
+      vm.run(chunk, filename, local_count)
     end
 
     # Compile a source string without executing — for pre-validation.
@@ -259,10 +293,7 @@ module Adjutant
     end
 
     def compile(io : IO, filename : String = "<compile>") : Chunk
-      parser = Parser.new(io, filename)
-      sources.register(filename, parser.source)
-      body = parser.parse
-      chunk, _local_count = Compiler.compile(body, @symbols)
+      chunk, _local_count = Compiler.compile(parse(io, filename), @symbols)
       chunk
     end
 

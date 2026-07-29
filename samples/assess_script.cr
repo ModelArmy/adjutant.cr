@@ -50,11 +50,19 @@ interp.modules.register(RiskySampleModule.new)
 # interpreter (and thus to RiskWalker) without running any script code.
 interp.modules.require("sample", interp)
 
+# `interp.parse` registers the source, so the ParseError below can be
+# rendered with the offending line and carets rather than just a
+# position. Constructing `Adjutant::Parser` directly skips that.
 body =
   begin
-    File.open(script_file) { |io| Adjutant::Parser.new(io.gets_to_end, script_file).parse }
+    File.open(script_file) { |io| interp.parse(io, script_file) }
   rescue e : Adjutant::ParseError
-    abort("Parse error: #{script_file}:#{e.line}:#{e.column}: #{e.message}")
+    rendered = interp.render_error(
+      e,
+      Adjutant::DiagnosticRenderer::Format::PlainText,
+      script_file
+    )
+    abort(rendered || "Parse error: #{script_file}:#{e.line}:#{e.column}: #{e.message}")
   end
 
 walker = Adjutant::RiskWalker.new(interp)
