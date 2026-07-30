@@ -344,17 +344,43 @@ module Adjutant
       it "raises when instruction limit exceeded" do
         limits = ExecutionLimits.new(instruction_limit: 5_u64)
         interp, _ = make_interp(limits)
-        expect_raises(RuntimeError, /instruction limit/) do
+        error = expect_raises(RuntimeError, /instruction limit/) do
           interp.eval("x = 0\nwhile true\nx += 1\nend")
         end
+        # An L code, not an R: the script is not malformed, it just
+        # exceeded a budget, and the reader's move differs accordingly.
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("L004")
+        diag.data["limit"].should eq("5")
       end
 
       it "stores the call depth limit" do
-        # Full call depth enforcement requires wired def/call (Phase 6).
-        # Verify the limit is stored and accessible.
         limits = ExecutionLimits.new(call_depth_limit: 3)
         interp, _ = make_interp(limits)
         interp.limits.call_depth_limit.should eq 3
+      end
+
+      it "enforces the call depth limit, reporting the configured value" do
+        # The comment here used to say enforcement awaited wired
+        # def/call. That landed, so this is testable now.
+        limits = ExecutionLimits.new(call_depth_limit: 4)
+        interp, _ = make_interp(limits)
+        error = expect_raises(RuntimeError) do
+          interp.eval("def down(n)\n  down(n + 1)\nend\ndown(0)")
+        end
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("L002")
+        diag.data["limit"].should eq("4")
+      end
+
+      it "tells the reader which limits a host can actually raise" do
+        # L002 and L004 guard ExecutionLimits settings, so their help
+        # can point at them. L003 guards a fixed constant and must not
+        # imply a knob exists.
+        ErrorCatalog["L002"].help.not_nil!.should contain("call_depth_limit")
+        ErrorCatalog["L004"].help.not_nil!.should contain("instruction_limit")
+        ErrorCatalog["L003"].help.not_nil!.should_not contain("limit`")
+        ErrorCatalog["L003"].why.not_nil!.should contain("not a setting")
       end
     end
 

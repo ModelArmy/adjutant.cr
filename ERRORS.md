@@ -101,15 +101,25 @@ The script is valid; it is just larger than something Adjutant is prepared
 to handle. Separate from `R` because the reader's move differs — not "this
 is wrong" but "this is too much".
 
-|Code|Limit reached                               |Raised by|Placeholders|
-|----|--------------------------------------------|---------|------------|
-|L001|Loops nested past the compiler's fixed depth|Compiler |`limit`     |
+|Code|Limit reached                               |Raised by|Host-adjustable    |Placeholders|
+|----|--------------------------------------------|---------|-------------------|------------|
+|L001|Loops nested past the compiler's fixed depth|Compiler |no                 |`limit`     |
+|L002|Too many live call frames                   |VM       |`call_depth_limit` |`limit`     |
+|L003|Value stack exhausted                       |VM       |no                 |`limit`     |
+|L004|Instruction budget spent before finishing   |VM       |`instruction_limit`|`limit`     |
 
 Whether a limit is host-adjustable varies, and the `help` has to be honest
-about it. `ExecutionLimits` exposes `instruction_limit` and
-`call_depth_limit` for a host to raise; L001's ceiling is a fixed
-compile-time constant guarding a compile-time structure, so its help says
-to restructure the script rather than implying a setting exists.
+about it — hence the column above. `ExecutionLimits` exposes
+`instruction_limit` and `call_depth_limit`, so L002 and L004 can tell a
+reader the host is able to raise them. L001 and L003 guard fixed
+compile-time constants, so their help says to restructure the script
+rather than implying a setting that doesn't exist. A spec checks this,
+because it is the kind of detail that rots quietly.
+
+L003 has no trigger test: reaching it needs 4096 live intermediate values
+in a single expression, and both the call-depth ceiling and the parser's
+own recursion are reached long before that in practice. Worth knowing it
+is a real guard but an untested one, rather than assuming it works.
 
 ## U — Deliberately unsupported
 

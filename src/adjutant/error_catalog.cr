@@ -173,6 +173,39 @@ module Adjutant
               "resets the nesting at each call."
       ),
 
+      "L002" => Entry.new(
+        code: "L002",
+        summary: "call stack too deep (limit {limit})",
+        why: "Each method or block call adds a frame, and {limit} were " \
+             "live at once. Recursion that never reaches its base case " \
+             "gets here quickly; genuinely deep call chains can too.",
+        help: "Check that any recursion has a base case it actually " \
+              "reaches. If the script is correct and simply needs more " \
+              "depth, the host running it can raise `call_depth_limit`."
+      ),
+      "L003" => Entry.new(
+        code: "L003",
+        summary: "value stack exhausted ({limit} slots)",
+        why: "Evaluating an expression pushes intermediate values onto a " \
+             "fixed stack. Deeply nested expressions, or a very long " \
+             "chain built in one statement, can fill it. Unlike the call " \
+             "depth and instruction ceilings, this one is a fixed size " \
+             "and not a setting.",
+        help: "Break the expression into steps, assigning intermediate " \
+              "results to variables."
+      ),
+      "L004" => Entry.new(
+        code: "L004",
+        summary: "instruction limit reached ({limit})",
+        why: "The script ran {limit} instructions without finishing. A " \
+             "loop whose condition never becomes false is the usual " \
+             "cause, though a large amount of real work reaches the same " \
+             "ceiling.",
+        help: "Check that every loop can terminate. If the work is real " \
+              "and simply large, the host running the script can raise " \
+              "`instruction_limit`."
+      ),
+
       # --- I: internal invariant violations -------------------------
       #
       # These mean Adjutant is broken, not the script. None carries a

@@ -484,7 +484,7 @@ module Adjutant
                            outer : Array(Value)? = nil, self_val : Value = Value.nil_value, lexical_scope : RubyClass? = nil,
                            block_outer_locals : Array(Value)? = nil) : Frame
       if @limits.call_depth_limit > 0 && @frames.size >= @limits.call_depth_limit
-        raise runtime_error("call stack too deep (limit: #{@limits.call_depth_limit})")
+        raise script_diagnostic("L002", {"limit" => @limits.call_depth_limit.to_s}, current_frame)
       end
       frame = Frame.new(proc, proc.chunk, stack_base, filename, block, outer, self_val, lexical_scope, block_outer_locals)
       @frames.push(frame)
@@ -500,7 +500,7 @@ module Adjutant
     end
 
     private def push(v : Value) : Nil
-      raise runtime_error("stack overflow") if @stack.size >= MAX_STACK
+      raise script_diagnostic("L003", {"limit" => MAX_STACK.to_s}, current_frame) if @stack.size >= MAX_STACK
       @stack.push(v)
     end
 
@@ -520,7 +520,7 @@ module Adjutant
     private def tick : Nil
       @instruction_count += 1
       if @limits.instruction_limit > 0 && @instruction_count > @limits.instruction_limit
-        raise runtime_error("instruction limit exceeded (#{@limits.instruction_limit})")
+        raise script_diagnostic("L004", {"limit" => @limits.instruction_limit.to_s}, current_frame)
       end
     end
 
