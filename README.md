@@ -325,14 +325,15 @@ Risk flow tracks explicit data flow only (assignment, arithmetic, string/array/h
 
 ## Unsupported language features
 
-Adjutant is a deliberate *subset* of Ruby, not a work-in-progress full implementation — a few constructs are permanently unsupported by design, not just "not yet built." Each one fails with a clear compile-time or runtime error naming the construct, not a silent wrong result:
+Adjutant is a deliberate *subset* of Ruby, not a work-in-progress full implementation — a few constructs are permanently unsupported by design, not just "not yet built." The first four fail with a clear error naming the construct, not a silent wrong result; the last three are simply undefined today, so they raise an ordinary undefined-method error instead:
 
-- **Class/module reopening** (`class Foo; end` written a second time to extend it) — Adjutant's constants are assign-once; this is the same rule applied to class/module names.
-- **`Class.new` / `Module.new`**
-- **Defining a method (`def` or `def self.foo`) nested inside another method's own body** — a method definition can only appear at the top level of a script or directly inside a class/module body.
-- **`&blk` parameter capture** — a block passed to a call is only usable via `yield` inside that same call; it can't be bound to a name, stored, or passed around.
+- **`&blk` parameter capture** (U001) — a block passed to a call is only usable via `yield` inside that same call; it can't be bound to a name, stored, or passed around.
+- **`Class.new` / `Module.new`** (U002) — declare classes literally with `class Foo; end`.
+- **Class/module reopening** (U003) — `class Foo; end` written a second time to extend it. Adjutant's constants are assign-once; this is the same rule applied to class/module names.
+- **Defining a method (`def` or `def self.foo`) nested inside another method's own body** (U004) — a method definition can only appear at the top level of a script or directly inside a class/module body.
+- **Dynamic dispatch by computed method name** (U005), **`eval`/`instance_eval`** (U006), and **reflection into native internals** (U007) — excluded permanently, because each makes a call site's target or effect unknowable without running the script, which is what static risk assessment depends on.
 
-See [SCOPE.md](./SCOPE.md)'s `Won't Support` section for the full reasoning behind each.
+See [UNSUPPORTED.md](./UNSUPPORTED.md) for the full reasoning behind each, what to write instead, and the current enforcement state. Every error carries a code documented in [ERRORS.md](./ERRORS.md).
 
 ## Development
 

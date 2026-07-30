@@ -155,7 +155,7 @@ module Adjutant
     # A `RuntimeError` covers two different things. Adjutant reporting a
     # failure it classified carries a diagnostic and a code. A script
     # raising its own error — `raise "boom"`, a re-raise from `ensure`,
-    # Kernel `raise` — does not, and must not: the message belongs to
+    # the builtin `raise` — does not, and must not: the message belongs to
     # the script's author, and no catalog entry could say anything true
     # about it.
     #
@@ -1315,7 +1315,7 @@ module Adjutant
             # 2) self_rclass.rclass's (Module's, for a `module M`
             #    body — Class's, for a `class Foo` body) instance-
             #    method CHAIN, walked up to Object — this is how a
-            #    bare Kernel-style native call (`puts`, or any
+            #    bare receiverless native call (`puts`, or any
             #    define_native function) resolves inside a class/
             #    module body in real Ruby: M is itself an INSTANCE of
             #    Module, and Module < Object (see

@@ -307,7 +307,7 @@ module Adjutant
     # source line and carets where position information allows.
     #
     # Returns nil when the error carries no diagnostic — which means the
-    # SCRIPT raised it (`raise "boom"`, a re-raise, Kernel `raise`)
+    # SCRIPT raised it (`raise "boom"`, a re-raise, the builtin `raise`)
     # rather than Adjutant reporting a failure it classified.
     #
     # That nil is permanent and load-bearing, not scaffolding left over
@@ -433,7 +433,7 @@ module Adjutant
     #
     # `Class.new`/`Module.new` (dynamically defining a class/module at
     # runtime, optionally from a block) are explicitly out of scope —
-    # see DEVELOPMENT.md's "Forbidden and out-of-scope features". This
+    # see UNSUPPORTED.md's U002. This
     # bootstrap only needs Class/Module to EXIST as real RubyClasses
     # for `.class`/`is_a?`/`ancestors` to work correctly; they're not
     # meant to be instantiable from script. Until 2026-07-27 that was
@@ -455,7 +455,7 @@ module Adjutant
       # entirely before — Module.superclass was nil, breaking the
       # chain a module needs to reach Object's methods (see
       # dispatch_call's implicit-self step: when self is a RubyClass,
-      # e.g. inside a `module M` body, finding a native/Kernel-style
+      # e.g. inside a `module M` body, finding a receiverless native
       # method like `puts` requires walking self.rclass's (M.rclass
       # == Module's) OWN superclass chain up to Object, not M's own
       # (modules have no superclass of their own in real Ruby at

@@ -17,9 +17,14 @@ module Adjutant::Builtins
   #
   # `<=>` is NOT included: it doesn't exist as an opcode OR a method
   # for Integer either (a pre-existing gap, not introduced here) — see
-  # DEVELOPMENT.md's "Forbidden and out-of-scope features" for the
-  # note on why this wasn't added just for Float alone, to avoid the
-  # two numeric types silently diverging in what they support.
+  # SCOPE.md's `Will Fix` list for the note on why this wasn't added
+  # just for Float alone, to avoid the two numeric types silently
+  # diverging in what they support.
+  #
+  # Deliberately points at SCOPE.md, not UNSUPPORTED.md: `<=>` is a gap
+  # that will be filled, not a construct that has been declined. The
+  # earlier wording sent readers to the out-of-scope list, which said
+  # the opposite of what is true here.
   def self.bootstrap_float(interp : Adjutant::Interpreter) : Adjutant::RubyClass
     cls = Adjutant::RubyClass.new("Float")
 

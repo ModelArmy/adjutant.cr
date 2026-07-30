@@ -157,7 +157,7 @@ module Adjutant
         # The exact regression reported after piece B landed: self
         # inside `module M; ...; end`'s body is M itself (a
         # RubyClass), and a module has no superclass of its OWN to
-        # walk (only classes do) — so a native/Kernel-style call
+        # walk (only classes do) — so a receiverless native call
         # (assert_not_nil, puts, ...) needed self.rclass's (Module's)
         # OWN chain up to Object, which was broken at its very first
         # link (Module.superclass was nil — see
