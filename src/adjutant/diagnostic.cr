@@ -24,6 +24,28 @@ module Adjutant
     end
   end
 
+  # The host drove Adjutant into a state it cannot serve — used a VM
+  # twice, or asked a bare VM for something only an Interpreter can do.
+  #
+  # Separate from `HostArgumentError`, and deliberately NOT sharing a
+  # parent with it: nothing was wrong with any argument here, and a
+  # common base class would assert otherwise. Both are `H`-coded,
+  # because the code says what kind of problem it is while the class
+  # stays whatever is actually true.
+  class HostStateError < Exception
+    getter diagnostic : Diagnostic?
+
+    def initialize(diagnostic : Diagnostic)
+      @diagnostic = diagnostic
+      super(diagnostic.to_line)
+    end
+
+    def initialize(message : String)
+      @diagnostic = nil
+      super(message)
+    end
+  end
+
   # A location in a source file that a diagnostic points at.
   #
   # `column` and `length` are BOTH optional, and that is deliberate

@@ -294,6 +294,26 @@ module Adjutant
               "unchanged."
       ),
 
+      "H005" => Entry.new(
+        code: "H005",
+        summary: "this VM has already run a chunk",
+        why: "A VM holds the frames and stack of one execution. Running a " \
+             "second chunk in the same one would start against whatever " \
+             "the first left behind.",
+        help: "Build a fresh VM per execution. `Interpreter#eval` already " \
+              "does this for every call."
+      ),
+      "H006" => Entry.new(
+        code: "H006",
+        summary: "`require` needs an interpreter, and this VM has none",
+        why: "`require` resolves against the modules an Interpreter " \
+             "registered. A VM constructed without one has nothing to " \
+             "resolve against — a supported configuration, but not one " \
+             "that can load modules.",
+        help: "Run the script through an `Interpreter`, or remove the " \
+              "`require` if the bare VM is intentional."
+      ),
+
       # --- I: internal invariant violations -------------------------
       #
       # These mean Adjutant is broken, not the script. None carries a

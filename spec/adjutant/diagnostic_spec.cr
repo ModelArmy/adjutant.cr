@@ -222,6 +222,69 @@ module Adjutant
     end
   end
 
+  describe "errors without a diagnostic" do
+    # This is the boundary the whole nilable-`diagnostic` design exists
+    # for, and the thing most likely to be "tidied away" by someone
+    # finishing what looks like an incomplete migration.
+    interp = Interpreter.new(
+      risk_flow_policy: TEST_REJECT_ALL_POLICY,
+      on_risk_flow_decision: TEST_UNEXPECTED_ASK_CALLBACK,
+    )
+
+    it "leaves a script's own raise uncoded" do
+      # `raise "boom"` is the script author's error, not a failure
+      # Adjutant classified. No catalog entry could say anything true
+      # about it, so it gets no code.
+      error = expect_raises(RuntimeError) { interp.eval(%(raise "boom")) }
+      error.diagnostic.should be_nil
+      error.message.not_nil!.should contain("boom")
+    end
+
+    it "renders as nil so a consumer falls back to the script's wording" do
+      error = expect_raises(RuntimeError) { interp.eval(%(raise "boom")) }
+      interp.render_error(error).should be_nil
+    end
+
+    it "still codes a failure Adjutant itself detected" do
+      # The contrast that makes the distinction meaningful.
+      error = expect_raises(RuntimeError) { interp.eval("no_such_thing") }
+      error.diagnostic.not_nil!.code.should eq("R008")
+    end
+  end
+
+  describe "host state errors" do
+    it "refuses to reuse a VM, without blaming the script" do
+      # Fires before any script runs, so no script could rescue it —
+      # and a RuntimeError would imply one should.
+      symbols = SymbolTable.new
+      body = Parser.new("1 + 1", "t.rb").parse
+      chunk, locals = Compiler.compile(body, symbols)
+      vm = VM.new(symbols)
+      vm.run(chunk, "t.rb", locals)
+      error = expect_raises(HostStateError) { vm.run(chunk, "t.rb", locals) }
+      error.diagnostic.not_nil!.code.should eq("H005")
+    end
+
+    it "reports a bare VM's inability to require as the host's wiring" do
+      # A VM with no interpreter is a supported configuration — it just
+      # cannot resolve modules. That makes this H, not the script's
+      # R010.
+      symbols = SymbolTable.new
+      body = Parser.new(%(require "anything"), "t.rb").parse
+      chunk, locals = Compiler.compile(body, symbols)
+      error = expect_raises(HostStateError) do
+        VM.new(symbols).run(chunk, "t.rb", locals)
+      end
+      error.diagnostic.not_nil!.code.should eq("H006")
+    end
+
+    it "is not a HostArgumentError, since no argument was wrong" do
+      # Separate classes for separate problems — a shared parent would
+      # assert something false about one of them.
+      HostStateError.new("x").is_a?(ArgumentError).should be_false
+    end
+  end
+
   describe "ERRORS.md consistency" do
     # error_catalog.cr is authoritative; ERRORS.md documents it for
     # readers. Two artifacts holding the same facts is exactly the

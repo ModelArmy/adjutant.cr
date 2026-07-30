@@ -306,12 +306,17 @@ module Adjutant
     # Render a diagnostic-carrying error as text, with the offending
     # source line and carets where position information allows.
     #
-    # Returns nil when the error predates the diagnostic migration
-    # (`diagnostic` is nil), so callers can fall back to `message`
-    # rather than special-casing which raise sites have been converted
-    # yet.
+    # Returns nil when the error carries no diagnostic — which means the
+    # SCRIPT raised it (`raise "boom"`, a re-raise, Kernel `raise`)
+    # rather than Adjutant reporting a failure it classified.
+    #
+    # That nil is permanent and load-bearing, not scaffolding left over
+    # from the migration. Callers should fall back to `message`, which
+    # is the script author's own wording and the only sensible thing to
+    # show. See `RuntimeError#diagnostic`.
     def render_error(error : ParseError | CompileError | RuntimeError |
-                             HostArgumentError | AmbiguousRiskFlowPolicyError,
+                             HostArgumentError | HostStateError |
+                             AmbiguousRiskFlowPolicyError,
                      format : DiagnosticRenderer::Format = DiagnosticRenderer::Format::Markdown,
                      filename : String? = nil) : String?
       diag = error.diagnostic

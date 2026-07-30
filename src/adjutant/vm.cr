@@ -149,11 +149,24 @@ module Adjutant
     # predate the typed-error hierarchy bootstrap.
     getter error_value : Value?
 
-    # The host-facing structured report, when this raise site has been
-    # migrated. Deliberately distinct from `error_value`: that is the
-    # object a SCRIPT rescues and must keep Ruby's semantics under the
-    # proper-subset mandate, while a Diagnostic is a report ABOUT the
-    # failure for whoever is reading the output.
+    # The host-facing structured report — nil when there isn't one, and
+    # that case is PERMANENT, not a migration leftover.
+    #
+    # A `RuntimeError` covers two different things. Adjutant reporting a
+    # failure it classified carries a diagnostic and a code. A script
+    # raising its own error — `raise "boom"`, a re-raise from `ensure`,
+    # Kernel `raise` — does not, and must not: the message belongs to
+    # the script's author, and no catalog entry could say anything true
+    # about it.
+    #
+    # So a nil diagnostic means "this is the script's error, not
+    # Adjutant's". Do not try to make this non-nilable; doing so would
+    # force a meaningless code onto every `raise` a script performs.
+    #
+    # Distinct from `error_value`, which is the object a SCRIPT rescues
+    # and has to keep Ruby's semantics under the proper-subset mandate.
+    # A diagnostic is a report ABOUT the failure, for whoever reads the
+    # output.
     getter diagnostic : Diagnostic?
 
     def initialize(message : String, @filename = "<script>", @line = 0, cause = nil, @error_value = nil)
@@ -239,7 +252,11 @@ module Adjutant
 
     # Execute a compiled chunk and return the result.
     def run(chunk : Chunk, filename : String = "<script>", local_count : Int32 = 0) : Value
-      raise RuntimeError.new("Must be fresh VM to run a compiled chunk.", filename) unless @frames.empty?
+      # Not a RuntimeError: this fires before any script runs, so no
+      # script could rescue it, and the fault is the host's wiring.
+      unless @frames.empty?
+        raise HostStateError.new(Diagnostic.new(code: "H005"))
+      end
       main_proc = ScriptProc.new(chunk, "<main>", local_count: local_count)
       # self at top level is `main` — a real RubyObject of class
       # Object, matching real Ruby (see Interpreter#main's own
@@ -1694,7 +1711,10 @@ module Adjutant
         if interp = @interpreter
           interp.require_module(path, filename)
         else
-          raise RuntimeError.new("'require' cannot load -- #{path} (no interpreter)", filename, line)
+          # A bare VM is a supported configuration; it just cannot
+          # require. That makes this the host's wiring, not the
+          # script's fault — so H, not R010.
+          raise HostStateError.new(Diagnostic.new(code: "H006"))
         end
       when "nil?"
         # Called as a method: args[0] is receiver

@@ -180,12 +180,18 @@ these fire while the host is still setting Adjutant up.
 |H002|`reversible: Depends` with no explanatory note |—                            |
 |H003|Two policy rules tie at the same priority      |`count`, `priority`, `target`|
 |H004|`invoke_proc` given something that isn't a Proc|`found`                      |
+|H005|A VM was reused for a second script            |—                            |
+|H006|`require` used on a VM with no interpreter     |—                            |
 
 These carry no source location, since there is no script position that
 would be honest to point at.
 
 To catch them: H001, H002, and H004 are `Adjutant::HostArgumentError`,
-which is an `ArgumentError`. H003 is `Adjutant::AmbiguousRiskFlowPolicyError`.
+which is an `ArgumentError`. H005 and H006 are
+`Adjutant::HostStateError`. H003 is
+`Adjutant::AmbiguousRiskFlowPolicyError`. They are separate classes
+because they are separate problems — bad arguments, wrong sequencing, and
+an ambiguous policy respectively.
 
 H004 arrives wrapped in an N001, because the only way to reach it is from
 inside a native function.
