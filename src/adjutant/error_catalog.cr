@@ -206,6 +206,94 @@ module Adjutant
               "`instruction_limit`."
       ),
 
+      # --- F: risk-flow refusals ------------------------------------
+      #
+      # Not a fault at all: the script asked for something the host's
+      # policy declines to allow. Nothing is broken, and the reader may
+      # well be the person who wrote the policy rather than the script.
+      "F001" => Entry.new(
+        code: "F001",
+        summary: "risk flow policy rejected `{call}`: {reason}",
+        why: "This call carries a risk label the host's policy refuses. " \
+             "The refusal is the policy working as configured, not a " \
+             "failure — the script asked to do something it is not " \
+             "permitted to do here.",
+        help: "If the call is legitimate, the policy needs a rule that " \
+              "allows it. If not, the script should not be making it. " \
+              "Scripts can `rescue RiskFlowRejectedError` to handle a " \
+              "refusal rather than aborting."
+      ),
+
+      # --- N: a native function raised ------------------------------
+      #
+      # A host-registered function raised while the script called it,
+      # and Adjutant has no idea why — the detail below is the host's
+      # own message, passed through. Its own letter rather than an `R`
+      # code because the provenance is the useful part: neither
+      # Adjutant nor, necessarily, the script is at fault, and nothing
+      # here can say which.
+      "N001" => Entry.new(
+        code: "N001",
+        summary: "native function `{function}` raised: {message}",
+        why: "`{function}` is provided by the host embedding Adjutant, " \
+             "not by Adjutant itself. It raised while the script was " \
+             "calling it, and the text above is that function's own " \
+             "message, reported as-is.",
+        help: "Check the arguments the script passed. If they look right, " \
+              "the failure is inside the host's `{function}` and needs " \
+              "reporting to whoever provides it."
+      ),
+
+      # --- H: the host misused Adjutant's API -----------------------
+      #
+      # Not the script's fault and not Adjutant's: whoever embedded
+      # Adjutant called it wrongly. The reader is a developer with a
+      # stack trace, so these carry no span — most fail before any
+      # script exists, and where one is running, a position would aim
+      # the reader at innocent script source.
+      #
+      # These deliberately do NOT share one exception class. Most are
+      # about bad arguments and so are `ArgumentError`s, but an
+      # ambiguous policy is about configuration state rather than any
+      # one call's arguments, and claiming otherwise would be false.
+      # The code classifies the failure; the class stays whatever is
+      # actually accurate.
+      "H001" => Entry.new(
+        code: "H001",
+        summary: "a RiskProfile with no tags must be reversible and Info",
+        why: "An untagged profile describes a call with no risk, so it " \
+             "cannot also declare itself irreversible or more severe than " \
+             "informational — the two statements contradict each other.",
+        help: "Add the `RiskTag` that describes the actual risk, rather " \
+              "than setting `reversible` or `severity` on their own."
+      ),
+      "H002" => Entry.new(
+        code: "H002",
+        summary: "a RiskProfile with `reversible: Depends` needs a note",
+        why: "`Depends` says reversibility varies by circumstance, which " \
+             "is only actionable if something explains what it depends on.",
+        help: "Pass `note:` describing what determines reversibility here."
+      ),
+      "H003" => Entry.new(
+        code: "H003",
+        summary: "{count} policy rules tie at priority {priority} for {target}",
+        why: "Sensitivity patterns are resolved by priority, and a tie " \
+             "leaves no defined answer. Adjutant refuses to guess rather " \
+             "than silently pick one, since which rule wins would decide " \
+             "how sensitive the data is treated as being.",
+        help: "Give the intended rule a higher `priority`, or remove the " \
+              "duplicate."
+      ),
+      "H004" => Entry.new(
+        code: "H004",
+        summary: "invoke_proc needs a Proc, got {found}",
+        why: "`invoke_proc` runs a lambda a script produced. It has to be " \
+             "given that lambda's own value — a plain object has no " \
+             "callable body to run.",
+        help: "Pass the Value the script returned for the lambda, " \
+              "unchanged."
+      ),
+
       # --- I: internal invariant violations -------------------------
       #
       # These mean Adjutant is broken, not the script. None carries a

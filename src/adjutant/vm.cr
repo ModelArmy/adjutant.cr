@@ -309,13 +309,24 @@ module Adjutant
     # from a trusted internal `blk` param.
     protected def invoke_proc(proc_obj : RubyObject, args : Array(Value), self_val : Value? = nil) : Value
       unless proc_obj.rclass == builtin_class_by_name("Proc")
-        # NOT an internal (`I`) diagnostic, despite looking like a type
-        # invariant: `Interpreter#invoke_proc` is a public host API, so a
-        # host can reach this by passing the wrong Value. Telling an
-        # integrator "this is a bug in Adjutant, please report it" would
-        # send them upstream to report their own mistake. Deferred until
-        # there is a category for host-API misuse.
-        raise runtime_error("invoke_proc called with a #{proc_obj.rclass.name}, not a Proc")
+        # An H code, not an I: `invoke_proc` is exposed through
+        # NativeCallContext, so the caller is always a host-provided
+        # native function passing the wrong Value. Telling an integrator
+        # to report their own mistake upstream would be wrong.
+        #
+        # Because that is the ONLY way here, this always unwinds through
+        # `call_native`'s rescue and reaches the reader as N001 carrying
+        # this H004 as its message. That is the useful shape — it names
+        # both the function that failed and why — but it does mean H004
+        # is never seen on its own, and that the result IS script-
+        # rescuable, since N001 is a RuntimeError.
+        #
+        # Kept as a HostArgumentError rather than a RuntimeError anyway:
+        # the classification is what is true about the failure, and it
+        # stays correct if invoke_proc ever becomes reachable elsewhere.
+        raise HostArgumentError.new(
+          Diagnostic.new(code: "H004", data: {"found" => proc_obj.rclass.name})
+        )
       end
       sproc = proc_obj.ivars[@symbols.intern("__sproc").value].as_proc
       invoke_internal(sproc, args, self_val, outer_locals: proc_obj.outer_locals)
@@ -1384,7 +1395,21 @@ module Adjutant
     rescue ex : RuntimeError
       raise ex
     rescue ex
-      raise runtime_error("Native call error: #{ex.message}", current_frame, cause: ex)
+      # Deliberately its own letter rather than an R code: Adjutant does
+      # not know whether the script passed something bad or the host's
+      # own function is broken, and an R code would imply it had decided.
+      raise runtime_diagnostic(
+        Diagnostic.new(
+          code: "N001",
+          primary: Span.new(line: line, filename: filename),
+          data: {
+            "function" => name,
+            "message"  => ex.message || ex.class.to_s,
+          }
+        ),
+        current_frame,
+        cause: ex
+      )
     end
 
     # The risk flow check itself — see call_native's doc comment. A
@@ -1478,10 +1503,17 @@ module Adjutant
     private def raise_risk_flow_rejected(request : RiskFlowDecisionRequest, filename : String, line : Int32) : NoReturn
       first = request.matches.first
       reason = first.rule.try { |rule| "#{rule.tag} (#{first.tag})" } || "reject_all policy (#{first.tag})"
-      msg = "risk flow policy rejected #{request.call_name}: #{reason}"
+      diag = Diagnostic.new(
+        code: "F001",
+        primary: Span.new(line: line, filename: filename),
+        data: {"call" => request.call_name, "reason" => reason}
+      )
+      # The script-visible class stays RiskFlowRejectedError: scripts are
+      # documented as able to `rescue` it, and that contract is
+      # independent of how the refusal is reported to the host.
       cls = builtin_class_by_name("RiskFlowRejectedError")
-      err_val = cls ? make_error_object(cls, msg) : Value.string(msg)
-      raise RuntimeError.new(msg, filename, line, error_value: err_val)
+      err_val = cls ? make_error_object(cls, diag.summary) : Value.string(diag.summary)
+      raise RuntimeError.new(diag, filename, line, error_value: err_val)
     end
 
     # `Foo.new(args)` — dispatches to a native singleton `new` if the

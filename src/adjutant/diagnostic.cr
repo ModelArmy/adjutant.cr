@@ -1,6 +1,29 @@
 require "./error_catalog"
 
 module Adjutant
+  # The embedding host passed Adjutant something it cannot accept.
+  #
+  # Subclasses `ArgumentError` because that is what these actually are,
+  # so a host's existing `rescue ArgumentError` keeps working. It is
+  # deliberately NOT a general "host error" base class: not every way a
+  # host can misuse Adjutant is about arguments — an ambiguous policy is
+  # about configuration state — and a shared parent would assert
+  # something false about half its members. The `H` code classifies the
+  # failure; each exception class stays whatever is accurate.
+  class HostArgumentError < ArgumentError
+    getter diagnostic : Diagnostic?
+
+    def initialize(diagnostic : Diagnostic)
+      @diagnostic = diagnostic
+      super(diagnostic.to_line)
+    end
+
+    def initialize(message : String)
+      @diagnostic = nil
+      super(message)
+    end
+  end
+
   # A location in a source file that a diagnostic points at.
   #
   # `column` and `length` are BOTH optional, and that is deliberate
@@ -66,13 +89,21 @@ module Adjutant
   # reading the output, not an object the script can catch.
   struct Diagnostic
     getter code : String
-    getter primary : Span
+
+    # Nil when the diagnostic isn't about a place in a script at all.
+    # The `H` series is why: a host validating a `RiskProfile` at
+    # registration time fails before any script exists, and even where
+    # one is running, the position would point at script source that is
+    # not at fault. A span there would be worse than none — it would
+    # aim the reader at innocent code.
+    getter primary : Span?
+
     getter secondary : Array(Span)
 
     # Substitutions for the catalog template's `{placeholder}`s.
     getter data : Hash(String, String)
 
-    def initialize(@code, @primary, @secondary = [] of Span, @data = {} of String => String)
+    def initialize(@code, @primary = nil, @secondary = [] of Span, @data = {} of String => String)
     end
 
     def entry : ErrorCatalog::Entry
@@ -109,18 +140,25 @@ module Adjutant
       code.starts_with?("I")
     end
 
-    # Every span, primary first. Renderers walk this in order.
+    # Every span, primary first. Renderers walk this in order. Empty
+    # for a diagnostic with no source location at all.
     def spans : Array(Span)
-      [primary] + secondary
+      if span = primary
+        [span] + secondary
+      else
+        secondary
+      end
     end
 
     # One-line form, for contexts with no room to render a snippet
     # (exception messages, logs). Carries the code so the reader can
     # still look the full explanation up.
     def to_line : String
+      span = primary
+      return "[#{code}] #{summary}" unless span
       pos = String.build do |io|
-        io << " (line " << primary.line
-        if col = primary.column
+        io << " (line " << span.line
+        if col = span.column
           io << ", col " << col
         end
         io << ")"

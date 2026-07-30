@@ -682,6 +682,27 @@ No colour is emitted anywhere, deliberately: the primary reader is an LLM under 
 
 `SourceMap` retains script source keyed by filename. Nothing changed about how source is read — `Lexer` already slurped the whole IO into a string for peek/backtrack — it was simply discarded once tokens existed. Keyed by filename because `require` evals further files, so a diagnostic's file isn't always the top-level script's.
 
+### Working on diagnostics
+
+[ERRORS.md](./ERRORS.md) is documentation for whoever *hits* an error — a script author, an LLM that generated the script, or a host integrator. Keep implementation reasoning out of it. The notes below are the maintainer-facing half.
+
+`src/adjutant/error_catalog.cr` is authoritative for wording; ERRORS.md is the reader-facing index. A spec fails the build if the two disagree on codes or placeholders, so the duplication cannot drift silently.
+
+**Adding a code:** add an `Entry` to `ENTRIES`, add a row to the matching table in ERRORS.md, and for a `U` code add the entry to UNSUPPORTED.md. Wording rules, learned the hard way: name the construct, since the reader needs to know what to stop writing; never reference a file in this repository, because a repo-internal path means nothing to a script author or a model; and keep `why` and `help` distinct, because a reader who understands the why still needs the what-instead.
+
+**Why the letter encodes the kind of problem and not the subsystem.** Enforcement moves between phases as the implementation improves — the nested-`def` check (U004) moved from the VM to the compiler mid-session. An identifier that changes when code is refactored is not an identifier, and cannot serve as a translation key, a spec assertion, or something to look up. The corollary when adding a code is to ask *who can reach this*, not *what went wrong*: that question is what separates `I` from `H`, and getting it wrong means telling someone to report their own mistake as our bug.
+
+**Specific decisions worth not re-litigating:**
+
+- **P001 has no `why`/`help`.** It stands in for every `expect` failure — a missing `)`, `,`, or `then` — and any explanation covering all of them is too vague to act on. Span labels carry the specifics. P003 was split out because missing-`end` is the one syntax error with something general worth saying, and the only one whose caret actively misleads.
+- **R001 and U003 share one guard.** Both come from the assign-once constant rule, told apart by whether both values are classes. They were one conflated message until 2026-07-28, which meant a script that had merely written `FOO = 1` twice was told about redefining classes.
+- **The rescuable class is set independently of the code.** R008 raises `NameError` because real Ruby does, and the proper-subset mandate outranks scheme tidiness. F001 keeps `RiskFlowRejectedError` for the same reason. `error_value` carries the diagnostic's summary only — never the code, why, or help — so a script sees ordinary Ruby-shaped prose.
+- **`Diagnostic#primary` is nilable** for the `H` series, which has no honest script position: most fire before a script exists, and where one is running the position would implicate innocent source. `to_line` omits the position rather than inventing `line 0`.
+- **`H` codes deliberately share no exception class.** H001/H002/H004 are `HostArgumentError < ArgumentError` because they really are bad arguments, which keeps a host's existing `rescue ArgumentError` working. H003 stays `AmbiguousRiskFlowPolicyError` — an ambiguous policy is configuration state, not one call's arguments, and a shared parent would assert something false about it.
+- **H004 is unreachable except from a native function**, since `invoke_proc` is only exposed through `NativeCallContext`. It therefore always unwinds through `call_native` and surfaces as N001 carrying the H004 text. Kept classified as `H` anyway, so it stays correct if `invoke_proc` is ever exposed elsewhere.
+- **L003 has no trigger test.** Reaching it needs 4096 live intermediate values in one expression, and both the call-depth ceiling and the parser's own recursion arrive first. A real guard, but an untested one.
+- **`L` help text must not promise absent knobs.** `ExecutionLimits` exposes `instruction_limit` and `call_depth_limit`, so L002 and L004 can say the host may raise them. L001 and L003 guard fixed constants. A spec asserts L003's help does *not* mention a setting, since that is the detail that rots when someone later adds one.
+
 ## Unsupported and out-of-scope features
 
 Some Ruby-like features are intentionally excluded — either because they'd break static risk assessment, or because they're a deliberate scoping cut. Both kinds are documented in [UNSUPPORTED.md](./UNSUPPORTED.md), with the reasoning that closed the door on each, what to write instead, and whether the construct currently fails loudly. Anyone tempted to add one of these should read that first.

@@ -104,7 +104,7 @@ module Adjutant
         i.define_native("make_bomb") { |_| Value.robject(obj) }
       end
       interp.modules.require("test/native_methods_error", interp)
-      expect_raises(RuntimeError, /Native call error: boom/) do
+      expect_raises(RuntimeError, /raised: boom/) do
         interp.eval(%(b = make_bomb()\nb.explode))
       end
     end

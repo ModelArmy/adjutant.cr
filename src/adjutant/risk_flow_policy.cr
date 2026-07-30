@@ -1,5 +1,6 @@
 require "json"
 require "./risk_profile"
+require "./diagnostic"
 
 module Adjutant
   # How a matched risk flow rule resolves a risky call.
@@ -92,6 +93,17 @@ module Adjutant
   # (Interpreter#bootstrap_error_classes), not a Crystal exception type
   # of its own.
   class AmbiguousRiskFlowPolicyError < Exception
+    getter diagnostic : Diagnostic?
+
+    def initialize(diagnostic : Diagnostic)
+      @diagnostic = diagnostic
+      super(diagnostic.to_line)
+    end
+
+    def initialize(message : String)
+      @diagnostic = nil
+      super(message)
+    end
   end
 
   # A single risk flow policy: sensitivity lookup rules plus risk flow
@@ -147,8 +159,14 @@ module Adjutant
       top = matches.select { |pattern| pattern.priority == top_priority }
       if top.size > 1
         raise AmbiguousRiskFlowPolicyError.new(
-          "ambiguous risk flow policy: #{top.size} sensitivity_patterns rules tie at priority " \
-          "#{top_priority} for #{kind}:#{origin}"
+          Diagnostic.new(
+            code: "H003",
+            data: {
+              "count"    => top.size.to_s,
+              "priority" => top_priority.to_s,
+              "target"   => "#{kind}:#{origin}",
+            }
+          )
         )
       end
       top.first.sensitivity

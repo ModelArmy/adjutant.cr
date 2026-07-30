@@ -145,7 +145,7 @@ module Adjutant
       sym_id = interp.symbols.intern("new").value
       cls.define_native_singleton_method(sym_id, RiskProfile.none) { |args| raise "boom" }
       interp.define_global_class(cls)
-      expect_raises(RuntimeError, /Native call error: boom/) do
+      expect_raises(RuntimeError, /raised: boom/) do
         interp.eval("Bomb.new")
       end
     end

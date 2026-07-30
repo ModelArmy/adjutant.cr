@@ -463,18 +463,31 @@ module Adjutant
       # throwaway native function that deliberately misuses
       # invoke_proc on a plain object and asserts a proper, clear
       # RuntimeError instead.
-      it "invoke_proc raises a clear RuntimeError, not a raw Crystal exception, when given a non-Proc RubyObject" do
+      it "invoke_proc misuse surfaces as a clear error, attributed to the native layer" do
+        # Two layers, and the nesting is unavoidable rather than merely
+        # deliberate: `invoke_proc` is only reachable through the
+        # NativeCallContext handed to a native function, so its H004 is
+        # ALWAYS raised inside a native call and always caught by
+        # call_native's rescue. It therefore surfaces as N001 carrying
+        # H004 as its message — which is the useful shape anyway, naming
+        # both the function that failed and why.
         interp, _ = make_interp
         interp.define_native("misuse_invoke_proc") do |args, _blk, ncc|
           ncc.invoke_proc(args.first.as_robject, [] of Value)
         end
-        expect_raises(Adjutant::RuntimeError, /not a Proc/) do
+        error = expect_raises(Adjutant::RuntimeError) do
           interp.eval(<<-RUBY)
             class Plain
             end
             misuse_invoke_proc(Plain.new)
           RUBY
         end
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("N001")
+        # The inner H004 is carried through as the native layer's own
+        # message, so the actual cause stays visible.
+        diag.data["message"].should contain("H004")
+        diag.data["message"].should contain("Plain")
       end
     end
 
@@ -1208,6 +1221,19 @@ module Adjutant
         error.diagnostic.not_nil!.code.should eq("R001")
       end
 
+      it "attributes a native function's own failure to the native layer" do
+        # N001 exists so the provenance is unambiguous: Adjutant cannot
+        # tell whether the script passed something bad or the host's
+        # function is broken, and an R code would imply it had decided.
+        interp, _ = make_interp
+        interp.define_native("explode") { |_args| raise "boom" }
+        error = expect_raises(RuntimeError) { interp.eval("explode") }
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("N001")
+        diag.data["function"].should eq("explode")
+        diag.data["message"].should eq("boom")
+      end
+
       it "keeps NameError as the rescuable class for R008" do
         # The diagnostic code and the script-visible class are set
         # independently: R008 classifies the failure for the reader,
@@ -1256,7 +1282,7 @@ module Adjutant
         end
         diag = error.diagnostic.not_nil!
         diag.code.should eq("U002")
-        diag.primary.column.should be_nil
+        diag.primary.not_nil!.column.should be_nil
         diag.data["class"].should eq("Class")
       end
     end

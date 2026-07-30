@@ -24,8 +24,11 @@ module Adjutant
     # `diagnostic` through `DiagnosticRenderer`.
     def initialize(diagnostic : Diagnostic)
       @diagnostic = diagnostic
-      @line = diagnostic.primary.line
-      @column = diagnostic.primary.column || 0
+      # These raise sites always carry a span; the fallbacks exist
+      # because `primary` is nilable for the H series, which never
+      # reaches either of these classes.
+      @line = diagnostic.primary.try(&.line) || 0
+      @column = diagnostic.primary.try(&.column) || 0
       super(diagnostic.to_line)
     end
   end

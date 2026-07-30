@@ -88,9 +88,16 @@ module Adjutant
           SensitivityPattern.new(ProvenanceKind::File, "^/etc/", 5, Sensitivity::Elevated, PatternType::Regex),
           SensitivityPattern.new(ProvenanceKind::File, "/etc/passwd", 5, Sensitivity::High),
         ])
-        expect_raises(AmbiguousRiskFlowPolicyError) do
+        # Keeps its own exception class rather than becoming a
+        # HostArgumentError: an ambiguous policy is about configuration
+        # state, not any one call's arguments.
+        error = expect_raises(AmbiguousRiskFlowPolicyError) do
           policy.sensitivity_for(ProvenanceKind::File, "/etc/passwd")
         end
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("H003")
+        diag.data["count"].should eq("2")
+        diag.data["priority"].should eq("5")
       end
 
       it "does not raise for an origin that only hits the non-tied rule" do

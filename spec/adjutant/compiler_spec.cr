@@ -399,11 +399,12 @@ module Adjutant
         diag.should_not be_nil
         diag = diag.not_nil!
         diag.code.should eq("U001")
-        diag.primary.line.should eq(1)
+        span = diag.primary.not_nil!
+        span.line.should eq(1)
         # Column 9 is the `&`, not the name — parse_param records the
         # position before consuming the sigil.
-        diag.primary.column.should eq(9)
-        diag.primary.length.should eq(4)
+        span.column.should eq(9)
+        span.length.should eq(4)
         diag.data["method"].should eq("foo")
       end
 
@@ -464,7 +465,7 @@ module Adjutant
         diag.data["target"].should eq("a method call")
         # Was hardcoded to column 0 before the migration, which is not a
         # column any source position can have.
-        diag.primary.column.not_nil!.should be > 0
+        diag.primary.not_nil!.column.not_nil!.should be > 0
       end
 
       it "rejects redo outside any loop as C002" do
@@ -501,9 +502,10 @@ module Adjutant
         diag.data["definition"].should eq("def nested")
         # Line 3 is the inner def; the column is the `def` keyword,
         # since parse_def records its position before consuming it.
-        diag.primary.line.should eq(3)
-        diag.primary.column.should eq(1)
-        diag.primary.length.should eq(3)
+        span = diag.primary.not_nil!
+        span.line.should eq(3)
+        span.column.should eq(1)
+        span.length.should eq(3)
       end
 
       it "reports the def self.foo shape distinctly from a plain def" do

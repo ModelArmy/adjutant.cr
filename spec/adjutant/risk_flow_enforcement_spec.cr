@@ -77,9 +77,15 @@ module Adjutant
     describe "RiskFlowAction::Reject" do
       it "raises when a tainted argument matches a Reject rule" do
         interp, _ = make_enforcement_interp(enforcement_policy_for(RiskFlowAction::Reject))
-        expect_raises(RuntimeError, /risk flow policy rejected/) do
+        error = expect_raises(RuntimeError, /risk flow policy rejected/) do
           interp.eval(%(delete_file(tainted_path("/etc/passwd"))))
         end
+        # An F code, not an R: nothing is broken. The policy declined a
+        # call it was configured to decline, and the reader may well be
+        # whoever wrote the policy rather than whoever wrote the script.
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("F001")
+        diag.data["call"].should eq("delete_file")
       end
 
       it "the raised error is a script-visible RiskFlowRejectedError" do
