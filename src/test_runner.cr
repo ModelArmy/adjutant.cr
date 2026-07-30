@@ -57,13 +57,13 @@ module Testing
       begin
         File.open(path) { |io| interp.eval(io, path) }
       rescue e : Adjutant::ParseError
-        error = "parse error: #{e.line}:#{e.column}: #{e.message}"
+        error = describe_error(interp, e, "parse error", path)
         cause = e
       rescue e : Adjutant::CompileError
-        error = "compile error: #{e.line}:#{e.column}: #{e.message}"
+        error = describe_error(interp, e, "compile error", path)
         cause = e
       rescue e : Adjutant::RuntimeError
-        error = "runtime error: #{e.line}: #{e.message}"
+        error = describe_error(interp, e, "runtime error", path)
         cause = e
       end
 
@@ -73,6 +73,30 @@ module Testing
       print "E".colorize(:yellow) if error
 
       FileResult.new(short, mod, error, cause)
+    end
+
+    # Prefers a rendered diagnostic (source line + carets) when the
+    # raise site has been migrated, and falls back to the old
+    # one-line form otherwise. Plain text rather than Markdown: this
+    # goes to a terminal, and the fences would be noise.
+    private def describe_error(interp : Adjutant::Interpreter,
+                               error : Adjutant::ParseError | Adjutant::CompileError | Adjutant::RuntimeError,
+                               kind : String,
+                               path : String) : String
+      rendered = interp.render_error(
+        error,
+        Adjutant::DiagnosticRenderer::Format::PlainText,
+        path
+      )
+      return rendered if rendered
+      # RuntimeError records a filename and line but no column, unlike
+      # the parse/compile errors — position fidelity differs by phase
+      # in the fallback exactly as it does in a rendered diagnostic.
+      if error.is_a?(Adjutant::RuntimeError)
+        "#{kind}: #{error.filename}:#{error.line}: #{error.message}"
+      else
+        "#{kind}: #{error.line}:#{error.column}: #{error.message}"
+      end
     end
 
     def print_summary(results : Array(FileResult))

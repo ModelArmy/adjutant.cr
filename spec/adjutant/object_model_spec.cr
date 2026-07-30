@@ -50,7 +50,7 @@ module Adjutant
         end
         dbl
         RUBY
-        expect_raises(Adjutant::RuntimeError, /undefined method or variable: dbl/) do
+        expect_raises(Adjutant::RuntimeError, /undefined method or variable `dbl`/) do
           eval(src)
         end
       end
@@ -64,7 +64,7 @@ module Adjutant
           dbl(3)
         end
         RUBY
-        expect_raises(Adjutant::RuntimeError, /undefined method or variable: dbl/) do
+        expect_raises(Adjutant::RuntimeError, /undefined method or variable `dbl`/) do
           eval(src)
         end
       end
@@ -78,7 +78,7 @@ module Adjutant
           RESULT = x
         end
         RUBY
-        expect_raises(Adjutant::RuntimeError, /undefined method or variable: x/) do
+        expect_raises(Adjutant::RuntimeError, /undefined method or variable `x`/) do
           eval(src)
         end
       end
@@ -111,7 +111,7 @@ module Adjutant
           end
         end
         RUBY
-        expect_raises(Adjutant::RuntimeError, /undefined method or variable: tmp_a/) do
+        expect_raises(Adjutant::RuntimeError, /undefined method or variable `tmp_a`/) do
           eval(src)
         end
       end
@@ -140,7 +140,7 @@ module Adjutant
         end
         local
         RUBY
-        expect_raises(Adjutant::RuntimeError, /undefined method or variable: local/) do
+        expect_raises(Adjutant::RuntimeError, /undefined method or variable `local`/) do
           eval(src)
         end
       end
@@ -155,7 +155,7 @@ module Adjutant
       end
 
       it "raises for an undefined superclass" do
-        expect_raises(RuntimeError, /uninitialized constant Unknown/) do
+        expect_raises(RuntimeError, /uninitialized constant `Unknown`/) do
           eval("class Dog < Unknown\nend")
         end
       end
@@ -244,7 +244,7 @@ module Adjutant
       end
 
       it "raises when instantiating a module" do
-        expect_raises(RuntimeError, /can't instantiate module/) do
+        expect_raises(RuntimeError, /cannot be instantiated/) do
           eval("module M\nend\nM.new")
         end
       end
@@ -601,7 +601,7 @@ module Adjutant
       end
 
       it "raises for an undefined leading :: constant" do
-        expect_raises(RuntimeError, /uninitialized constant NOPE/) do
+        expect_raises(RuntimeError, /uninitialized constant `NOPE`/) do
           eval("::NOPE")
         end
       end

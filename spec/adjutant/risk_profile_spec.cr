@@ -25,21 +25,41 @@ module Adjutant
     end
 
     it "raises when empty tags are paired with non-default reversibility" do
-      expect_raises(ArgumentError, /no tags must have reversible: Yes/) do
+      error = expect_raises(ArgumentError, /must be reversible and Info/) do
         RiskProfile.new(reversible: Reversibility::No)
       end
+      error.as(HostArgumentError).diagnostic.not_nil!.code.should eq("H001")
     end
 
     it "raises when empty tags are paired with non-default severity" do
-      expect_raises(ArgumentError, /no tags must have reversible: Yes/) do
+      # Still an ArgumentError — HostArgumentError subclasses it,
+      # because these genuinely ARE bad arguments, so a host's existing
+      # `rescue ArgumentError` keeps working.
+      error = expect_raises(ArgumentError, /must be reversible and Info/) do
         RiskProfile.new(severity: Severity::Warning)
       end
+      error.as(HostArgumentError).diagnostic.not_nil!.code.should eq("H001")
     end
 
     it "raises when reversible is Depends without a note" do
-      expect_raises(ArgumentError, /note is required when reversible is Depends/) do
+      error = expect_raises(ArgumentError, /needs a note/) do
         RiskProfile.new(tags: Set{RiskTag::WritesFiles}, reversible: Reversibility::Depends)
       end
+      error.as(HostArgumentError).diagnostic.not_nil!.code.should eq("H002")
+    end
+
+    it "carries no source span, since no script is involved" do
+      # These fire while the HOST is registering risk profiles — before
+      # any script exists. A span would have to point somewhere, and
+      # everywhere it could point would be innocent.
+      error = expect_raises(HostArgumentError) do
+        RiskProfile.new(severity: Severity::Warning)
+      end
+      diag = error.diagnostic.not_nil!
+      diag.primary.should be_nil
+      diag.spans.should be_empty
+      # to_line therefore omits the position rather than inventing one.
+      diag.to_line.should eq("[H001] a RiskProfile with no tags must be reversible and Info")
     end
 
     it "allows reversible: Depends when a note is provided" do

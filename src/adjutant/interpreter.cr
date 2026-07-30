@@ -174,6 +174,18 @@ module Adjutant
     getter risk_flow_policy : RiskFlowPolicy
     getter on_risk_flow_decision : RiskFlowDecisionRequest -> RiskFlowDecision
 
+    # Source of every script this interpreter has parsed, keyed by
+    # filename. Populated by `eval`/`compile`, including files pulled
+    # in by `require`, whose diagnostics name a different file than
+    # the top-level script.
+    getter sources : SourceMap = SourceMap.new
+
+    # Where a reader is told to report an internal (`I`-series) error.
+    # Defaults upstream; a host embedding Adjutant should point this at
+    # wherever ITS users should report problems, since those users have
+    # no relationship with this project.
+    property report_url : String = DiagnosticRenderer::DEFAULT_REPORT_URL
+
     # `self` at the top level of a script — a real RubyObject whose
     # class is Object, matching real Ruby's actual `main` (not a
     # simplification of it: a bare top-level `def` genuinely becomes
@@ -228,6 +240,31 @@ module Adjutant
       @globals[sym.value]? || Value.nil_value
     end
 
+    # Parse a script to an AST without compiling or running it.
+    #
+    # This is the entry point for the assess-then-decide workflow: a
+    # host that wants to run `RiskWalker` over a script before choosing
+    # whether to execute it needs the `Body`, not a result.
+    #
+    # Prefer this over constructing a `Parser` directly. Both parse
+    # identically, but this registers the source first, so a diagnostic
+    # raised by ANY later phase can quote the offending line. A host
+    # that goes straight to `Parser` gets diagnostics with a location
+    # and an explanation but no source snippet — the failure is silent
+    # and looks like the feature simply not working.
+    def parse(source : String, filename : String = "<parse>") : Body
+      parse(IO::Memory.new(source), filename)
+    end
+
+    # ditto, from an IO stream.
+    def parse(io : IO, filename : String = "<parse>") : Body
+      parser = Parser.new(io, filename)
+      # Registered BEFORE parsing, so a ParseError gets a snippet too —
+      # not only the errors from phases that run after parsing.
+      sources.register(filename, parser.source)
+      parser.parse
+    end
+
     # Parse, compile, and execute a source string.
     def eval(source : String, filename : String = "<eval>") : Value
       eval(IO::Memory.new(source), filename)
@@ -235,11 +272,25 @@ module Adjutant
 
     # Parse, compile, and execute from an IO stream.
     def eval(io : IO, filename : String = "<eval>") : Value
-      body = Parser.new(io, filename).parse
+      eval(parse(io, filename), filename)
+    end
+
+    # Compile and execute an already-parsed script.
+    #
+    # Completes the assess-then-decide workflow: `parse`, walk the
+    # `Body` for risk, decide, then execute THAT body — with no second
+    # parse, and no window in which the text could differ from what was
+    # assessed.
+    #
+    # `filename` is required, unlike the other overloads. A `Body` does
+    # not record which file it came from, and defaulting would key VM
+    # frames and diagnostics to a name the source was never registered
+    # under — losing snippets precisely when something has gone wrong.
+    # Pass the same name given to `parse`.
+    def eval(body : Body, filename : String) : Value
       chunk, local_count = Compiler.compile(body, @symbols)
       vm = make_vm
-      result = vm.run(chunk, filename, local_count)
-      result
+      vm.run(chunk, filename, local_count)
     end
 
     # Compile a source string without executing — for pre-validation.
@@ -248,9 +299,29 @@ module Adjutant
     end
 
     def compile(io : IO, filename : String = "<compile>") : Chunk
-      body = Parser.new(io, filename).parse
-      chunk, _local_count = Compiler.compile(body, @symbols)
+      chunk, _local_count = Compiler.compile(parse(io, filename), @symbols)
       chunk
+    end
+
+    # Render a diagnostic-carrying error as text, with the offending
+    # source line and carets where position information allows.
+    #
+    # Returns nil when the error carries no diagnostic — which means the
+    # SCRIPT raised it (`raise "boom"`, a re-raise, the builtin `raise`)
+    # rather than Adjutant reporting a failure it classified.
+    #
+    # That nil is permanent and load-bearing, not scaffolding left over
+    # from the migration. Callers should fall back to `message`, which
+    # is the script author's own wording and the only sensible thing to
+    # show. See `RuntimeError#diagnostic`.
+    def render_error(error : ParseError | CompileError | RuntimeError |
+                             HostArgumentError | HostStateError | InternalError |
+                             AmbiguousRiskFlowPolicyError,
+                     format : DiagnosticRenderer::Format = DiagnosticRenderer::Format::Markdown,
+                     filename : String? = nil) : String?
+      diag = error.diagnostic
+      return nil unless diag
+      DiagnosticRenderer.new(sources, report_url).render(diag, format, filename)
     end
 
     # Called by VM when a script issues `require "path"`.
@@ -266,7 +337,15 @@ module Adjutant
         end
       end
 
-      raise RuntimeError.new("'require' cannot load -- #{path}", filename, 0)
+      raise RuntimeError.new(
+        Diagnostic.new(
+          code: "R010",
+          primary: Span.new(line: 0, filename: filename),
+          data: {"path" => path}
+        ),
+        filename,
+        0
+      )
     end
 
     # Install a native function as a global callable from scripts with arguments array, block if any, and
@@ -354,7 +433,7 @@ module Adjutant
     #
     # `Class.new`/`Module.new` (dynamically defining a class/module at
     # runtime, optionally from a block) are explicitly out of scope —
-    # see DEVELOPMENT.md's "Forbidden and out-of-scope features". This
+    # see UNSUPPORTED.md's U002. This
     # bootstrap only needs Class/Module to EXIST as real RubyClasses
     # for `.class`/`is_a?`/`ancestors` to work correctly; they're not
     # meant to be instantiable from script. Until 2026-07-27 that was
@@ -376,7 +455,7 @@ module Adjutant
       # entirely before — Module.superclass was nil, breaking the
       # chain a module needs to reach Object's methods (see
       # dispatch_call's implicit-self step: when self is a RubyClass,
-      # e.g. inside a `module M` body, finding a native/Kernel-style
+      # e.g. inside a `module M` body, finding a receiverless native
       # method like `puts` requires walking self.rclass's (M.rclass
       # == Module's) OWN superclass chain up to Object, not M's own
       # (modules have no superclass of their own in real Ruby at

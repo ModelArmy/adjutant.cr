@@ -388,6 +388,26 @@ module Adjutant
         end
       end
 
+      it "carries a U001 diagnostic spanning the whole `&blk`" do
+        # Asserting on the CODE rather than the prose: the code is the
+        # stable identity, so rewording the message can't break this,
+        # and the span is what a caret row is drawn from.
+        error = expect_raises(CompileError) do
+          compile("def foo(&blk)\nend")
+        end
+        diag = error.diagnostic
+        diag.should_not be_nil
+        diag = diag.not_nil!
+        diag.code.should eq("U001")
+        span = diag.primary.not_nil!
+        span.line.should eq(1)
+        # Column 9 is the `&`, not the name — parse_param records the
+        # position before consuming the sigil.
+        span.column.should eq(9)
+        span.length.should eq(4)
+        diag.data["method"].should eq("foo")
+      end
+
       it "does not reject an ordinary block-consuming def that uses yield" do
         # Regression check for the guard above — yield doesn't declare
         # &blk as a param at all, so it must be completely unaffected.
@@ -432,6 +452,70 @@ module Adjutant
         expect_raises(CompileError, /inside another method's body/) do
           compile("f = ->() { def inner\nend }")
         end
+      end
+
+      it "names what the unassignable target actually was" do
+        # AST class names (`Call`, `IntLiteral`) mean nothing to a script
+        # author, so the diagnostic renders what they wrote.
+        error = expect_raises(CompileError) do
+          compile("foo() = 1")
+        end
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("C001")
+        diag.data["target"].should eq("a method call")
+        # Was hardcoded to column 0 before the migration, which is not a
+        # column any source position can have.
+        diag.primary.not_nil!.column.not_nil!.should be > 0
+      end
+
+      it "rejects redo outside any loop as C002" do
+        error = expect_raises(CompileError) do
+          compile("redo")
+        end
+        error.diagnostic.not_nil!.code.should eq("C002")
+      end
+
+      it "reports the nesting limit, and its actual value, as L001" do
+        # A limit rather than a fault: the script is valid, just too
+        # deeply nested. The limit is interpolated so the message can't
+        # drift from the constant.
+        source = String.build do |io|
+          17.times { |i| io << "while x#{i}\n" }
+          17.times { io << "end\n" }
+        end
+        error = expect_raises(CompileError) do
+          compile(source)
+        end
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("L001")
+        diag.data["limit"].should eq("16")
+      end
+
+      it "carries a U004 diagnostic naming how the def was written" do
+        # Asserting on the code, not the prose — the code is the stable
+        # identity, so rewording the catalog can't break this.
+        error = expect_raises(CompileError) do
+          compile("class A\ndef test\ndef nested\nend\nend\nend")
+        end
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("U004")
+        diag.data["definition"].should eq("def nested")
+        # Line 3 is the inner def; the column is the `def` keyword,
+        # since parse_def records its position before consuming it.
+        span = diag.primary.not_nil!
+        span.line.should eq(3)
+        span.column.should eq(1)
+        span.length.should eq(3)
+      end
+
+      it "reports the def self.foo shape distinctly from a plain def" do
+        # Both shapes hit the same guard, so the diagnostic has to
+        # reconstruct which one was actually written — the compiler
+        # has no access to the source text to slice it out of.
+        error = expect_raises(CompileError) do
+          compile("class A\ndef test\ndef self.nested\nend\nend\nend")
+        end
+        error.diagnostic.not_nil!.data["definition"].should eq("def self.nested")
       end
 
       it "still allows an ordinary def directly inside a class body" do

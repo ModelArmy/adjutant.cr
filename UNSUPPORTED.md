@@ -44,10 +44,15 @@ full registry across all letters lives in
 [ERRORS.md](./ERRORS.md); `U` rows there link back here rather than
 restating the reasoning, so each fact lives in exactly one place.
 
-**Status note (2026-07-28):** the codes below are allocated, but not yet
-emitted — the error-reporting redesign that introduces them is designed,
-not shipped. Today's messages name the construct but carry no code. Each
-entry records its current enforcement state explicitly.
+**Status note (2026-07-28):** the diagnostic system these codes key into
+now exists, and **every enforced entry below — U001 through U004 — is
+wired to it.** Their errors carry a structured `Diagnostic`, render with
+the offending source line, and draw their wording from the catalog rather
+than the raise site. U001 and U004 are caught by the compiler and get
+carets; U002 and U003 are caught by the VM, which records a line but no
+column, so those render the source line without a caret row.
+
+Every entry below now reports its own code.
 
 ---
 
@@ -71,7 +76,8 @@ U004's check.
 **Instead:** call the block with `yield`, or pass a lambda as an ordinary
 parameter.
 
-**Enforcement — active since 2026-07-27, compile time.** Until then,
+**Enforcement — active since 2026-07-27, compile time; migrated to a
+structured `U001` diagnostic 2026-07-28.** Until then,
 `def foo(&blk)` compiled fine and silently bound `blk` to `nil`; a script
 only discovered the gap if it later tried to use `blk`, where `blk.call`
 raised a generic "undefined method or variable: call" with no hint that
@@ -98,7 +104,8 @@ and not needed by anything driving the base-types work.
 
 **Instead:** declare the class literally with `class Foo; end`.
 
-**Enforcement — active since 2026-07-27, runtime.** Until then nothing
+**Enforcement — active since 2026-07-27, runtime; migrated to a
+structured `U002` diagnostic 2026-07-28.** Until then nothing
 enforced this: `Class.new`/`Module.new` fell through to the generic
 `construct_object` path and silently succeeded, producing a bare,
 non-functional object with no name and no meaningful way to define methods
@@ -131,11 +138,13 @@ the practical consequence for host integration: a native `new` (or any
 code first defines it via `class Foo; end`, in that same definition.
 
 **Enforcement — active since 2026-07-18, runtime, via the constant rule
-rather than a dedicated check.** `Op::MakeClass` always allocates a fresh,
-disconnected `RubyClass` for every `class Foo; end` it compiles, with no
-reuse-if-already-exists check, so the reassignment guard in
-`Op::SetConstant` is what converts a reopen into a loud error instead of
-silent data loss.
+rather than a dedicated check; migrated to a structured `U003` diagnostic
+2026-07-28, which is also when reopening stopped sharing one message with
+ordinary constant reassignment (now R001).** `Op::MakeClass` always
+allocates a fresh, disconnected `RubyClass` for every `class Foo; end` it
+compiles, with no reuse-if-already-exists check, so the reassignment guard
+in `Op::SetConstant` is what converts a reopen into a loud error instead
+of silent data loss.
 
 **Confirmed concretely by the person, 2026-07-18:** before that guard
 existed, reopening a *builtin* — `class String; def hello; "hello"; end;
@@ -203,7 +212,8 @@ corrected the step before it rather than merely narrowing it:
    `Op::DefMethod` and `Op::DefSingleton` need the same answer, not two
    different mechanisms.
 
-**Enforcement — active since 2026-07-27, compile time, final version.**
+**Enforcement — active since 2026-07-27, compile time, final version;
+migrated to a structured `U004` diagnostic 2026-07-28.**
 Moved out of `vm.cr` entirely into `Compiler#compile_def`: a `@def_depth`
 counter, incremented for `def` and lambda bodies (genuinely
 deferred/callable-later contexts), propagated unchanged through block
@@ -239,12 +249,29 @@ stay rare.
 
 **Instead:** call the method directly by name, or branch explicitly.
 
-**Enforcement — none specific, as of 2026-07-28.** These names are simply
-undefined, so a script using one gets a generic undefined-method error that
-doesn't explain the construct is deliberately excluded. This is the same
-failure shape the 2026-07-27 audit removed from U001–U004, and is a
-candidate for the same treatment. Unverified — flagged 2026-07-28, not
-empirically confirmed.
+**Enforcement — active since 2026-07-29, runtime.** Until then these names
+were simply undefined, so a script using one got a generic
+undefined-method error that never said the construct was deliberately
+excluded — the same failure shape the 2026-07-27 audit removed from
+U001–U004, and worse here, because these are the permanent kind: an LLM's
+natural response to "undefined" is to retry with a variation, and every
+variation fails identically.
+
+Checked in `dispatch_call` **after** normal resolution fails, not at
+compile time. Compile-time rejection was the original proposal and is
+wrong: a script may define its own method with one of these names
+(`class Mailer; def send; ...; end; end` is valid Ruby and valid
+Adjutant), and rejecting the name outright would break it. Reaching the
+check means the name resolved to nothing, so the script meant Ruby's
+construct. Raised as a `NameError` like any unresolved name, so a script
+rescuing `NameError` still catches it; the code is what says it will never
+resolve. Verified via `vm_spec.cr`, including the own-method case.
+
+The enforced set is deliberately narrow — `send`, `public_send`,
+`__send__`, `method_missing`, `define_method`. Names like `class_eval`,
+`instance_exec`, `methods`, and `instance_variable_get` pose the same
+hazard but are not declared exclusions here, and listing them would assert
+"never coming" without that decision having been made.
 
 ### U006 — `eval` / `instance_eval` on runtime strings
 
@@ -253,7 +280,9 @@ arbitrary code at runtime has no static risk profile at all.
 
 **Instead:** nothing; this is permanently excluded by the risk model.
 
-**Enforcement — none specific, as of 2026-07-28.** See U005.
+**Enforcement — active since 2026-07-29, runtime.** See U005 for the
+mechanism and why the check happens after resolution rather than at
+compile time.
 
 ### U007 — Reflection exposing native/Crystal internals
 
@@ -266,7 +295,17 @@ entirely.
 **Instead:** register what the script legitimately needs as a native module
 with a declared risk profile.
 
-**Enforcement — none specific, as of 2026-07-28.** See U005.
+**Enforcement — partial, since 2026-07-29, runtime.** `ObjectSpace` is
+reported as U007 rather than as an uninitialized constant. This goes
+through constant resolution rather than method dispatch, unlike U005/U006
+— the same after-resolution-fails principle, a different lookup path.
+
+Only `ObjectSpace` is named. There is no list of reflection METHOD names to
+enforce, because none is declared here: this entry describes a category
+("arbitrary FFI, `ObjectSpace`-style introspection") rather than an
+enumerated set, and inventing the enumeration while enforcing it would be
+deciding scope by implementation. Anything else reflective currently
+reports as an ordinary undefined name.
 
 ---
 

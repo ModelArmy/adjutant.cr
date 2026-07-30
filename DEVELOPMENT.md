@@ -19,20 +19,9 @@ This document explains how `adjutant` works internally. It is written for contri
 |`ops lint`                     |Run `ameba` on the source code                                                    |
 |`ops clean`                    |Remove debug and release build files                                              |
 |`ops wipe`                     |In addition to cleaning, remove all compiler caches                               |
-|`ops test`                     |Run Crystal test specs.                                                           |
-
-### Run test scripts
-
-> `ops test` does not run test scripts, only Crystal test specs
-
-Test scripts are Ruby files that test the Adjutant language features.
-
-```
-ops build
-bin/debug/test_runner
-```
-
-This will run all the test scripts in `spec/scripts` folder.
+|`ops test_specs`               |Run Crystal test specs.                                                           |
+|`ops test_scripts`             |Build test script runner and run the test scripts                                 |
+|`ops test`                     |Run test specs, test scripts, and linter.                                         |
 
 ### Run samples
 
@@ -210,7 +199,7 @@ The dispatch loop is a `case` on `Op` enum values, which LLVM compiles to a jump
 
 `dispatch_call`'s implicit-self step is what finds all of this again on a later bare/receiverless call — and it genuinely branches on what kind of thing `self` is, not one shared lookup, since the two cases mean different things:
 - **`self` is a `RubyObject`** (an ordinary instance — `main` at top level, or any object inside its own method body): checks that object's own class (`find_method`, then `find_native_method`) — the same table an explicit `self.foo`/`obj.foo` call on it would use.
-- **`self` is a `RubyClass`** (inside a class/module body): checks `self`'s own *singleton* tables first (`find_singleton_method`/`find_native_singleton_method` — a `def self.foo` called bare from elsewhere in the same body), then **`self.rclass`'s instance-method chain** (`Module`/`Class` walking up to `Object`) for anything Kernel-style. `self`'s own *instance*-method table (`self.find_method` — what `Foo.new` would see, not `Foo` itself) is deliberately **not** checked here: a class/module body can't bare-call its own future instance methods, matching real Ruby exactly (only an actual instance can). This distinction is also why `Module.superclass` must be `Object` (see "Every class defaults to real ancestors" below) — a module has no superclass of its own at all, so a bare Kernel-style call (`puts`, or any `define_native` function) inside a `module M` body only resolves by walking `M.rclass`'s (`Module`'s) chain, not `M`'s own.
+- **`self` is a `RubyClass`** (inside a class/module body): checks `self`'s own *singleton* tables first (`find_singleton_method`/`find_native_singleton_method` — a `def self.foo` called bare from elsewhere in the same body), then **`self.rclass`'s instance-method chain** (`Module`/`Class` walking up to `Object`) for anything called without a receiver. `self`'s own *instance*-method table (`self.find_method` — what `Foo.new` would see, not `Foo` itself) is deliberately **not** checked here: a class/module body can't bare-call its own future instance methods, matching real Ruby exactly (only an actual instance can). This distinction is also why `Module.superclass` must be `Object` (see "Every class defaults to real ancestors" below) — a module has no superclass of its own at all, so a bare receiverless call (`puts`, or any `define_native` function) inside a `module M` body only resolves by walking `M.rclass`'s (`Module`'s) chain, not `M`'s own.
 
 Either way, implicit-self falls through to constants/builtins and finally a script-catchable `NameError` if nothing matches. `@globals` now holds only constants and classes — `Op::GetGlobal`/`Op::SetConstant` — nothing else writes into it in any currently-parseable script.
 
@@ -307,7 +296,7 @@ flowchart LR
 
 **Every class defaults to real ancestors, not `nil`.** A script-written `class Foo; end` with no explicit `< Bar` inherits from `Object`; every class or module's own `rclass` is `Class` (a module's own class is `Class` too, not some separate `Module`-of-modules — `Module` itself is an instance of `Class`, same as any other class object). `Object`, `Class`, and `Module` are bootstrapped once per `Interpreter`, before anything else — see `Interpreter#bootstrap_core_hierarchy` below, since the three have a genuine circular dependency in real Ruby (`Class.superclass == Module`, `Module.superclass == Object`, and everything's `rclass` is `Class` except `Class.rclass == Class` itself, self-referential) that can't be resolved in a single construction pass. `Object.superclass` is `nil` — the deliberate root (real Ruby's is `BasicObject`, which Adjutant doesn't model). `MakeClass` resolves an explicit superclass by looking it up as an existing global `RubyClass` (raising `uninitialized constant` if it isn't one) and otherwise defaults to `Object`; a builtin class not built via `Interpreter#define_builtin_class` directly (e.g. `Integer`, built in the separate `Builtins` module) gets the same defaulting patched on afterward by `Interpreter#register_builtin_class`.
 
-**`Class.new`/`Module.new` are explicitly out of scope** — see "Forbidden and out-of-scope features" below. This bootstrap only makes `Class`/`Module` exist as real `RubyClass`es for `.class`/`is_a?`/`superclass` to work correctly; it does not make them instantiable from script.
+**`Class.new`/`Module.new` are explicitly out of scope** — see [UNSUPPORTED.md](./UNSUPPORTED.md), U002. This bootstrap only makes `Class`/`Module` exist as real `RubyClass`es for `.class`/`is_a?`/`superclass` to work correctly; it does not make them instantiable from script.
 
 **Universal methods** (`.class`, `.superclass`, `is_a?`/`kind_of?`, `respond_to?`, `equal?`) are implemented as `exec_builtin` VM-level fallback cases, the same mechanism `to_s`/`to_i`/`puts` already use — NOT as real inherited methods living on `Object`'s own method table. This is a known simplification: real Ruby resolves these by walking to `Object`/`Kernel` like any other method, so `respond_to?` in particular can't yet see them (asking `x.respond_to?(:to_s)` returns `false` even though `x.to_s` would work) — see `respond_to?`'s own doc comment in `vm.cr` for the exact boundary. Revisiting this — making these real `Object` methods discovered through normal dispatch — is a reasonable future cleanup once something actually needs `respond_to?` to see them, not a correctness bug today.
 
@@ -668,6 +657,52 @@ Two things worth calling out beyond node coverage:
 `ScriptProc` carries an optional `ast_body`/`ast_params` (set by the compiler at `compile_def`) purely so `RiskWalker` can walk a method's real control-flow shape — the VM itself never reads these fields. `RiskWalker` also builds throwaway `ScriptProc`s (empty `Chunk`, real `ast_body`) for the `def`s it discovers itself — never executed, only walked.
 
 A worked example: `samples/assess_script.cr` parses a script file (never running it) and prints both `RiskAggregator.summarize`'s worst-case path and every `RiskAggregator.all_findings` entry; `samples/scripts/risky_example.rb` exercises the `if`/`while`/def-discovery paths together.
+
+## Error reporting
+
+Errors are structured data, rendered late — not strings built at the raise site.
+
+A `Diagnostic` (`diagnostic.cr`) carries a **code**, one or more **spans**, and a `data` hash of substitutions. It carries no prose at all: the summary, the "why", and the "help" line are looked up in `ErrorCatalog` (`error_catalog.cr`) by code, with `{placeholder}`s filled from `data`. `DiagnosticRenderer` (`diagnostic_renderer.cr`) turns one into Markdown or plain text, quoting the offending source line from a `SourceMap` and drawing carets beneath the span.
+
+The code's letter encodes the **kind** of problem (`P` syntax, `C` static semantics, `R` runtime, `U` deliberately unsupported, `F` risk flow), never the subsystem that raised it — enforcement moves between phases, and an identifier that changes under refactoring can't serve as a translation key or a spec assertion. See [ERRORS.md](./ERRORS.md).
+
+Three consequences worth knowing before adding a raise site:
+
+- **Position fidelity differs by phase, and spans are nullable to match.** The parser has line, column, and a lexeme size; the compiler has `Node#line`/`#column` but no end position; the VM has a line and no column at all. A renderer degrades cleanly — no column means no caret row, no length means a one-character caret — so a phase can emit diagnostics now and gain precision later without changing anything else.
+- **`Span#filename` is nullable too**, for a different reason: the compiler is never told what file it is compiling. Nil means "the unit being compiled," and the renderer resolves it from a filename the caller supplies.
+- **A nil `diagnostic` is permanent, and means "the script raised this".** Every raise site in Adjutant now carries a diagnostic, but `diagnostic` stays nilable and `render_error` still returns nil, because a `RuntimeError` covers two different things. Adjutant reporting a failure it classified has a code. A script raising its own error — `raise "boom"`, a re-raise from `ensure`, the builtin `raise` — does not, and must not: the message belongs to the script's author, and no catalog entry could say anything true about it. Consumers fall back to `message` for those, which is the right thing to show. This is not migration scaffolding to be tidied away later; making it non-nilable would force a meaningless code onto every `raise` a script performs.
+
+Hosts should reach diagnostics through the interpreter rather than assembling the pieces themselves: `interp.parse` registers source and returns a `Body`, `interp.eval(body, filename)` runs an already-assessed one, and `interp.render_error` renders a diagnostic-carrying error or returns nil for a raise site not yet migrated. Driving `Adjutant::Parser` directly still works but skips registration, producing diagnostics with a position and no snippet — working, but visibly worse, with nothing to indicate why.
+
+VM-raised diagnostics keep the structured report separate from the script-visible error object: `RuntimeError#error_value` is what a script `rescue`s and carries only the diagnostic's summary, in ordinary Ruby-shaped prose. The code, the "why", and the "help" are for whoever reads the interpreter's output — a script has no use for them, and putting Adjutant-specific structure into a rescuable object would diverge from Ruby for no gain.
+
+The `I` series is treated differently from every other letter: those errors mean Adjutant is broken, not the script. They carry no `help`, because there is nothing the reader can do to their own code and a suggestion would send them editing something that was never at fault. Renderers append a report footer instead, pointing at `Interpreter#report_url` — a property, defaulting upstream, that a host should repoint at wherever ITS users report problems. Their `why` is written for whoever debugs Adjutant from a pasted report, not for the person who hit it.
+
+No colour is emitted anywhere, deliberately: the primary reader is an LLM under an agent harness, where ANSI escapes are noise in a captured log, and carets don't need colour to work.
+
+`SourceMap` retains script source keyed by filename. Nothing changed about how source is read — `Lexer` already slurped the whole IO into a string for peek/backtrack — it was simply discarded once tokens existed. Keyed by filename because `require` evals further files, so a diagnostic's file isn't always the top-level script's.
+
+### Working on diagnostics
+
+[ERRORS.md](./ERRORS.md) is documentation for whoever *hits* an error — a script author, an LLM that generated the script, or a host integrator. Keep implementation reasoning out of it. The notes below are the maintainer-facing half.
+
+`src/adjutant/error_catalog.cr` is authoritative for wording; ERRORS.md is the reader-facing index. A spec fails the build if the two disagree on codes or placeholders, so the duplication cannot drift silently.
+
+**Adding a code:** add an `Entry` to `ENTRIES`, add a row to the matching table in ERRORS.md, and for a `U` code add the entry to UNSUPPORTED.md. Wording rules, learned the hard way: name the construct, since the reader needs to know what to stop writing; never reference a file in this repository, because a repo-internal path means nothing to a script author or a model; and keep `why` and `help` distinct, because a reader who understands the why still needs the what-instead.
+
+**Why the letter encodes the kind of problem and not the subsystem.** Enforcement moves between phases as the implementation improves — the nested-`def` check (U004) moved from the VM to the compiler mid-session. An identifier that changes when code is refactored is not an identifier, and cannot serve as a translation key, a spec assertion, or something to look up. The corollary when adding a code is to ask *who can reach this*, not *what went wrong*: that question is what separates `I` from `H`, and getting it wrong means telling someone to report their own mistake as our bug.
+
+**Specific decisions worth not re-litigating:**
+
+- **P001 has no `why`/`help`.** It stands in for every `expect` failure — a missing `)`, `,`, or `then` — and any explanation covering all of them is too vague to act on. Span labels carry the specifics. P003 was split out because missing-`end` is the one syntax error with something general worth saying, and the only one whose caret actively misleads.
+- **R001 and U003 share one guard.** Both come from the assign-once constant rule, told apart by whether both values are classes. They were one conflated message until 2026-07-28, which meant a script that had merely written `FOO = 1` twice was told about redefining classes.
+- **The rescuable class is set independently of the code.** R008 raises `NameError` because real Ruby does, and the proper-subset mandate outranks scheme tidiness. F001 keeps `RiskFlowRejectedError` for the same reason. `error_value` carries the diagnostic's summary only — never the code, why, or help — so a script sees ordinary Ruby-shaped prose.
+- **`Diagnostic#primary` is nilable** for the `H` series, which has no honest script position: most fire before a script exists, and where one is running the position would implicate innocent source. `to_line` omits the position rather than inventing `line 0`.
+- **`H` codes deliberately share no exception class.** H001/H002/H004 are `HostArgumentError < ArgumentError` because they really are bad arguments, which keeps a host's existing `rescue ArgumentError` working. H003 stays `AmbiguousRiskFlowPolicyError` — an ambiguous policy is configuration state, not one call's arguments, and a shared parent would assert something false about it.
+- **H004 is unreachable except from a native function**, since `invoke_proc` is only exposed through `NativeCallContext`. It therefore always unwinds through `call_native` and surfaces as N001 carrying the H004 text. Kept classified as `H` anyway, so it stays correct if `invoke_proc` is ever exposed elsewhere.
+- **`I` codes ride on three different exception classes**, following the same "the class stays accurate" rule as `H`. Compile-phase ones are `CompileError`, run-phase ones `RuntimeError`, and I007 is `InternalError` because risk aggregation is neither — a host calls `RiskAggregator.summarize` directly, and forcing it into either of the others would misdescribe when it happened.
+- **L003 has no trigger test.** Reaching it needs 4096 live intermediate values in one expression, and both the call-depth ceiling and the parser's own recursion arrive first. A real guard, but an untested one.
+- **`L` help text must not promise absent knobs.** `ExecutionLimits` exposes `instruction_limit` and `call_depth_limit`, so L002 and L004 can say the host may raise them. L001 and L003 guard fixed constants. A spec asserts L003's help does *not* mention a setting, since that is the detail that rots when someone later adds one.
 
 ## Unsupported and out-of-scope features
 

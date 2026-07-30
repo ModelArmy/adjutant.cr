@@ -33,7 +33,7 @@ module Adjutant
       # Module, Module.superclass == Object. This gap caused a real
       # regression found in the 2026-07-16/17 root-scope work: a
       # module body's self is the module itself (a RubyClass), and
-      # implicit-self dispatch for a Kernel-style native call (e.g.
+      # implicit-self dispatch for a receiverless native call (e.g.
       # `assert_not_nil` inside `module M; ...; end`) needs to walk
       # self.rclass's (Module's) own superclass chain up to Object —
       # broken at its very first link without this.

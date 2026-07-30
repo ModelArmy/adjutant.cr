@@ -152,6 +152,30 @@ end
 
 USAGE = "Usage: run_script FILE\n\nOpen, compile and interpret the Ruby-ish script"
 
+# Renders a diagnostic-carrying error with its source line and carets,
+# falling back to a one-liner for raise sites not yet migrated to the
+# diagnostic system. A real host would pick Markdown instead when the
+# consumer is an LLM, or when piping through a Markdown renderer for a
+# human — the structure is identical, only the formatting differs.
+def report(interp : Adjutant::Interpreter,
+           error : Adjutant::ParseError | Adjutant::CompileError | Adjutant::RuntimeError,
+           kind : String,
+           filename : String) : String
+  rendered = interp.render_error(
+    error,
+    Adjutant::DiagnosticRenderer::Format::PlainText,
+    filename
+  )
+  return rendered if rendered
+  # RuntimeError has a filename and line but no column, unlike the
+  # parse/compile errors.
+  if error.is_a?(Adjutant::RuntimeError)
+    "#{kind}: #{filename}:#{error.line}: #{error.message}"
+  else
+    "#{kind}: #{filename}:#{error.line}:#{error.column}: #{error.message}"
+  end
+end
+
 script_file = ARGV.first?.try(&.strip)
 abort(USAGE) if script_file.nil? || script_file.blank?
 
@@ -196,29 +220,44 @@ script_source = File.read(script_file)
 # has both a static and a dynamic (risk flow / IFC) layer — they catch
 # different things, and this sample demonstrates both together on the
 # same script rather than treating them as alternatives.
-begin
-  body = Adjutant::Parser.new(script_source, script_file).parse
-  walker = Adjutant::RiskWalker.new(interp)
-  tree = walker.walk_body(body)
-  summary = Adjutant::RiskAggregator.summarize(tree)
+# `interp.parse` rather than `Adjutant::Parser` directly: it registers
+# the source so any diagnostic raised later — including from compile,
+# further down — can quote the offending line. Parsing straight through
+# `Parser` works, but produces diagnostics with no source snippet.
+body =
+  begin
+    interp.parse(script_source, script_file)
+  rescue e : Adjutant::ParseError
+    abort(report(interp, e, "Parse error", script_file))
+  end
 
-  puts "=== Static risk assessment: #{script_file} ==="
-  puts "Worst case: #{summary.severity} / reversible=#{summary.reversible}"
-  puts "Tags: #{summary.tags.empty? ? "none" : summary.tags.join(", ")}"
-  puts
-rescue e : Adjutant::ParseError
-  abort("Parse error: #{script_file}:#{e.line}:#{e.column}: #{e.message}")
-end
+walker = Adjutant::RiskWalker.new(interp)
+tree = walker.walk_body(body)
+summary = Adjutant::RiskAggregator.summarize(tree)
+
+puts "=== Static risk assessment: #{script_file} ==="
+puts "Worst case: #{summary.severity} / reversible=#{summary.reversible}"
+puts "Tags: #{summary.tags.empty? ? "none" : summary.tags.join(", ")}"
+puts
 
 # Now actually run the script — this is where dynamic risk flow (IFC)
 # enforcement kicks in, via VM#call_native's automatic label-driven
 # check and SampleModule's explicit declare_sensitivity calls.
 puts "=== Running: #{script_file} ==="
 begin
-  result = interp.eval(script_source, script_file)
+  # Executes the body already parsed and assessed above — no second
+  # parse, so there is no window in which the text could differ from
+  # what the risk assessment actually saw.
+  result = interp.eval(body, script_file)
   puts "Result: #{result}"
+rescue e : Adjutant::CompileError
+  # Constructs Adjutant deliberately refuses (`&blk` capture, a `def`
+  # nested inside another `def`, and so on) are rejected here, between
+  # parsing and running. Easy to forget when handling errors, and the
+  # resulting crash is far worse than the diagnostic it discarded.
+  STDERR.puts report(interp, e, "Compile error", script_file)
 rescue e : Adjutant::RuntimeError
-  STDERR.puts "Runtime error: #{e.filename}:#{e.line}: #{e.message}"
+  STDERR.puts report(interp, e, "Runtime error", script_file)
 end
 
 # Inspect what the script wrote to stdout.

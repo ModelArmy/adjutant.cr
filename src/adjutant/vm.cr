@@ -149,14 +149,53 @@ module Adjutant
     # predate the typed-error hierarchy bootstrap.
     getter error_value : Value?
 
+    # The host-facing structured report — nil when there isn't one, and
+    # that case is PERMANENT, not a migration leftover.
+    #
+    # A `RuntimeError` covers two different things. Adjutant reporting a
+    # failure it classified carries a diagnostic and a code. A script
+    # raising its own error — `raise "boom"`, a re-raise from `ensure`,
+    # the builtin `raise` — does not, and must not: the message belongs to
+    # the script's author, and no catalog entry could say anything true
+    # about it.
+    #
+    # So a nil diagnostic means "this is the script's error, not
+    # Adjutant's". Do not try to make this non-nilable; doing so would
+    # force a meaningless code onto every `raise` a script performs.
+    #
+    # Distinct from `error_value`, which is the object a SCRIPT rescues
+    # and has to keep Ruby's semantics under the proper-subset mandate.
+    # A diagnostic is a report ABOUT the failure, for whoever reads the
+    # output.
+    getter diagnostic : Diagnostic?
+
     def initialize(message : String, @filename = "<script>", @line = 0, cause = nil, @error_value = nil)
+      @diagnostic = nil
       super(message, cause)
     end
 
     def initialize(message : String, frame : Frame, cause = nil, @error_value = nil)
       @filename = frame.filename
       @line = frame.line
+      @diagnostic = nil
       super(message, cause)
+    end
+
+    def initialize(diagnostic : Diagnostic, frame : Frame, cause = nil, @error_value = nil)
+      @diagnostic = diagnostic
+      @filename = frame.filename
+      @line = frame.line
+      super(diagnostic.to_line, cause)
+    end
+
+    # For diagnostics raised outside the dispatch loop, where there is
+    # no Frame — `require` failing to resolve a module, for instance.
+    # Fabricating a Frame for those would mean inventing a proc and a
+    # chunk that never existed.
+    def initialize(diagnostic : Diagnostic, @filename : String, @line : Int32,
+                   cause = nil, @error_value = nil)
+      @diagnostic = diagnostic
+      super(diagnostic.to_line, cause)
     end
   end
 
@@ -213,7 +252,11 @@ module Adjutant
 
     # Execute a compiled chunk and return the result.
     def run(chunk : Chunk, filename : String = "<script>", local_count : Int32 = 0) : Value
-      raise RuntimeError.new("Must be fresh VM to run a compiled chunk.", filename) unless @frames.empty?
+      # Not a RuntimeError: this fires before any script runs, so no
+      # script could rescue it, and the fault is the host's wiring.
+      unless @frames.empty?
+        raise HostStateError.new(Diagnostic.new(code: "H005"))
+      end
       main_proc = ScriptProc.new(chunk, "<main>", local_count: local_count)
       # self at top level is `main` — a real RubyObject of class
       # Object, matching real Ruby (see Interpreter#main's own
@@ -283,7 +326,24 @@ module Adjutant
     # from a trusted internal `blk` param.
     protected def invoke_proc(proc_obj : RubyObject, args : Array(Value), self_val : Value? = nil) : Value
       unless proc_obj.rclass == builtin_class_by_name("Proc")
-        raise runtime_error("invoke_proc called with a #{proc_obj.rclass.name}, not a Proc")
+        # An H code, not an I: `invoke_proc` is exposed through
+        # NativeCallContext, so the caller is always a host-provided
+        # native function passing the wrong Value. Telling an integrator
+        # to report their own mistake upstream would be wrong.
+        #
+        # Because that is the ONLY way here, this always unwinds through
+        # `call_native`'s rescue and reaches the reader as N001 carrying
+        # this H004 as its message. That is the useful shape — it names
+        # both the function that failed and why — but it does mean H004
+        # is never seen on its own, and that the result IS script-
+        # rescuable, since N001 is a RuntimeError.
+        #
+        # Kept as a HostArgumentError rather than a RuntimeError anyway:
+        # the classification is what is true about the failure, and it
+        # stays correct if invoke_proc ever becomes reachable elsewhere.
+        raise HostArgumentError.new(
+          Diagnostic.new(code: "H004", data: {"found" => proc_obj.rclass.name})
+        )
       end
       sproc = proc_obj.ivars[@symbols.intern("__sproc").value].as_proc
       invoke_internal(sproc, args, self_val, outer_locals: proc_obj.outer_locals)
@@ -415,7 +475,9 @@ module Adjutant
       if cls = f.self_val.as_rclass?
         return cls
       end
-      raise runtime_error("class variable access outside of a class/module body", f)
+      raise runtime_diagnostic(
+        Diagnostic.new(code: "R002", primary: frame_span(f)), f
+      )
     end
 
     # Reads @name off `self` — a RubyObject's own ivars for an
@@ -450,7 +512,7 @@ module Adjutant
                            outer : Array(Value)? = nil, self_val : Value = Value.nil_value, lexical_scope : RubyClass? = nil,
                            block_outer_locals : Array(Value)? = nil) : Frame
       if @limits.call_depth_limit > 0 && @frames.size >= @limits.call_depth_limit
-        raise runtime_error("call stack too deep (limit: #{@limits.call_depth_limit})")
+        raise script_diagnostic("L002", {"limit" => @limits.call_depth_limit.to_s}, current_frame)
       end
       frame = Frame.new(proc, proc.chunk, stack_base, filename, block, outer, self_val, lexical_scope, block_outer_locals)
       @frames.push(frame)
@@ -466,12 +528,16 @@ module Adjutant
     end
 
     private def push(v : Value) : Nil
-      raise runtime_error("stack overflow") if @stack.size >= MAX_STACK
+      raise script_diagnostic("L003", {"limit" => MAX_STACK.to_s}, current_frame) if @stack.size >= MAX_STACK
       @stack.push(v)
     end
 
     private def pop : Value
-      raise runtime_error("stack underflow") if @stack.size <= current_frame.stack_base
+      if @stack.size <= current_frame.stack_base
+        raise runtime_diagnostic(
+          Diagnostic.new(code: "I003", primary: frame_span(current_frame))
+        )
+      end
       @stack.pop
     end
 
@@ -482,7 +548,7 @@ module Adjutant
     private def tick : Nil
       @instruction_count += 1
       if @limits.instruction_limit > 0 && @instruction_count > @limits.instruction_limit
-        raise runtime_error("instruction limit exceeded (#{@limits.instruction_limit})")
+        raise script_diagnostic("L004", {"limit" => @limits.instruction_limit.to_s}, current_frame)
       end
     end
 
@@ -593,7 +659,7 @@ module Adjutant
             start = f.self_val.as_rclass? || f.lexical_scope
             val = start.try(&.find_constant(sym.value)) || @globals[sym.value]?
             unless val
-              raise runtime_error("uninitialized constant #{sym.name}", f)
+              raise undefined_constant(sym.name, f)
             end
             push(val)
           when Op::SetConstant
@@ -622,13 +688,13 @@ module Adjutant
             # class/module body goes through target.constants instead.
             # Both need the same check; this isn't specific to classes.
             if target
-              if target.constants.has_key?(sym.value)
-                raise runtime_error("constant #{target.name}::#{sym.name} already initialized — Adjutant does not permit constant reassignment (this includes redefining/reopening a class or module)", f)
+              if existing = target.constants[sym.value]?
+                raise constant_reassignment(existing, val, "#{target.name}::#{sym.name}", f)
               end
               target.constants[sym.value] = val
             else
-              if @globals.has_key?(sym.value)
-                raise runtime_error("constant #{sym.name} already initialized — Adjutant does not permit constant reassignment (this includes redefining/reopening a class or module)", f)
+              if existing = @globals[sym.value]?
+                raise constant_reassignment(existing, val, sym.name, f)
               end
               @globals[sym.value] = val
             end
@@ -637,18 +703,18 @@ module Adjutant
             sym = chunk.consts[inst.c].as_sym
             ns_val = pop
             unless ns = ns_val.as_rclass?
-              raise runtime_error("#{ns_val} is not a class/module", f)
+              raise script_diagnostic("R004", {"value" => ns_val.to_s}, f)
             end
             val = ns.constants[sym.value]?
             unless val
-              raise runtime_error("uninitialized constant #{ns.name}::#{sym.name}", f)
+              raise undefined_constant("#{ns.name}::#{sym.name}", f, bare_name: sym.name)
             end
             push(val)
           when Op::GetGlobalConstant
             sym = chunk.consts[inst.c].as_sym
             val = @globals[sym.value]?
             unless val
-              raise runtime_error("uninitialized constant #{sym.name}", f)
+              raise undefined_constant(sym.name, f)
             end
             push(val)
 
@@ -734,7 +800,7 @@ module Adjutant
             case
             when v.int?   then push(Value.int(-v.as_int))
             when v.float? then push(Value.float(-v.as_float))
-            else               raise runtime_error("cannot negate #{v} (#{v.raw.class})", f)
+            else               raise script_diagnostic("R005", {"operator" => "-", "type" => describe_value(v)}, f)
             end
           when Op::Pos
             # Mirrors Op::Neg's exact int?/float?/else-raise shape —
@@ -756,11 +822,11 @@ module Adjutant
             v = pop
             case
             when v.int?, v.float? then push(v)
-            else                       raise runtime_error("cannot apply unary + to #{v} (#{v.raw.class})", f)
+            else                       raise script_diagnostic("R005", {"operator" => "+", "type" => describe_value(v)}, f)
             end
           when Op::BitNot
             v = pop
-            raise runtime_error("~ requires Integer", f) unless v.int?
+            raise script_diagnostic("R005", {"operator" => "~", "type" => describe_value(v)}, f) unless v.int?
             push(Value.int(~v.as_int))
 
             # --- Jumps ----------------------------------------------------------
@@ -868,7 +934,7 @@ module Adjutant
               super_sym = chunk.consts[inst.b].as_sym
               super_val = @globals[super_sym.value]?
               unless super_val && super_val.rclass?
-                raise runtime_error("uninitialized constant #{super_sym.name}", f)
+                raise undefined_constant(super_sym.name, f)
               end
               superclass = super_val.as_rclass
             end
@@ -912,7 +978,7 @@ module Adjutant
             # simplification of it.
             owner = f.self_val.as_rclass? || f.self_val.as_robject?.try(&.rclass)
             unless owner
-              raise runtime_error("def outside of a class/module body", f)
+              raise script_diagnostic("R006", {"definition" => "def #{name_sym.name}"}, f)
             end
             proc = proc_val.as_proc
             proc.lexical_scope = owner
@@ -936,7 +1002,7 @@ module Adjutant
             # this check lived here at runtime and why it moved).
             owner = recv.as_rclass? || recv.as_robject?.try(&.rclass)
             unless owner
-              raise runtime_error("def self.#{name_sym.name} outside of a class/module body", f)
+              raise script_diagnostic("R006", {"definition" => "def self.#{name_sym.name}"}, f)
             end
             proc = proc_val.as_proc
             proc.lexical_scope = owner
@@ -960,7 +1026,7 @@ module Adjutant
               result = call_script_proc(blk, args, f.filename, nil, f.block_outer_locals)
               push(result) if @frames.size == depth_before
             else
-              raise runtime_error("no block given", f)
+              raise script_diagnostic("R007", {"method" => f.proc.name}, f)
             end
           when Op::BlockBreak
             val = pop
@@ -973,10 +1039,10 @@ module Adjutant
 
             # --- Exception handling ---------------------------------------
           when Op::Try
-            raise runtime_error("internal error: unpatched Try target", f) if inst.c == Chunk::NO_TARGET
+            raise internal_diagnostic("I002", {"target" => "Try"}, f) if inst.c == Chunk::NO_TARGET
             f.handlers.push(HandlerEntry.new(rescue_ip: inst.c.to_i))
           when Op::SetEnsure
-            raise runtime_error("internal error: unpatched SetEnsure target", f) if inst.c == Chunk::NO_TARGET
+            raise internal_diagnostic("I002", {"target" => "SetEnsure"}, f) if inst.c == Chunk::NO_TARGET
             if inst.b == 1_u16
               # Same construct as the immediately-preceding Try — add
               # the ensure target to the entry it just pushed, rather
@@ -1030,7 +1096,7 @@ module Adjutant
           when Op::GetMethodName
             push(Value.string(f.proc.name))
           else
-            raise runtime_error("unknown opcode: #{inst.op}", f)
+            raise internal_diagnostic("I001", {"opcode" => inst.op.to_s}, f)
           end
         rescue ex : RuntimeError
           # Clear any stale pending re-raise up front: a genuinely new
@@ -1249,7 +1315,7 @@ module Adjutant
             # 2) self_rclass.rclass's (Module's, for a `module M`
             #    body — Class's, for a `class Foo` body) instance-
             #    method CHAIN, walked up to Object — this is how a
-            #    bare Kernel-style native call (`puts`, or any
+            #    bare receiverless native call (`puts`, or any
             #    define_native function) resolves inside a class/
             #    module body in real Ruby: M is itself an INSTANCE of
             #    Module, and Module < Object (see
@@ -1308,12 +1374,34 @@ module Adjutant
         return result
       end
 
+      # Nothing resolved. Before reporting the name as merely undefined,
+      # check whether it names a construct Adjutant deliberately
+      # excludes — the difference matters, because "undefined" invites
+      # the reader (often an LLM) to retry with a variation, and every
+      # variation will fail identically.
+      #
+      # Checked HERE, after resolution, not at compile time: a script
+      # may define its own `send`, and rejecting the name outright would
+      # break that. Reaching this point means the name resolved to
+      # nothing, so the script meant Ruby's construct.
+      if code = ErrorCatalog::EXCLUDED_METHODS[name]?
+        raise excluded_construct(code, name, filename, line)
+      end
+
       # No local, no native, no global proc, no builtin — this is an
       # unresolved bare identifier/method name. Real Ruby raises
       # NameError here (undefined local variable or method), so this
       # is script-catchable via `rescue NameError` (or `rescue`, since
       # NameError < StandardError) rather than silently returning nil.
-      raise name_error("undefined method or variable: #{name}", filename, line)
+      raise runtime_diagnostic(
+        Diagnostic.new(
+          code: "R008",
+          primary: Span.new(line: line, filename: filename),
+          data: {"name" => name}
+        ),
+        current_frame,
+        error_class: "NameError"
+      )
     end
 
     # Invoke a NativeCallable, wrapping any Crystal exception as a
@@ -1338,7 +1426,21 @@ module Adjutant
     rescue ex : RuntimeError
       raise ex
     rescue ex
-      raise runtime_error("Native call error: #{ex.message}", current_frame, cause: ex)
+      # Deliberately its own letter rather than an R code: Adjutant does
+      # not know whether the script passed something bad or the host's
+      # own function is broken, and an R code would imply it had decided.
+      raise runtime_diagnostic(
+        Diagnostic.new(
+          code: "N001",
+          primary: Span.new(line: line, filename: filename),
+          data: {
+            "function" => name,
+            "message"  => ex.message || ex.class.to_s,
+          }
+        ),
+        current_frame,
+        cause: ex
+      )
     end
 
     # The risk flow check itself — see call_native's doc comment. A
@@ -1432,10 +1534,17 @@ module Adjutant
     private def raise_risk_flow_rejected(request : RiskFlowDecisionRequest, filename : String, line : Int32) : NoReturn
       first = request.matches.first
       reason = first.rule.try { |rule| "#{rule.tag} (#{first.tag})" } || "reject_all policy (#{first.tag})"
-      msg = "risk flow policy rejected #{request.call_name}: #{reason}"
+      diag = Diagnostic.new(
+        code: "F001",
+        primary: Span.new(line: line, filename: filename),
+        data: {"call" => request.call_name, "reason" => reason}
+      )
+      # The script-visible class stays RiskFlowRejectedError: scripts are
+      # documented as able to `rescue` it, and that contract is
+      # independent of how the refusal is reported to the host.
       cls = builtin_class_by_name("RiskFlowRejectedError")
-      err_val = cls ? make_error_object(cls, msg) : Value.string(msg)
-      raise RuntimeError.new(msg, filename, line, error_value: err_val)
+      err_val = cls ? make_error_object(cls, diag.summary) : Value.string(diag.summary)
+      raise RuntimeError.new(diag, filename, line, error_value: err_val)
     end
 
     # `Foo.new(args)` — dispatches to a native singleton `new` if the
@@ -1447,7 +1556,7 @@ module Adjutant
     # cannot express that, since it always allocates a bare
     # RubyObject.
     private def construct(cls : RubyClass, args : Array(Value), filename : String, line : Int32, blk : ScriptProc?) : Value
-      raise runtime_error("can't instantiate module #{cls.name}") if cls.is_module?
+      raise script_diagnostic("R009", {"module" => cls.name}, current_frame) if cls.is_module?
       if cls.uninstantiable?
         # `Class.new`/`Module.new` — see RubyClass#uninstantiable? and
         # Interpreter#bootstrap_core_hierarchy for why these two
@@ -1456,7 +1565,13 @@ module Adjutant
         # definitions). Before this guard, both fell through to
         # construct_object below and silently succeeded, producing a
         # bare, non-functional RubyObject — see UNSUPPORTED.md, U002.
-        raise runtime_error("can't instantiate #{cls.name}")
+        raise runtime_diagnostic(
+          Diagnostic.new(
+            code: "U002",
+            primary: frame_span(current_frame),
+            data: {"class" => cls.name}
+          )
+        )
       end
       if sym_id = @symbols.lookup("new").try(&.value)
         if native_new = cls.find_native_singleton_method(sym_id)
@@ -1610,7 +1725,10 @@ module Adjutant
         if interp = @interpreter
           interp.require_module(path, filename)
         else
-          raise RuntimeError.new("'require' cannot load -- #{path} (no interpreter)", filename, line)
+          # A bare VM is a supported configuration; it just cannot
+          # require. That makes this the host's wiring, not the
+          # script's fault — so H, not R010.
+          raise HostStateError.new(Diagnostic.new(code: "H006"))
         end
       when "nil?"
         # Called as a method: args[0] is receiver
@@ -1808,6 +1926,128 @@ module Adjutant
       RuntimeError.new(msg, frame, cause, error_value: err_val)
     end
 
+    # Same as runtime_error, but carries a structured Diagnostic for
+    # the host alongside the script-visible error object.
+    #
+    # The script-visible object gets the diagnostic's SUMMARY only —
+    # not the code, the "why", or the "help". A script that rescues
+    # this and prints `e.message` should see an ordinary Ruby-shaped
+    # sentence; the code and the explanation are for whoever is reading
+    # the interpreter's output, and a script has no use for either.
+    #
+    # Spans here carry a line and no column: `Frame` doesn't record
+    # one. The renderer quotes the source line and omits the caret row.
+    # `error_class` is the Ruby class a script sees when it rescues
+    # this. It has to stay independently settable from the diagnostic
+    # code: the code classifies the failure for whoever reads the
+    # report, while the class governs `rescue` semantics and must match
+    # real Ruby's choice — an unresolved bare name is a `NameError`
+    # there, and Adjutant is a proper subset, so it is one here too.
+    private def runtime_diagnostic(diag : Diagnostic, frame : Frame = current_frame,
+                                   cause = nil, error_class : String = "RuntimeError") : RuntimeError
+      cls = builtin_class_by_name(error_class)
+      err_val = cls ? make_error_object(cls, diag.summary) : nil
+      RuntimeError.new(diag, frame, cause, error_value: err_val)
+    end
+
+    # An unresolved constant. Reports a deliberately excluded name as
+    # such, and anything else as an ordinary uninitialized constant.
+    #
+    # `bare_name` lets a qualified lookup (`Foo::ObjectSpace`) be tested
+    # against the table by its last segment while still reporting the
+    # full path the script wrote.
+    private def undefined_constant(name : String, frame : Frame,
+                                   bare_name : String? = nil) : RuntimeError
+      if code = ErrorCatalog::EXCLUDED_CONSTANTS[bare_name || name]?
+        return excluded_construct(code, name, frame.filename, frame.line)
+      end
+      script_diagnostic("R003", {"name" => name}, frame)
+    end
+
+    # A construct Adjutant will never support, reported as such rather
+    # than as an undefined name.
+    #
+    # Raised as a NameError like R008, and for the same reason: from the
+    # script's side the name genuinely does not resolve, and a script
+    # that rescues NameError should still catch this. The code is what
+    # tells the reader it is never going to resolve.
+    private def excluded_construct(code : String, name : String,
+                                   filename : String, line : Int32) : RuntimeError
+      runtime_diagnostic(
+        Diagnostic.new(
+          code: code,
+          primary: Span.new(line: line, filename: filename),
+          data: {"construct" => name}
+        ),
+        current_frame,
+        error_class: "NameError"
+      )
+    end
+
+    # Shorthand for the ordinary script-fault diagnostics, which all
+    # have the same shape: a code, some substitutions, and the frame.
+    private def script_diagnostic(code : String, data : Hash(String, String), frame : Frame) : RuntimeError
+      runtime_diagnostic(
+        Diagnostic.new(code: code, primary: frame_span(frame), data: data),
+        frame
+      )
+    end
+
+    # A value's type as a script author would name it. The old messages
+    # interpolated `v.raw.class`, which leaks Crystal type names
+    # (`Int64`, `Nil`) at someone writing Ruby.
+    private def describe_value(value : Value) : String
+      if obj = value.as_robject?
+        return obj.rclass.name
+      end
+      if cls = value.as_rclass?
+        return cls.name
+      end
+      @interpreter.try(&.builtin_class_for(value)).try(&.name) || "this value"
+    end
+
+    # Shorthand for the internal (`I`) diagnostics raised from inside
+    # the dispatch loop, which all have the same shape: a code, a
+    # couple of substitutions, and the frame in hand.
+    private def internal_diagnostic(code : String, data : Hash(String, String), frame : Frame) : RuntimeError
+      runtime_diagnostic(
+        Diagnostic.new(code: code, primary: frame_span(frame), data: data),
+        frame
+      )
+    end
+
+    # Span for a failure the VM detected, from the frame it happened
+    # in. Line only — see runtime_diagnostic.
+    private def frame_span(frame : Frame) : Span
+      Span.new(line: frame.line, filename: frame.filename)
+    end
+
+    # Constants are assign-once, and that single rule catches two
+    # genuinely different mistakes. Reporting them as one — which the
+    # message here used to do, mentioning class reopening even to a
+    # script that had just written `FOO = 1` twice — makes each case
+    # read as noise to whoever hit the other one.
+    #
+    #   - Both values are classes/modules: this is `class Foo; end`
+    #     written twice, i.e. reopening. A deliberately unsupported
+    #     construct (U003), and the reader needs to know it is never
+    #     coming rather than that some constant rule fired.
+    #   - Otherwise: an ordinary constant reassigned (R001). The
+    #     assign-once rule working as intended, and a normal fault to
+    #     fix in the script.
+    private def constant_reassignment(existing : Value, replacement : Value,
+                                      name : String, frame : Frame) : RuntimeError
+      reopening = !existing.as_rclass?.nil? && !replacement.as_rclass?.nil?
+      runtime_diagnostic(
+        Diagnostic.new(
+          code: reopening ? "U003" : "R001",
+          primary: frame_span(frame),
+          data: {"name" => name}
+        ),
+        frame
+      )
+    end
+
     # Same shape as runtime_error, but tags the script-visible error
     # object as NameError instead of RuntimeError — used for the
     # "no local, no native, no global, no builtin" dispatch miss,
@@ -1847,7 +2087,15 @@ module Adjutant
                                   label : RiskFlowLabel?) : Value
       cls = builtin_class_by_name("Range")
       unless cls
-        raise runtime_error("Range class not registered — bootstrap_builtin_classes must run before any Range literal is evaluated")
+        raise runtime_diagnostic(
+          Diagnostic.new(
+            code: "I004",
+            primary: frame_span(current_frame),
+            data: {
+              "class" => "Range",
+            }
+          )
+        )
       end
       obj = RubyObject.new(cls)
       obj.ivars[@symbols.intern("__min").value] = rstart
@@ -1865,7 +2113,15 @@ module Adjutant
     private def make_lambda_object(sproc : ScriptProc, label : RiskFlowLabel?, outer_locals : Array(Value)?) : Value
       cls = builtin_class_by_name("Proc")
       unless cls
-        raise runtime_error("Proc class not registered — bootstrap_builtin_classes must run before any lambda literal is evaluated")
+        raise runtime_diagnostic(
+          Diagnostic.new(
+            code: "I004",
+            primary: frame_span(current_frame),
+            data: {
+              "class" => "Proc",
+            }
+          )
+        )
       end
       obj = RubyObject.new(cls)
       obj.ivars[@symbols.intern("__sproc").value] = Value.proc(sproc)

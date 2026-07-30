@@ -1,13 +1,35 @@
 require "./ast"
 require "./bytecode"
+require "./diagnostic"
 
 module Adjutant
   class CompileError < Exception
     getter line : Int32
     getter column : Int32
 
+    # Present only for raise sites migrated to the diagnostic system.
+    # Nil means this error predates that migration and carries just a
+    # message — the two forms coexist deliberately, so converting the
+    # ~70 raise sites can happen incrementally instead of as one
+    # unreviewable change.
+    getter diagnostic : Diagnostic?
+
     def initialize(message : String, @line, @column)
+      @diagnostic = nil
       super("#{message} (line #{line}, col #{column})")
+    end
+
+    # `message` stays a readable one-liner so existing rescuers and
+    # specs keep working; anything wanting the source snippet renders
+    # `diagnostic` through `DiagnosticRenderer`.
+    def initialize(diagnostic : Diagnostic)
+      @diagnostic = diagnostic
+      # These raise sites always carry a span; the fallbacks exist
+      # because `primary` is nilable for the H series, which never
+      # reaches either of these classes.
+      @line = diagnostic.primary.try(&.line) || 0
+      @column = diagnostic.primary.try(&.column) || 0
+      super(diagnostic.to_line)
     end
   end
 
@@ -232,7 +254,13 @@ module Adjutant
       when ModifierIf     then compile_modifier_if(node)
       when ModifierWhile  then compile_modifier_while(node)
       else
-        raise CompileError.new("unknown node type: #{node.class}", node.line, node.column)
+        raise CompileError.new(
+          Diagnostic.new(
+            code: "I005",
+            primary: Span.new(line: node.line, column: node.column),
+            data: {"node" => node.class.to_s}
+          )
+        )
       end
     end
 
@@ -554,7 +582,11 @@ module Adjutant
       when TokenKind::Gt      then Op::Gt
       when TokenKind::GtE     then Op::Gte
       else
-        raise "unknown binary op: #{op}"
+        # No position: this maps a token kind to an opcode and never
+        # sees the node it came from.
+        raise CompileError.new(
+          Diagnostic.new(code: "I006", data: {"operator" => op.to_s})
+        )
       end
     end
 
@@ -663,7 +695,19 @@ module Adjutant
         compile_node(target.index)
         @chunk.emit(Op::SetIndex, line)
       else
-        raise CompileError.new("invalid assignment target: #{target.class}", line, 0)
+        raise CompileError.new(
+          Diagnostic.new(
+            code: "C001",
+            primary: Span.new(
+              line: target.line,
+              # Was hardcoded to column 0, which is not a real column —
+              # the target node has known its own position all along.
+              column: target.column,
+              label: "not assignable"
+            ),
+            data: {"target" => describe_node(target)}
+          )
+        )
       end
     end
 
@@ -789,6 +833,66 @@ module Adjutant
       @scope = outer
     end
 
+    # Three sites guard the same limit, so the diagnostic is built in
+    # one place rather than repeated.
+    private def loop_too_deep(node : Node) : CompileError
+      CompileError.new(
+        Diagnostic.new(
+          code: "L001",
+          primary: Span.new(
+            line: node.line,
+            column: node.column,
+            label: "nesting limit reached here"
+          ),
+          data: {"limit" => MAX_LOOP_DEPTH.to_s}
+        )
+      )
+    end
+
+    # What the author wrote, for an unassignable target. AST class
+    # names are internal (`IntegerLit`, `CallNode`) and mean nothing to
+    # a script author, so the common cases get named in their terms.
+    # Keyed on the class objects, not on class-NAME strings: this way
+    # the compiler checks them, so renaming or removing an AST class
+    # breaks the build rather than silently degrading every affected
+    # diagnostic to the generic wording. A lookup rather than a `case`
+    # keeps it to one branch — as a `case` this was sixteen type tests
+    # and over Ameba's complexity threshold.
+    NODE_DESCRIPTIONS = Hash(Node.class, String){
+      Call          => "a method call",
+      IntLiteral    => "a number",
+      FloatLiteral  => "a number",
+      StringLiteral => "a string",
+      InterpString  => "a string",
+      SymbolLiteral => "a symbol",
+      ArrayLiteral  => "an array literal",
+      HashLiteral   => "a hash literal",
+      RangeLiteral  => "a range",
+      NilLiteral    => "`nil`",
+      BoolLiteral   => "`true`/`false`",
+      SelfNode      => "`self`",
+      Binary        => "the result of an expression",
+      Unary         => "the result of an expression",
+      Ternary       => "the result of an expression",
+    }
+
+    private def describe_node(node : Node) : String
+      NODE_DESCRIPTIONS[node.class]? || "this expression"
+    end
+
+    # How the definition was written, for diagnostics: `def foo`,
+    # `def self.foo`, `def obj.foo`. Reconstructed rather than sliced
+    # out of the source, since the compiler has no access to it.
+    private def def_signature(node : DefNode) : String
+      prefix =
+        case recv = node.receiver
+        when SelfNode   then "self."
+        when Identifier then "#{recv.name}."
+        else                 ""
+        end
+      "def #{prefix}#{node.name}"
+    end
+
     private def compile_def(node : DefNode) : Nil
       if @def_depth > 0
         # Rejects `def`/`def self.foo` lexically nested inside ANOTHER
@@ -830,12 +934,24 @@ module Adjutant
         # because a nested proc body compiles via a BRAND NEW `Compiler`
         # instance — ivar state on this instance wouldn't reach it.
         raise CompileError.new(
-          "defining a method (`def#{node.receiver ? " self." : " "}#{node.name}`) " \
-          "inside another method's body is not supported — a method " \
-          "definition can only appear at the top level of a script or " \
-          "directly inside a class/module body, not somewhere that runs " \
-          "conditionally or more than once.",
-          node.line, node.column
+          Diagnostic.new(
+            code: "U004",
+            primary: Span.new(
+              line: node.line,
+              # `parse_def` records its position before consuming `def`,
+              # so the column is the keyword. The caret covers just the
+              # keyword rather than reaching to the method name:
+              # `DefNode` has no end position, and reconstructing the
+              # width from `def ` plus the name would assume exactly
+              # one space, which `def  foo` breaks. Three characters
+              # that are always right beat a longer span that is
+              # usually right.
+              column: node.column,
+              length: 3,
+              label: "not allowed here"
+            ),
+            data: {"definition" => def_signature(node)}
+          )
         )
       end
       if blk_param = node.params.find(&.block_param?)
@@ -847,13 +963,26 @@ module Adjutant
         # than left to silently bind nothing (which is what happened
         # before this guard: `blk` inside the method body was just
         # always `nil`, so `blk.call` failed with a generic, confusing
-        # "undefined method or variable: call" instead of a clear
+        # R008, undefined method or variable `call`, instead of a clear
         # explanation of what's actually unsupported and why).
         raise CompileError.new(
-          "block parameter capture (`&#{blk_param.name}`) is not supported — " \
-          "a block passed to this method can only be used via `yield`, not " \
-          "bound to a name.",
-          blk_param.line, blk_param.column
+          Diagnostic.new(
+            code: "U001",
+            primary: Span.new(
+              line: blk_param.line,
+              column: blk_param.column,
+              # `&` plus the name. `parse_param` captures the position
+              # BEFORE consuming the `&`, so the column already points
+              # at the sigil and the span covers exactly what the
+              # author wrote.
+              length: blk_param.name.size + 1,
+              label: "not usable as a value"
+            ),
+            data: {
+              "param"  => blk_param.name,
+              "method" => node.name,
+            }
+          )
         )
       end
       params = node.params.map(&.name)
@@ -986,7 +1115,7 @@ module Adjutant
     end
 
     private def compile_while(node : WhileNode) : Nil
-      raise CompileError.new("loop nesting too deep", node.line, node.column) if @loop_stack.size >= MAX_LOOP_DEPTH
+      raise loop_too_deep(node) if @loop_stack.size >= MAX_LOOP_DEPTH
       loop_start = @chunk.pos
       scope = LoopScope.new(loop_start)
       @loop_stack.push(scope)
@@ -1008,7 +1137,7 @@ module Adjutant
     end
 
     private def compile_loop(node : LoopNode) : Nil
-      raise CompileError.new("loop nesting too deep", node.line, node.column) if @loop_stack.size >= MAX_LOOP_DEPTH
+      raise loop_too_deep(node) if @loop_stack.size >= MAX_LOOP_DEPTH
       loop_start = @chunk.pos
       scope = LoopScope.new(loop_start)
       scope.body_pos = loop_start
@@ -1139,7 +1268,19 @@ module Adjutant
     end
 
     private def compile_redo(node : RedoNode) : Nil
-      raise CompileError.new("redo outside loop", node.line, node.column) if @loop_stack.empty?
+      if @loop_stack.empty?
+        raise CompileError.new(
+          Diagnostic.new(
+            code: "C002",
+            primary: Span.new(
+              line: node.line,
+              column: node.column,
+              length: 4,
+              label: "no loop to restart"
+            )
+          )
+        )
+      end
       @chunk.emit(Op::Jump, node.line, c: @loop_stack.last.body_pos.to_u32)
     end
 
@@ -1302,7 +1443,7 @@ module Adjutant
     end
 
     private def compile_modifier_while(node : ModifierWhile) : Nil
-      raise CompileError.new("loop nesting too deep", node.line, node.column) if @loop_stack.size >= MAX_LOOP_DEPTH
+      raise loop_too_deep(node) if @loop_stack.size >= MAX_LOOP_DEPTH
       loop_start = @chunk.pos
       scope = LoopScope.new(loop_start)
       scope.body_pos = loop_start

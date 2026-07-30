@@ -1,3 +1,5 @@
+require "./diagnostic"
+
 module Adjutant
   # Intrinsic risk categories a native function's effect can fall into.
   #
@@ -61,12 +63,10 @@ module Adjutant
                    @severity = Severity::Info,
                    @note = nil)
       if @tags.empty? && (!@reversible.yes? || !@severity.info?)
-        raise ArgumentError.new(
-          "RiskProfile with no tags must have reversible: Yes and severity: Info " \
-          "— add a RiskTag instead of setting these directly")
+        raise HostArgumentError.new(Diagnostic.new(code: "H001"))
       end
       if @reversible.depends? && @note.nil?
-        raise ArgumentError.new("RiskProfile: note is required when reversible is Depends")
+        raise HostArgumentError.new(Diagnostic.new(code: "H002"))
       end
     end
 

@@ -89,7 +89,7 @@ module Adjutant
 
       # End-to-end regression for the exact bug the person found
       # (2026-07-25, via mruby's spec/scripts/mruby/float.rb fixture):
-      # `-0.0.to_s` used to raise "cannot negate 0.0 (String)" — .to_s
+      # `-0.0.to_s` used to raise R005 for negating a String — .to_s
       # ran FIRST (on positive 0.0), THEN negation was attempted on
       # the resulting String. Now correctly groups as `(-0.0).to_s`.
       it "groups unary minus with an adjacent numeric literal before postfix, not after" do
@@ -100,13 +100,13 @@ module Adjutant
         # `n` is a variable, not a literal, so this remains
         # Unary(Minus, Call(...)) — negating n.to_s's RESULT, not
         # fusing with anything. Adjutant's Op::Neg only accepts
-        # Integer/Float (see the "cannot negate" runtime_error in
-        # vm.cr) — there's no per-type -@ dispatch the way modern Ruby
+        # Integer/Float (see R005's raise site in vm.cr) — there's no
+        # per-type -@ dispatch the way modern Ruby
         # has (Ruby's own String#-@ would actually make -(a.to_s) NOT
         # raise, just return a frozen copy — Adjutant deliberately
         # doesn't replicate that nuance, matching Op::Neg's existing,
         # narrower numeric-only contract, unchanged by this fix).
-        expect_raises(RuntimeError, /cannot negate/) { eval("n = 0.0\n-n.to_s") }
+        expect_raises(RuntimeError, /cannot be applied/) { eval("n = 0.0\n-n.to_s") }
       end
 
       # End-to-end regression for the exact values the person reported
@@ -177,7 +177,7 @@ module Adjutant
       end
 
       it "raises applying unary plus to a non-numeric value" do
-        expect_raises(RuntimeError, /cannot apply unary \+/) { eval(%(+"str")) }
+        expect_raises(RuntimeError, /`\+` cannot be applied/) { eval(%(+"str")) }
       end
 
       it "raises on divide by zero" do
@@ -344,17 +344,43 @@ module Adjutant
       it "raises when instruction limit exceeded" do
         limits = ExecutionLimits.new(instruction_limit: 5_u64)
         interp, _ = make_interp(limits)
-        expect_raises(RuntimeError, /instruction limit/) do
+        error = expect_raises(RuntimeError, /instruction limit/) do
           interp.eval("x = 0\nwhile true\nx += 1\nend")
         end
+        # An L code, not an R: the script is not malformed, it just
+        # exceeded a budget, and the reader's move differs accordingly.
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("L004")
+        diag.data["limit"].should eq("5")
       end
 
       it "stores the call depth limit" do
-        # Full call depth enforcement requires wired def/call (Phase 6).
-        # Verify the limit is stored and accessible.
         limits = ExecutionLimits.new(call_depth_limit: 3)
         interp, _ = make_interp(limits)
         interp.limits.call_depth_limit.should eq 3
+      end
+
+      it "enforces the call depth limit, reporting the configured value" do
+        # The comment here used to say enforcement awaited wired
+        # def/call. That landed, so this is testable now.
+        limits = ExecutionLimits.new(call_depth_limit: 4)
+        interp, _ = make_interp(limits)
+        error = expect_raises(RuntimeError) do
+          interp.eval("def down(n)\n  down(n + 1)\nend\ndown(0)")
+        end
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("L002")
+        diag.data["limit"].should eq("4")
+      end
+
+      it "tells the reader which limits a host can actually raise" do
+        # L002 and L004 guard ExecutionLimits settings, so their help
+        # can point at them. L003 guards a fixed constant and must not
+        # imply a knob exists.
+        ErrorCatalog["L002"].help.not_nil!.should contain("call_depth_limit")
+        ErrorCatalog["L004"].help.not_nil!.should contain("instruction_limit")
+        ErrorCatalog["L003"].help.not_nil!.should_not contain("limit`")
+        ErrorCatalog["L003"].why.not_nil!.should contain("not a setting")
       end
     end
 
@@ -380,7 +406,7 @@ module Adjutant
         interp, ef = make_interp
         ef.add_file("greet.rb", %(x = "hello from vfs"))
         interp.eval(%(require "greet.rb"))
-        expect_raises(Adjutant::RuntimeError, /undefined method or variable: x/) do
+        expect_raises(Adjutant::RuntimeError, /undefined method or variable `x`/) do
           interp.eval("x")
         end
       end
@@ -437,18 +463,31 @@ module Adjutant
       # throwaway native function that deliberately misuses
       # invoke_proc on a plain object and asserts a proper, clear
       # RuntimeError instead.
-      it "invoke_proc raises a clear RuntimeError, not a raw Crystal exception, when given a non-Proc RubyObject" do
+      it "invoke_proc misuse surfaces as a clear error, attributed to the native layer" do
+        # Two layers, and the nesting is unavoidable rather than merely
+        # deliberate: `invoke_proc` is only reachable through the
+        # NativeCallContext handed to a native function, so its H004 is
+        # ALWAYS raised inside a native call and always caught by
+        # call_native's rescue. It therefore surfaces as N001 carrying
+        # H004 as its message — which is the useful shape anyway, naming
+        # both the function that failed and why.
         interp, _ = make_interp
         interp.define_native("misuse_invoke_proc") do |args, _blk, ncc|
           ncc.invoke_proc(args.first.as_robject, [] of Value)
         end
-        expect_raises(Adjutant::RuntimeError, /not a Proc/) do
+        error = expect_raises(Adjutant::RuntimeError) do
           interp.eval(<<-RUBY)
             class Plain
             end
             misuse_invoke_proc(Plain.new)
           RUBY
         end
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("N001")
+        # The inner H004 is carried through as the native layer's own
+        # message, so the actual cause stays visible.
+        diag.data["message"].should contain("H004")
+        diag.data["message"].should contain("Plain")
       end
     end
 
@@ -465,7 +504,7 @@ module Adjutant
         # because they happen to share a process/interpreter).
         interp, _ = make_interp
         interp.eval("x = 10")
-        expect_raises(Adjutant::RuntimeError, /undefined method or variable: x/) do
+        expect_raises(Adjutant::RuntimeError, /undefined method or variable `x`/) do
           interp.eval("x + 5")
         end
       end
@@ -789,7 +828,7 @@ module Adjutant
       # "unknown method" fallback now backs GetGlobal too, tagged as
       # NameError (script-catchable, since NameError < StandardError).
       it "raises NameError for a truly undefined bare identifier" do
-        expect_raises(Adjutant::RuntimeError, /undefined method or variable: totally_unknown/) do
+        expect_raises(Adjutant::RuntimeError, /undefined method or variable `totally_unknown`/) do
           eval("totally_unknown")
         end
       end
@@ -801,7 +840,7 @@ module Adjutant
         end
         test
         RUBY
-        expect_raises(Adjutant::RuntimeError, /undefined method or variable: unknown/) do
+        expect_raises(Adjutant::RuntimeError, /undefined method or variable `unknown`/) do
           eval(src)
         end
       end
@@ -814,7 +853,10 @@ module Adjutant
           e.message
         end
         RUBY
-        eval(src).as_string.should eq "undefined method or variable: totally_unknown"
+        # `e.message` is the diagnostic's summary and nothing else: the
+        # code, the why, and the help stay out of the object a script
+        # rescues, so this asserts the script-visible wording exactly.
+        eval(src).as_string.should eq "undefined method or variable `totally_unknown`"
       end
 
       it "tags the raised error object as NameError specifically" do
@@ -838,7 +880,7 @@ module Adjutant
         # genuinely has nothing to resolve to yet, same as real Ruby:
         # `x += 1` alone raises NameError, it does not silently
         # default x to 0/nil first.
-        expect_raises(Adjutant::RuntimeError, /undefined method or variable: x/) do
+        expect_raises(Adjutant::RuntimeError, /undefined method or variable `x`/) do
           eval("x += 1")
         end
       end
@@ -1130,7 +1172,13 @@ module Adjutant
         # lost, not a compile/runtime error. See UNSUPPORTED.md's U003,
         # class/module reopening, for why real reopening isn't being
         # built instead.
-        expect_raises(RuntimeError, /already initialized/) do
+        # Reports as U003 (reopening) rather than the generic
+        # constant-reassignment fault: both come from the same
+        # assign-once guard, but a reader who reopened a class needs to
+        # know that construct is never coming, not that some constant
+        # rule fired. Asserting on the code, which is stable, rather
+        # than the wording, which is not.
+        error = expect_raises(RuntimeError) do
           eval(<<-RUBY)
           class Foo
             def five; 5; end
@@ -1140,6 +1188,7 @@ module Adjutant
           end
           RUBY
         end
+        error.diagnostic.not_nil!.code.should eq("U003")
       end
 
       it "reopening a builtin class also raises, same policy" do
@@ -1152,13 +1201,143 @@ module Adjutant
         # therefore also a hard error now, consistent with the
         # deliberate scope decision (UNSUPPORTED.md, U003), not an
         # oversight.
-        expect_raises(RuntimeError, /already initialized/) do
+        error = expect_raises(RuntimeError) do
           eval(<<-RUBY)
           class String
             def shout; upcase; end
           end
           RUBY
         end
+        error.diagnostic.not_nil!.code.should eq("U003")
+      end
+
+      it "distinguishes an ordinary constant reassignment from a reopen" do
+        # Same guard, two different problems — the message used to
+        # conflate them, telling a script that had merely written
+        # `FOO = 1` twice about redefining classes.
+        error = expect_raises(RuntimeError) do
+          eval("FOO = 1\nFOO = 2")
+        end
+        error.diagnostic.not_nil!.code.should eq("R001")
+      end
+
+      it "attributes a native function's own failure to the native layer" do
+        # N001 exists so the provenance is unambiguous: Adjutant cannot
+        # tell whether the script passed something bad or the host's
+        # function is broken, and an R code would imply it had decided.
+        interp, _ = make_interp
+        interp.define_native("explode") { |_args| raise "boom" }
+        error = expect_raises(RuntimeError) { interp.eval("explode") }
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("N001")
+        diag.data["function"].should eq("explode")
+        diag.data["message"].should eq("boom")
+      end
+
+      it "reports a deliberately excluded method as excluded, not undefined" do
+        # The point of the whole exercise: "undefined" invites a retry
+        # with a variation, and every variation fails identically.
+        {"send" => "U005", "public_send" => "U005", "__send__" => "U005",
+         "method_missing" => "U005", "define_method" => "U005",
+         "eval" => "U006", "instance_eval" => "U006"}.each do |name, code|
+          error = expect_raises(RuntimeError) { eval(name) }
+          diag = error.diagnostic.not_nil!
+          diag.code.should eq(code)
+          diag.data["construct"].should eq(name)
+        end
+      end
+
+      it "lets a script define its own method that shares an excluded name" do
+        # This is why the check happens after resolution rather than at
+        # compile time. `class Mailer; def send; end; end` is valid Ruby
+        # and must stay valid here.
+        eval(<<-RUBY).as_string.should eq("delivered")
+          class Mailer
+            def send
+              "delivered"
+            end
+          end
+          Mailer.new.send
+        RUBY
+      end
+
+      it "still reports an ordinary unknown name as merely undefined" do
+        # The contrast that makes the distinction meaningful — an
+        # excluded name is permanent, a typo is not.
+        error = expect_raises(RuntimeError) { eval("no_such_thing") }
+        error.diagnostic.not_nil!.code.should eq("R008")
+      end
+
+      it "reports an excluded constant as excluded, not uninitialized" do
+        error = expect_raises(RuntimeError) { eval("ObjectSpace") }
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("U007")
+        diag.data["construct"].should eq("ObjectSpace")
+      end
+
+      it "stays rescuable as a NameError, like any unresolved name" do
+        # From the script's side the name genuinely does not resolve, so
+        # a script rescuing NameError should still catch it. The code is
+        # what says it will never resolve.
+        eval(<<-RUBY).as_string.should eq("caught")
+          begin
+            send(:anything)
+          rescue NameError
+            "caught"
+          end
+        RUBY
+      end
+
+      it "keeps NameError as the rescuable class for R008" do
+        # The diagnostic code and the script-visible class are set
+        # independently: R008 classifies the failure for the reader,
+        # while NameError is what real Ruby raises and therefore what a
+        # script must be able to rescue.
+        error = expect_raises(RuntimeError) do
+          eval("no_such_thing")
+        end
+        error.diagnostic.not_nil!.code.should eq("R008")
+        error.error_value.not_nil!.as_robject?.not_nil!.rclass.name.should eq("NameError")
+      end
+
+      it "names the type in script terms, not Crystal terms" do
+        # The old message interpolated `v.raw.class`, leaking Crystal
+        # type names at someone writing Ruby.
+        error = expect_raises(RuntimeError) do
+          eval("n = 0.0\n-n.to_s")
+        end
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("R005")
+        diag.data["operator"].should eq("-")
+        diag.data["type"].should eq("String")
+      end
+
+      it "collapses the four uninitialized-constant sites onto one code" do
+        error = expect_raises(RuntimeError) { eval("Nope") }
+        error.diagnostic.not_nil!.code.should eq("R003")
+        error.diagnostic.not_nil!.data["name"].should eq("Nope")
+      end
+
+      it "names the method that yielded without a block" do
+        error = expect_raises(RuntimeError) do
+          eval("def needs_block\n  yield\nend\nneeds_block")
+        end
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("R007")
+        diag.data["method"].should eq("needs_block")
+      end
+
+      it "reports U002 for Class.new, with a line but no column" do
+        # First VM-raised diagnostic: Frame records a line and no
+        # column, so this is the real exercise of the renderer's
+        # line-only degradation rather than a synthetic one.
+        error = expect_raises(RuntimeError) do
+          eval("x = Class.new")
+        end
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("U002")
+        diag.primary.not_nil!.column.should be_nil
+        diag.data["class"].should eq("Class")
       end
     end
   end

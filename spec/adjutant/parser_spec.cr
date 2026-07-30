@@ -562,9 +562,45 @@ module Adjutant
       # `parse_call_args_and_block` has no handling for at all (see
       # SCOPE.md's Must Fix entry on argument binding).
       it "does not yet parse keyword-argument syntax at a call site" do
-        expect_raises(ParseError, /Colon/) do
+        # Asserts on the offending token rather than the TokenKind name
+        # the old message leaked: a script author wrote `:`, never
+        # `Colon`, and the diagnostic now says so.
+        error = expect_raises(ParseError) do
           parse_expr(%(greet(name: "Ruby")))
         end
+        error.diagnostic.not_nil!.data["found"].should eq("`:`")
+      end
+
+      it "points a missing `end` at the construct that lost it" do
+        # The caret alone lands at EOF, far from the cause. The
+        # secondary span is the part that makes this diagnosable.
+        error = expect_raises(ParseError) do
+          Parser.new("def outer\n  if x\n    y\n  end\n", "t.rb").parse
+        end
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("P003")
+        diag.data["construct"].should eq("def")
+        diag.secondary.size.should eq(1)
+        diag.secondary.first.line.should eq(1)
+        diag.secondary.first.label.not_nil!.should contain("never closed")
+      end
+
+      it "attributes the missing `end` to the innermost open construct" do
+        # `if` is closed, `def` is not — so `def` is what's reported,
+        # not merely the outermost or the most recent keyword seen.
+        error = expect_raises(ParseError) do
+          Parser.new("class A\n  def b\n", "t.rb").parse
+        end
+        diag = error.diagnostic.not_nil!
+        diag.data["construct"].should eq("def")
+        diag.secondary.first.line.should eq(2)
+      end
+
+      it "reports a plain P001 when the missing token isn't an `end`" do
+        error = expect_raises(ParseError) do
+          parse_expr("foo(1, 2")
+        end
+        error.diagnostic.not_nil!.code.should eq("P001")
       end
 
       it "parses a def with body" do

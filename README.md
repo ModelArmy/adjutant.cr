@@ -124,11 +124,13 @@ The third block param above (`ncc`) is a `NativeCallContext` — passed to every
 
 ```crystal
 begin
-  body = File.open("script.rb") { |io| Adjutant::Parser.new(io.gets_to_end, "script.rb").parse }
+  body = File.open("script.rb") { |io| interp.parse(io, "script.rb") }
 rescue e : Adjutant::ParseError
-  STDERR.puts "Parse error: #{e.message}"
+  STDERR.puts interp.render_error(e, filename: "script.rb") || e.message
 end
 ```
+
+Use `interp.parse` rather than constructing an `Adjutant::Parser` yourself. Both produce the same `Body`, but `interp.parse` registers the source text, which is what lets an error from this or any later phase be rendered with the offending line and carets beneath it. See [Reporting errors](#reporting-errors).
 
 ### 3. Walk and assess risk
 
@@ -150,9 +152,17 @@ if summary.severity.error? || summary.severity.warning?
   # if the user rejects, stop here — don't call eval.
 end
 
-result = interp.eval(body)
-puts "Result: #{result}"
+begin
+  result = interp.eval(body, "script.rb")
+  puts "Result: #{result}"
+rescue e : Adjutant::CompileError
+  STDERR.puts interp.render_error(e, filename: "script.rb") || e.message
+end
 ```
+
+`eval` takes the `Body` you already assessed, so there's no second parse and no window in which the text could differ from what the risk walker saw. The filename is required here because a `Body` doesn't record which file it came from.
+
+`CompileError` is worth catching explicitly: constructs Adjutant deliberately refuses — `&blk` capture, a `def` nested inside another `def` — are rejected between parsing and running, so they surface neither as a `ParseError` nor at runtime.
 
 `interp.eval` also accepts a source string or `IO` directly (parsing internally) if you don't need the intermediate `Body` for risk assessment:
 
@@ -161,8 +171,8 @@ begin
   result = interp.eval(File.open("script.rb"), "script.rb")
 rescue e : Adjutant::RuntimeError
   STDERR.puts "Script error: #{e.message}"
-rescue e : Adjutant::ParseError
-  STDERR.puts "Parse error: #{e.message}"
+rescue e : Adjutant::ParseError | Adjutant::CompileError
+  STDERR.puts interp.render_error(e, filename: "script.rb") || e.message
 end
 
 # Inspect what the script wrote to stdout.
@@ -179,10 +189,43 @@ You can also compile without executing — useful for pre-validating LLM-generat
 begin
   chunk = interp.compile(source, "script.rb")
   # chunk is an Adjutant::Chunk you can inspect or execute later
-rescue Adjutant::ParseError => e
-  STDERR.puts "Invalid script: #{e.message}"
+rescue e : Adjutant::ParseError | Adjutant::CompileError
+  STDERR.puts interp.render_error(e, filename: "script.rb") || e.message
 end
 ```
+
+### Reporting errors
+
+Errors that carry a `Diagnostic` render with the offending source line and carets, drawn from the source `interp.parse`/`interp.eval` registered:
+
+```
+error[U001]: block parameter capture (`&blk`) is not supported
+script.rb:1:9
+1 | def foo(&blk)
+  |         ^^^^
+  |         not usable as a value
+why:  A block passed to a method can only be run synchronously, via `yield`,
+      inside the call it was passed to. It never becomes a value, so it cannot
+      be bound to the parameter `blk`, stored, returned, or called later.
+help: Run the block with `yield` inside `foo`, or take a lambda as an ordinary
+      parameter and call it with `.call`.
+```
+
+`interp.render_error` returns `nil` for errors not yet migrated to the diagnostic system, so the idiom is to fall back:
+
+```crystal
+STDERR.puts interp.render_error(e, filename: "script.rb") || e.message
+```
+
+Two formats. `Markdown` is the default, aimed at an LLM consuming the output — or at piping through your own Markdown renderer when showing a human. `PlainText` suits a terminal or a log:
+
+```crystal
+interp.render_error(e, Adjutant::DiagnosticRenderer::Format::PlainText, "script.rb")
+```
+
+Nothing is ever colourized: ANSI escapes are noise in a captured agent log, and carets don't need colour to work.
+
+Each code is stable and documented in [ERRORS.md](./ERRORS.md) — the leading letter says what kind of problem it is (`P` syntax, `C` static semantics, `R` runtime, `U` deliberately unsupported, `F` risk flow), never which part of the implementation caught it. A code is a durable thing to look up, match on in a test, or hand to a model as a retrieval key.
 
 ### Current limitations
 
@@ -282,14 +325,15 @@ Risk flow tracks explicit data flow only (assignment, arithmetic, string/array/h
 
 ## Unsupported language features
 
-Adjutant is a deliberate *subset* of Ruby, not a work-in-progress full implementation — a few constructs are permanently unsupported by design, not just "not yet built." Each one fails with a clear compile-time or runtime error naming the construct, not a silent wrong result:
+Adjutant is a deliberate *subset* of Ruby, not a work-in-progress full implementation — a few constructs are permanently unsupported by design, not just "not yet built." Each one fails with a clear error naming the construct, not a silent wrong result:
 
-- **Class/module reopening** (`class Foo; end` written a second time to extend it) — Adjutant's constants are assign-once; this is the same rule applied to class/module names.
-- **`Class.new` / `Module.new`**
-- **Defining a method (`def` or `def self.foo`) nested inside another method's own body** — a method definition can only appear at the top level of a script or directly inside a class/module body.
-- **`&blk` parameter capture** — a block passed to a call is only usable via `yield` inside that same call; it can't be bound to a name, stored, or passed around.
+- **`&blk` parameter capture** (U001) — a block passed to a call is only usable via `yield` inside that same call; it can't be bound to a name, stored, or passed around.
+- **`Class.new` / `Module.new`** (U002) — declare classes literally with `class Foo; end`.
+- **Class/module reopening** (U003) — `class Foo; end` written a second time to extend it. Adjutant's constants are assign-once; this is the same rule applied to class/module names.
+- **Defining a method (`def` or `def self.foo`) nested inside another method's own body** (U004) — a method definition can only appear at the top level of a script or directly inside a class/module body.
+- **Dynamic dispatch by computed method name** (U005), **`eval`/`instance_eval`** (U006), and **reflection into native internals** (U007) — excluded permanently, because each makes a call site's target or effect unknowable without running the script, which is what static risk assessment depends on.
 
-See [SCOPE.md](./SCOPE.md)'s `Won't Support` section for the full reasoning behind each.
+See [UNSUPPORTED.md](./UNSUPPORTED.md) for the full reasoning behind each, what to write instead, and the current enforcement state. Every error carries a code documented in [ERRORS.md](./ERRORS.md).
 
 ## Development
 

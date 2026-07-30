@@ -1,5 +1,6 @@
 require "./risk_node"
 require "./risk_profile"
+require "./diagnostic"
 
 module Adjutant
   # A single worst-case path through a RiskNode tree, kept as a trail
@@ -100,7 +101,11 @@ module Adjutant
       when RiskDeferred
         summarize_deferred(node)
       else
-        raise "unreachable RiskNode subtype"
+        # Was a bare `raise`, surfacing as an untyped Crystal exception
+        # with no code and nothing telling the reader to report it.
+        raise InternalError.new(
+          Diagnostic.new(code: "I007", data: {"node" => node.class.to_s})
+        )
       end
     end
 

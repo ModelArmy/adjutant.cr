@@ -84,45 +84,6 @@ may unblock ones above it.
   likely one coordinated fix given they share the same binding
   mechanism.
 
-- **`send`/`method_missing`/`eval`/reflection are declared unsupported but
-  almost certainly aren't enforced.** Added 2026-07-28, while extracting
-  [UNSUPPORTED.md](./UNSUPPORTED.md) — U005 (dynamic dispatch by computed
-  method name: `send`, `public_send`, `method_missing`, `define_method`),
-  U006 (`eval`/`instance_eval`), and U007 (reflection into native
-  internals: FFI, `ObjectSpace`-style introspection) have been documented
-  exclusions since the risk-model design, but unlike U001–U004 nothing
-  appears to reject them by name. The expectation — believed, not yet
-  confirmed empirically — is that these names are simply undefined, so a
-  script using one gets a generic undefined-method error that never says
-  the construct is deliberately excluded and never will be.
-
-  That is precisely the failure shape the 2026-07-27 audit removed from
-  U001–U004: it doesn't silently do the wrong thing, but it does leave the
-  reader (a human, or an LLM that generated the call) with no way to tell
-  "this doesn't exist yet" apart from "this will never exist." These three
-  are the *permanent* kind, so a misleading message here is worse than
-  elsewhere — an LLM's natural next move on undefined-method is to retry
-  with a variation, and every variation will fail the same way.
-
-  Two steps, in order:
-  1. **Verify.** Run a probe for each construct and record what actually
-     happens today. Belongs in `spec/scripts/language/` if it fails at
-     runtime, or in a `.cr` spec with `expect_raises` if it fails at parse
-     or compile time — see the `test_runner` constraint noted against
-     U001's enforcement history (a `ParseError`/`CompileError` aborts the
-     whole script file before any assertion machinery loads, so
-     `assert_raise` can never observe one).
-  2. **Remediate** whatever isn't already loud, following the U001–U004
-     pattern: reject as early as the construct is detectable, name the
-     construct, and say nothing about this repo's internals in the
-     message. `send` and friends are detectable at compile time from the
-     literal `Call#method` name; `eval`/`instance_eval` likewise.
-
-  Sequencing note: this is a natural first consumer of the `U`-code
-  diagnostic work, since all three want the same message shape and none
-  of them has a legacy message to preserve. Worth doing after that lands
-  rather than writing messages twice.
-
 ## Will Fix
 
 Real gaps, not currently blocking anything, no active design conversation
@@ -162,6 +123,77 @@ wins.
   is otherwise unaffected — every `Hash` method works on however the
   hash `Value` was constructed. Small parser addition whenever it's
   worth doing.
+
+### Error reporting
+
+- **Runtime diagnostics have no carets, because `Frame` records a line
+  but no column.** Filed 2026-07-29, after the migration finished and it
+  became clear how much of the catalog this covers: every `R`, `L`, `F`
+  and `N` code, plus the VM-raised `U002`/`U003`. Those render the
+  offending source line with nothing pointing into it, while
+  parser- and compiler-raised codes get a caret and a span label.
+
+  It is the largest remaining gap in what a reader actually sees. A
+  runtime error on a dense line (`foo(bar.baz, qux[i])`) says which line
+  failed but not which part of it, which is exactly the question the
+  reader has.
+
+  The span model already supports this — `Span#column` is optional
+  precisely so phases could gain precision independently — so nothing
+  needs redesigning. The work is threading a column onto `Frame`
+  alongside `line`, which means the compiler emitting one into the
+  bytecode's position info, since that is where `Frame#line` comes
+  from. Bigger than it sounds for that reason, and worth checking what
+  it costs per instruction before committing to it.
+
+  Not blocking anything: the renderer degrades cleanly today, and this
+  is a quality improvement rather than a correctness fix.
+
+- **U007's reflection exclusion is a category, not a list, so only
+  `ObjectSpace` is enforced.** Added 2026-07-29 while enforcing U005–U007.
+  `UNSUPPORTED.md`'s U007 entry describes "arbitrary FFI,
+  `ObjectSpace`-style introspection, and similar" — a shape rather than an
+  enumerated set. `ObjectSpace` could be enforced because it is named;
+  everything else reflective (`binding`, `methods`, `instance_variables`,
+  `instance_variable_get`, and so on) still reports as an ordinary
+  undefined name.
+
+  Deliberately not enumerated during that work: deciding which names are
+  permanently excluded is a scope decision, and making it while writing
+  the enforcement would have settled it by implementation rather than by
+  choice. The same applies to `class_eval`/`module_eval`/`instance_exec`
+  under U006 — the same hazard as `eval`, but not currently declared.
+
+  Worth a short scoping conversation to settle both lists, after which
+  enforcement is a one-line table addition each.
+
+
+Quality-of-diagnostic gaps in the `Diagnostic`/`ErrorCatalog` system
+(see [ERRORS.md](./ERRORS.md)). None affect correctness — every one is
+"the error is right, but says less than it could."
+
+- **`@def_depth` counts nesting but doesn't record what the enclosing
+  scope was, so U004 can't name it.** Added 2026-07-28 while migrating
+  U004 to a diagnostic. The guard in `Compiler#compile_def` fires on
+  `@def_depth > 0`, which is enough to know a `def` is nested inside
+  *something* deferred but not whether that something was a `def` or a
+  lambda, nor its name. The message therefore says "inside another
+  method's body" generically, where it could say "inside method
+  `foo`" and point a secondary span at `foo`'s own definition —
+  materially more useful when the two are far apart in a long file, or
+  when the nesting was accidental.
+
+  The fix is to make `@def_depth` a small stack of
+  `{kind, name, line, column}` rather than an `Int32`, threaded
+  through `compile_proc` the same way the counter already is. Depth
+  then becomes the stack's size, so the existing guard condition is
+  unchanged. Deliberately deferred when U004 was migrated: it turns a
+  counter into a data structure across every `compile_proc` call site,
+  which is a wider change than the migration it would have ridden
+  along inside.
+
+  Would also give U004 its first real use of a secondary span, which
+  nothing exercises yet.
 
 ### Object model
 
