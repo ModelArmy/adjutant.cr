@@ -206,6 +206,40 @@ module Adjutant
               "`instruction_limit`."
       ),
 
+      "U005" => Entry.new(
+        code: "U005",
+        summary: "`{construct}` is not supported",
+        why: "Adjutant resolves every call to a specific method before the " \
+             "script runs, which is what lets a host see what a script can " \
+             "do without executing it. `{construct}` picks a method by " \
+             "name while running, so no such resolution is possible. This " \
+             "is a permanent exclusion, not a missing feature.",
+        help: "Call the method directly by name, or branch explicitly " \
+              "between the calls you might make."
+      ),
+      "U006" => Entry.new(
+        code: "U006",
+        summary: "`{construct}` is not supported",
+        why: "`{construct}` runs code assembled while the script is " \
+             "already running, so nothing about it can be known " \
+             "beforehand — a script able to do this has no meaningful " \
+             "risk profile at all. This is a permanent exclusion, not a " \
+             "missing feature.",
+        help: "Write the code directly. There is no alternative for " \
+              "running generated source; that capability is excluded by " \
+              "design."
+      ),
+      "U007" => Entry.new(
+        code: "U007",
+        summary: "`{construct}` is not available",
+        why: "Reflection into the interpreter's internals would let a " \
+             "script reach past the boundary that native modules and " \
+             "their risk profiles define. That boundary is how a host " \
+             "controls what a script can do, so nothing may bypass it.",
+        help: "Ask the host to register what the script legitimately " \
+              "needs as a native module with a declared risk profile."
+      ),
+
       # --- F: risk-flow refusals ------------------------------------
       #
       # Not a fault at all: the script asked for something the host's
@@ -462,6 +496,37 @@ module Adjutant
     def self.codes : Array(String)
       ENTRIES.keys.sort!
     end
+
+    # Names Adjutant deliberately excludes, mapped to the code that
+    # says so.
+    #
+    # Consulted only AFTER normal resolution has failed. That ordering
+    # is the whole design: a script may legitimately define its own
+    # `send` — `class Mailer; def send; ...; end; end` is valid Ruby and
+    # valid Adjutant — and rejecting the name at compile time, as was
+    # first proposed, would break that. Reaching this table means the
+    # name resolved to nothing, so the script meant Ruby's construct.
+    #
+    # Deliberately conservative. Every entry here is a promise that the
+    # construct is excluded permanently, so only what UNSUPPORTED.md
+    # actually declares belongs. `class_eval`, `instance_exec`,
+    # `methods`, `instance_variable_get` and similar are plausible
+    # additions but are NOT declared exclusions today — listing them
+    # would tell a reader "never coming" on our own authority.
+    EXCLUDED_METHODS = {
+      "send"           => "U005",
+      "public_send"    => "U005",
+      "__send__"       => "U005",
+      "method_missing" => "U005",
+      "define_method"  => "U005",
+      "eval"           => "U006",
+      "instance_eval"  => "U006",
+    }
+
+    # Same, for constants — a different resolution path reports these.
+    EXCLUDED_CONSTANTS = {
+      "ObjectSpace" => "U007",
+    }
 
     PLACEHOLDER = /\{([a-z_][a-z0-9_]*)\}/
 

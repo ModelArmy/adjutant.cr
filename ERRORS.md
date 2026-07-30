@@ -133,13 +133,14 @@ alternative in [UNSUPPORTED.md](./UNSUPPORTED.md).
 |U002|`Class.new` / `Module.new`             |`class`          |
 |U003|Reopening a class or module            |`name`           |
 |U004|Defining a method inside another method|`definition`     |
-|U005|Calling a method by computed name      |—                |
+|U005|Calling a method by computed name      |`construct`      |
 |U006|`eval` / `instance_eval`               |—                |
 |U007|Reflection into the host's internals   |—                |
 
-U005, U006, and U007 are not yet rejected by name. Using them currently
-produces an undefined-method error instead, which does not say the
-construct is permanently excluded.
+U005 and U006 are reported when a name that would resolve to one of them
+resolves to nothing else. A script is still free to define its own method
+with one of those names — `def send` on your own class works, and calling
+it works.
 
 ## F — Risk flow
 

@@ -325,7 +325,7 @@ Risk flow tracks explicit data flow only (assignment, arithmetic, string/array/h
 
 ## Unsupported language features
 
-Adjutant is a deliberate *subset* of Ruby, not a work-in-progress full implementation — a few constructs are permanently unsupported by design, not just "not yet built." The first four fail with a clear error naming the construct, not a silent wrong result; the last three are simply undefined today, so they raise an ordinary undefined-method error instead:
+Adjutant is a deliberate *subset* of Ruby, not a work-in-progress full implementation — a few constructs are permanently unsupported by design, not just "not yet built." Each one fails with a clear error naming the construct, not a silent wrong result:
 
 - **`&blk` parameter capture** (U001) — a block passed to a call is only usable via `yield` inside that same call; it can't be bound to a name, stored, or passed around.
 - **`Class.new` / `Module.new`** (U002) — declare classes literally with `class Foo; end`.

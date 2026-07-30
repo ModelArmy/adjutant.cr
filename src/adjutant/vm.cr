@@ -659,7 +659,7 @@ module Adjutant
             start = f.self_val.as_rclass? || f.lexical_scope
             val = start.try(&.find_constant(sym.value)) || @globals[sym.value]?
             unless val
-              raise script_diagnostic("R003", {"name" => sym.name}, f)
+              raise undefined_constant(sym.name, f)
             end
             push(val)
           when Op::SetConstant
@@ -707,14 +707,14 @@ module Adjutant
             end
             val = ns.constants[sym.value]?
             unless val
-              raise script_diagnostic("R003", {"name" => "#{ns.name}::#{sym.name}"}, f)
+              raise undefined_constant("#{ns.name}::#{sym.name}", f, bare_name: sym.name)
             end
             push(val)
           when Op::GetGlobalConstant
             sym = chunk.consts[inst.c].as_sym
             val = @globals[sym.value]?
             unless val
-              raise script_diagnostic("R003", {"name" => sym.name}, f)
+              raise undefined_constant(sym.name, f)
             end
             push(val)
 
@@ -934,7 +934,7 @@ module Adjutant
               super_sym = chunk.consts[inst.b].as_sym
               super_val = @globals[super_sym.value]?
               unless super_val && super_val.rclass?
-                raise script_diagnostic("R003", {"name" => super_sym.name}, f)
+                raise undefined_constant(super_sym.name, f)
               end
               superclass = super_val.as_rclass
             end
@@ -1372,6 +1372,20 @@ module Adjutant
       # 4) Built-in fallback operations
       if result = exec_builtin(name, args, filename, line, blk)
         return result
+      end
+
+      # Nothing resolved. Before reporting the name as merely undefined,
+      # check whether it names a construct Adjutant deliberately
+      # excludes — the difference matters, because "undefined" invites
+      # the reader (often an LLM) to retry with a variation, and every
+      # variation will fail identically.
+      #
+      # Checked HERE, after resolution, not at compile time: a script
+      # may define its own `send`, and rejecting the name outright would
+      # break that. Reaching this point means the name resolved to
+      # nothing, so the script meant Ruby's construct.
+      if code = ErrorCatalog::EXCLUDED_METHODS[name]?
+        raise excluded_construct(code, name, filename, line)
       end
 
       # No local, no native, no global proc, no builtin — this is an
@@ -1934,6 +1948,40 @@ module Adjutant
       cls = builtin_class_by_name(error_class)
       err_val = cls ? make_error_object(cls, diag.summary) : nil
       RuntimeError.new(diag, frame, cause, error_value: err_val)
+    end
+
+    # An unresolved constant. Reports a deliberately excluded name as
+    # such, and anything else as an ordinary uninitialized constant.
+    #
+    # `bare_name` lets a qualified lookup (`Foo::ObjectSpace`) be tested
+    # against the table by its last segment while still reporting the
+    # full path the script wrote.
+    private def undefined_constant(name : String, frame : Frame,
+                                   bare_name : String? = nil) : RuntimeError
+      if code = ErrorCatalog::EXCLUDED_CONSTANTS[bare_name || name]?
+        return excluded_construct(code, name, frame.filename, frame.line)
+      end
+      script_diagnostic("R003", {"name" => name}, frame)
+    end
+
+    # A construct Adjutant will never support, reported as such rather
+    # than as an undefined name.
+    #
+    # Raised as a NameError like R008, and for the same reason: from the
+    # script's side the name genuinely does not resolve, and a script
+    # that rescues NameError should still catch this. The code is what
+    # tells the reader it is never going to resolve.
+    private def excluded_construct(code : String, name : String,
+                                   filename : String, line : Int32) : RuntimeError
+      runtime_diagnostic(
+        Diagnostic.new(
+          code: code,
+          primary: Span.new(line: line, filename: filename),
+          data: {"construct" => name}
+        ),
+        current_frame,
+        error_class: "NameError"
+      )
     end
 
     # Shorthand for the ordinary script-fault diagnostics, which all

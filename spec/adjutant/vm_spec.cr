@@ -1234,6 +1234,60 @@ module Adjutant
         diag.data["message"].should eq("boom")
       end
 
+      it "reports a deliberately excluded method as excluded, not undefined" do
+        # The point of the whole exercise: "undefined" invites a retry
+        # with a variation, and every variation fails identically.
+        {"send" => "U005", "public_send" => "U005", "__send__" => "U005",
+         "method_missing" => "U005", "define_method" => "U005",
+         "eval" => "U006", "instance_eval" => "U006"}.each do |name, code|
+          error = expect_raises(RuntimeError) { eval(name) }
+          diag = error.diagnostic.not_nil!
+          diag.code.should eq(code)
+          diag.data["construct"].should eq(name)
+        end
+      end
+
+      it "lets a script define its own method that shares an excluded name" do
+        # This is why the check happens after resolution rather than at
+        # compile time. `class Mailer; def send; end; end` is valid Ruby
+        # and must stay valid here.
+        eval(<<-RUBY).as_string.should eq("delivered")
+          class Mailer
+            def send
+              "delivered"
+            end
+          end
+          Mailer.new.send
+        RUBY
+      end
+
+      it "still reports an ordinary unknown name as merely undefined" do
+        # The contrast that makes the distinction meaningful — an
+        # excluded name is permanent, a typo is not.
+        error = expect_raises(RuntimeError) { eval("no_such_thing") }
+        error.diagnostic.not_nil!.code.should eq("R008")
+      end
+
+      it "reports an excluded constant as excluded, not uninitialized" do
+        error = expect_raises(RuntimeError) { eval("ObjectSpace") }
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("U007")
+        diag.data["construct"].should eq("ObjectSpace")
+      end
+
+      it "stays rescuable as a NameError, like any unresolved name" do
+        # From the script's side the name genuinely does not resolve, so
+        # a script rescuing NameError should still catch it. The code is
+        # what says it will never resolve.
+        eval(<<-RUBY).as_string.should eq("caught")
+          begin
+            send(:anything)
+          rescue NameError
+            "caught"
+          end
+        RUBY
+      end
+
       it "keeps NameError as the rescuable class for R008" do
         # The diagnostic code and the script-visible class are set
         # independently: R008 classifies the failure for the reader,

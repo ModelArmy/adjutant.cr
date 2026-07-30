@@ -52,8 +52,7 @@ than the raise site. U001 and U004 are caught by the compiler and get
 carets; U002 and U003 are caught by the VM, which records a line but no
 column, so those render the source line without a caret row.
 
-U005–U007 emit nothing specific to them at all — see their entries and
-`SCOPE.md`'s `Must Fix`.
+Every entry below now reports its own code.
 
 ---
 
@@ -250,12 +249,29 @@ stay rare.
 
 **Instead:** call the method directly by name, or branch explicitly.
 
-**Enforcement — none specific, as of 2026-07-28.** These names are simply
-undefined, so a script using one gets a generic undefined-method error that
-doesn't explain the construct is deliberately excluded. This is the same
-failure shape the 2026-07-27 audit removed from U001–U004, and is a
-candidate for the same treatment. Unverified — flagged 2026-07-28, not
-empirically confirmed.
+**Enforcement — active since 2026-07-29, runtime.** Until then these names
+were simply undefined, so a script using one got a generic
+undefined-method error that never said the construct was deliberately
+excluded — the same failure shape the 2026-07-27 audit removed from
+U001–U004, and worse here, because these are the permanent kind: an LLM's
+natural response to "undefined" is to retry with a variation, and every
+variation fails identically.
+
+Checked in `dispatch_call` **after** normal resolution fails, not at
+compile time. Compile-time rejection was the original proposal and is
+wrong: a script may define its own method with one of these names
+(`class Mailer; def send; ...; end; end` is valid Ruby and valid
+Adjutant), and rejecting the name outright would break it. Reaching the
+check means the name resolved to nothing, so the script meant Ruby's
+construct. Raised as a `NameError` like any unresolved name, so a script
+rescuing `NameError` still catches it; the code is what says it will never
+resolve. Verified via `vm_spec.cr`, including the own-method case.
+
+The enforced set is deliberately narrow — `send`, `public_send`,
+`__send__`, `method_missing`, `define_method`. Names like `class_eval`,
+`instance_exec`, `methods`, and `instance_variable_get` pose the same
+hazard but are not declared exclusions here, and listing them would assert
+"never coming" without that decision having been made.
 
 ### U006 — `eval` / `instance_eval` on runtime strings
 
@@ -264,7 +280,9 @@ arbitrary code at runtime has no static risk profile at all.
 
 **Instead:** nothing; this is permanently excluded by the risk model.
 
-**Enforcement — none specific, as of 2026-07-28.** See U005.
+**Enforcement — active since 2026-07-29, runtime.** See U005 for the
+mechanism and why the check happens after resolution rather than at
+compile time.
 
 ### U007 — Reflection exposing native/Crystal internals
 
@@ -277,7 +295,17 @@ entirely.
 **Instead:** register what the script legitimately needs as a native module
 with a declared risk profile.
 
-**Enforcement — none specific, as of 2026-07-28.** See U005.
+**Enforcement — partial, since 2026-07-29, runtime.** `ObjectSpace` is
+reported as U007 rather than as an uninitialized constant. This goes
+through constant resolution rather than method dispatch, unlike U005/U006
+— the same after-resolution-fails principle, a different lookup path.
+
+Only `ObjectSpace` is named. There is no list of reflection METHOD names to
+enforce, because none is declared here: this entry describes a category
+("arbitrary FFI, `ObjectSpace`-style introspection") rather than an
+enumerated set, and inventing the enumeration while enforcing it would be
+deciding scope by implementation. Anything else reflective currently
+reports as an ordinary undefined name.
 
 ---
 
