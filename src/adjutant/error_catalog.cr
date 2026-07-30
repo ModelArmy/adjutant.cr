@@ -75,6 +75,87 @@ module Adjutant
               "body, or remove it."
       ),
 
+      # --- R: runtime faults ----------------------------------------
+      "R002" => Entry.new(
+        code: "R002",
+        summary: "class variable used outside a class or module body",
+        why: "A class variable belongs to a class, so there has to be one " \
+             "for it to belong to.",
+        help: "Move it inside a `class` or `module` body, or use a local " \
+              "variable or a constant instead."
+      ),
+      "R003" => Entry.new(
+        code: "R003",
+        summary: "uninitialized constant `{name}`",
+        why: "No constant, class, or module by that name has been defined " \
+             "at the point this ran. Constants are assign-once and defined " \
+             "in order, so one defined further down the script is not " \
+             "visible here yet.",
+        help: "Check the spelling and capitalisation, and that `{name}` is " \
+              "defined before this point."
+      ),
+      "R004" => Entry.new(
+        code: "R004",
+        summary: "`{value}` is not a class or module",
+        why: "A `::` lookup needs a class or a module on its left, since " \
+             "that is what holds the constant being looked up.",
+        help: "Check that the name on the left of `::` refers to a class " \
+              "or module."
+      ),
+      "R005" => Entry.new(
+        code: "R005",
+        summary: "`{operator}` cannot be applied to {type}",
+        why: "This operator is only defined for the types that can " \
+             "meaningfully support it, and {type} is not one of them.",
+        help: "Convert the value first, or check that it holds what you " \
+              "expected — it may be `nil` from an earlier step that " \
+              "returned nothing."
+      ),
+      "R006" => Entry.new(
+        code: "R006",
+        summary: "`{definition}` has no class or module to attach to",
+        why: "A method has to belong to something. Defining one requires a " \
+             "class, a module, or the top-level object as its owner, and " \
+             "the value acting as `self` here is none of those.",
+        help: "Define the method at the top level, or inside a `class` or " \
+              "`module` body."
+      ),
+      "R007" => Entry.new(
+        code: "R007",
+        summary: "no block given to `{method}`",
+        why: "`{method}` reached a `yield`, which runs the block passed to " \
+             "it, but it was called without one.",
+        help: "Pass a block — `{method} { ... }` or `{method} do ... end`. " \
+              "To make the block optional, guard the `yield` with " \
+              "`block_given?`."
+      ),
+      "R008" => Entry.new(
+        code: "R008",
+        summary: "undefined method or variable `{name}`",
+        why: "`{name}` is not a local variable in scope, and no method by " \
+             "that name is defined on the receiver. Adjutant is a subset " \
+             "of Ruby, so some methods real Ruby has may not exist here.",
+        help: "Check the spelling, that the variable is assigned before " \
+              "this point, and that the receiver is the type you expect."
+      ),
+      "R009" => Entry.new(
+        code: "R009",
+        summary: "`{module}` is a module and cannot be instantiated",
+        why: "Modules have no instances — they exist to be included into " \
+             "classes, or to namespace constants and methods.",
+        help: "Instantiate a class that includes `{module}`, or call the " \
+              "method on `{module}` itself if it is defined on the module."
+      ),
+      "R010" => Entry.new(
+        code: "R010",
+        summary: "cannot load `{path}`",
+        why: "`require` resolves against the modules the host has " \
+             "registered, not the filesystem. Nothing is registered under " \
+             "that name.",
+        help: "Check the spelling, and that the host registered this " \
+              "module before running the script."
+      ),
+
       # --- L: limits reached ----------------------------------------
       #
       # The script is valid; it is just larger than something Adjutant

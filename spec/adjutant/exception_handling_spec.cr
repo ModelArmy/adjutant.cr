@@ -590,7 +590,7 @@ module Adjutant
       catch_it
       e
       RUBY
-      expect_raises(Adjutant::RuntimeError, /undefined method or variable: e/) do
+      expect_raises(Adjutant::RuntimeError, /undefined method or variable `e`/) do
         eval(src)
       end
     end

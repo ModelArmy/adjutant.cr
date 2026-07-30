@@ -956,7 +956,7 @@ module Adjutant
         # than left to silently bind nothing (which is what happened
         # before this guard: `blk` inside the method body was just
         # always `nil`, so `blk.call` failed with a generic, confusing
-        # "undefined method or variable: call" instead of a clear
+        # R008, undefined method or variable `call`, instead of a clear
         # explanation of what's actually unsupported and why).
         raise CompileError.new(
           Diagnostic.new(

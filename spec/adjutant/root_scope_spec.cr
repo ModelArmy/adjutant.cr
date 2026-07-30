@@ -200,7 +200,7 @@ module Adjutant
           bar
         end
         RUBY
-        expect_raises(Adjutant::RuntimeError, /undefined method or variable: bar/) do
+        expect_raises(Adjutant::RuntimeError, /undefined method or variable `bar`/) do
           eval(src)
         end
       end

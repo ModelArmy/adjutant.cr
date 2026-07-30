@@ -331,7 +331,15 @@ module Adjutant
         end
       end
 
-      raise RuntimeError.new("'require' cannot load -- #{path}", filename, 0)
+      raise RuntimeError.new(
+        Diagnostic.new(
+          code: "R010",
+          primary: Span.new(line: 0, filename: filename),
+          data: {"path" => path}
+        ),
+        filename,
+        0
+      )
     end
 
     # Install a native function as a global callable from scripts with arguments array, block if any, and

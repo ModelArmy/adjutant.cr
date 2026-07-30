@@ -699,7 +699,7 @@ module Adjutant
     # Binary(a, -, b), not as a bare call `a(-b)`. That gap went
     # undetected until `spec/scripts/methods.rb`'s `def self.add(a,b);
     # a+b; end` (an existing test script, not new coverage written for
-    # this fix) failed with "undefined method or variable: a" — `a+b`
+    # this fix) failed with R008, undefined method or variable `a` — `a+b`
     # was being parsed as `a(+b)`, a bare call passing `+b` as an
     # argument, so `a` (a real local parameter) was looked up as a
     # callable instead. Confirmed via real Ruby that `a-b`/`a+b` (no

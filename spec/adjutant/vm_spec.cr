@@ -89,7 +89,7 @@ module Adjutant
 
       # End-to-end regression for the exact bug the person found
       # (2026-07-25, via mruby's spec/scripts/mruby/float.rb fixture):
-      # `-0.0.to_s` used to raise "cannot negate 0.0 (String)" — .to_s
+      # `-0.0.to_s` used to raise R005 for negating a String — .to_s
       # ran FIRST (on positive 0.0), THEN negation was attempted on
       # the resulting String. Now correctly groups as `(-0.0).to_s`.
       it "groups unary minus with an adjacent numeric literal before postfix, not after" do
@@ -100,13 +100,13 @@ module Adjutant
         # `n` is a variable, not a literal, so this remains
         # Unary(Minus, Call(...)) — negating n.to_s's RESULT, not
         # fusing with anything. Adjutant's Op::Neg only accepts
-        # Integer/Float (see the "cannot negate" runtime_error in
-        # vm.cr) — there's no per-type -@ dispatch the way modern Ruby
+        # Integer/Float (see R005's raise site in vm.cr) — there's no
+        # per-type -@ dispatch the way modern Ruby
         # has (Ruby's own String#-@ would actually make -(a.to_s) NOT
         # raise, just return a frozen copy — Adjutant deliberately
         # doesn't replicate that nuance, matching Op::Neg's existing,
         # narrower numeric-only contract, unchanged by this fix).
-        expect_raises(RuntimeError, /cannot negate/) { eval("n = 0.0\n-n.to_s") }
+        expect_raises(RuntimeError, /cannot be applied/) { eval("n = 0.0\n-n.to_s") }
       end
 
       # End-to-end regression for the exact values the person reported
@@ -177,7 +177,7 @@ module Adjutant
       end
 
       it "raises applying unary plus to a non-numeric value" do
-        expect_raises(RuntimeError, /cannot apply unary \+/) { eval(%(+"str")) }
+        expect_raises(RuntimeError, /`\+` cannot be applied/) { eval(%(+"str")) }
       end
 
       it "raises on divide by zero" do
@@ -380,7 +380,7 @@ module Adjutant
         interp, ef = make_interp
         ef.add_file("greet.rb", %(x = "hello from vfs"))
         interp.eval(%(require "greet.rb"))
-        expect_raises(Adjutant::RuntimeError, /undefined method or variable: x/) do
+        expect_raises(Adjutant::RuntimeError, /undefined method or variable `x`/) do
           interp.eval("x")
         end
       end
@@ -465,7 +465,7 @@ module Adjutant
         # because they happen to share a process/interpreter).
         interp, _ = make_interp
         interp.eval("x = 10")
-        expect_raises(Adjutant::RuntimeError, /undefined method or variable: x/) do
+        expect_raises(Adjutant::RuntimeError, /undefined method or variable `x`/) do
           interp.eval("x + 5")
         end
       end
@@ -789,7 +789,7 @@ module Adjutant
       # "unknown method" fallback now backs GetGlobal too, tagged as
       # NameError (script-catchable, since NameError < StandardError).
       it "raises NameError for a truly undefined bare identifier" do
-        expect_raises(Adjutant::RuntimeError, /undefined method or variable: totally_unknown/) do
+        expect_raises(Adjutant::RuntimeError, /undefined method or variable `totally_unknown`/) do
           eval("totally_unknown")
         end
       end
@@ -801,7 +801,7 @@ module Adjutant
         end
         test
         RUBY
-        expect_raises(Adjutant::RuntimeError, /undefined method or variable: unknown/) do
+        expect_raises(Adjutant::RuntimeError, /undefined method or variable `unknown`/) do
           eval(src)
         end
       end
@@ -814,7 +814,10 @@ module Adjutant
           e.message
         end
         RUBY
-        eval(src).as_string.should eq "undefined method or variable: totally_unknown"
+        # `e.message` is the diagnostic's summary and nothing else: the
+        # code, the why, and the help stay out of the object a script
+        # rescues, so this asserts the script-visible wording exactly.
+        eval(src).as_string.should eq "undefined method or variable `totally_unknown`"
       end
 
       it "tags the raised error object as NameError specifically" do
@@ -838,7 +841,7 @@ module Adjutant
         # genuinely has nothing to resolve to yet, same as real Ruby:
         # `x += 1` alone raises NameError, it does not silently
         # default x to 0/nil first.
-        expect_raises(Adjutant::RuntimeError, /undefined method or variable: x/) do
+        expect_raises(Adjutant::RuntimeError, /undefined method or variable `x`/) do
           eval("x += 1")
         end
       end
@@ -1177,6 +1180,45 @@ module Adjutant
           eval("FOO = 1\nFOO = 2")
         end
         error.diagnostic.not_nil!.code.should eq("R001")
+      end
+
+      it "keeps NameError as the rescuable class for R008" do
+        # The diagnostic code and the script-visible class are set
+        # independently: R008 classifies the failure for the reader,
+        # while NameError is what real Ruby raises and therefore what a
+        # script must be able to rescue.
+        error = expect_raises(RuntimeError) do
+          eval("no_such_thing")
+        end
+        error.diagnostic.not_nil!.code.should eq("R008")
+        error.error_value.not_nil!.as_robject?.not_nil!.rclass.name.should eq("NameError")
+      end
+
+      it "names the type in script terms, not Crystal terms" do
+        # The old message interpolated `v.raw.class`, leaking Crystal
+        # type names at someone writing Ruby.
+        error = expect_raises(RuntimeError) do
+          eval("n = 0.0\n-n.to_s")
+        end
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("R005")
+        diag.data["operator"].should eq("-")
+        diag.data["type"].should eq("String")
+      end
+
+      it "collapses the four uninitialized-constant sites onto one code" do
+        error = expect_raises(RuntimeError) { eval("Nope") }
+        error.diagnostic.not_nil!.code.should eq("R003")
+        error.diagnostic.not_nil!.data["name"].should eq("Nope")
+      end
+
+      it "names the method that yielded without a block" do
+        error = expect_raises(RuntimeError) do
+          eval("def needs_block\n  yield\nend\nneeds_block")
+        end
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("R007")
+        diag.data["method"].should eq("needs_block")
       end
 
       it "reports U002 for Class.new, with a line but no column" do

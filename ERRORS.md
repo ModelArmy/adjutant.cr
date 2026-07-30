@@ -70,9 +70,24 @@ Parsed successfully, but rejected before it could run.
 
 ## R — Runtime
 
-|Code|Fault                                         |Raised by|Placeholders|
-|----|----------------------------------------------|---------|------------|
-|R001|Constant reassigned after its first assignment|VM       |`name`      |
+|Code|Fault                                                 |Raised by  |Placeholders      |
+|----|------------------------------------------------------|-----------|------------------|
+|R001|Constant reassigned after its first assignment        |VM         |`name`            |
+|R002|Class variable used outside a class/module body       |VM         |—                 |
+|R003|Uninitialized constant                                |VM         |`name`            |
+|R004|`::` applied to something that isn't a class or module|VM         |`value`           |
+|R005|Unary operator not applicable to this type            |VM         |`operator`, `type`|
+|R006|Method definition with no owner to attach to          |VM         |`definition`      |
+|R007|`yield` reached with no block passed                  |VM         |`method`          |
+|R008|Undefined method or variable                          |VM         |`name`            |
+|R009|Module cannot be instantiated                         |VM         |`module`          |
+|R010|`require` cannot resolve a module                     |Interpreter|`path`            |
+
+R008 raises a script-visible `NameError`, not `RuntimeError`, matching real
+Ruby. The diagnostic code and the rescuable class are set independently on
+purpose: the code classifies the failure for whoever reads the report,
+while the class governs `rescue` semantics and has to follow Ruby, since
+Adjutant is meant to be a proper subset of it.
 
 R001 and U003 come from the same assign-once guard and are told apart by
 what is being reassigned: two classes means a reopen (U003, a construct
