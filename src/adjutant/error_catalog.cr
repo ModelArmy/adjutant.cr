@@ -387,6 +387,21 @@ module Adjutant
              "registered it yet. `bootstrap_builtin_classes` must run " \
              "before any script code is evaluated."
       ),
+      "I006" => Entry.new(
+        code: "I006",
+        summary: "internal: no opcode for binary operator {operator}",
+        why: "The parser produced a binary expression whose operator the " \
+             "compiler has no instruction for. Usually an operator added " \
+             "to the lexer and parser without a matching case in the " \
+             "compiler's opcode mapping."
+      ),
+      "I007" => Entry.new(
+        code: "I007",
+        summary: "internal: no risk-aggregation case for {node}",
+        why: "A risk tree contained a node kind the aggregator does not " \
+             "handle. Usually a new RiskNode subtype added without a " \
+             "matching case in the summarizer."
+      ),
       "I005" => Entry.new(
         code: "I005",
         summary: "internal: no compiler case for AST node {node}",

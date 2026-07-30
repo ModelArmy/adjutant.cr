@@ -582,7 +582,11 @@ module Adjutant
       when TokenKind::Gt      then Op::Gt
       when TokenKind::GtE     then Op::Gte
       else
-        raise "unknown binary op: #{op}"
+        # No position: this maps a token kind to an opcode and never
+        # sees the node it came from.
+        raise CompileError.new(
+          Diagnostic.new(code: "I006", data: {"operator" => op.to_s})
+        )
       end
     end
 

@@ -209,6 +209,12 @@ integration.
 |I003|The value stack went below its frame             |—           |
 |I004|A builtin class was used before it was registered|`class`     |
 |I005|The compiler has no case for part of the syntax  |`node`      |
+|I006|The compiler has no instruction for an operator  |`operator`  |
+|I007|Risk aggregation met a node kind it can't handle |`node`      |
+
+Most arrive as a `CompileError` or `RuntimeError`, depending on when they
+happen. I007 is an `Adjutant::InternalError`, because risk aggregation is
+neither compiling nor running.
 
 These carry no suggestions, because none would be honest. Instead they end
 with an address to report to. Copying the whole report is genuinely useful:

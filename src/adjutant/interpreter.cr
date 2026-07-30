@@ -315,7 +315,7 @@ module Adjutant
     # is the script author's own wording and the only sensible thing to
     # show. See `RuntimeError#diagnostic`.
     def render_error(error : ParseError | CompileError | RuntimeError |
-                             HostArgumentError | HostStateError |
+                             HostArgumentError | HostStateError | InternalError |
                              AmbiguousRiskFlowPolicyError,
                      format : DiagnosticRenderer::Format = DiagnosticRenderer::Format::Markdown,
                      filename : String? = nil) : String?

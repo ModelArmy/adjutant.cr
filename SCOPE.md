@@ -126,6 +126,29 @@ wins.
 
 ### Error reporting
 
+- **Runtime diagnostics have no carets, because `Frame` records a line
+  but no column.** Filed 2026-07-29, after the migration finished and it
+  became clear how much of the catalog this covers: every `R`, `L`, `F`
+  and `N` code, plus the VM-raised `U002`/`U003`. Those render the
+  offending source line with nothing pointing into it, while
+  parser- and compiler-raised codes get a caret and a span label.
+
+  It is the largest remaining gap in what a reader actually sees. A
+  runtime error on a dense line (`foo(bar.baz, qux[i])`) says which line
+  failed but not which part of it, which is exactly the question the
+  reader has.
+
+  The span model already supports this — `Span#column` is optional
+  precisely so phases could gain precision independently — so nothing
+  needs redesigning. The work is threading a column onto `Frame`
+  alongside `line`, which means the compiler emitting one into the
+  bytecode's position info, since that is where `Frame#line` comes
+  from. Bigger than it sounds for that reason, and worth checking what
+  it costs per instruction before committing to it.
+
+  Not blocking anything: the renderer degrades cleanly today, and this
+  is a quality improvement rather than a correctness fix.
+
 - **U007's reflection exclusion is a category, not a list, so only
   `ObjectSpace` is enforced.** Added 2026-07-29 while enforcing U005–U007.
   `UNSUPPORTED.md`'s U007 entry describes "arbitrary FFI,

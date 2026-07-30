@@ -285,6 +285,27 @@ module Adjutant
     end
   end
 
+  describe "internal errors with no natural exception class" do
+    it "reports an unhandled risk node with a code and a report footer" do
+      # Was a bare `raise`, which surfaced as an untyped Crystal
+      # exception: no code, and nothing telling the reader this was
+      # ours to fix rather than theirs.
+      diag = Diagnostic.new(code: "I007", data: {"node" => "RiskWhatever"})
+      diag.internal?.should be_true
+      out = DiagnosticRenderer.new.render(diag, DiagnosticRenderer::Format::PlainText)
+      out.should contain("I007")
+      out.should contain("bug in Adjutant")
+    end
+
+    it "uses InternalError, since aggregation is neither compiling nor running" do
+      # The letter classifies the failure; the class stays accurate.
+      # There is no CompileError or RuntimeError that would be true here.
+      error = InternalError.new(Diagnostic.new(code: "I007"))
+      error.diagnostic.not_nil!.code.should eq("I007")
+      error.is_a?(CompileError).should be_false
+    end
+  end
+
   describe "ERRORS.md consistency" do
     # error_catalog.cr is authoritative; ERRORS.md documents it for
     # readers. Two artifacts holding the same facts is exactly the

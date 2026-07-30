@@ -24,6 +24,28 @@ module Adjutant
     end
   end
 
+  # An internal invariant broke somewhere with no natural existing
+  # exception class to carry it.
+  #
+  # Most `I` diagnostics ride on `CompileError` or `RuntimeError`,
+  # because they happen during compilation or execution and those are
+  # the accurate classes there. Risk aggregation is neither — a host
+  # calls `RiskAggregator.summarize` directly — so it gets this rather
+  # than being forced into a class that would misdescribe it.
+  class InternalError < Exception
+    getter diagnostic : Diagnostic?
+
+    def initialize(diagnostic : Diagnostic)
+      @diagnostic = diagnostic
+      super(diagnostic.to_line)
+    end
+
+    def initialize(message : String)
+      @diagnostic = nil
+      super(message)
+    end
+  end
+
   # The host drove Adjutant into a state it cannot serve — used a VM
   # twice, or asked a bare VM for something only an Interpreter can do.
   #
