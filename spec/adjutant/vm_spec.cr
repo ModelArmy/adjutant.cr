@@ -679,6 +679,104 @@ module Adjutant
       end
     end
 
+    # VM-level coverage for the 2026-08-03 argument-binding fix
+    # (SCOPE.md's Must Fix — defaults/splats half). spec/scripts/
+    # language/default_params.rb and splat_params.rb already cover the
+    # core def-site cases end-to-end via the `assert` script framework;
+    # these specs instead use eval's returned Value directly (so they
+    # can assert on array CONTENTS, not just equality) and cover shapes
+    # those two files don't: defaults/splats combined in one param
+    # list, and defaults/splats on lambdas and block literals — not
+    # just plain `def` — since Compiler#compile_proc's prologue and
+    # VM#bind_args are shared across all three call sites (compile_def,
+    # compile_lambda, compile_call's block-literal branch).
+    describe "argument binding — defaults and splats" do
+      it "combines a default param and a trailing splat in one signature" do
+        src = <<-RUBY
+        def f(a, b = 10, *rest)
+          [a, b, rest]
+        end
+        f(1)
+        RUBY
+        v = eval(src)
+        v.as_array[0].as_int.should eq 1_i64
+        v.as_array[1].as_int.should eq 10_i64  # b's default applied
+        v.as_array[2].as_array.should be_empty # rest collects nothing
+      end
+
+      it "an explicit arg overrides the default even when a splat follows it" do
+        src = <<-RUBY
+        def f(a, b = 10, *rest)
+          [a, b, rest]
+        end
+        f(1, 2, 3, 4)
+        RUBY
+        v = eval(src)
+        v.as_array[1].as_int.should eq 2_i64 # explicit, not the default
+        v.as_array[2].as_array.map(&.as_int).should eq [3_i64, 4_i64]
+      end
+
+      it "a lambda's default param applies when omitted" do
+        src = <<-RUBY
+        f = ->(x = 5) { x }
+        f.call
+        RUBY
+        eval(src).as_int.should eq 5_i64
+      end
+
+      it "a lambda's default param is overridden when supplied" do
+        src = <<-RUBY
+        f = ->(x = 5) { x }
+        f.call(9)
+        RUBY
+        eval(src).as_int.should eq 9_i64
+      end
+
+      it "a lambda's splat param collects extra call args" do
+        src = <<-RUBY
+        f = ->(*xs) { xs }
+        f.call(1, 2, 3)
+        RUBY
+        eval(src).as_array.map(&.as_int).should eq [1_i64, 2_i64, 3_i64]
+      end
+
+      it "a block literal's default param applies when the yielded value list is short" do
+        # each_pair-style: the block wants 2 params but the caller
+        # only yields 1 value for this iteration.
+        src = <<-RUBY
+        def once
+          yield 7
+        end
+        once { |a, b = 99| [a, b] }
+        RUBY
+        v = eval(src)
+        v.as_array[0].as_int.should eq 7_i64
+        v.as_array[1].as_int.should eq 99_i64
+      end
+
+      it "a splat param collects a genuinely empty array (not nil) when nothing remains" do
+        src = <<-RUBY
+        def f(*rest)
+          rest
+        end
+        f
+        RUBY
+        v = eval(src)
+        v.array?.should be_true
+        v.as_array.should be_empty
+      end
+
+      it "a required param before a splat still binds correctly when over-supplied" do
+        src = <<-RUBY
+        def f(first, *rest)
+          first
+        end
+        f(1, 2, 3)
+        RUBY
+        eval(src).as_int.should eq 1_i64
+      end
+    end
+
     describe "realistic programs" do
       it "computes fibonacci iteratively" do
         src = <<-RUBY

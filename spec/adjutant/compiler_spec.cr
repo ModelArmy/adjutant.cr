@@ -17,6 +17,20 @@ module Adjutant
     compile(source).code.map(&.op)
   end
 
+  # Helper: compile source whose LAST top-level statement is expected to
+  # be a `def`, call literal block, `for`, or lambda assignment, and
+  # return the compiled PROC BODY's own chunk (not the outer chunk) —
+  # i.e. what Compiler.compile_proc actually produced for it, including
+  # any default-value prologue emit_default_prologue emitted. Finds the
+  # nearest Op::MakeProc in the outer chunk and follows its const-pool
+  # index into the ScriptProc it pushes.
+  private def self.def_proc_chunk(source : String) : Chunk
+    chunk = compile(source)
+    make_proc = chunk.code.reverse.find { |inst| inst.op == Op::MakeProc } ||
+                raise "no Op::MakeProc in compiled output for #{source.inspect}"
+    chunk.consts[make_proc.c].as_proc.chunk
+  end
+
   describe Compiler do
     describe "literals" do
       it "compiles nil to Const" do
@@ -531,6 +545,108 @@ module Adjutant
         # @def_depth is 0 here since this def isn't nested in anything.
         o = ops("def self.greet\nend")
         o.should contain(Op::DefSingleton)
+      end
+    end
+
+    # Unit-level coverage for the 2026-08-03 argument-binding fix
+    # (SCOPE.md's Must Fix — defaults/splats half; keywords remain
+    # separate). spec/scripts/language/default_params.rb and
+    # splat_params.rb already cover this end-to-end (real values, real
+    # execution); these specs instead pin the actual BYTECODE
+    # Compiler#emit_default_prologue produces, the same level every
+    # other describe block in this file tests at — so a future
+    # refactor that changes the shape (not just the outcome) of the
+    # prologue gets caught here, closer to the change, rather than
+    # only surfacing as a script-level behavior diff.
+    describe "default-parameter prologue" do
+      it "emits no prologue at all for a def with only required params" do
+        # Regression check — the overwhelmingly common case (no
+        # defaults) must not pay for or contain any of this machinery.
+        o = def_proc_chunk("def add(a, b)\na + b\nend").code.map(&.op)
+        o.should_not contain(Op::GetArgc)
+      end
+
+      it "emits GetArgc/Gte/JumpIfTrue guarding the default expression for one default param" do
+        o = def_proc_chunk("def greet(name = \"world\")\nname\nend").code.map(&.op)
+        o.first(4).should eq [Op::GetArgc, Op::Const, Op::Gte, Op::JumpIfTrue]
+      end
+
+      it "stores the applied default to the param's own slot and discards the leftover value" do
+        # SetLocal (slot 0 — the only param) then Pop, matching the
+        # same "expression compiled as a statement" shape used
+        # elsewhere in this file (compile_body's own Pop-between-
+        # statements), not left on the stack to corrupt whatever the
+        # body pushes next.
+        code = def_proc_chunk("def greet(name = \"world\")\nname\nend").code
+        set_local = code.find { |inst| inst.op == Op::SetLocal }.not_nil!
+        set_local.c.should eq 0_u32
+        idx = code.index(set_local).not_nil!
+        code[idx + 1].op.should eq Op::Pop
+      end
+
+      it "compares argc against slot+1 (1-based count vs 0-based slot), not the bare slot index" do
+        # b is slot 1; supplied exactly when argc >= 2, not >= 1 — off
+        # by one here would make `add(5, 10)` (2 args) incorrectly
+        # skip a default it shouldn't need, or `add(5)` (1 arg)
+        # incorrectly apply one it should.
+        chunk = def_proc_chunk("def add(a, b = 10)\na + b\nend")
+        const_idx = chunk.code[1].c # the Const right after GetArgc
+        chunk.consts[const_idx].as_int.should eq 2_i64
+      end
+
+      it "emits one independent guarded block per default param, in declared order" do
+        chunk = def_proc_chunk("def pair(a = 1, b = 2)\n[a, b]\nend")
+        o = chunk.code.map(&.op)
+        # Two full GetArgc...JumpIfTrue guards, not one shared check —
+        # each default is independently omittable (pair(1) leaves only
+        # b defaulted).
+        o.count(Op::GetArgc).should eq 2
+        o.count(Op::JumpIfTrue).should eq 2
+        # First guard's Const is 1 (slot 0 + 1), second is 2 (slot 1 + 1).
+        first_const_idx = chunk.code[1].c
+        chunk.consts[first_const_idx].as_int.should eq 1_i64
+      end
+
+      it "compiles a default expression referencing an earlier param" do
+        # def add(a, b = a + 1) — the applied-default branch just
+        # compiles `a + 1` via the ordinary compile_node path, so it
+        # should contain a plain GetLocal (resolving `a`) same as any
+        # other expression referencing a param would.
+        o = def_proc_chunk("def add(a, b = a + 1)\nb\nend").code.map(&.op)
+        o.should contain(Op::GetLocal)
+      end
+
+      it "does NOT emit a default-value guard for a splat param" do
+        # Splat collection happens in VM#bind_args (pure Array
+        # slicing, nothing to evaluate) — the compiler has nothing to
+        # do for it, so no GetArgc guard should exist at all here.
+        o = def_proc_chunk("def sum(*args)\nargs\nend").code.map(&.op)
+        o.should_not contain(Op::GetArgc)
+      end
+
+      it "does NOT emit a default-value guard for a kwarg param, even though it has a default" do
+        # The fix the person's review caught before it shipped: a
+        # kwarg param's `default` must stay unapplied here (deferred
+        # to real keyword-argument support — see SCOPE.md's Must
+        # Fix), even though Param#default is set for it exactly like
+        # an ordinary positional default would be.
+        o = def_proc_chunk("def greet(name: \"world\")\nname\nend").code.map(&.op)
+        o.should_not contain(Op::GetArgc)
+      end
+
+      it "emits the prologue for a lambda's default params too, not just def" do
+        o = def_proc_chunk("f = ->(x = 5) { x }").code.map(&.op)
+        o.first(4).should eq [Op::GetArgc, Op::Const, Op::Gte, Op::JumpIfTrue]
+      end
+
+      it "emits the prologue for a call-site block literal's default params too" do
+        o = def_proc_chunk("[1].each { |x = 9| x }").code.map(&.op)
+        o.first(4).should eq [Op::GetArgc, Op::Const, Op::Gte, Op::JumpIfTrue]
+      end
+
+      it "emits no prologue for a for-loop's desugared block (synthetic params, never have defaults)" do
+        o = def_proc_chunk("for x in [1, 2, 3]\nx\nend").code.map(&.op)
+        o.should_not contain(Op::GetArgc)
       end
     end
 

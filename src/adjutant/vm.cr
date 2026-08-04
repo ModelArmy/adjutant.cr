@@ -19,10 +19,17 @@ module Adjutant
 
     # The original AST this proc was compiled from — nil for procs that
     # don't have one (compiled directly from a Chunk in tests, etc.).
-    # Not used by the VM at all; kept solely so RiskWalker can walk a
-    # method's actual control-flow shape (branches, loops) rather than
-    # re-deriving it from bytecode jump targets. See DEVELOPMENT.md's
-    # "Structured risk" section.
+    # ast_body isn't used by the VM at all; kept solely so RiskWalker
+    # can walk a method's actual control-flow shape (branches, loops)
+    # rather than re-deriving it from bytecode jump targets. See
+    # DEVELOPMENT.md's "Structured risk" section.
+    #
+    # ast_params IS read by the VM (VM#bind_args) — the param shapes
+    # (`default`/`splat?`/`kwarg?`) that positional index-copy alone
+    # can't see. nil only for RiskWalker's placeholder ScriptProcs
+    # (never executed) and for procs built directly from a Chunk with
+    # no AST at all — see bind_args's own plain-positional fallback
+    # for that case.
     getter ast_body : Body?
     getter ast_params : Array(Param)?
 
@@ -116,9 +123,19 @@ module Adjutant
     # might later `yield` to.
     property block_outer_locals : Array(Value)?
 
+    # Number of positional args the call that created this frame
+    # actually supplied — set once in call_script_proc, read only by
+    # Op::GetArgc (see that opcode's comment). Distinct from
+    # `locals.size`/`proc.local_count`, both of which count DECLARED
+    # slots (params + body locals) and never change; this is what the
+    # CALLER actually passed, which is exactly what a default-param
+    # prologue needs and locals (pre-filled with nil_value regardless)
+    # cannot tell it.
+    property argc : Int32
+
     def initialize(@proc, @chunk, @stack_base, @filename, @block = nil, outer : Array(Value)? = nil,
                    @self_val : Value = Value.nil_value, @lexical_scope : RubyClass? = nil,
-                   @block_outer_locals : Array(Value)? = nil)
+                   @block_outer_locals : Array(Value)? = nil, @argc : Int32 = 0)
       @ip = 0
       @line = 0
       @handlers = [] of HandlerEntry
@@ -510,11 +527,11 @@ module Adjutant
 
     private def push_frame(proc : ScriptProc, filename : String, block : ScriptProc? = nil, stack_base : Int32 = @stack.size,
                            outer : Array(Value)? = nil, self_val : Value = Value.nil_value, lexical_scope : RubyClass? = nil,
-                           block_outer_locals : Array(Value)? = nil) : Frame
+                           block_outer_locals : Array(Value)? = nil, argc : Int32 = 0) : Frame
       if @limits.call_depth_limit > 0 && @frames.size >= @limits.call_depth_limit
         raise script_diagnostic("L002", {"limit" => @limits.call_depth_limit.to_s}, current_frame)
       end
-      frame = Frame.new(proc, proc.chunk, stack_base, filename, block, outer, self_val, lexical_scope, block_outer_locals)
+      frame = Frame.new(proc, proc.chunk, stack_base, filename, block, outer, self_val, lexical_scope, block_outer_locals, argc)
       @frames.push(frame)
       frame
     end
@@ -895,6 +912,8 @@ module Adjutant
               f.locals << val
             end
             push(val)
+          when Op::GetArgc
+            push(Value.int(f.argc))
           when Op::GetOuter
             slot = inst.c.to_i
             outer = f.outer_locals
@@ -1634,12 +1653,97 @@ module Adjutant
                           else
                             proc.lexical_scope || (@frames.empty? ? nil : current_frame.lexical_scope)
                           end
+      # Captured before push_frame changes what current_frame means —
+      # this is the CALLER's line (where the call itself happened),
+      # which is what bind_args should log a splat-collection
+      # RiskFlowEvent against; the freshly pushed callee frame's own
+      # `line` is still 0 at this point (only execute's dispatch loop
+      # advances it, once the callee's first instruction runs).
+      caller_line = @frames.empty? ? 0 : current_frame.line
       frame = push_frame(proc, filename, block: blk, stack_base: base, outer: outer, self_val: inherited_self,
-        lexical_scope: effective_lexical, block_outer_locals: block_outer)
-      args.each_with_index do |arg, i|
-        frame.locals[i] = arg if i < frame.locals.size
-      end
+        lexical_scope: effective_lexical, block_outer_locals: block_outer, argc: args.size)
+      bind_args(frame, proc, args, caller_line)
       Value.nil_value # sentinel; Op::Ret will push the real return value
+    end
+
+    # Binds `args` (the caller's actual positional Values) into
+    # `frame.locals`, slot-by-slot in declared order. Two shapes,
+    # neither of which the plain index-copy this replaced understood:
+    #
+    #   - A splat param (`Param#splat?`) absorbs every remaining
+    #     positional arg once the params before it are satisfied, as
+    #     an Array — not a single Value at its slot, which is what
+    #     plain index-copy did (see SCOPE.md's Must Fix entry, now
+    #     resolved). At most one splat is expected per param list (the
+    #     parser doesn't reject a second one, but nothing upstream of
+    #     here does either — not this method's job to validate shape
+    #     the parser should have).
+    #   - A param with `Param#default` and no matching positional arg
+    #     is deliberately left AT `nil_value` here, not filled — see
+    #     Compiler#emit_default_prologue, which runs immediately after
+    #     this method returns (as the first real instructions of
+    #     `frame.chunk`) and evaluates the default expression itself.
+    #     Evaluating a default requires running compiled bytecode (it
+    #     can reference earlier params, e.g. `def f(a, b = a + 1)`),
+    #     which this method — plain Crystal, no access to `execute` —
+    #     cannot do; only the compiled prologue can. `Op::GetArgc`
+    #     (see that opcode's comment) is how the prologue tells
+    #     "omitted" apart from "explicitly passed nil," since a Value
+    #     already sitting at nil_value doesn't say which happened.
+    #
+    # A plain required param (no default, no splat) still binds
+    # exactly as before: positional-index copy, silently absent
+    # (nil_value) if the caller passed too few — Adjutant has never
+    # arity-checked calls, and this is not the place that starts.
+    #
+    # `proc.ast_params` is nil only for the placeholder ScriptProcs
+    # RiskWalker constructs for static analysis (never executed, see
+    # that file's own comment) — every real, callable proc (from
+    # Compiler#compile_def/#compile_lambda/#compile_call's block
+    # literal, or the synthetic no-default/no-splat Params
+    # Compiler#compile_for builds for its `each`-block desugar) always
+    # carries it, so the plain-positional fallback below exists for
+    # completeness, not because a live call path hits it.
+    private def bind_args(frame : Frame, proc : ScriptProc, args : Array(Value), caller_line : Int32) : Nil
+      ast_params = proc.ast_params
+      unless ast_params
+        args.each_with_index { |arg, i| frame.locals[i] = arg if i < frame.locals.size }
+        return
+      end
+      pos = 0 # index into `args` — advances only for non-splat params
+      ast_params.each_with_index do |param, slot|
+        next if slot >= frame.locals.size
+        if param.splat?
+          frame.locals[slot] = collect_splat(args, pos, caller_line)
+          pos = args.size
+        elsif pos < args.size
+          frame.locals[slot] = args[pos]
+          pos += 1
+        end
+        # else: left at nil_value — either no arg was supplied for a
+        # required param (always been silently permissive), or this
+        # param has a default that the compiled prologue will apply.
+      end
+    end
+
+    # Collects `args[from..]` into a risk-flow-labeled Array Value,
+    # for a splat param. Labeled the same way Op::MakeArray labels a
+    # literal array (join of every element's label) — a splat-bound
+    # array is exactly as much a container of its elements as one
+    # built with `[...]`, and IFC shouldn't be able to tell them
+    # apart. Records a RiskFlowEvent under the same "MakeArray" op
+    # name for the same reason: to a risk-flow log reader, a splat
+    # collecting args into an array and a literal `[...]` are the same
+    # KIND of event. `line` is the CALL SITE's line (see
+    # call_script_proc's `caller_line`), not the freshly pushed
+    # callee frame's — that frame's own `line` is still 0 here, since
+    # only execute's dispatch loop advances it once the callee's first
+    # instruction actually runs.
+    private def collect_splat(args : Array(Value), from : Int32, line : Int32) : Value
+      elements = from < args.size ? args[from..] : [] of Value
+      joined_label = elements.reduce(nil.as(RiskFlowLabel?)) { |acc, value| RiskFlowLabel.join(acc, value.label) }
+      @risk_flow_log.record("MakeArray", elements.map(&.label), joined_label, line)
+      Value.new(LabeledArray.new(elements, joined_label), joined_label)
     end
 
     # Minimal built-ins needed for specs to pass before stdlib lands.

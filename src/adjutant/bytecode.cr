@@ -120,6 +120,16 @@ module Adjutant
     GetLocal # push frame.locals[c]
     SetLocal # pop → frame.locals[c]; push value
 
+    # push Value.int(frame.argc) — the number of positional args the
+    # CURRENT call actually supplied, before any default-value/splat
+    # binding ran. Used only by the default-param prologue Compiler#
+    # emit_default_prologue emits (see that method) to test "was slot
+    # i given an argument," since Frame#locals is pre-filled with
+    # nil_value for every slot regardless of whether the caller
+    # supplied anything — nil is not distinguishable from "omitted"
+    # without this. Not reachable from script source directly.
+    GetArgc
+
     # Closure capture (block reading/writing enclosing frame's locals)
     GetOuter # push frame.outer_locals[c]
     SetOuter # pop → frame.outer_locals[c]; push value
