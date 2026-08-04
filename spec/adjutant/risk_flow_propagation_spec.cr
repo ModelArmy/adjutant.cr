@@ -110,6 +110,63 @@ module Adjutant
       end
     end
 
+    # A splat param collecting call args (VM#bind_args/#collect_splat,
+    # added 2026-08-03 alongside the default-parameter prologue — see
+    # SCOPE.md's Must Fix) builds an Array exactly the way Op::MakeArray
+    # does, just from positional call args instead of a `[...]` literal
+    # — these specs pin that it's genuinely the same KIND of event to a
+    # risk-flow log/policy, not a container IFC silently can't see
+    # through.
+    describe "a splat param collecting args (VM#collect_splat)" do
+      it "joins labels across collected elements onto the array's own label" do
+        interp, _ = make_tainted_interp
+        result = interp.eval(<<-RUBY)
+          def sum(*args)
+            args
+          end
+          sum(1, tainted("/etc/passwd"), 3)
+        RUBY
+        result.label.not_nil!.sensitivity.should eq Sensitivity::High
+      end
+
+      it "a splat of unlabeled elements stays unlabeled" do
+        interp, _ = make_tainted_interp
+        result = interp.eval(<<-RUBY)
+          def sum(*args)
+            args
+          end
+          sum(1, 2, 3)
+        RUBY
+        result.label.should be_nil
+      end
+
+      it "records a RiskFlowEvent under the MakeArray op name" do
+        interp, _ = make_tainted_interp
+        interp.eval(<<-RUBY)
+          def sum(*args)
+            args
+          end
+          sum(1, tainted("/etc/passwd"), 3)
+        RUBY
+        interp.risk_flow_log.events.map(&.op).should contain "MakeArray"
+      end
+
+      it "a splat with nothing left to collect is unlabeled, not just empty" do
+        # Zero elements means the reduce never runs, so joined_label
+        # stays nil — an empty splat-collected array must be exactly
+        # as inert to IFC as `[]` is, not carry some leftover label
+        # from a prior call.
+        interp, _ = make_tainted_interp
+        result = interp.eval(<<-RUBY)
+          def sum(*args)
+            args
+          end
+          sum
+        RUBY
+        result.label.should be_nil
+      end
+    end
+
     describe "Op::MakeHash" do
       it "joins labels across keys and values onto the hash's own label" do
         interp, _ = make_tainted_interp

@@ -157,10 +157,18 @@ module Adjutant
     # instance that's about to compile a NESTED `def` node, to reject
     # it before ever emitting `Op::DefMethod`/`Op::DefSingleton` — see
     # that method's own comment for why this exists.
+    # `params` takes full `Param` nodes (not bare names) specifically
+    # so this method can emit the default-value prologue below —
+    # every real caller (compile_def, compile_lambda, the block-
+    # literal branch of compile_call) has the full `Param`s on hand
+    # from the AST already; only `compile_for`'s synthetic `each`
+    # desugar has bare names (loop variables can't carry `=`/`*`
+    # syntax), which is why that one call site builds plain `Param`s
+    # with no default/splat instead of changing this signature twice.
     def self.compile_proc(
       body : Body,
       symbols : SymbolTable,
-      params : Array(String) = [] of String,
+      params : Array(Param) = [] of Param,
       in_block : Bool = false,
       parent_scope : CompilerScope? = nil,
       def_depth : Int32 = 0,
@@ -168,7 +176,8 @@ module Adjutant
       c = new(symbols, def_depth)
       scope = CompilerScope.new(in_block, parent_scope)
       c.scope = scope
-      params.each { |param| scope.define(param) }
+      slots = params.map { |param| scope.define(param.name) }
+      c.emit_default_prologue(params, slots)
       c.compile_body(body)
       c.emit_ret(0)
       local_count = scope.next_slot
@@ -197,6 +206,73 @@ module Adjutant
 
     protected def emit_ret(line : Int32) : Nil
       @chunk.emit(Op::Ret, line)
+    end
+
+    # Emits, at the very top of a proc's chunk (before any body
+    # statement), one conditional block per param that has a
+    # `default` — the piece of the argument-binding fix that VM#
+    # bind_args (vm.cr) explicitly leaves undone, because evaluating
+    # an arbitrary default expression means running compiled bytecode,
+    # which only the compiler can produce and only `execute` can run;
+    # bind_args is plain Crystal with neither.
+    #
+    # Per default param, in declared order:
+    #   GetArgc; Const(slot+1); Gte; JumpIfTrue → skip
+    #     (the Gte result is true when the caller DID supply this
+    #     slot, so JumpIfTrue is "skip the default, it's not needed")
+    #   [falls through here when argc < slot+1, i.e. omitted:]
+    #     compile(default expression); SetLocal slot; Pop
+    #   skip:
+    #
+    # `slot+1` (not `slot`) because `argc` is a COUNT (1-based: "how
+    # many args came in") while `slot` is a 0-based index — the param
+    # at slot i is supplied exactly when argc >= i+1.
+    #
+    # A default expression can reference earlier params (`def add(a, b
+    # = a + 1)`) — this works unremarkably because `compile_node`
+    # resolves `a` against `scope`, and every earlier param is already
+    # `scope.define`d (and, if it's own default applied, already
+    # `SetLocal`-written into its slot) by the time a later default
+    # compiles, since this method walks params in the same declared
+    # order they were defined in.
+    #
+    # Splat and plain required params are skipped here entirely —
+    # splat collection is pure Array slicing with nothing to evaluate,
+    # so VM#bind_args does it directly with no bytecode needed; a
+    # required param with no default has nothing to fall back to and
+    # is unaffected (left at nil_value if the caller omitted it, same
+    # permissive behavior as always).
+    #
+    # A KWARG param's default (`def f(name: "world")` — Param#kwarg?
+    # and Param#default are both set by parse_param's Colon branch) is
+    # ALSO deliberately skipped here, even though it has a `default`.
+    # This fix is scoped to defaults on ordinary positional params and
+    # splat collection — see SCOPE.md's Must Fix entry — not to
+    # keyword arguments, which need their own call-site parser work
+    # and design pass first (still unstarted; see the same entry's
+    # discussion of why keywords are a separate piece). Applying a
+    # kwarg's default here, ahead of that, would be observably wrong
+    # in the interim: a kwarg called positionally with too few args
+    # would silently start returning its default instead of nil,
+    # which spec/scripts/language/keyword_params_defsite.rb pins as
+    # the correct (if incomplete) behavior until keywords land
+    # properly.
+    protected def emit_default_prologue(params : Array(Param), slots : Array(Int32)) : Nil
+      params.each_with_index do |param, i|
+        next if param.kwarg?
+        next unless default = param.default
+        slot = slots[i]
+        line = param.line
+        @chunk.emit(Op::GetArgc, line)
+        count_idx = @chunk.add_const(Value.int(i + 1))
+        @chunk.emit(Op::Const, line, c: count_idx)
+        @chunk.emit(Op::Gte, line)
+        skip_jump = @chunk.emit_jump(Op::JumpIfTrue, line)
+        compile_node(default)
+        @chunk.emit(Op::SetLocal, line, c: slot.to_u32)
+        @chunk.emit(Op::Pop, line)
+        @chunk.patch_jump(skip_jump, @chunk.pos)
+      end
     end
 
     # ameba:disable Metrics/CyclomaticComplexity
@@ -770,12 +846,13 @@ module Adjutant
         blk_params = blk.params.map(&.name)
         blk_chunk, blk_locals = Compiler.compile_proc(
           blk.body, @symbols,
-          params: blk_params,
+          params: blk.params,
           in_block: true,
           parent_scope: @scope,
           def_depth: @def_depth
         )
-        sproc = ScriptProc.new(blk_chunk, "<block>", blk_params, blk_locals, true)
+        sproc = ScriptProc.new(blk_chunk, "<block>", blk_params, blk_locals, true,
+          ast_params: blk.params)
         proc_idx = @chunk.add_const(Value.proc(sproc))
         @chunk.emit(Op::MakeProc, node.line, c: proc_idx)
       else
@@ -988,7 +1065,7 @@ module Adjutant
       params = node.params.map(&.name)
       body_chunk, local_count = Compiler.compile_proc(
         node.body, @symbols,
-        params: params,
+        params: node.params,
         in_block: false,
         def_depth: @def_depth + 1
       )
@@ -1047,7 +1124,7 @@ module Adjutant
       params = node.params.map(&.name)
       lam_chunk, local_count = Compiler.compile_proc(
         node.body, @symbols,
-        params: params,
+        params: node.params,
         in_block: true,
         parent_scope: @scope,
         # Incremented, not propagated unchanged — a lambda IS a real,
@@ -1061,7 +1138,8 @@ module Adjutant
         # propagate @def_depth unchanged instead).
         def_depth: @def_depth + 1
       )
-      sproc = ScriptProc.new(lam_chunk, "<lambda>", params, local_count, true)
+      sproc = ScriptProc.new(lam_chunk, "<lambda>", params, local_count, true,
+        ast_params: node.params)
       proc_idx = @chunk.add_const(Value.proc(sproc))
       # a=1: wrap as a real Proc RubyObject (see vm.cr Op::MakeProc,
       # builtins/proc.cr). def bodies and call-site block literals
@@ -1167,14 +1245,24 @@ module Adjutant
       #      with (1) fixed the for-body would never have run.
       compile_node(node.iter) # receiver: the iterable
 
+      # `node.vars` is `Array(String)` (a `for` loop var can't carry
+      # `=`/`*`/`:` syntax — see ForNode), so this builds plain,
+      # metadata-free Params rather than changing compile_proc's
+      # signature back for one caller. No per-var position exists on
+      # ForNode to attribute these to individually; node's own
+      # line/column is the closest honest position, and it's dead
+      # weight anyway — emit_default_prologue skips every one of
+      # these (`default` is always nil).
+      for_params = node.vars.map { |name| Param.new(name, nil, false, false, false, node.line, node.column) }
       blk_chunk, blk_locals = Compiler.compile_proc(
         node.body, @symbols,
-        params: node.vars,
+        params: for_params,
         in_block: true,
         parent_scope: @scope,
         def_depth: @def_depth
       )
-      sproc = ScriptProc.new(blk_chunk, "<block>", node.vars, blk_locals, true)
+      sproc = ScriptProc.new(blk_chunk, "<block>", node.vars, blk_locals, true,
+        ast_params: for_params)
       proc_idx = @chunk.add_const(Value.proc(sproc))
       @chunk.emit(Op::MakeProc, node.line, c: proc_idx)
       @chunk.emit(Op::SetBlock, node.line)

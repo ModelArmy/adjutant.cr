@@ -40,6 +40,26 @@ module Adjutant
     # literal `do` is ambiguous with a loop construct's own `do`.
     @no_do_block = false
 
+    # True only while parsing a single block/lambda PARAM's default
+    # value (`|x = value|` — the `Eq` branch of parse_param, reached
+    # only from parse_block_params). `Pipe` is a real binary operator
+    # (bitwise-or, PRECEDENCE 7) AND the block-param-list delimiter, so
+    # parse_expression's operator loop can't otherwise tell "here's the
+    # closing `|`" from "here's a bitwise-or continuing the default" —
+    # without this, `{ |x = 9| x }` parses `9| x }` as the start of a
+    # (never-terminated) `9 | x` expression instead of stopping at the
+    # closing pipe. Suspended (not just left on) around parse_block
+    # itself — see that method — so a default value that CONTAINS its
+    # own nested block literal (`def f(g = xs.each { |y| y })`) doesn't
+    # leak this restriction into the nested block's own params or body,
+    # which have nothing to do with the outer param list. Deliberately
+    # narrower than a general "suspend inside any bracket" mechanism:
+    # nothing needs `|` used as bitwise-or unparenthesized inside a
+    # block-param default, so `{ |x = (a | b)| }` staying unsupported
+    # is an acceptable, documentable restriction rather than added risk
+    # for a case nothing exercises.
+    @no_pipe = false
+
     # Tracks, per open scope, which bare names have been established as
     # locals so far in the CURRENT parse — used only to disambiguate
     # `name [expr]` (no dot, no explicit call syntax) between indexing
@@ -460,6 +480,11 @@ module Adjutant
     private def parse_expression(min_prec : Int32) : Node
       left = parse_unary
       loop do
+        # See @no_pipe's own comment — while armed, a `Pipe` here is
+        # the closing delimiter of an enclosing block-param list, not
+        # a bitwise-or continuing this expression, regardless of what
+        # min_prec would otherwise allow through.
+        break if @no_pipe && current_kind == TokenKind::Pipe
         prec = token_precedence(current_kind)
         break if prec <= min_prec
         op_tok = @current
@@ -928,27 +953,44 @@ module Adjutant
     end
 
     private def parse_block : BlockNode
-      l, c = line, col
-      push_local_scope(inherit: true)
-      if at_kind?(TokenKind::KwDo)
-        open_block("do", line, col)
-        advance
-        params = parse_block_params
-        params.each { |param| register_local(param.name) }
-        skip_newlines
-        body = parse_body_until(TokenKind::KwEnd)
-        close_block
-        pop_local_scope
-        BlockNode.new(params, body, l, c)
-      else
-        expect(TokenKind::LBrace)
-        params = parse_block_params
-        params.each { |param| register_local(param.name) }
-        skip_newlines
-        body = parse_body_until(TokenKind::RBrace)
-        expect(TokenKind::RBrace)
-        pop_local_scope
-        BlockNode.new(params, body, l, c)
+      # Suspended for this WHOLE block literal (params AND body), not
+      # just its params — see @no_pipe's own comment. Reachable with
+      # @no_pipe already true when this block is written as the
+      # default value of an ENCLOSING param (`def f(g = xs.each { |y|
+      # y })`): without suspending here, the outer flag would still be
+      # armed while parsing THIS block's own `|y|` and body, breaking
+      # both a bare `|` inside this block's body and (were block
+      # params ever nested two default-levels deep) this block's own
+      # param defaults. Saved/restored, not reset to a hardcoded
+      # false, so a block literal directly inside another block
+      # literal's default (however unlikely) still nests correctly.
+      saved_no_pipe = @no_pipe
+      @no_pipe = false
+      begin
+        l, c = line, col
+        push_local_scope(inherit: true)
+        if at_kind?(TokenKind::KwDo)
+          open_block("do", line, col)
+          advance
+          params = parse_block_params
+          params.each { |param| register_local(param.name) }
+          skip_newlines
+          body = parse_body_until(TokenKind::KwEnd)
+          close_block
+          pop_local_scope
+          BlockNode.new(params, body, l, c)
+        else
+          expect(TokenKind::LBrace)
+          params = parse_block_params
+          params.each { |param| register_local(param.name) }
+          skip_newlines
+          body = parse_body_until(TokenKind::RBrace)
+          expect(TokenKind::RBrace)
+          pop_local_scope
+          BlockNode.new(params, body, l, c)
+        end
+      ensure
+        @no_pipe = saved_no_pipe
       end
     end
 
@@ -1083,13 +1125,43 @@ module Adjutant
       # keyword argument: name: or name: default
       if at_kind?(TokenKind::Colon)
         advance
-        default = at_any?(TokenKind::Comma, TokenKind::RParen, TokenKind::Pipe) ? nil : parse_expression(0)
+        # The `at_any?` guard only covers an EMPTY default (`name:`
+        # immediately followed by `,`/`)`/`|`) — a non-trivial kwarg
+        # default (`name: 9`) still needs the same @no_pipe protection
+        # as an ordinary default just below, for the identical reason:
+        # `Pipe` closing a block's param list is otherwise
+        # indistinguishable from `Pipe` continuing the default
+        # expression as bitwise-or. Kwarg call-site syntax isn't
+        # implemented yet (see SCOPE.md's Must Fix), but kwarg
+        # DECLARATION on a block param is — `xs.each { |k: 9| k }` —
+        # so this is a live path, not dead code.
+        default = if at_any?(TokenKind::Comma, TokenKind::RParen, TokenKind::Pipe)
+                    nil
+                  else
+                    begin
+                      @no_pipe = true
+                      parse_expression(0)
+                    ensure
+                      @no_pipe = false
+                    end
+                  end
         return Param.new(name, default, false, false, true, l, c)
       end
       # default parameter: name = value
       if at_kind?(TokenKind::Eq)
         advance
-        default = parse_expression(0)
+        # @no_pipe is a no-op for a DEF param's default (no enclosing
+        # `|...|`, so Pipe never appears at min_prec=0 here regardless)
+        # — armed unconditionally anyway so this one code path is
+        # correct for both def-params and block-params, rather than
+        # branching parse_param itself on which kind of param list
+        # called it.
+        default = begin
+          @no_pipe = true
+          parse_expression(0)
+        ensure
+          @no_pipe = false
+        end
         return Param.new(name, default, false, false, false, l, c)
       end
       Param.new(name, nil, false, false, false, l, c)

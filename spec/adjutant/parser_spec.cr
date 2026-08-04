@@ -821,6 +821,72 @@ module Adjutant
         call = node.as(Call)
         call.block.should_not be_nil
       end
+
+      # Found 2026-08-04 while adding tests for the default-parameter
+      # prologue fix: `|x = 9|` failed to parse at all — `Pipe` is
+      # both the block-param delimiter AND a real binary operator
+      # (bitwise-or), so parse_expression(0) parsing the default kept
+      # going past the closing `|`, consuming into the block BODY and
+      # eventually erroring on an unexpected `}`. Fixed via @no_pipe
+      # (parser.cr, see that flag's own comment for the full
+      # mechanism) — these pin the parse-level shape; vm_spec.cr's
+      # "argument binding — defaults and splats" and
+      # compiler_spec.cr's "default-parameter prologue" cover that the
+      # VALUE actually binds correctly at runtime.
+      it "parses a block param with a default value" do
+        node = parse_expr("[1].each { |x = 9| x }")
+        call = node.as(Call)
+        param = call.block.not_nil!.params.first
+        param.default.should_not be_nil
+      end
+
+      it "parses a block param with a default AFTER an earlier required param" do
+        # The shape that actually failed originally — `b`'s default
+        # isn't the first thing after the opening pipe.
+        node = parse_expr("[1].each { |a, b = 9| a }")
+        call = node.as(Call)
+        params = call.block.not_nil!.params
+        params[0].default.should be_nil
+        params[1].default.should_not be_nil
+      end
+
+      it "parses a do...end block param with a default value" do
+        # Same bug, the other block syntax — parse_block's fix covers
+        # both branches, so this must be unaffected too.
+        node = parse_expr("[1].each do |x = 9|\nx\nend")
+        call = node.as(Call)
+        param = call.block.not_nil!.params.first
+        param.default.should_not be_nil
+      end
+
+      it "parses a block param with a KEYWORD default value (name: 9)" do
+        # parse_param's kwarg branch had the identical latent bug —
+        # its own Pipe guard only covered an EMPTY default (`name:`),
+        # not a real expression like `name: 9`.
+        node = parse_expr("[1].each { |k: 9| k }")
+        call = node.as(Call)
+        param = call.block.not_nil!.params.first
+        param.kwarg?.should be_true
+        param.default.should_not be_nil
+      end
+
+      it "does not let a suspended default-value Pipe restriction leak into a NESTED block literal's own params or body" do
+        # @no_pipe must be suspended (not just left armed) around
+        # parse_block itself — otherwise an outer param's default
+        # value that CONTAINS its own block literal would incorrectly
+        # treat that inner block's `|y|` delimiters, or a bare `|` in
+        # its body, as the OUTER block's closing pipe too early.
+        node = parse_expr("[1].each { |g = [2].map { |y| y | 1 }.first| g }")
+        call = node.as(Call)
+        outer_param = call.block.not_nil!.params.first
+        outer_param.default.should_not be_nil
+        # If the inner block's body (`y | 1`) had been mis-parsed as
+        # terminating early on `|`, this whole expression wouldn't
+        # have parsed as ONE call at all — reaching here at all is
+        # most of the assertion; the block's own presence confirms
+        # the outer `{ ... }` closed where it should have.
+        call.block.not_nil!.body.should_not be_nil
+      end
     end
 
     describe "begin/rescue/ensure" do
