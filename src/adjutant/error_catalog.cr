@@ -155,6 +155,24 @@ module Adjutant
         help: "Check the spelling, and that the host registered this " \
               "module before running the script."
       ),
+      "R011" => Entry.new(
+        code: "R011",
+        summary: "missing keyword: `{name}`",
+        why: "`{method}` declares `{name}:` with no default, so a caller " \
+             "must supply it by name. This call didn't.",
+        help: "Pass `{name}: ...` at the call site, or give the " \
+              "parameter a default (`{name}: some_value`) if it should " \
+              "be optional."
+      ),
+      "R012" => Entry.new(
+        code: "R012",
+        summary: "unknown keyword: `{name}`",
+        why: "`{method}` was called with `{name}:`, but it either takes " \
+             "no keyword arguments at all or doesn't declare one by " \
+             "that name.",
+        help: "Check the spelling against `{method}`'s declared " \
+              "parameters, or drop the keyword if it isn't needed."
+      ),
 
       # --- L: limits reached ----------------------------------------
       #

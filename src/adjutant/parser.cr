@@ -587,8 +587,8 @@ module Adjutant
           advance
           method_tok = @current
           advance
-          args, blk = parse_call_args_and_block
-          node = Call.new(node, method_tok.lexeme, args, blk, safe, l, c)
+          args, kwargs, blk = parse_call_args_and_block
+          node = Call.new(node, method_tok.lexeme, args, blk, safe, l, c, kwargs: kwargs)
         when TokenKind::ColonColon
           advance
           name_tok = @current
@@ -816,8 +816,8 @@ module Adjutant
         # fails on its own merits once parsed as a bare call's first
         # argument (a bare tuple isn't a valid expression here either).
         # See SCOPE.md's entry on this bug for the full research trail.
-        args, blk = parse_call_args_and_block
-        Call.new(nil, name, args, blk, false, l, c)
+        args, kwargs, blk = parse_call_args_and_block
+        Call.new(nil, name, args, blk, false, l, c, kwargs: kwargs)
       elsif block_follows_no_paren?
         blk = parse_block
         Call.new(nil, name, [] of Node, blk, false, l, c)
@@ -866,12 +866,14 @@ module Adjutant
     # behaviors, so extracting it is a genuine simplification, not just
     # a lint workaround.
     private def parse_bare_call_args(name : String, l : Int32, c : Int32) : Call
-      args = [parse_expression(0)] of Node
+      args = [] of Node
+      kwargs = [] of {String, Node}
+      parse_call_arg(args, kwargs)
       while match(TokenKind::Comma)
-        args << parse_expression(0)
+        parse_call_arg(args, kwargs)
       end
       blk = parse_block if block_follows_no_paren?
-      Call.new(nil, name, args, blk, false, l, c)
+      Call.new(nil, name, args, blk, false, l, c, kwargs: kwargs)
     end
 
     private def block_follows_no_paren? : Bool
@@ -931,25 +933,43 @@ module Adjutant
 
     # --- Calls --------------------------------------------------------------
 
-    private def parse_call_args_and_block : {Array(Node), BlockNode?}
+    # One call argument: `name: value` (an Identifier immediately
+    # followed by a Colon, checked via one-token lookahead so it
+    # doesn't misfire on a ternary's `cond ? a : b`, whose colon is
+    # never the SECOND token of an argument) routes into `kwargs`;
+    # everything else is an ordinary positional expression. Shared
+    # between the parenthesized and bare (no-paren) call-argument
+    # loops so this lookahead lives in exactly one place.
+    private def parse_call_arg(args : Array(Node), kwargs : Array({String, Node})) : Nil
+      if at_kind?(TokenKind::Identifier) && peek_kind == TokenKind::Colon
+        name = advance.lexeme
+        advance # the Colon
+        kwargs << {name, parse_expression(0)}
+      else
+        args << parse_expression(0)
+      end
+    end
+
+    private def parse_call_args_and_block : {Array(Node), Array({String, Node}), BlockNode?}
       args = [] of Node
+      kwargs = [] of {String, Node}
       blk = nil
       if at_kind?(TokenKind::LParen)
         advance
         skip_newlines
         unless at_kind?(TokenKind::RParen)
-          args << parse_expression(0)
+          parse_call_arg(args, kwargs)
           while match(TokenKind::Comma)
             skip_newlines
             break if at_kind?(TokenKind::RParen)
-            args << parse_expression(0)
+            parse_call_arg(args, kwargs)
           end
         end
         skip_newlines
         expect(TokenKind::RParen)
       end
       blk = parse_block if block_follows_no_paren?
-      {args, blk}
+      {args, kwargs, blk}
     end
 
     private def parse_block : BlockNode
@@ -1458,7 +1478,7 @@ module Adjutant
       advance # consume 'raise'
       args = [] of Node
       if at_kind?(TokenKind::LParen)
-        args, _blk = parse_call_args_and_block
+        args, _kwargs, _blk = parse_call_args_and_block
       elsif arg_follows_no_paren?
         args << parse_expression(0)
         while match(TokenKind::Comma)

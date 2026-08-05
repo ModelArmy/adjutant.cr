@@ -97,13 +97,21 @@ Something went wrong while the script was running.
 |R008|Undefined method or variable                          |`name`            |
 |R009|Modules cannot be instantiated                        |`module`          |
 |R010|`require` cannot find the named module                |`path`            |
+|R011|Missing a required keyword argument                   |`name`, `method`  |
+|R012|Passed a keyword argument the method doesn't declare  |`name`, `method`  |
 
-Scripts can `rescue` these. R008 raises a `NameError`, matching Ruby; the
-rest raise `RuntimeError`.
+Scripts can `rescue` these. R008 raises a `NameError`, matching Ruby;
+R011 and R012 raise `ArgumentError`, also matching Ruby; the rest raise
+`RuntimeError`.
 
 Adjutant's constants are assign-once, which Ruby only warns about. R001 is
 that rule firing on an ordinary constant; reopening a class or module is
 U003 instead.
+
+R011/R012 apply to script-defined methods only. A native function, a
+builtin, or `Class.new`/`initialize` has no declared `name:` parameter
+list to check against — passing any keyword argument to one of these
+raises R012 outright, rather than silently discarding it.
 
 ## L — Limits
 

@@ -216,17 +216,22 @@ module Adjutant
     # which only the compiler can produce and only `execute` can run;
     # bind_args is plain Crystal with neither.
     #
-    # Per default param, in declared order:
-    #   GetArgc; Const(slot+1); Gte; JumpIfTrue → skip
-    #     (the Gte result is true when the caller DID supply this
-    #     slot, so JumpIfTrue is "skip the default, it's not needed")
-    #   [falls through here when argc < slot+1, i.e. omitted:]
+    # Per param with a default, in declared order:
+    #   [HasKwarg name | GetArgc; Const(slot+1); Gte]; JumpIfTrue → skip
+    #     (true means the caller DID supply this slot, so JumpIfTrue is
+    #     "skip the default, it's not needed")
+    #   [falls through here when omitted:]
     #     compile(default expression); SetLocal slot; Pop
     #   skip:
     #
-    # `slot+1` (not `slot`) because `argc` is a COUNT (1-based: "how
-    # many args came in") while `slot` is a 0-based index — the param
-    # at slot i is supplied exactly when argc >= i+1.
+    # The two bracketed forms are the ONLY difference between a kwarg
+    # default and an ordinary positional one — everything else in this
+    # method is shared. A kwarg's "was this supplied?" test is by
+    # NAME (Op::HasKwarg), since kwargs don't occupy a fixed position
+    # at all; an ordinary param's is by argc count, where `slot+1` (not
+    # `slot`) accounts for argc being 1-based ("how many args came
+    # in") while `slot` is a 0-based index — the param at slot i is
+    # supplied exactly when argc >= i+1.
     #
     # A default expression can reference earlier params (`def add(a, b
     # = a + 1)`) — this works unremarkably because `compile_node`
@@ -238,35 +243,34 @@ module Adjutant
     #
     # Splat and plain required params are skipped here entirely —
     # splat collection is pure Array slicing with nothing to evaluate,
-    # so VM#bind_args does it directly with no bytecode needed; a
-    # required param with no default has nothing to fall back to and
-    # is unaffected (left at nil_value if the caller omitted it, same
-    # permissive behavior as always).
-    #
-    # A KWARG param's default (`def f(name: "world")` — Param#kwarg?
-    # and Param#default are both set by parse_param's Colon branch) is
-    # ALSO deliberately skipped here, even though it has a `default`.
-    # This fix is scoped to defaults on ordinary positional params and
-    # splat collection — see SCOPE.md's Must Fix entry — not to
-    # keyword arguments, which need their own call-site parser work
-    # and design pass first (still unstarted; see the same entry's
-    # discussion of why keywords are a separate piece). Applying a
-    # kwarg's default here, ahead of that, would be observably wrong
-    # in the interim: a kwarg called positionally with too few args
-    # would silently start returning its default instead of nil,
-    # which spec/scripts/language/keyword_params_defsite.rb pins as
-    # the correct (if incomplete) behavior until keywords land
-    # properly.
+    # so VM#bind_args does it directly with no bytecode needed. A
+    # required param with no default — kwarg or not — has nothing to
+    # fall back to and is unaffected by this method at all: an
+    # ordinary one is silently left at nil_value if the caller omitted
+    # it (permissive, as always); a REQUIRED kwarg is instead raised
+    # on directly by VM#bind_args (R011) the moment it's found
+    # missing, since there's a fixed fact to report and no expression
+    # to evaluate — this method never even sees it (the `next unless
+    # default = param.default` guard below skips it immediately).
     protected def emit_default_prologue(params : Array(Param), slots : Array(Int32)) : Nil
       params.each_with_index do |param, i|
-        next if param.kwarg?
         next unless default = param.default
         slot = slots[i]
         line = param.line
-        @chunk.emit(Op::GetArgc, line)
-        count_idx = @chunk.add_const(Value.int(i + 1))
-        @chunk.emit(Op::Const, line, c: count_idx)
-        @chunk.emit(Op::Gte, line)
+        # A required kwarg with no default (missing → VM#bind_args
+        # raises directly, no bytecode needed) never reaches here at
+        # all — only a kwarg WITH a default does, same as any other
+        # param below. The two branches differ only in how "was this
+        # slot actually supplied?" is tested: by name (HasKwarg) for a
+        # kwarg, by position count (GetArgc) for everything else.
+        if param.kwarg?
+          @chunk.emit(Op::HasKwarg, line, c: intern(param.name))
+        else
+          @chunk.emit(Op::GetArgc, line)
+          count_idx = @chunk.add_const(Value.int(i + 1))
+          @chunk.emit(Op::Const, line, c: count_idx)
+          @chunk.emit(Op::Gte, line)
+        end
         skip_jump = @chunk.emit_jump(Op::JumpIfTrue, line)
         compile_node(default)
         @chunk.emit(Op::SetLocal, line, c: slot.to_u32)
@@ -841,6 +845,18 @@ module Adjutant
         compile_node(recv)
       end
       node.args.each { |arg| compile_node(arg) }
+      # Keyword args, if any: push (name symbol, value) pairs — same
+      # alternating convention Op::MakeHash uses — then SetKwargNames
+      # to stage them for the Call below. Only emitted when there
+      # actually are some, so the overwhelming majority of calls (no
+      # keyword args at all) never touch this path.
+      unless node.kwargs.empty?
+        node.kwargs.each do |(name, value)|
+          @chunk.emit(Op::Const, node.line, c: intern(name))
+          compile_node(value)
+        end
+        @chunk.emit(Op::SetKwargNames, node.line, a: node.kwargs.size.to_u8)
+      end
       # Register block if present — MakeProc pushes it, SetBlock pops it
       if blk = node.block
         blk_params = blk.params.map(&.name)
