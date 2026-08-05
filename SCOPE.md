@@ -24,44 +24,51 @@ Blocking, or actively causing incorrect behavior in normal use. Ordered
 roughly by dependency, not necessarily by importance — an item lower down
 may unblock ones above it.
 
-- **`break`/`next` inside a `begin`/`rescue`/`ensure` region silently
-  skip the `ensure` body and leave a stale exception handler on the
-  stack.** Found 2026-08-05 during a full sweep of upstream mruby's
-  `test/t/exception.rb` (two tests not carried into
-  `spec/scripts/mruby/exception.rb`: "break value from begin/rescue/
-  ensure in while loop", "next inside rescue continues the loop").
-  `compile_break`/`compile_next` (`compiler.cr`) emit a bare
-  `Op::Jump` straight to the loop's break-list or start position,
-  consulting only `@loop_stack` — which has no interaction at all with
-  `begin`/`rescue`/`ensure` compilation. The VM's exception machinery
-  (`f.handlers`, pushed by `Op::Try`/`Op::SetEnsure`, popped by
-  `Op::EnterEnsure`) assumes control reaches `EnterEnsure` either
-  through normal fallthrough or the error-unwind loop — neither of
-  which a `break`/`next`-triggered jump goes through. Concretely:
+- **`next`/`redo` inside a `begin...end while`/`until` loop (the
+  do-while modifier form) target the wrong bytecode position and can
+  infinite-loop.** Found 2026-08-05 while adding regression coverage
+  for the break/next/ensure interaction fix (now resolved — see git
+  history; this is a separate, adjacent bug the same investigation
+  surfaced, confirmed via `git stash` to predate that session's
+  changes entirely). `compile_modifier_while` (`compiler.cr`) sets
+  `LoopScope#start_pos`/`#body_pos` both to `loop_start` — the very
+  top of the loop, before its body runs even once — rather than to the
+  condition check. Real Ruby's `next` in this loop form still means
+  "skip to the end of this iteration, then check the condition," not
+  "restart the body unconditionally." Concretely:
 
   ```ruby
-  while true
-    begin
-      break 123
-    ensure
-      side << :ensure   # never runs — silently skipped
-    end
-  end
+  count = 0
+  begin
+    count += 1
+    next
+  end while count < 2   # never terminates: `next` never reaches the
+                         # condition check at all, let alone lets it
+                         # go false
   ```
 
-  Two bugs bundled together: the `ensure` body's side effects are
-  silently dropped (no error, just skipped), and the `HandlerEntry` that
-  `Try`/`SetEnsure` pushed is never popped — a stale handler left on
-  `f.handlers` that could wrongly intercept a later, unrelated error in
-  the same frame. This is the same "silently do something different
-  from what was written" failure class as the `===` bug below, and
-  worse in one respect: there's no error at all to notice, so a script
-  author has no signal anything went wrong. Fix needs `break`/`next` to
-  route through the same ensure-running path `raise`/normal completion
-  already use, rather than a bare `Op::Jump`, when the jump target is
-  outside the current try/ensure region — likely means `@loop_stack`
-  (or a parallel structure) needs to track try/ensure nesting depth at
-  the point a `break`/`next` is compiled, not just loop nesting.
+  No error, no crash — just a script that never returns control,
+  matching the same "lockup, not a crash" failure class the now-fixed
+  break/next/ensure interaction bug had (see git history — that entry
+  no longer appears in this file, resolved 2026-08-05). `redo` in this
+  same loop form is very likely broken the same way for the same
+  reason (untraced beyond noting `start_pos`/`body_pos` are identical
+  here, unlike `compile_while`, where they're genuinely different
+  positions) — confirm both together rather than fixing one and
+  assuming the other. Not yet fixed: this
+  session deliberately scoped its own fix to the break/next/ensure
+  interaction and the two bugs it surfaced along the way in
+  `compile_while` specifically (a struct-copy bug losing `body_pos`
+  entirely, and a double-nil-push on `break <value>` as a loop's
+  trailing expression — both now fixed, see git history) — this item
+  is the one adjacent finding left deliberately unfixed, since
+  `compile_modifier_while`'s correct target likely needs its own
+  small design pass (does `next`/`redo` need a THIRD position distinct
+  from `start_pos`/`body_pos`, given this form's condition sits at the
+  *end* of the loop, not the start?) rather than a same-shape patch.
+  No test currently exercises `next`/`redo` in this loop form for that
+  reason — see `spec/adjutant/exception_handling_spec.cr`'s note next
+  to where such a test would go.
 
 - **Multi-target assignment (`a, b = 1, 2`, `a, b = some_array`)
   doesn't parse at all.** Found 2026-08-05 in the same mruby sweep,

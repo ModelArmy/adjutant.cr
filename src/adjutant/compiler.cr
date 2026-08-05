@@ -39,8 +39,44 @@ module Adjutant
     property body_pos : Int32      # position after condition (redo target)
     property breaks : Array(Int32) # indices of Break jumps to patch
 
-    def initialize(@start_pos, @body_pos = 0)
+    # Snapshot of @ensure_stack.size at the point this loop was
+    # entered — how many begin/rescue/ensure regions were ALREADY
+    # open around the loop itself, as opposed to opened fresh inside
+    # its body. compile_break/compile_next diffs this against the
+    # current @ensure_stack.size to find how many regions a jump back
+    # to this loop's start/exit needs to unwind THROUGH (running their
+    # ensure bodies and popping their VM handler entries) rather than
+    # jump straight past. See EnsureRegion below for why this can't
+    # just be "the loop's own nesting" — a loop can sit inside a
+    # begin/ensure that was opened before the loop existed.
+    property ensure_depth_at_entry : Int32
+
+    def initialize(@start_pos, @body_pos = 0, @ensure_depth_at_entry = 0)
       @breaks = [] of Int32
+    end
+  end
+
+  # One lexically-open begin/rescue/ensure construct, tracked only
+  # while the compiler is walking inside it — pushed by compile_begin
+  # before compiling its body/rescue/ensure, popped after. Exists
+  # purely so compile_break/compile_next can see, at compile time,
+  # which ensure bodies (if any) a jump out of a loop is skipping
+  # past, the same way @loop_stack lets them see which loop start/end
+  # they're jumping to. Deliberately separate from LoopScope: a begin/
+  # ensure and a loop nest independently of each other (a loop can
+  # open inside a begin, or a begin can open inside a loop), so this
+  # needs its own stack rather than being folded into LoopScope.
+  #
+  # ensure_body is nil for a rescue-only construct (no ensure clause)
+  # — still tracked here, because break/next skipping over it leaves
+  # the SAME stale HandlerEntry problem (rescue_ip set, never cleared
+  # via Op::EndTry) even with no ensure code to run. In that case
+  # compile_break/compile_next emit Op::EnterEnsure alone (pop the
+  # handler, run nothing) rather than skipping this region entirely.
+  private struct EnsureRegion
+    property ensure_body : Body?
+
+    def initialize(@ensure_body)
     end
   end
 
@@ -119,6 +155,7 @@ module Adjutant
       @symbols = symbols
       @chunk = Chunk.new
       @loop_stack = [] of LoopScope
+      @ensure_stack = [] of EnsureRegion
       @in_block = false
       @scope = nil.as(CompilerScope?)
       @def_depth = def_depth
@@ -1211,29 +1248,85 @@ module Adjutant
     private def compile_while(node : WhileNode) : Nil
       raise loop_too_deep(node) if @loop_stack.size >= MAX_LOOP_DEPTH
       loop_start = @chunk.pos
-      scope = LoopScope.new(loop_start)
+      scope = LoopScope.new(loop_start, ensure_depth_at_entry: @ensure_stack.size)
       @loop_stack.push(scope)
 
       compile_node(node.cond)
       # For `until`, invert the condition
       @chunk.emit(Op::Not, node.line) if node.until_loop?
       jmp_exit = @chunk.emit_jump(Op::JumpIfFalse, node.line)
-      scope.body_pos = @chunk.pos
+      # LoopScope is a struct (value type): @loop_stack.push(scope)
+      # above already copied it onto the array, so mutating the local
+      # `scope` variable from here on (as the pre-existing code below
+      # already did for `breaks`, and previously also did for
+      # body_pos) does NOT reach the copy the array holds. `breaks`
+      # happens to work anyway because Array(Int32) is a reference —
+      # the local's `breaks` and the array copy's `breaks` are two
+      # struct fields pointing at the SAME underlying Array object, so
+      # pushes to either are visible through both. `body_pos` has no
+      # such rescue: Int32 is a value, so writing scope.body_pos here
+      # only ever changed the local's own copy, never the one
+      # @loop_stack.last actually returns.
+      #
+      # Found 2026-08-05: pre-existing, present already in HEAD before
+      # this session's changes (confirmed via git stash) — completely
+      # independent of the break/next/ensure work. Every redo inside a
+      # `while`/`until` loop jumped to @loop_stack.last.body_pos's
+      # struct DEFAULT (0), not the real body start — index 0 of
+      # whatever chunk was being compiled, not even necessarily inside
+      # this loop at all. In a top-level script that's index 0 of the
+      # whole program, meaning `redo` silently re-ran everything from
+      # the top, re-initializing any locals declared before the loop
+      # (e.g. a counter reset to its original value) — an infinite
+      # loop for any redo whose only exit condition depended on such a
+      # counter ever advancing. Never caught before because no test in
+      # this repo's history had ever executed `redo` through the VM at
+      # all (see spec/adjutant/exception_handling_spec.cr's redo tests
+      # for the confirming grep and the bounded regression coverage).
+      #
+      # Fixed by a read-modify-write through the array INDEX
+      # (@loop_stack[-1] = ...), not `.last.body_pos =` — `.last`
+      # itself returns another copy for a struct element, same trap
+      # one level down, so `.last.body_pos = x` would compile cleanly
+      # and silently do nothing, identically to the original bug.
+      # compile_loop/compile_modifier_while avoid the whole problem by
+      # setting body_pos before pushing instead, baking the correct
+      # value into the copy at push time — that approach doesn't work
+      # here, since body_pos for a `while` isn't known until AFTER the
+      # condition and its JumpIfFalse are compiled (loop_start is the
+      # condition check; body_pos is the position right after it).
+      current = @loop_stack[-1]
+      current.body_pos = @chunk.pos
+      @loop_stack[-1] = current
 
       compile_body(node.body)
       @chunk.emit(Op::Pop, node.line)
       @chunk.emit(Op::Jump, node.line, c: loop_start.to_u32)
       @chunk.patch_jump(jmp_exit, @chunk.pos)
 
-      scope = @loop_stack.pop
-      scope.breaks.each { |brk| @chunk.patch_jump(brk, @chunk.pos) }
+      # Fallthrough (condition went false, no break) has nothing on
+      # the stack yet for this expression's value — push nil here,
+      # same as an unbroken loop always evaluates to. A break, by
+      # contrast, already pushed its OWN value before jumping
+      # (compile_break) — landing on this same emit_nil and falling
+      # through it would push a second, spurious nil on top of that
+      # value (found 2026-08-05 by a test that made a broken-with-
+      # value while loop the last statement in a script, the one
+      # context where the extra nil isn't silently discarded by some
+      # later Pop). So breaks must NOT land here — patch them past
+      # this emit_nil instead, to the shared point both paths reach
+      # with exactly one value on the stack.
       emit_nil(node.line)
+      tail = @chunk.pos
+
+      scope = @loop_stack.pop
+      scope.breaks.each { |brk| @chunk.patch_jump(brk, tail) }
     end
 
     private def compile_loop(node : LoopNode) : Nil
       raise loop_too_deep(node) if @loop_stack.size >= MAX_LOOP_DEPTH
       loop_start = @chunk.pos
-      scope = LoopScope.new(loop_start)
+      scope = LoopScope.new(loop_start, ensure_depth_at_entry: @ensure_stack.size)
       scope.body_pos = loop_start
       @loop_stack.push(scope)
 
@@ -1241,9 +1334,24 @@ module Adjutant
       @chunk.emit(Op::Pop, node.line)
       @chunk.emit(Op::Jump, node.line, c: loop_start.to_u32)
 
-      scope = @loop_stack.pop
-      scope.breaks.each { |brk| @chunk.patch_jump(brk, @chunk.pos) }
+      # `loop do ... end` has no natural fallthrough exit — the Jump
+      # above is unconditional, so nothing reaches emit_nil below
+      # except a break's patched jump landing on it directly (there's
+      # no separate "condition went false" path to protect the way
+      # compile_while has, since this form has no condition at all).
+      # Still must NOT let breaks land on and fall through emit_nil,
+      # though: every break already pushed its own value
+      # (compile_break), so falling through would push a second,
+      # spurious nil on top of it. Patch breaks to AFTER emit_nil, not
+      # to the position emit_nil itself starts at (found 2026-08-05 by
+      # a test making a broken-with-value `loop` the last statement in
+      # a script — see compile_while's identical fix for the fuller
+      # writeup of why no prior test caught this).
       emit_nil(node.line)
+      after_nil = @chunk.pos
+
+      scope = @loop_stack.pop
+      scope.breaks.each { |brk| @chunk.patch_jump(brk, after_nil) }
     end
 
     private def compile_for(node : ForNode) : Nil
@@ -1347,6 +1455,7 @@ module Adjutant
         emit_nil(node.line)
       end
       if !@loop_stack.empty?
+        emit_ensure_unwind_for_loop_jump(@loop_stack.last, node.line)
         jmp = @chunk.emit_jump(Op::Jump, node.line)
         @loop_stack.last.breaks << jmp
       else
@@ -1360,6 +1469,7 @@ module Adjutant
           compile_node(v)
           @chunk.emit(Op::Pop, node.line)
         end
+        emit_ensure_unwind_for_loop_jump(@loop_stack.last, node.line)
         @chunk.emit(Op::Jump, node.line, c: @loop_stack.last.start_pos.to_u32)
       else
         if v = node.value
@@ -1368,6 +1478,42 @@ module Adjutant
           emit_nil(node.line)
         end
         @chunk.emit(Op::Ret, node.line)
+      end
+    end
+
+    # A break/next/redo whose target (loop exit, loop start, or loop
+    # body restart) lies outside one or more begin/rescue/ensure
+    # regions opened since the loop itself was entered must run those
+    # regions' ensure bodies (if any) and pop their VM handler entries
+    # before the jump — otherwise the jump lands past Op::EnterEnsure,
+    # silently skipping the ensure body's side effects and leaving a
+    # stale HandlerEntry on Frame#handlers that could wrongly intercept
+    # a later, unrelated error in the same frame. See SCOPE.md's Must
+    # Fix entry for the full bug writeup (filed for break/next; redo
+    # shares the identical shape — see compile_redo's own note).
+    #
+    # Innermost-first is required, not incidental: it's the same order
+    # real Ruby runs nested ensures in when unwinding, and it's also
+    # the only order where each region's Op::EnterEnsure pops the
+    # correct top-of-stack HandlerEntry (they were pushed outermost-
+    # first, so they must come off in the reverse order).
+    #
+    # Any value already pushed by the caller (break's return value —
+    # next's is popped before this runs, so there's nothing live to
+    # protect in that case) is left alone: each drained region's own
+    # ensure body pushes and pops exactly one value of its own (see
+    # compile_begin's identical Pop-after-compile_body convention), so
+    # the stack is balanced before and after this runs regardless.
+    private def emit_ensure_unwind_for_loop_jump(loop : LoopScope, line : Int32) : Nil
+      exiting = @ensure_stack.size - loop.ensure_depth_at_entry
+      return if exiting <= 0
+      exiting.times do |i|
+        region = @ensure_stack[@ensure_stack.size - 1 - i]
+        @chunk.emit(Op::EnterEnsure, line)
+        if ensure_body = region.ensure_body
+          compile_body(ensure_body)
+          @chunk.emit(Op::Pop, line)
+        end
       end
     end
 
@@ -1385,6 +1531,15 @@ module Adjutant
           )
         )
       end
+      # Same bug shape as break/next (see emit_ensure_unwind_for_loop_jump's
+      # comment): body_pos is a position INSIDE the loop, before any
+      # begin/rescue/ensure nested in the body was entered, so a redo
+      # from inside such a region needs the same handler-draining
+      # treatment — not "no loop to jump to" territory like break/next's
+      # loop-stack-empty branch, but the same "jump target is outside
+      # currently-open ensure regions" territory as their loop-stack-
+      # nonempty branch.
+      emit_ensure_unwind_for_loop_jump(@loop_stack.last, node.line)
       @chunk.emit(Op::Jump, node.line, c: @loop_stack.last.body_pos.to_u32)
     end
 
@@ -1413,7 +1568,17 @@ module Adjutant
       has_rescue = !node.rescue_body.nil?
       try_at, ensure_at = emit_try_and_ensure_setup(node, has_rescue)
 
+      # Only node.body itself is lexically "inside" this construct's
+      # handler region — the rescue/ensure clauses below run AFTER
+      # the handler entry they belong to is being torn down (EndTry/
+      # EnterEnsure), not while it's still the nearest enclosing one.
+      # A break/next inside the rescue or ensure body itself is
+      # already past this construct, not skipping over it, so it
+      # must not see this region on @ensure_stack either — hence the
+      # narrow push/pop bracketing only compile_body(node.body).
+      @ensure_stack.push(EnsureRegion.new(node.ensure_body))
       compile_body(node.body)
+      @ensure_stack.pop
       @chunk.emit(Op::EndTry, node.line) if has_rescue
 
       if (rescue_body = node.rescue_body) && (try_pos = try_at)
@@ -1549,7 +1714,7 @@ module Adjutant
     private def compile_modifier_while(node : ModifierWhile) : Nil
       raise loop_too_deep(node) if @loop_stack.size >= MAX_LOOP_DEPTH
       loop_start = @chunk.pos
-      scope = LoopScope.new(loop_start)
+      scope = LoopScope.new(loop_start, ensure_depth_at_entry: @ensure_stack.size)
       scope.body_pos = loop_start
       @loop_stack.push(scope)
 
