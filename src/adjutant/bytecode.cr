@@ -35,6 +35,30 @@ module Adjutant
 
     # Calls
     SetBlock # register block proc from constants[c] before a call
+
+    # register keyword call arguments before a call, mirroring
+    # SetBlock's "stage something for the next Call" shape rather than
+    # extending Call's own operands (its `c` is already the method
+    # name, and there's nowhere to fit a set of argument NAMES, not
+    # just a count, into a single instruction). Emitted only when a
+    # call actually has keyword args — a=pair count; pops a*2 stack
+    # values pushed as alternating (name symbol, value), same
+    # convention as MakeHash, and stashes them for the Call that
+    # immediately follows to hand to VM#bind_args. Op::Call always
+    # clears the staged value after consuming it, so a call with no
+    # keyword args (the overwhelming majority — this instruction is
+    # simply never emitted before them) sees none pending.
+    SetKwargNames
+
+    # push true if the CURRENT call supplied a keyword argument named
+    # constants[c], else false. The keyword-argument equivalent of
+    # GetArgc — used only by the default-param prologue (see
+    # Compiler#emit_default_prologue) to test whether a kwarg-with-a-
+    # default was actually passed, since (like GetArgc) a slot left at
+    # nil_value doesn't distinguish "omitted" from "explicitly nil".
+    # Not reachable from script source directly.
+    HasKwarg
+
     Call     # call method constants[c], argc=a, b bit0=safe(&.), bit1=has_receiver
     SafeCall # &. nil-safe call
     Ret      # return top of stack from current frame

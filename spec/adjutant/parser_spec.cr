@@ -550,25 +550,35 @@ module Adjutant
         node.as(DefNode).params.first.splat?.should be_true
       end
 
-      # Moved here from spec/scripts/keyword_params_callsite.rb
-      # (2026-07-27) — test_runner's assert framework can't intercept a
-      # ParseError at all (interp.eval parses the WHOLE file before
-      # executing anything, so a parse error aborts the file before any
-      # assertion machinery even loads); a spec using expect_raises
-      # directly is the only way to actually assert on this. Def-site
-      # keyword param DECLARATION (`def greet(name:)`) parses fine (see
-      # `parse_param`'s Colon branch) — this is specifically about
-      # keyword-argument syntax at the CALL SITE, which
-      # `parse_call_args_and_block` has no handling for at all (see
-      # SCOPE.md's Must Fix entry on argument binding).
-      it "does not yet parse keyword-argument syntax at a call site" do
-        # Asserts on the offending token rather than the TokenKind name
-        # the old message leaked: a script author wrote `:`, never
-        # `Colon`, and the diagnostic now says so.
-        error = expect_raises(ParseError) do
-          parse_expr(%(greet(name: "Ruby")))
-        end
-        error.diagnostic.not_nil!.data["found"].should eq("`:`")
+      # Was spec/scripts/keyword_params_callsite.rb, moved here
+      # 2026-07-27, and originally asserted call-site keyword syntax
+      # was a ParseError (see SCOPE.md's Must Fix entry, now closed).
+      # Kept in the same spot now that the entry's resolved, covering
+      # both call shapes and the one real ambiguity a bare `name:`
+      # lookahead has to get right: a ternary's `? a : b`, whose colon
+      # is never the SECOND token of an argument the way a genuine
+      # `name:` kwarg's always is.
+      it "parses keyword arguments at a parenthesized call site" do
+        node = parse_expr(%(greet(name: "Ruby", "positional")))
+        call = node.as(Call)
+        call.args.size.should eq 1
+        call.kwargs.size.should eq 1
+        call.kwargs.first[0].should eq "name"
+        call.kwargs.first[1].should be_a(StringLiteral)
+      end
+
+      it "parses keyword arguments at a bare (no-paren) call site" do
+        node = parse_expr(%(puts x: 1, y: 2))
+        call = node.as(Call)
+        call.args.should be_empty
+        call.kwargs.map(&.first).should eq ["x", "y"]
+      end
+
+      it "does not mistake a ternary's `:` for a keyword argument" do
+        node = parse_expr(%(f(cond ? a : b)))
+        call = node.as(Call)
+        call.kwargs.should be_empty
+        call.args.first.should be_a(Ternary)
       end
 
       it "points a missing `end` at the construct that lost it" do

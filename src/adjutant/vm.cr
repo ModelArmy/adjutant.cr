@@ -133,6 +133,13 @@ module Adjutant
     # cannot tell it.
     property argc : Int32
 
+    # Names of the keyword args the call that created this frame
+    # actually supplied — the by-name counterpart to `argc` above, set
+    # once in call_script_proc and read only by Op::HasKwarg (see that
+    # opcode's comment). nil for the overwhelming majority of calls,
+    # which pass no keyword args at all.
+    property kwarg_names : Set(String)?
+
     def initialize(@proc, @chunk, @stack_base, @filename, @block = nil, outer : Array(Value)? = nil,
                    @self_val : Value = Value.nil_value, @lexical_scope : RubyClass? = nil,
                    @block_outer_locals : Array(Value)? = nil, @argc : Int32 = 0)
@@ -252,6 +259,14 @@ module Adjutant
       # running yield. See Op::SetBlock, Op::Yield, and Frame#
       # block_outer_locals's own comment for the full mechanism.
       @current_block_locals = nil.as(Array(Value)?)
+      # Keyword args staged by Op::SetKwargNames for the Call that
+      # immediately follows — the by-name counterpart to
+      # @current_block above, same transient "stage, consume, clear"
+      # lifecycle, just carrying named values instead of a proc. nil
+      # whenever the pending call has no keyword args at all (the
+      # overwhelming majority), since Op::SetKwargNames is only
+      # emitted when there are some.
+      @pending_kwargs = nil.as(Hash(String, Value)?)
       # Value of the most recently caught error, for Op::PushError.
       # A RubyObject of the raised/builtin error class when one was
       # constructed (see RuntimeError#error_value); a plain string for
@@ -382,6 +397,7 @@ module Adjutant
       saved_ins_count = @instruction_count
       saved_cur_block = @current_block
       saved_cur_block_locals = @current_block_locals
+      saved_pending_kwargs = @pending_kwargs
       result = Value.nil_value
       begin
         f = current_frame # before replacing @frames
@@ -424,6 +440,7 @@ module Adjutant
         @instruction_count = saved_ins_count
         @current_block = saved_cur_block
         @current_block_locals = saved_cur_block_locals
+        @pending_kwargs = saved_pending_kwargs
       end
       result
     end
@@ -762,6 +779,23 @@ module Adjutant
             # but by the time a later Op::Yield fires (possibly deep
             # inside the callee), `f` will have moved on entirely.
             @current_block_locals = @current_block ? f.locals : nil
+          when Op::SetKwargNames
+            # Same "take the last N, pop them, read in push order"
+            # idiom as Op::MakeHash's pairs — @stack.last(n) returns
+            # them oldest-pushed-first, so pairs.each_slice(2) lines
+            # each (name, value) up correctly without any reversal.
+            # Deliberately NOT recorded to @risk_flow_log the way
+            # MakeHash's pairs are: this isn't constructing a new
+            # composite Value that flows through the script (nothing
+            # is pushed back) — each value keeps flowing under its OWN
+            # existing label straight into its own param slot in
+            # bind_args, exactly as an ordinary positional arg does.
+            n = inst.a.to_i * 2
+            pairs = @stack.last(n)
+            @stack.pop(n) if n > 0
+            h = {} of String => Value
+            pairs.each_slice(2) { |pair| h[pair[0].as_sym.name] = pair[1] }
+            @pending_kwargs = h
           when Op::Call, Op::SafeCall
             sym = chunk.consts[inst.c].as_sym
             argc = inst.a.to_i
@@ -773,9 +807,10 @@ module Adjutant
 
             depth_before = @frames.size
             result = dispatch_call(sym.name, args, safe, f.filename, inst.line, @current_block, has_receiver,
-              blk_outer: @current_block_locals, self_val: f.self_val)
+              blk_outer: @current_block_locals, self_val: f.self_val, kwargs: @pending_kwargs)
             @current_block = nil
             @current_block_locals = nil
+            @pending_kwargs = nil
             # If dispatch pushed a new ScriptProc frame, do NOT push the
             # sentinel return value — Op::Ret will push the real result.
             push(result) if @frames.size == depth_before
@@ -914,6 +949,9 @@ module Adjutant
             push(val)
           when Op::GetArgc
             push(Value.int(f.argc))
+          when Op::HasKwarg
+            name = chunk.consts[inst.c].as_sym.name
+            push(Value.bool(f.kwarg_names.try(&.includes?(name)) || false))
           when Op::GetOuter
             slot = inst.c.to_i
             outer = f.outer_locals
@@ -1226,7 +1264,8 @@ module Adjutant
                               blk : ScriptProc? = nil,
                               has_receiver : Bool = false,
                               blk_outer : Array(Value)? = nil,
-                              self_val : Value? = nil) : Value
+                              self_val : Value? = nil,
+                              kwargs : Hash(String, Value)? = nil) : Value
       # 1) Safe navigation: skip call if receiver (first arg) is nil
       if safe && !args.empty? && args.first.null?
         return Value.nil_value
@@ -1238,16 +1277,22 @@ module Adjutant
       if has_receiver && !args.empty?
         recv = args.first
         if recv.rclass? && name == "new"
+          # `.new`/`initialize` doesn't thread kwargs through to a
+          # script-defined `initialize` yet — deliberately deferred,
+          # not silently dropped: any keyword arg fails loudly (R012)
+          # rather than vanishing unused. Follow-up, not a design
+          # decision — see DEVELOPMENT.md's "Argument binding".
+          reject_kwargs!(kwargs, name, filename, line)
           return construct(recv.as_rclass, args[1..], filename, line, blk)
         end
         if recv.robject?
           cls = recv.as_robject.rclass
           if sym_id = @symbols.lookup(name).try(&.value)
             if method = cls.find_method(sym_id)
-              return call_script_proc(method, args[1..], filename, blk, nil, self_val: recv, block_outer: blk_outer)
+              return call_script_proc(method, args[1..], filename, blk, nil, self_val: recv, block_outer: blk_outer, kwargs: kwargs)
             end
             if native = cls.find_native_method(sym_id)
-              return call_native(native, args, filename, line, blk, "#{cls.name}##{name}")
+              return call_native(native, args, filename, line, blk, "#{cls.name}##{name}", kwargs: kwargs)
             end
           end
         elsif recv.rclass?
@@ -1259,10 +1304,10 @@ module Adjutant
           cls = recv.as_rclass
           if sym_id = @symbols.lookup(name).try(&.value)
             if method = cls.find_singleton_method(sym_id)
-              return call_script_proc(method, args[1..], filename, blk, nil, self_val: recv, block_outer: blk_outer)
+              return call_script_proc(method, args[1..], filename, blk, nil, self_val: recv, block_outer: blk_outer, kwargs: kwargs)
             end
             if native = cls.find_native_singleton_method(sym_id)
-              return call_native(native, args, filename, line, blk, "#{cls.name}.#{name}")
+              return call_native(native, args, filename, line, blk, "#{cls.name}.#{name}", kwargs: kwargs)
             end
           end
         elsif interp = @interpreter
@@ -1271,7 +1316,7 @@ module Adjutant
           # Interpreter#builtin_class_for instead.
           if (cls = interp.builtin_class_for(recv)) && (sym_id = @symbols.lookup(name).try(&.value))
             if native = cls.find_native_method(sym_id)
-              return call_native(native, args, filename, line, blk, "#{cls.name}##{name}")
+              return call_native(native, args, filename, line, blk, "#{cls.name}##{name}", kwargs: kwargs)
             end
           end
         end
@@ -1317,10 +1362,10 @@ module Adjutant
             # use.
             cls = obj.rclass
             if method = cls.find_method(sym_id)
-              return call_script_proc(method, args, filename, blk, nil, self_val: self_val, block_outer: blk_outer)
+              return call_script_proc(method, args, filename, blk, nil, self_val: self_val, block_outer: blk_outer, kwargs: kwargs)
             end
             if native = cls.find_native_method(sym_id)
-              return call_native(native, args, filename, line, blk, display_name_for_implicit_self(name))
+              return call_native(native, args, filename, line, blk, display_name_for_implicit_self(name), kwargs: kwargs)
             end
           elsif self_rclass = self_val.as_rclass?
             # self IS a class/module object (inside a class/module
@@ -1353,17 +1398,17 @@ module Adjutant
             # (methods available on instances OF this class), not
             # methods usable on the class object itself.
             if singleton = self_rclass.find_singleton_method(sym_id)
-              return call_script_proc(singleton, args, filename, blk, nil, self_val: self_val, block_outer: blk_outer)
+              return call_script_proc(singleton, args, filename, blk, nil, self_val: self_val, block_outer: blk_outer, kwargs: kwargs)
             end
             if native_singleton = self_rclass.find_native_singleton_method(sym_id)
-              return call_native(native_singleton, args, filename, line, blk, display_name_for_implicit_self(name))
+              return call_native(native_singleton, args, filename, line, blk, display_name_for_implicit_self(name), kwargs: kwargs)
             end
             if meta = self_rclass.rclass
               if method = meta.find_method(sym_id)
-                return call_script_proc(method, args, filename, blk, nil, self_val: self_val, block_outer: blk_outer)
+                return call_script_proc(method, args, filename, blk, nil, self_val: self_val, block_outer: blk_outer, kwargs: kwargs)
               end
               if native = meta.find_native_method(sym_id)
-                return call_native(native, args, filename, line, blk, display_name_for_implicit_self(name))
+                return call_native(native, args, filename, line, blk, display_name_for_implicit_self(name), kwargs: kwargs)
               end
             end
           end
@@ -1384,12 +1429,12 @@ module Adjutant
         gval = @globals[sym.value]?
         if gval && gval.proc?
           sproc = gval.as_proc.as(ScriptProc)
-          return call_script_proc(sproc, args, filename, blk, nil, self_val: self_val, block_outer: blk_outer)
+          return call_script_proc(sproc, args, filename, blk, nil, self_val: self_val, block_outer: blk_outer, kwargs: kwargs)
         end
       end
 
       # 4) Built-in fallback operations
-      if result = exec_builtin(name, args, filename, line, blk)
+      if result = exec_builtin(name, args, filename, line, blk, kwargs: kwargs)
         return result
       end
 
@@ -1439,7 +1484,9 @@ module Adjutant
     # RiskFlowRejectedError (see raise_risk_flow_rejected); Ask
     # resolved to Allow proceeds normally.
     private def call_native(native : NativeCallable, args : Array(Value),
-                            filename : String, line : Int32, blk : ScriptProc?, name : String) : Value
+                            filename : String, line : Int32, blk : ScriptProc?, name : String,
+                            kwargs : Hash(String, Value)? = nil) : Value
+      reject_kwargs!(kwargs, name, filename, line)
       check_risk_flow(native, args, name, filename, line)
       NativeFunctionCall.new(self, native, filename, line, name).call(args, blk)
     rescue ex : RuntimeError
@@ -1645,7 +1692,8 @@ module Adjutant
                                  self_val : Value? = nil,
                                  lexical_scope : RubyClass? = nil,
                                  lexical_override : Bool = false,
-                                 block_outer : Array(Value)? = nil) : Value
+                                 block_outer : Array(Value)? = nil,
+                                 kwargs : Hash(String, Value)? = nil) : Value
       base = @stack.size
       inherited_self = self_val || (@frames.empty? ? Value.nil_value : current_frame.self_val)
       effective_lexical = if lexical_override
@@ -1662,13 +1710,16 @@ module Adjutant
       caller_line = @frames.empty? ? 0 : current_frame.line
       frame = push_frame(proc, filename, block: blk, stack_base: base, outer: outer, self_val: inherited_self,
         lexical_scope: effective_lexical, block_outer_locals: block_outer, argc: args.size)
-      bind_args(frame, proc, args, caller_line)
+      frame.kwarg_names = kwargs.keys.to_set if kwargs
+      bind_args(frame, proc, args, caller_line, kwargs)
       Value.nil_value # sentinel; Op::Ret will push the real return value
     end
 
-    # Binds `args` (the caller's actual positional Values) into
-    # `frame.locals`, slot-by-slot in declared order. Two shapes,
-    # neither of which the plain index-copy this replaced understood:
+    # Binds `args` (the caller's actual positional Values) and
+    # `kwargs` (the caller's actual keyword Values, by name) into
+    # `frame.locals`, slot-by-slot in declared order. Three shapes,
+    # only the first two of which the plain index-copy this replaced
+    # ever understood:
     #
     #   - A splat param (`Param#splat?`) absorbs every remaining
     #     positional arg once the params before it are satisfied, as
@@ -1690,11 +1741,29 @@ module Adjutant
     #     (see that opcode's comment) is how the prologue tells
     #     "omitted" apart from "explicitly passed nil," since a Value
     #     already sitting at nil_value doesn't say which happened.
+    #   - A kwarg param (`Param#kwarg?`) is looked up in `kwargs` BY
+    #     NAME, never by position — it never touches `pos` at all, so
+    #     it can't accidentally consume a positional arg meant for a
+    #     later param, and a positional arg can't accidentally satisfy
+    #     it either. Present → bound directly, immediately, right
+    #     here (no bytecode needed — presence is a plain Hash lookup,
+    #     unlike evaluating a default expression). Absent with a
+    #     default → left at nil_value for the compiled prologue, same
+    #     deferral as an ordinary default and for the same reason,
+    #     just tested by name (`Op::HasKwarg`) instead of by count.
+    #     Absent with NO default → raised on immediately, right here
+    #     (R011) — nothing to defer, since there's no expression to
+    #     run, just a fixed fact already known: the caller was
+    #     supposed to name it and didn't.
     #
-    # A plain required param (no default, no splat) still binds
-    # exactly as before: positional-index copy, silently absent
+    # A plain required param (no default, no splat, no kwarg) still
+    # binds exactly as before: positional-index copy, silently absent
     # (nil_value) if the caller passed too few — Adjutant has never
-    # arity-checked calls, and this is not the place that starts.
+    # arity-checked positional calls, and this is not the place that
+    # starts (a kwarg's stricter treatment above is deliberate, not an
+    # inconsistency — real Ruby is exactly this asymmetric too: a
+    # missing positional arg is quietly nil-able in loose style, but a
+    # keyword contract, once declared, is enforced).
     #
     # `proc.ast_params` is nil only for the placeholder ScriptProcs
     # RiskWalker constructs for static analysis (never executed, see
@@ -1704,18 +1773,23 @@ module Adjutant
     # Compiler#compile_for builds for its `each`-block desugar) always
     # carries it, so the plain-positional fallback below exists for
     # completeness, not because a live call path hits it.
-    private def bind_args(frame : Frame, proc : ScriptProc, args : Array(Value), caller_line : Int32) : Nil
+    private def bind_args(frame : Frame, proc : ScriptProc, args : Array(Value), caller_line : Int32,
+                          kwargs : Hash(String, Value)? = nil) : Nil
       ast_params = proc.ast_params
       unless ast_params
         args.each_with_index { |arg, i| frame.locals[i] = arg if i < frame.locals.size }
         return
       end
-      pos = 0 # index into `args` — advances only for non-splat params
+      pos = 0 # index into `args` — advances only for non-splat, non-kwarg params
+      declared_kwargs = Set(String).new
       ast_params.each_with_index do |param, slot|
         next if slot >= frame.locals.size
         if param.splat?
           frame.locals[slot] = collect_splat(args, pos, caller_line)
           pos = args.size
+        elsif param.kwarg?
+          declared_kwargs << param.name
+          bind_kwarg_param(frame, proc, param, slot, kwargs, caller_line)
         elsif pos < args.size
           frame.locals[slot] = args[pos]
           pos += 1
@@ -1724,9 +1798,84 @@ module Adjutant
         # required param (always been silently permissive), or this
         # param has a default that the compiled prologue will apply.
       end
+      check_unknown_keywords!(kwargs, declared_kwargs, proc, frame, caller_line)
     end
 
-    # Collects `args[from..]` into a risk-flow-labeled Array Value,
+    # Binds a single kwarg param — split out purely to keep
+    # `bind_args`'s own branch count down (Ameba's cyclomatic-
+    # complexity check), no behavior difference from having this
+    # inline. Three-way shape (see `bind_args`'s own doc comment for
+    # the full rationale): supplied → bind directly; absent with a
+    # default → leave at `nil_value` for the compiled prologue;
+    # absent with no default → raise immediately, right here.
+    private def bind_kwarg_param(frame : Frame, proc : ScriptProc, param : Param, slot : Int32,
+                                 kwargs : Hash(String, Value)?, caller_line : Int32) : Nil
+      if kwargs && (val = kwargs[param.name]?)
+        frame.locals[slot] = val
+      elsif param.default.nil?
+        # No default AND never supplied — unlike a missing positional
+        # param (silently left nil, always has been), this is
+        # unambiguous: the caller was supposed to name it and didn't.
+        # Raised directly, in plain Crystal, not deferred to the
+        # compiled prologue — there's no expression to evaluate, just
+        # a fixed fact already known.
+        raise runtime_diagnostic(
+          Diagnostic.new(
+            code: "R011",
+            primary: Span.new(line: caller_line, filename: frame.filename),
+            data: {"name" => param.name, "method" => proc.name}
+          ),
+          current_frame,
+          error_class: "ArgumentError"
+        )
+      end
+      # else: left at nil_value for the compiled default prologue
+      # (Op::HasKwarg) to fill — see that opcode's comment.
+    end
+
+    # A keyword name the caller passed but `proc` never declared at
+    # all — real Ruby raises here too (`unknown keyword`), and
+    # Adjutant is supposed to be a subset of Ruby, not a superset
+    # that quietly accepts more. Reports the first such name; if the
+    # caller got several wrong, fixing the first is what surfaces the
+    # rest on the next run, same as any other single-name error in
+    # this catalog (R008, R011 above).
+    private def check_unknown_keywords!(kwargs : Hash(String, Value)?, declared : Set(String),
+                                        proc : ScriptProc, frame : Frame, caller_line : Int32) : Nil
+      return unless kwargs
+      unknown = kwargs.keys.find { |k| !declared.includes?(k) }
+      return unless unknown
+      raise runtime_diagnostic(
+        Diagnostic.new(
+          code: "R012",
+          primary: Span.new(line: caller_line, filename: frame.filename),
+          data: {"name" => unknown, "method" => proc.name}
+        ),
+        current_frame,
+        error_class: "ArgumentError"
+      )
+    end
+
+    # Guards a call site that has no `Param` list to check keyword
+    # names against at all — a native function, a builtin, or (for
+    # now — see dispatch_call's `.new` branch) construction. Every
+    # supplied name is therefore unsupported here; reports the first,
+    # same one-name style as bind_args's own R011/R012. A no-op
+    # (returns immediately) for the overwhelming majority of calls,
+    # which pass no keyword args.
+    private def reject_kwargs!(kwargs : Hash(String, Value)?, method : String, filename : String, line : Int32) : Nil
+      return if kwargs.nil? || kwargs.empty?
+      raise runtime_diagnostic(
+        Diagnostic.new(
+          code: "R012",
+          primary: Span.new(line: line, filename: filename),
+          data: {"name" => kwargs.first_key, "method" => method}
+        ),
+        current_frame,
+        error_class: "ArgumentError"
+      )
+    end
+
     # for a splat param. Labeled the same way Op::MakeArray labels a
     # literal array (join of every element's label) — a splat-bound
     # array is exactly as much a container of its elements as one
@@ -1751,7 +1900,9 @@ module Adjutant
     private def exec_builtin(name : String,
                              args : Array(Value),
                              filename : String, line : Int32,
-                             blk : ScriptProc? = nil) : Value?
+                             blk : ScriptProc? = nil,
+                             kwargs : Hash(String, Value)? = nil) : Value?
+      reject_kwargs!(kwargs, name, filename, line)
       case name
       when "puts"
         str = args.map { |arg|

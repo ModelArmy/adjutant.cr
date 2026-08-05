@@ -24,60 +24,7 @@ Blocking, or actively causing incorrect behavior in normal use. Ordered
 roughly by dependency, not necessarily by importance — an item lower down
 may unblock ones above it.
 
-- **Keyword arguments don't actually work at runtime — call-site
-  syntax doesn't even parse, and def-site `kwarg?` params bind exactly
-  like ordinary positional ones.** Originally filed 2026-07-27 as a
-  three-part item (defaults, splats, keywords) sharing one root cause:
-  `Param` (`ast.cr`) correctly parses and carries `default`, `splat?`,
-  and `kwarg?` for every param shape, but none of the three were ever
-  read anywhere in `compiler.cr`/`vm.cr` — argument binding
-  (`VM#call_script_proc`) was unconditional positional index-copy.
-  Defaults and splats were fixed 2026-08-03 (`Compiler#
-  emit_default_prologue` + `VM#bind_args`/`#collect_splat` — see
-  `DEVELOPMENT.md`'s "The Compiler"/"The VM" sections, both updated
-  with a paragraph on the new binding model, and
-  `spec/scripts/language/default_params.rb`/`splat_params.rb`, both
-  now real assertions rather than commented-out probes). This entry is
-  now narrowed to the piece that fix deliberately left alone:
-
-  - Keyword-argument CALL syntax (`greet(name: "Ruby")`) doesn't even
-    PARSE — `parse_call_args_and_block` has no `name:` handling at all,
-    confirmed via `parser_spec.cr`'s "does not yet parse keyword-argument
-    syntax at a call site" (`expected RParen, got Colon`). Keyword param
-    DECLARATION at the def site (`def greet(name:)`) does parse and
-    compile, and can still be called positionally today (see
-    `spec/scripts/language/keyword_params_defsite.rb`) — but there's no
-    way to actually invoke it AS a keyword argument, so real
-    keyword-style calls are blocked twice over (parse failure at the
-    call site, no binding path even if that parse gap were closed).
-  - A `kwarg?` param's `default` is NOT applied by the new
-    default-value prologue — `Compiler#emit_default_prologue`
-    explicitly excludes `kwarg?` params (deliberately, not an
-    oversight — see that method's own comment), specifically so
-    `keyword_params_defsite.rb`'s pinned interim behavior
-    (`greet_with_default`, called positionally with no args, stays
-    `nil` rather than silently picking up `"world"`) didn't regress
-    out from under this item before keywords have a real design. A
-    kwarg param still binds exactly like an ordinary positional one
-    when called positionally, same as before this session.
-
-  Distinct from `&blk`-param capture ([UNSUPPORTED.md](./UNSUPPORTED.md),
-  U001 — actively rejected at compile time) — `&blk` is a deliberate
-  cut; this is a bug in functionality that's supposed to work and
-  currently silently doesn't. Fixing this properly means: closing the
-  call-site parser gap (a new node shape distinguishing `name: value`
-  from an ordinary positional arg, interacting with splat-at-call-site
-  ordering), then extracting `kwarg?` params from those call
-  arguments at bind time (likely `VM#bind_args`, the same method
-  splats now bind in), then deciding what happens when a required
-  kwarg is never supplied (a new error code, most likely — nothing
-  today distinguishes "positional arg missing" as an error case at
-  all, so this may want its own design conversation rather than
-  reusing whatever positional calls do). Worth a scoping conversation
-  before code, same as the letter taxonomy and host-error hierarchy
-  were — this is the one sub-problem of the original three with real
-  design surface, which is why it was split out rather than finished
-  alongside the other two.
+Empty as of 2026-08-04
 
 ## Will Fix
 
@@ -204,6 +151,20 @@ U004, which generalised it to nested method definition of any shape.
   Kernel methods, which are private. Found while fixing piece B (the
   root-scope work); see `root_scope_spec.cr`'s own test coverage of the
   current (permissive) behavior.
+- **`Class.new(name: ...)` can't reach a keyword-declaring `initialize`
+  — any keyword argument to `.new` raises `R012` unconditionally.**
+  Keyword arguments (2026-08-04) thread through ordinary script-method
+  calls end to end (`VM#bind_args`), but `.new`'s construction path
+  (`dispatch_call`'s `.new` branch → `VM#construct` →
+  `#construct_object` → `#invoke`) never picked up a `kwargs` param at
+  all — closing that gap means threading it through `invoke`'s own
+  signature too, one layer this arc didn't touch. Deliberately guarded
+  rather than left silent: any keyword arg reaching `.new` today raises
+  loudly (`VM#reject_kwargs!`) instead of vanishing unused. Native
+  functions and builtins get the same guard, but for a different reason
+  that isn't expected to change — they have no `Param` list to check
+  keyword names against at all, being Crystal-implemented rather than
+  script-defined.
 
 ### Data & builtin types
 

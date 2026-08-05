@@ -247,10 +247,19 @@ module Adjutant
     getter receiver : Node?
     getter method : String
     getter args : Array(Node)
+    # Keyword call arguments (`name: value`), kept separate from `args`
+    # rather than mixed in — a kwarg binds to a callee param by NAME,
+    # never by position, so folding it into the same ordered list would
+    # invite exactly the position-based bugs keeping it separate avoids.
+    # Defaulted so the many existing construction sites that never
+    # have keyword args (`::name`, bare block-only calls, `raise`)
+    # don't need to change.
+    getter kwargs : Array({String, Node})
     getter block : BlockNode?
     getter? safe : Bool # &. safe navigation
 
-    def initialize(@receiver, @method, @args, @block, @safe, line, column)
+    def initialize(@receiver, @method, @args, @block, @safe, line, column,
+                   @kwargs = [] of {String, Node})
       super(line, column)
     end
   end
