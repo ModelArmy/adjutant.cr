@@ -89,6 +89,12 @@ ordinary `yield` — a separate mechanism — is untouched by the guard.
 Revisit as a new, separate scope item if a real script needs to hold and
 defer-call a block.
 
+**Also covers:** `&obj` calling `to_proc` on a non-`Symbol` receiver at
+a call site (found 2026-08-05 in the mruby full-repo sweep,
+`test/t/proc.rb`) — not a separate decision, just one more manifestation
+of the same underlying gap (no first-class block/proc capture), since
+`&obj` needs somewhere to bind the resulting proc.
+
 ### U002 — `Class.new` / `Module.new`
 
 Dynamically defining a class or module at runtime, optionally with a block
@@ -429,6 +435,90 @@ script writing `$foo = 1` fails at parse time today, but with a generic
 parse error rather than one naming globals as a deliberate exclusion
 tied to the IFC model. Tracked as part of the U008–U011 batch in
 [SCOPE.md](./SCOPE.md)'s Error reporting group.
+
+### U012 — Numbered block parameters (`_1`, `_2`)
+
+Real Ruby's implicit block-parameter shorthand — `arr.map { _1 * 2 }`
+instead of `arr.map { |x| x * 2 }`.
+
+**Why:** decided 2026-08-05, triaging the mruby full-repo sweep
+(`test/t/syntax.rb`). Pure convenience over named block parameters,
+which already fully cover the capability with no loss of
+expressiveness — this is the cleanest possible exclusion case in that
+sense. Also a newer Ruby idiom (3.0+) with less representation in
+training data than named parameters, so lower probability an agent
+reaches for it by default even before considering support.
+
+**Instead:** name the block parameter explicitly (`{ |x| x * 2 }`).
+
+**Enforcement — not yet enforced.** `_1`/`_2` parse today as ordinary
+identifiers — ordinary undefined-variable errors if referenced without
+being otherwise assigned, not a diagnostic naming this as a deliberate
+exclusion.
+
+### U013 — Endless method definitions (`def square(x) = x * x`)
+
+Real Ruby's one-line method-definition shorthand (3.0+).
+
+**Why:** decided 2026-08-05, same triage session as U012. Purely
+cosmetic — zero expressiveness difference from an ordinary multi-line
+`def`, which is unaffected and fully supported.
+
+**Instead:** write the method body on its own line(s) with `def`/`end`
+as usual.
+
+**Enforcement — not yet enforced.** `def square(x) = x * x` fails to
+parse today (`parse_def` expects a body followed by `end`, not `=`),
+with a generic syntax error rather than one naming this construct.
+
+### U014 — `class << self` (singleton-class block syntax)
+
+Real Ruby's block form for opening a class's singleton class, most
+commonly used to define several class methods at once without
+repeating `self.` on each one.
+
+**Why:** decided 2026-08-05, same triage session as U012/U013.
+`def self.foo` — already fully supported — covers the same capability
+per-method with no loss; `class << self` is convenience syntax for
+defining several class methods together, not new expressiveness.
+
+**Instead:** prefix each class method with `self.` individually
+(`def self.foo; end`).
+
+**Enforcement — not yet enforced.** `class << self` fails to parse
+today (`<<` after `class` isn't a recognized construct), with a
+generic syntax error rather than one naming this construct.
+
+### U015 — `undef`, `method_added`/`singleton_method_added` hooks
+
+Real Ruby's `undef method_name` (permanently removing a method from a
+class) and the `method_added`/`singleton_method_added` callback hooks
+(invoked automatically whenever a method is defined/added).
+
+**Why:** decided 2026-08-05, triaging the mruby full-repo sweep
+(`test/t/methods.rb`). `undef` has near-zero use in short,
+agent-authored scripts — removing a method after the fact isn't a
+pattern this use case calls for. The two hooks are reflection-adjacent
+metaprogramming, the same family U005–U007 already exclude for the
+same reason (letting a script observe/react to its own method-table
+changes has little pragmatic value here and cuts against static
+resolvability) — grouped with those rather than treated as a new
+decision. Distinct from `Class#inherited` (tracked separately in
+[SCOPE.md](./SCOPE.md) as `Will Fix`): that hook has a genuine
+pragmatic use (registry/discovery patterns) with no equivalent
+already-supported spelling, which these two don't.
+
+**Instead:** for `undef`, simply don't call the method (or don't define
+it in the first place). For the hooks, there's no equivalent — a script
+needing to know what methods exist should track that explicitly itself
+(e.g., appending to an array at each definition site) rather than
+relying on an automatic callback.
+
+**Enforcement — not yet enforced.** `undef` fails to parse today (no
+`undef` keyword token); the two hooks are ordinary undefined-method
+errors if a script tries to define `self.method_added` expecting it to
+be called automatically — nothing currently invokes it either way, so
+defining it silently does nothing rather than erroring.
 
 ---
 

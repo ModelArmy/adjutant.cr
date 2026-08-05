@@ -24,6 +24,76 @@ Blocking, or actively causing incorrect behavior in normal use. Ordered
 roughly by dependency, not necessarily by importance — an item lower down
 may unblock ones above it.
 
+- **`break`/`next` inside a `begin`/`rescue`/`ensure` region silently
+  skip the `ensure` body and leave a stale exception handler on the
+  stack.** Found 2026-08-05 during a full sweep of upstream mruby's
+  `test/t/exception.rb` (two tests not carried into
+  `spec/scripts/mruby/exception.rb`: "break value from begin/rescue/
+  ensure in while loop", "next inside rescue continues the loop").
+  `compile_break`/`compile_next` (`compiler.cr`) emit a bare
+  `Op::Jump` straight to the loop's break-list or start position,
+  consulting only `@loop_stack` — which has no interaction at all with
+  `begin`/`rescue`/`ensure` compilation. The VM's exception machinery
+  (`f.handlers`, pushed by `Op::Try`/`Op::SetEnsure`, popped by
+  `Op::EnterEnsure`) assumes control reaches `EnterEnsure` either
+  through normal fallthrough or the error-unwind loop — neither of
+  which a `break`/`next`-triggered jump goes through. Concretely:
+
+  ```ruby
+  while true
+    begin
+      break 123
+    ensure
+      side << :ensure   # never runs — silently skipped
+    end
+  end
+  ```
+
+  Two bugs bundled together: the `ensure` body's side effects are
+  silently dropped (no error, just skipped), and the `HandlerEntry` that
+  `Try`/`SetEnsure` pushed is never popped — a stale handler left on
+  `f.handlers` that could wrongly intercept a later, unrelated error in
+  the same frame. This is the same "silently do something different
+  from what was written" failure class as the `===` bug below, and
+  worse in one respect: there's no error at all to notice, so a script
+  author has no signal anything went wrong. Fix needs `break`/`next` to
+  route through the same ensure-running path `raise`/normal completion
+  already use, rather than a bare `Op::Jump`, when the jump target is
+  outside the current try/ensure region — likely means `@loop_stack`
+  (or a parallel structure) needs to track try/ensure nesting depth at
+  the point a `break`/`next` is compiled, not just loop nesting.
+
+- **Multi-target assignment (`a, b = 1, 2`, `a, b = some_array`)
+  doesn't parse at all.** Found 2026-08-05 in the same mruby sweep,
+  superseding and more severe than the `c = b = 5`
+  assignment-as-expression note in the Long-standing language gaps
+  bundle below (that note undersold this — chained assignment and
+  multi-target assignment are different gaps, and this one is the
+  more commonly hit of the two). Traced precisely: `ast.cr` has a full
+  `MultiAssign` node, and `compiler.cr` has a full
+  `compile_multi_assign` backed by a real `Op::MultiUnpack` opcode —
+  the machinery exists end to end and is presumably exercised by
+  something (worth confirming what, given nothing constructs the
+  node). The gap is narrowly in the parser: `maybe_assignment`
+  (`parser.cr`), the only place `Assign`/`MultiAssign` nodes get
+  built, is only ever entered with a single already-parsed `lhs` and
+  only checks for a bare `=` immediately after it — it never branches
+  on a following `Comma`. `parse_multi_rhs`'s own comment claims it
+  "wraps in MultiAssign if needed," but the actual code wraps in
+  `ArrayLiteral` instead — stale comment, not stale behavior; confirm
+  this doesn't reflect some other intended design before assuming it's
+  simply wrong. `for k, v in pairs` is unaffected — `ForNode` carries
+  `vars : Array(String)` independently of this path.
+
+  High value (basic, extremely common Ruby idiom — value-swapping,
+  unpacking a multi-value return, small-array destructuring — with no
+  clean workaround) against apparently low cost (the backing
+  implementation looks fully built; the fix may be limited to
+  detecting the comma in `maybe_assignment` and dispatching into the
+  existing `MultiAssign`/`Op::MultiUnpack` path) — worth confirming
+  that cost estimate holds up, but promising enough to prioritize
+  investigating first.
+
 - **`<=>` as the sole overloadable comparison hook; `<`/`<=`/`>`/`>=`
   dispatch through it for custom objects.** Decided 2026-08-05, in a
   design conversation prompted by the mruby-spec/operator survey (see
@@ -166,6 +236,20 @@ may unblock ones above it.
   (unchanged) still flags per-instruction bytecode cost as unverified;
   that tradeoff surfaces when the work is picked up, not before.
 
+- **`defined?` doesn't exist — no token, no parsing, at all.** Found
+  2026-08-05 in the mruby full-repo sweep (`test/t/syntax.rb`'s
+  "defined? on statically-decidable operands" and its two sibling
+  tests). Real Ruby's `defined?(x)` is a common defensive-programming
+  idiom (`defined?(x) ? x : default`) for checking whether a local,
+  constant, or method resolves before touching it — a natural pattern
+  for an agent writing cautious code, and not something
+  `respond_to?`'s existing gap (tracked separately) covers, since that
+  only applies to methods, not locals/constants. No workaround an
+  LLM would reliably reach for. Not yet traced to a starting file/
+  method — needs a new keyword/token, parser support, and a real
+  runtime check per operand kind (literal/expression, `self`, local,
+  method, constant, global — the last excluded per U011 either way).
+
 Empty otherwise as of 2026-08-04
 
 ## Will Fix
@@ -181,6 +265,20 @@ still roughly ordered by how cheap/independent the fix is.
 Small, mechanical, independent of each other — good candidates for quick
 wins.
 
+- **Call-site splat/double-splat expansion (`foo(*args)`,
+  `foo(**opts)`), and `def foo(...); bar(...); end` argument-forwarding
+  shorthand.** Def-site `*args` collection already works; what's
+  missing is *spreading* an existing array/hash back out at a call
+  site — needed for delegation/wrapper patterns ("call this other
+  method with whatever I was given"), a common shape in agent-
+  generated code. Not yet traced to specific parser/compiler locations.
+  The `...` forwarding shorthand (found 2026-08-05 in the mruby
+  full-repo sweep, `test/t/syntax.rb`'s "argument forwarding") is
+  real Ruby 2.7+ sugar over the same underlying capability — once
+  call-site splat/double-splat exists, `...` is a terser spelling of
+  `(*args, **kwargs, &blk)`, not a separate mechanism; worth
+  implementing together or `...` shortly after, not as an independent
+  design question.
 - **`raise`/`super` don't get the same space-before-`(` fix
   `parse_identifier_or_call` got.** Flagged 2026-07-26 while fixing
   `eq (6/3), 2` (see `DEVELOPMENT.md`'s Parser section) — `parse_raise`
@@ -209,20 +307,25 @@ Runtime diagnostic carets — same underlying gap as originally filed
 here — were promoted to `Must Fix` 2026-08-05; see that entry above for
 current status.
 
-- **U008–U011 are decided but not enforced.** Filed 2026-08-05, same
-  session the four entries were written into `UNSUPPORTED.md`
+- **U008–U015 are decided but not enforced.** Filed 2026-08-05 in two
+  sessions (U008–U011, then U012–U015 added the same day after the
+  mruby full-repo sweep) — see `UNSUPPORTED.md` for all eight entries
   (`private`/`protected`/`public`, `Struct.new`, `super` across
-  multiple `rescue`, `$globals`). Each currently falls through to a
-  generic undefined-name/undefined-method error rather than naming the
-  construct — the same gap U001–U004 had before their 2026-07-27/28
-  enforcement pass, and the exact failure shape `UNSUPPORTED.md`'s own
-  design principle warns against. Follows the established
-  decide-first-enforce-second pattern rather than waiting on
-  enforcement to write the entries (see U007's own precedent — already
-  partially enforced/partially not, same file). Each of the four is a
-  lookup-after-resolution-fails check, same mechanism as U005–U007
-  (`dispatch_call`/constant resolution, `vm.cr`), not new machinery —
-  should be cheap to batch together once picked up.
+  multiple `rescue`, `$globals`, numbered block params, endless `def`,
+  `class << self`, `undef`/method-added hooks). Each currently falls
+  through to a generic undefined-name/undefined-method/parse error
+  rather than naming the construct — the same gap U001–U004 had before
+  their 2026-07-27/28 enforcement pass, and the exact failure shape
+  `UNSUPPORTED.md`'s own design principle warns against. Follows the
+  established decide-first-enforce-second pattern rather than waiting
+  on enforcement to write the entries (see U007's own precedent —
+  already partially enforced/partially not, same file). Most of the
+  eight are a lookup-after-resolution-fails check, same mechanism as
+  U005–U007 (`dispatch_call`/constant resolution, `vm.cr`); U012–U015
+  are parse-time rather than resolution-time (numbered params/`undef`/
+  `class << self`/endless-`def` all fail differently at the parser
+  today, not via name lookup) — worth confirming the right enforcement
+  point per item rather than assuming all eight share one mechanism.
 
 - **U007's reflection exclusion is a category, not a list, so only
   `ObjectSpace` is enforced.** Added 2026-07-29 while enforcing U005–U007.
@@ -272,9 +375,30 @@ Quality-of-diagnostic gaps in the `Diagnostic`/`ErrorCatalog` system
 
 ### Object model
 
-No open items in this group as of 2026-08-05. Per-instance singleton
-methods became a deliberate non-goal 2026-07-27 (see
-[UNSUPPORTED.md](./UNSUPPORTED.md), U004). Implicit-`self`
+- **`Class#inherited` hook not implemented.** Found 2026-08-05 in the
+  mruby full-repo sweep (`test/t/class.rb`). Real Ruby calls
+  `self.inherited(subclass)` automatically the instant a class is
+  subclassed, before the subclass body runs — there's no way to
+  reconstruct this after the fact (by the time you'd poll for
+  subclasses you'd need to already know their names). Distinct in kind
+  from `class << self` (below, WONTFIX) — that's alternate syntax for
+  something already expressible via `def self.x`; this is a real
+  capability with no equivalent already-supported spelling. Primary
+  use is registry/discovery patterns (a base class automatically
+  tracking every class that inherits from it — plugin systems, ORMs,
+  test-case discovery) without a separate manual-registration call in
+  each subclass — plausible for an agent building a small plugin or
+  multi-behavior dispatch system of its own. Considered against
+  monkey-patching concerns during triage (2026-08-05 chat) and judged
+  distinct: the hook's pragmatic use (registry-on-subclass) doesn't
+  require or enable monkey-patching, which stays excluded regardless.
+  Not yet traced to a starting file/method — likely lands wherever
+  `ClassNode`/`class Foo < Bar` compiles the superclass link
+  (`compiler.cr`), triggering a call to the superclass's own
+  `inherited` if defined, same shape as other hook-style dispatch.
+
+Per-instance singleton methods became a deliberate non-goal 2026-07-27
+(see [UNSUPPORTED.md](./UNSUPPORTED.md), U004). Implicit-`self`
 privacy/visibility (`private`/`public`/`protected`) became a deliberate
 non-goal 2026-08-05 (see UNSUPPORTED.md, U008). `Class.new(kwargs)` →
 `initialize` binding was promoted to `Must Fix` 2026-08-05; see that
@@ -325,6 +449,17 @@ individually.
 
 ### Standard library surface
 
+- **`catch`/`throw` (Kernel non-local jump, tagged block).** Found
+  2026-08-05 in the mruby full-repo sweep — mruby packages this as an
+  optional gem (`mruby-catch`) rather than core language, which is the
+  right call for Adjutant too: `catch`/`throw` are `Kernel` methods in
+  real Ruby, not keywords, so nothing about the language grammar needs
+  to change. Buildable as a native module on top of the exception
+  machinery already built for `raise`/`rescue` (a tagged non-local
+  jump is structurally close to a targeted raise) rather than needing
+  new opcodes — natural fit for the core-API-library work rather than
+  a standalone language-layer item. Filed here rather than under a
+  language-gap group for that reason.
 - **No native File IO/HTTP module — really a scoping question, not a
   missing-feature bug.** Only `SampleModule`'s simulated I/O exists
   today. Reframed 2026-07-27 (previously filed as a plain missing-

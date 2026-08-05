@@ -148,17 +148,22 @@ alternative in [UNSUPPORTED.md](./UNSUPPORTED.md).
 |U009|`Struct.new`                            |—                |
 |U010|`super` across multiple `rescue` clauses|—                |
 |U011|`$globals`                              |`name`           |
+|U012|Numbered block parameters (`_1`, `_2`)  |—                |
+|U013|Endless method definitions              |—                |
+|U014|`class << self` singleton-class syntax  |—                |
+|U015|`undef` / method-added hooks            |`construct`      |
 
 U005 and U006 are reported when a name that would resolve to one of them
 resolves to nothing else. A script is still free to define its own method
 with one of those names — `def send` on your own class works, and calling
 it works.
 
-**U008–U011 status (2026-08-05): decided, not yet enforced.** All four
+**U008–U015 status (2026-08-05): decided, not yet enforced.** All eight
 currently fall through to an ordinary undefined-name/undefined-method
-error rather than naming the construct — enforcement is tracked as a
-`Must Fix` item in [SCOPE.md](./SCOPE.md) (Error reporting group). See
-[UNSUPPORTED.md](./UNSUPPORTED.md) for the reasoning behind each.
+or generic parse error rather than naming the construct — enforcement is
+tracked as a `Must Fix` item in [SCOPE.md](./SCOPE.md) (Error reporting
+group). See [UNSUPPORTED.md](./UNSUPPORTED.md) for the reasoning behind
+each.
 
 ## F — Risk flow
 
