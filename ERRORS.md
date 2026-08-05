@@ -135,20 +135,30 @@ Adjutant is a subset of Ruby. These constructs are not missing features
 awaiting implementation — they will not be added, and each has a documented
 alternative in [UNSUPPORTED.md](./UNSUPPORTED.md).
 
-|Code|Construct                              |Placeholders     |
-|----|---------------------------------------|-----------------|
-|U001|`&blk` parameter capture               |`param`, `method`|
-|U002|`Class.new` / `Module.new`             |`class`          |
-|U003|Reopening a class or module            |`name`           |
-|U004|Defining a method inside another method|`definition`     |
-|U005|Calling a method by computed name      |`construct`      |
-|U006|`eval` / `instance_eval`               |—                |
-|U007|Reflection into the host's internals   |—                |
+|Code|Construct                               |Placeholders     |
+|----|----------------------------------------|-----------------|
+|U001|`&blk` parameter capture                |`param`, `method`|
+|U002|`Class.new` / `Module.new`              |`class`          |
+|U003|Reopening a class or module             |`name`           |
+|U004|Defining a method inside another method |`definition`     |
+|U005|Calling a method by computed name       |`construct`      |
+|U006|`eval` / `instance_eval`                |—                |
+|U007|Reflection into the host's internals    |—                |
+|U008|`private`/`protected`/`public`          |`construct`      |
+|U009|`Struct.new`                            |—                |
+|U010|`super` across multiple `rescue` clauses|—                |
+|U011|`$globals`                              |`name`           |
 
 U005 and U006 are reported when a name that would resolve to one of them
 resolves to nothing else. A script is still free to define its own method
 with one of those names — `def send` on your own class works, and calling
 it works.
+
+**U008–U011 status (2026-08-05): decided, not yet enforced.** All four
+currently fall through to an ordinary undefined-name/undefined-method
+error rather than naming the construct — enforcement is tracked as a
+`Must Fix` item in [SCOPE.md](./SCOPE.md) (Error reporting group). See
+[UNSUPPORTED.md](./UNSUPPORTED.md) for the reasoning behind each.
 
 ## F — Risk flow
 

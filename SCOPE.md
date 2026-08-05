@@ -24,7 +24,149 @@ Blocking, or actively causing incorrect behavior in normal use. Ordered
 roughly by dependency, not necessarily by importance — an item lower down
 may unblock ones above it.
 
-Empty as of 2026-08-04
+- **`<=>` as the sole overloadable comparison hook; `<`/`<=`/`>`/`>=`
+  dispatch through it for custom objects.** Decided 2026-08-05, in a
+  design conversation prompted by the mruby-spec/operator survey (see
+  that session's chat; not yet written up as a standalone doc). Today
+  `Op::Lt`/`Op::Le`/`Op::Gt`/`Op::Ge` go straight to
+  `ValueOps.compare`, which explicitly does not handle `RubyObject`
+  operands (see `value_ops.cr`'s own header comment, "a script class
+  overriding `+`/`<=>`/etc. isn't supported yet") — so a script's own
+  `def <=>(other)` is currently dead code for infix comparison; only
+  `case/when`'s `compile_spaceship` path actually calls it.
+
+  **The decision, precisely:**
+  - `<=>` is the one script-definable comparison method. This is not
+    general operator overloading — it's a single fixed VM hook, the
+    same category as `to_s` already being consulted for string
+    conversion.
+  - `Op::Lt`/`Op::Le`/`Op::Gt`/`Op::Ge` — when either operand is a
+    `RubyObject` — dispatch a real `<=>` call and derive the boolean
+    result from its sign, instead of falling into `ValueOps`'s
+    existing "cannot compare" error. No "is `<=>` defined?" pre-check
+    needed: dispatch unconditionally for `RubyObject` operands and let
+    an absent `<=>` fail the same way any undefined method call
+    already does (`Op::Call`'s existing NameError-equivalent path) —
+    consistent with the rest of the language, no new error shape.
+  - **`Op::Eq`/`==` is deliberately NOT part of this.** Real Ruby's
+    plain `Object#==` is identity, not derived from `<=>` — only
+    `Comparable#==` (which Adjutant doesn't have, no mixins) does
+    that. Folding `==` into this hook would make it mean something for
+    custom classes it doesn't mean in real Ruby, cutting against the
+    proper-subset mandate. Whatever `Op::Eq`/`values_equal?` currently
+    does for `RubyObject` operands is unchanged by this item.
+  - The derived comparison logic should be exposed for native/host
+    code to call directly, the same way `ValueOps` already is —
+    something a native method can use to compare two `Value`s without
+    going through bytecode, rather than being wired only into the
+    three opcodes.
+
+  Explicitly reaffirms, rather than reopens: arithmetic (`+ - * / %
+  & | ^ << >>`) and indexing (`[] []=`) stay fixed-opcode, no
+  script-level override, matching the standing "no monkey-patching, no
+  general operator overloading" decision. This item is the one
+  deliberate, narrow exception, not a step toward broader overloading.
+
+- **`===` fallback semantics for `Class` and `Range` — a correctness
+  bug, not a new capability.** Also surfaced 2026-08-05 in the same
+  session. `case/when` already compiles to a genuine `Op::Call` of
+  `"==="` per branch (`compiler.cr`'s `compile_case`), and a script's
+  own `def ===` already works — the dispatch mechanism itself is not
+  the problem. The bug is the *built-in* fallback: `vm.cr`'s `when
+  "==="` branch is just `values_equal?`, i.e. plain `==`, for every
+  receiver. Concretely, `case x; when Integer` and `case x; when
+  1..10` both compile and run with no error, and never match, because
+  `x == Integer` and `x == (1..10)` are always false — a silent wrong
+  answer on two of the most idiomatic `case/when` forms in real Ruby.
+
+  Fix is narrowly scoped to native semantics for two receiver types,
+  no opcode changes, no new overloadability:
+  - `Class#===` → is-instance-of. `vm.cr` already has a reusable
+    `is_a_target?` helper backing `is_a?`/`kind_of?` — reuse it here
+    rather than writing new logic.
+  - `Range#===` → is-member-of (`<=`/`>=` against the range bounds, or
+    `<=>` if bounds aren't plain numerics).
+  - Every other receiver (no built-in `===` of its own) keeps falling
+    back to `==`, which is correct — real Ruby's default
+    `Object#===` genuinely is `==`, so this case needs no change.
+
+  Depends loosely on the `<=>` item above: `Range#===` against custom
+  Comparable-style objects benefits from `<=>` dispatch existing, but
+  the common integer/float range case doesn't need it and can land
+  independently.
+
+- **Multiple `rescue` clauses per `begin`, and `rescue A, B` (multiple
+  exception types on one clause).** Promoted from the long-standing
+  language-gaps backlog 2026-08-05, after a design conversation about
+  whether Adjutant should keep real Ruby exception syntax at all
+  (decision: yes — an LLM's exception-handling fluency is
+  pattern-retrieval from a saturated Ruby training corpus, not novel
+  reasoning, so the usual "exceptions are hard for LLMs" argument
+  doesn't hold for a proper-Ruby-subset specifically; see that
+  session's chat). Currently a script can write exactly one `rescue`
+  per `begin`, catching one type — real Ruby's "catch this OR that
+  specific type, handle other types separately" is a basic
+  error-handling shape and not currently expressible at all. Also the
+  most-flagged single gap across the `spec/scripts/mruby/exception.rb`
+  survey (2026-08-05). `parse_begin`/`BeginNode` (parser.cr/ast.cr) is
+  where the single-clause assumption lives today.
+
+- **Symbol-shorthand hash literal syntax** (`{k: v}`). Promoted from
+  Parser/lexer gaps 2026-08-05 — not because the fix is hard (it
+  isn't; see the original entry below, unchanged in substance), but
+  because of hit-probability: this is the overwhelmingly dominant
+  hash-literal spelling in the Ruby corpus any Ruby-trained model
+  draws on, more so than hash-rocket. Left as `Will Fix`, this is a
+  silent parse-failure risk on the single most probable way an agent
+  writes a hash literal — including the option-hash shape (`retries:
+  3, timeout: 10`) the upcoming core API work will lean on directly,
+  both in the API's own sample/test scripts and in agent-generated
+  calls against it. `Parser#parse_hash_or_block_brace`
+  (parser.cr) only ever calls `expect(TokenKind::HashRocket)` today —
+  see the original Parser/lexer entry for the precise gap, unchanged.
+
+- **`Class.new(name: ...)` can't reach a keyword-declaring
+  `initialize`.** Promoted from Object model 2026-08-05, ahead of the
+  core-API-library work: an options-heavy native class
+  (`Config.new(retries: 3, timeout: 10)`-shaped) is the natural
+  constructor pattern that work will reach for, and today any keyword
+  argument to `.new` raises `R012` unconditionally regardless of
+  whether the target class declares matching keyword params. Blocks
+  the *shape* of the API being designed, not just a script author's
+  convenience — see the original Object model entry below (unchanged)
+  for the precise trace (`VM#invoke` needs `kwargs` threaded through
+  its own signature, one layer the 2026-08-04 keyword-args arc didn't
+  touch).
+
+- **`dup`/`clone`/`initialize_copy`.** Promoted from the mruby-derived
+  gap survey 2026-08-05, ahead of the core-API-library work. No
+  object-copying mechanism exists at all today — a script wanting a
+  modified variant of an object (a config, a response-shaped object)
+  has to hand-write a copy constructor per class, which is exactly the
+  kind of boilerplate an LLM either omits or gets subtly wrong (misses
+  a field added later). Narrow and mechanical, no design question, and
+  stdlib objects that hold state are exactly where this gap will bite
+  once real APIs exist to copy. Not yet traced to a specific file/
+  method — starting point is wherever `RubyObject` instance fields are
+  enumerated for construction (see `#construct_object`/`#invoke` in
+  `vm.cr`, already touched by the kwargs item above).
+
+- **Runtime diagnostics have no carets** (`Frame` records a line but no
+  column). Promoted from Error reporting 2026-08-05 on a
+  turn-churn argument specific to this use case: the cost of an
+  under-specified error isn't primarily human readability, it's how
+  much a small/local model must *infer* versus *read* to fix it. A
+  dense line (`foo(bar.baz, qux[i])`) failing with a line-only error
+  gives a weaker model no way to tell which subexpression was at
+  fault — it's exactly the shape of ambiguity that produces a wrong
+  guess, a resubmission, a different error on the same line, and
+  another wasted turn, and that failure mode gets worse specifically
+  for the weaker models this project targets. Promoted as a priority
+  call, not a claim that the fix is now cheap — the entry below
+  (unchanged) still flags per-instruction bytecode cost as unverified;
+  that tradeoff surfaces when the work is picked up, not before.
+
+Empty otherwise as of 2026-08-04
 
 ## Will Fix
 
@@ -56,40 +198,31 @@ wins.
   identifier immediately before a construct's own `do`) was flagged as
   likely present in `parse_until`/anywhere else accepting an optional
   trailing `do` — not verified beyond `while`/`for`.
-- **Symbol-shorthand hash literal syntax** (`{k: v}`).
-  `Parser#parse_hash_or_block_brace` only ever calls
-  `expect(TokenKind::HashRocket)` — there's no branch checking for a
-  colon after a bare identifier key, so `{a: 1}` doesn't parse at all
-  today; only `{"a" => 1}` (hash-rocket) does. Noticed while
-  bootstrapping the `Hash` builtin class (Phase 4c of base types), which
-  is otherwise unaffected — every `Hash` method works on however the
-  hash `Value` was constructed. Small parser addition whenever it's
-  worth doing.
+
+Symbol-shorthand hash literal syntax (`{k: v}`) — same underlying gap
+as originally filed here — was promoted to `Must Fix` 2026-08-05; see
+that entry above for current status.
 
 ### Error reporting
 
-- **Runtime diagnostics have no carets, because `Frame` records a line
-  but no column.** Filed 2026-07-29, after the migration finished and it
-  became clear how much of the catalog this covers: every `R`, `L`, `F`
-  and `N` code, plus the VM-raised `U002`/`U003`. Those render the
-  offending source line with nothing pointing into it, while
-  parser- and compiler-raised codes get a caret and a span label.
+Runtime diagnostic carets — same underlying gap as originally filed
+here — were promoted to `Must Fix` 2026-08-05; see that entry above for
+current status.
 
-  It is the largest remaining gap in what a reader actually sees. A
-  runtime error on a dense line (`foo(bar.baz, qux[i])`) says which line
-  failed but not which part of it, which is exactly the question the
-  reader has.
-
-  The span model already supports this — `Span#column` is optional
-  precisely so phases could gain precision independently — so nothing
-  needs redesigning. The work is threading a column onto `Frame`
-  alongside `line`, which means the compiler emitting one into the
-  bytecode's position info, since that is where `Frame#line` comes
-  from. Bigger than it sounds for that reason, and worth checking what
-  it costs per instruction before committing to it.
-
-  Not blocking anything: the renderer degrades cleanly today, and this
-  is a quality improvement rather than a correctness fix.
+- **U008–U011 are decided but not enforced.** Filed 2026-08-05, same
+  session the four entries were written into `UNSUPPORTED.md`
+  (`private`/`protected`/`public`, `Struct.new`, `super` across
+  multiple `rescue`, `$globals`). Each currently falls through to a
+  generic undefined-name/undefined-method error rather than naming the
+  construct — the same gap U001–U004 had before their 2026-07-27/28
+  enforcement pass, and the exact failure shape `UNSUPPORTED.md`'s own
+  design principle warns against. Follows the established
+  decide-first-enforce-second pattern rather than waiting on
+  enforcement to write the entries (see U007's own precedent — already
+  partially enforced/partially not, same file). Each of the four is a
+  lookup-after-resolution-fails check, same mechanism as U005–U007
+  (`dispatch_call`/constant resolution, `vm.cr`), not new machinery —
+  should be cheap to batch together once picked up.
 
 - **U007's reflection exclusion is a category, not a list, so only
   `ObjectSpace` is enforced.** Added 2026-07-29 while enforcing U005–U007.
@@ -139,32 +272,14 @@ Quality-of-diagnostic gaps in the `Diagnostic`/`ErrorCatalog` system
 
 ### Object model
 
-The privacy/visibility model below is the one open item in this group —
-per-instance singleton methods, previously listed here, became a
-deliberate non-goal 2026-07-27 — see [UNSUPPORTED.md](./UNSUPPORTED.md),
-U004, which generalised it to nested method definition of any shape.
+No open items in this group as of 2026-08-05. Per-instance singleton
+methods became a deliberate non-goal 2026-07-27 (see
+[UNSUPPORTED.md](./UNSUPPORTED.md), U004). Implicit-`self`
+privacy/visibility (`private`/`public`/`protected`) became a deliberate
+non-goal 2026-08-05 (see UNSUPPORTED.md, U008). `Class.new(kwargs)` →
+`initialize` binding was promoted to `Must Fix` 2026-08-05; see that
+entry above for current status.
 
-- **No implicit-`self` privacy/visibility model.** Adjutant has no
-  `private`/`public`/`protected` at all — a native function or top-level
-  `def` (both land on `Object`) is reachable via an explicit receiver on
-  any inheriting object (`Foo.new.puts_equivalent`), unlike real Ruby's
-  Kernel methods, which are private. Found while fixing piece B (the
-  root-scope work); see `root_scope_spec.cr`'s own test coverage of the
-  current (permissive) behavior.
-- **`Class.new(name: ...)` can't reach a keyword-declaring `initialize`
-  — any keyword argument to `.new` raises `R012` unconditionally.**
-  Keyword arguments (2026-08-04) thread through ordinary script-method
-  calls end to end (`VM#bind_args`), but `.new`'s construction path
-  (`dispatch_call`'s `.new` branch → `VM#construct` →
-  `#construct_object` → `#invoke`) never picked up a `kwargs` param at
-  all — closing that gap means threading it through `invoke`'s own
-  signature too, one layer this arc didn't touch. Deliberately guarded
-  rather than left silent: any keyword arg reaching `.new` today raises
-  loudly (`VM#reject_kwargs!`) instead of vanishing unused. Native
-  functions and builtins get the same guard, but for a different reason
-  that isn't expected to change — they have no `Param` list to check
-  keyword names against at all, being Crystal-implemented rather than
-  script-defined.
 
 ### Data & builtin types
 
@@ -232,11 +347,21 @@ not touched by any session since — genuinely a backlog rather than
 active work. Worth splitting into individual entries if any one becomes
 a priority; currently untriaged relative to each other.
 
+Two items originally listed here left this bundle 2026-08-05: multiple
+`rescue` clauses (promoted to `Must Fix`, see above) and `super` across
+multiple `rescue` clauses / `$globals` (moved to `UNSUPPORTED.md` as
+U010/U011 — see that file; `Struct.new`, U009 in the same batch, was
+never listed in this bundle and is noted separately in the gap-survey
+chat history).
+
 - assignment-as-real-expression (`c = b = 5` doesn't parse)
-- `include`/mixins
-- `super` across multiple `rescue` clauses per `begin`
-- `$globals` (lexed as `GVar` but never consumed by the parser — see
-  `DEVELOPMENT.md`'s scoping section)
+- `include`/mixins — real gap, but the specific case that most often
+  motivates it (sharing comparison behavior via `Comparable`) is now
+  covered by the narrower `<=>` hook (see `Must Fix`, above); what's
+  left is general code-sharing, which reopens some of the same
+  static-resolvability tension the `send`/`eval` exclusions (U005/U006)
+  exist to avoid — worth its own scoping pass before promoting, not a
+  drop-in fix. Noted 2026-08-05.
 - heredocs/`%w[]` literals
 - multi-level closures
 - `Range` for non-`Integer`/non-`succ`-having bound types beyond what's

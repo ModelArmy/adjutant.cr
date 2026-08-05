@@ -307,6 +307,129 @@ enumerated set, and inventing the enumeration while enforcing it would be
 deciding scope by implementation. Anything else reflective currently
 reports as an ordinary undefined name.
 
+### U008 — `private`/`protected`/`public`
+
+Ruby's implicit-`self` method visibility model. A native function or
+top-level `def` (both land on `Object`) is reachable via an explicit
+receiver on any inheriting object today — there is no way to mark a
+method unreachable from outside its own class.
+
+**Why:** decided 2026-08-05, during a session filtering the mruby-derived
+gap survey by value against Adjutant's actual use case. Visibility exists
+in real Ruby to protect an interface from *other* authors calling it in
+ways the original author didn't intend. Adjutant scripts are
+LLM-generated, typically single-authored and often short-lived or
+narrow in scope even when reused — there's no second author whose
+misuse visibility would be defending against. Adding the mechanism
+mainly introduces a new failure mode (an agent calling something that
+should have been private, and getting an error for a distinction that
+serves no purpose in this use case) without a corresponding safety
+benefit here.
+
+**Instead:** nothing; every method stays callable via an explicit
+receiver, as it is today. If a script wants to signal "don't call this,"
+naming convention (a leading underscore, a comment) is the available
+tool, same as it would be in a language with no visibility model at all.
+
+**Enforcement — not yet enforced.** `private`/`protected`/`public` are
+currently either undefined names (if used as bare calls) or silently
+inert (if a script defines its own method with one of those names,
+which works exactly like any other method definition — there's no
+special parsing for the visibility-declaration call shape at all). Not
+yet migrated to a structured diagnostic; tracked as part of the U008–
+U011 batch in [SCOPE.md](./SCOPE.md)'s Error reporting group.
+
+### U009 — `Struct.new`
+
+Ruby's `Struct.new(:a, :b) { ... }` — dynamically synthesizing a class
+from a field list, with generated accessors, `==`, `to_s`/`inspect`, and
+`to_a`/`to_h` for free.
+
+**Why:** decided 2026-08-05, in the same filtering session as U008.
+Structurally adjacent to `Class.new`/`Module.new` (U002) — both
+dynamically generate a class at runtime rather than declaring one
+statically — and every real use case a `Struct` covers (a small,
+named-field data bag) is already fully expressible with a plain class:
+
+```ruby
+class Point
+  attr_accessor :x, :y
+  def initialize(x, y)
+    @x = x
+    @y = y
+  end
+end
+```
+
+The only genuine loss is the free `==`/`to_s`/`to_a`/`to_h` real
+`Struct` derives automatically — a real but minor cost next to the
+dynamic-class-generation cost of supporting `Struct` at all, and one an
+LLM reaches for reliably in its more verbose, explicit form.
+
+**Instead:** declare a plain class with `attr_accessor` and an
+`initialize`, as above.
+
+**Enforcement — not yet enforced.** `Struct` currently resolves as an
+uninitialized constant (there is no bootstrap `Struct` class the way
+there is for `Class`/`Module`/`Object`), so a script gets a generic
+undefined-constant error rather than one naming `Struct` specifically as
+a deliberate exclusion. Tracked as part of the U008–U011 batch in
+[SCOPE.md](./SCOPE.md)'s Error reporting group.
+
+### U010 — `super` across multiple `rescue` clauses per `begin`
+
+Calling `super` from within one `rescue` clause of a `begin` that has
+more than one `rescue` clause, where the semantics of which superclass
+method `super` should reach depend on which clause is active.
+
+**Why:** decided 2026-08-05, in the same session multiple `rescue`
+clauses themselves were promoted to `Must Fix` (see
+[SCOPE.md](./SCOPE.md)). Genuinely obscure even in human-written Ruby —
+the ordinary combination of `super` and `rescue` (a `rescue` clause that
+doesn't itself call `super`) is unaffected and remains fully supported;
+this exclusion is narrowly the *interaction* of the two, not either
+construct on its own.
+
+**Instead:** restructure the rescue body to call the intended method
+explicitly rather than via `super`, or move the `super` call outside the
+`rescue`/`begin` entirely if the intent allows it.
+
+**Enforcement — not yet enforced.** Calling `super` inside a
+multi-clause `rescue` today either behaves unpredictably or resolves to
+whatever `super`'s ordinary (single-clause-unaware) implementation
+does — not yet audited precisely, since multiple `rescue` clauses
+themselves don't parse yet (see the `Must Fix` item). Enforcement here
+is gated on that item landing first, and is tracked as part of the
+U008–U011 batch in [SCOPE.md](./SCOPE.md)'s Error reporting group.
+
+### U011 — `$globals`
+
+Ruby's `$`-prefixed global variables — a single mutable namespace
+visible from anywhere in a script, independent of lexical scope.
+
+**Why:** decided 2026-08-05, in the same filtering session as U008/U009.
+Beyond being rarely used even in human-written Ruby, a global mutable
+channel is precisely the kind of implicit side-channel Adjutant's IFC/
+risk-flow model (`EffectHandler`/`ModuleRegistry`, provenance tracking —
+see the IFC design arc) exists to make explicit and traceable. Every
+other way data moves through an Adjutant script — parameters, return
+values, instance variables — is visible to the risk aggregator by
+construction; a global would let two unrelated parts of a script
+communicate outside any of those paths, undermining the same
+static-traceability property the `send`/`eval`/reflection exclusions
+(U005–U007) protect from a different angle.
+
+**Instead:** pass values explicitly as parameters/return values, or use
+an instance variable on an object shared between the parts of the
+script that need to communicate.
+
+**Enforcement — not yet enforced.** `$name`-shaped tokens are lexed as
+`GVar` but the parser never consumes them into a usable node — so a
+script writing `$foo = 1` fails at parse time today, but with a generic
+parse error rather than one naming globals as a deliberate exclusion
+tied to the IFC model. Tracked as part of the U008–U011 batch in
+[SCOPE.md](./SCOPE.md)'s Error reporting group.
+
 ---
 
 ## 2. Design decisions with no script-visible surface
