@@ -24,52 +24,6 @@ Blocking, or actively causing incorrect behavior in normal use. Ordered
 roughly by dependency, not necessarily by importance — an item lower down
 may unblock ones above it.
 
-- **`next`/`redo` inside a `begin...end while`/`until` loop (the
-  do-while modifier form) target the wrong bytecode position and can
-  infinite-loop.** Found 2026-08-05 while adding regression coverage
-  for the break/next/ensure interaction fix (now resolved — see git
-  history; this is a separate, adjacent bug the same investigation
-  surfaced, confirmed via `git stash` to predate that session's
-  changes entirely). `compile_modifier_while` (`compiler.cr`) sets
-  `LoopScope#start_pos`/`#body_pos` both to `loop_start` — the very
-  top of the loop, before its body runs even once — rather than to the
-  condition check. Real Ruby's `next` in this loop form still means
-  "skip to the end of this iteration, then check the condition," not
-  "restart the body unconditionally." Concretely:
-
-  ```ruby
-  count = 0
-  begin
-    count += 1
-    next
-  end while count < 2   # never terminates: `next` never reaches the
-                         # condition check at all, let alone lets it
-                         # go false
-  ```
-
-  No error, no crash — just a script that never returns control,
-  matching the same "lockup, not a crash" failure class the now-fixed
-  break/next/ensure interaction bug had (see git history — that entry
-  no longer appears in this file, resolved 2026-08-05). `redo` in this
-  same loop form is very likely broken the same way for the same
-  reason (untraced beyond noting `start_pos`/`body_pos` are identical
-  here, unlike `compile_while`, where they're genuinely different
-  positions) — confirm both together rather than fixing one and
-  assuming the other. Not yet fixed: this
-  session deliberately scoped its own fix to the break/next/ensure
-  interaction and the two bugs it surfaced along the way in
-  `compile_while` specifically (a struct-copy bug losing `body_pos`
-  entirely, and a double-nil-push on `break <value>` as a loop's
-  trailing expression — both now fixed, see git history) — this item
-  is the one adjacent finding left deliberately unfixed, since
-  `compile_modifier_while`'s correct target likely needs its own
-  small design pass (does `next`/`redo` need a THIRD position distinct
-  from `start_pos`/`body_pos`, given this form's condition sits at the
-  *end* of the loop, not the start?) rather than a same-shape patch.
-  No test currently exercises `next`/`redo` in this loop form for that
-  reason — see `spec/adjutant/exception_handling_spec.cr`'s note next
-  to where such a test would go.
-
 - **Multi-target assignment (`a, b = 1, 2`, `a, b = some_array`)
   doesn't parse at all.** Found 2026-08-05 in the same mruby sweep,
   superseding and more severe than the `c = b = 5`

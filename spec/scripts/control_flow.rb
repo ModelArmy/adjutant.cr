@@ -30,6 +30,36 @@ assert("modifier while") {
   x == 3
 }
 
+assert("modifier until") {
+  x = 0
+  x += 1 until x == 3
+  x == 3
+}
+
+assert("modifier while 2") {
+  x = 3
+  x += 1 while x < 3
+  x == 3
+}
+
+assert("modifier while 3") {
+  x = 3
+  x += 1 while x != 3
+  x == 3
+}
+
+assert("modifier until 2") {
+  x = 3
+  x += 1 until x >= 3
+  x == 3
+}
+
+assert("modifier until 3") {
+  x = 3
+  x += 1 until x == 3
+  x == 3
+}
+
 # ------ if... statements
 
 assert("elsif chain (stmt)") {

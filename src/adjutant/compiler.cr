@@ -1712,22 +1712,125 @@ module Adjutant
     end
 
     private def compile_modifier_while(node : ModifierWhile) : Nil
+      # `begin...end while cond` / `begin...end until cond` — the
+      # do-while form, where the wrapped expression happens to be
+      # a `begin` block — is a deliberate scope decision (see
+      # UNSUPPORTED.md, U016), not merely unimplemented: real Ruby
+      # gives this ONE specific form different semantics than
+      # every other modifier-while (runs its body once before the
+      # first condition check, rather than checking first like
+      # `expr while cond` always does otherwise) — a single AST shape
+      # (ModifierWhile wrapping a BeginNode) silently switching what
+      # the rest of this method means undermines exactly the kind of
+      # local, read-the-code-and-know-what-it-does reasoning this
+      # subset exists to preserve. Rejected HERE for the ASSIGNED
+      # form specifically (`x = begin...end while cond` and its
+      # `+=`/`-=`/`*=`/`/=`/`%=`/`||=`/`&&=` siblings — the only ways
+      # this construct successfully parses into a ModifierWhile at
+      # all): this is the one point that already knows precisely which
+      # form it is, once parsing has finished building the node.
+      # The far more natural BARE-statement form (`begin...end
+      # while cond` on its own, no assignment) never reaches this
+      # method or builds a ModifierWhile in the first place — see
+      # `Parser#reject_do_while` (`parser.cr`) for that one, an earlier
+      # rejection at the point parse_statement's `KwBegin` case sees a
+      # `while`/`until` immediately follow a bare `begin...end`, since
+      # nothing downstream of THAT gap would ever have produced a node
+      # for this method to check to begin with.
+      if begin_node = do_while_begin(node.body)
+        raise CompileError.new(
+          Diagnostic.new(
+            code: "U016",
+            primary: Span.new(
+              line: begin_node.line,
+              column: begin_node.column,
+              length: 5, # "begin"
+              label: "do-while form not supported"
+            )
+          )
+        )
+      end
+
+      # Real Ruby gives `expr while cond` (this method's only
+      # remaining job now that the do-while form above is
+      # rejected) CHECK-FIRST semantics, identical in shape to a plain
+      # `while`/`until` statement, just written postfix — `x -= 1
+      # while x > 0` may run zero times, the same as `while x > 0; x
+      # -= 1; end` would. Found 2026-08-05: this method previously
+      # compiled EVERY ModifierWhile — this form and the do-while form
+      # alike — with check-LAST semantics (body always runs at least
+      # once, condition checked only after) regardless of which one it
+      # actually was. Correct only for the do-while form, silently
+      # wrong for this one: `x -= 1 while x > 0` decremented x once
+      # even when the condition was false from the very first check.
+      # No test anywhere caught this, for either form, before this
+      # session.
       raise loop_too_deep(node) if @loop_stack.size >= MAX_LOOP_DEPTH
       loop_start = @chunk.pos
       scope = LoopScope.new(loop_start, ensure_depth_at_entry: @ensure_stack.size)
-      scope.body_pos = loop_start
       @loop_stack.push(scope)
 
-      compile_node(node.body)
       compile_node(node.cond)
       @chunk.emit(Op::Not, node.line) if node.until_loop?
       jmp_exit = @chunk.emit_jump(Op::JumpIfFalse, node.line)
+      # Struct-copy trap: @loop_stack[-1] = ... (read-modify-write
+      # through the array INDEX), not `.last.body_pos = ...` or
+      # mutating the local `scope` after it was already pushed — see
+      # compile_while's identical fix (same file) for the full
+      # mechanism; LoopScope is a struct, so either of those silently
+      # writes to a copy the array never sees.
+      current = @loop_stack[-1]
+      current.body_pos = @chunk.pos
+      @loop_stack[-1] = current
+
+      compile_node(node.body)
+      @chunk.emit(Op::Pop, node.line)
       @chunk.emit(Op::Jump, node.line, c: loop_start.to_u32)
       @chunk.patch_jump(jmp_exit, @chunk.pos)
 
-      scope = @loop_stack.pop
-      scope.breaks.each { |brk| @chunk.patch_jump(brk, @chunk.pos) }
+      # Fallthrough (condition went false, no break) has nothing on
+      # the stack yet for this expression's value — push nil, same as
+      # an unbroken while/until always evaluates to. A break already
+      # pushed its OWN value before jumping (compile_break); landing
+      # on this same emit_nil and falling through it would push a
+      # second, spurious nil on top of that value — see compile_while
+      # for the identical reasoning and the test that originally
+      # caught it. So breaks patch to AFTER emit_nil, not onto it.
       emit_nil(node.line)
+      tail = @chunk.pos
+
+      scope = @loop_stack.pop
+      scope.breaks.each { |brk| @chunk.patch_jump(brk, tail) }
+    end
+
+    # Finds the BeginNode that makes a ModifierWhile's body a do-while,
+    # if any — either the body IS one directly, or it's exactly one
+    # layer of assignment away from one (`x = begin...end while cond`
+    # and its `+=`/`-=`/`*=`/`/=`/`%=`/`||=`/`&&=` siblings — Assign,
+    # OpAssign, and CondAssign all share a `value` field for their
+    # RHS, which is what maybe_assignment actually built the
+    # ModifierWhile around, not the BeginNode itself). In practice
+    # only the assignment-wrapped shapes are ever actually reachable
+    # here — `Parser#reject_do_while` (parser.cr) catches the bare,
+    # unwrapped `begin...end while cond` statement at parse time,
+    # before any ModifierWhile is built for it at all — but the direct
+    # BeginNode case stays here as a defensive fallback rather than an
+    # assumption baked in twice (both places would need to agree for
+    # dropping it to be safe, and only one of them needs to be right
+    # for keeping it to be). Returns nil for every other shape,
+    # including a BeginNode buried deeper than one assignment layer
+    # down (e.g. inside a method call's argument) — real Ruby's
+    # do-while trigger is specifically "the modifier's immediate
+    # operand, largely ignoring assignment, is a begin block," not "a
+    # begin block appears anywhere in the expression."
+    private def do_while_begin(node : Node) : BeginNode?
+      case node
+      when BeginNode  then node
+      when Assign     then node.value.as?(BeginNode)
+      when OpAssign   then node.value.as?(BeginNode)
+      when CondAssign then node.value.as?(BeginNode)
+      else                 nil
+      end
     end
 
     # --- Helpers ------------------------------------------------------------

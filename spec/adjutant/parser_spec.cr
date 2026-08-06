@@ -768,6 +768,53 @@ module Adjutant
         node = parse_expr("x -= 1 while x > 0")
         node.should be_a(ModifierWhile)
       end
+
+      it "rejects a bare begin...end while (do-while) statement with U016" do
+        # Regression coverage for a bug found 2026-08-06: parse_statement's
+        # `KwBegin` case called parse_begin directly and returned its
+        # bare BeginNode immediately, with no check for a trailing
+        # `while`/`until` — the modifier was left dangling as what
+        # looked like the start of an unrelated next statement, which
+        # the parser then reported as a confusing, unrelated P003
+        # ("`while` is missing its `end`") with no hint that
+        # begin/rescue/ensure had anything to do with it. do-while is
+        # a deliberate exclusion (UNSUPPORTED.md, U016), not merely
+        # unimplemented — this confirms the BARE-statement form
+        # (no assignment) is rejected with a clear, purpose-built
+        # error instead of that confusing fallback.
+        error = expect_raises(ParseError) do
+          Parser.new("begin\n  1\nend while true\n", "t.rb").parse
+        end
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("U016")
+        diag.primary.not_nil!.line.should eq(1)
+      end
+
+      it "rejects a bare begin...end until (do-while) statement with U016" do
+        error = expect_raises(ParseError) do
+          Parser.new("begin\n  1\nend until false\n", "t.rb").parse
+        end
+        error.diagnostic.not_nil!.code.should eq("U016")
+      end
+
+      it "does not reject an ordinary begin...end with no trailing " \
+         "while/until modifier" do
+        # Regression guard for the checks above — an ordinary begin/end
+        # with nothing following it must be completely unaffected.
+        node = parse_expr("begin\n  1\nend")
+        node.should be_a(BeginNode)
+      end
+
+      it "does not reject begin...end followed by an unrelated next " \
+         "statement" do
+        # Guards against over-matching on mere token adjacency rather
+        # than the specific KwWhile/KwUntil check — an ordinary
+        # begin/end followed by a completely separate statement on the
+        # next line must parse as two statements, not trigger U016.
+        body = parse("begin\n  1\nend\nx = 2\n")
+        body.stmts.size.should eq(2)
+        body.stmts.first.should be_a(BeginNode)
+      end
     end
 
     describe "expression-position control flow" do
