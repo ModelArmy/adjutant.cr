@@ -318,6 +318,31 @@ module Adjutant
       it "evaluates modifier unless" do
         eval("x = 1\nx = 2 unless false\nx").as_int.should eq 2_i64
       end
+
+      it "evaluates modifier while with check-first semantics: the " \
+         "body never runs if the condition is false from the start" do
+        # Regression coverage for a bug found 2026-08-06:
+        # compile_modifier_while (compiler.cr) previously compiled
+        # EVERY `expr while cond` with check-LAST semantics (body
+        # always runs at least once) — correct only for the do-while
+        # `begin...end while cond` form (now rejected outright,
+        # see U016 in UNSUPPORTED.md), silently wrong for this,
+        # the ordinary and far more common form. Real Ruby: `x -=
+        # 1 while x > 10` starting at x = 5 must never touch x at
+        # all, since 5 > 10 is false before the body ever runs once.
+        eval("x = 5\nx -= 1 while x > 10\nx").as_int.should eq 5_i64
+      end
+
+      it "evaluates modifier while normally when the condition starts " \
+         "true, running until it goes false" do
+        # Sibling check to the one above — confirms the check-first
+        # fix didn't overcorrect into never running the body at all.
+        eval("x = 0\nx += 1 while x < 3\nx").as_int.should eq 3_i64
+      end
+
+      it "evaluates modifier until with the same check-first semantics" do
+        eval("x = 5\nx -= 1 until x < 10\nx").as_int.should eq 5_i64
+      end
     end
 
     describe "effect handler" do

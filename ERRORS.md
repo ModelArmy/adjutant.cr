@@ -152,6 +152,7 @@ alternative in [UNSUPPORTED.md](./UNSUPPORTED.md).
 |U013|Endless method definitions              |—                |
 |U014|`class << self` singleton-class syntax  |—                |
 |U015|`undef` / method-added hooks            |`construct`      |
+|U016|`begin...end while`/`until` (do-while)  |—                |
 
 U005 and U006 are reported when a name that would resolve to one of them
 resolves to nothing else. A script is still free to define its own method
@@ -164,6 +165,16 @@ or generic parse error rather than naming the construct — enforcement is
 tracked as a `Must Fix` item in [SCOPE.md](./SCOPE.md) (Error reporting
 group). See [UNSUPPORTED.md](./UNSUPPORTED.md) for the reasoning behind
 each.
+
+**U016 status: actively enforced, both forms.** A bare
+`begin...end while cond` statement raises U016 at parse time
+(`Parser#reject_do_while`); the same construct reached via assignment
+(`x = begin...end while cond`, or a compound-assignment sibling) raises
+it at compile time (`Compiler#compile_modifier_while`, unwrapping one
+layer of assignment before checking for a `BeginNode`) — two different
+points because the two forms reach the point where the shape is
+knowable at two different stages of the pipeline, not two different
+decisions. See [UNSUPPORTED.md](./UNSUPPORTED.md) for the reasoning.
 
 ## F — Risk flow
 

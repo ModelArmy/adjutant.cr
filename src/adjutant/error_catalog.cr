@@ -498,6 +498,18 @@ module Adjutant
         help: "Define `{name}` once, with all of its methods in that one " \
               "body."
       ),
+      "U016" => Entry.new(
+        code: "U016",
+        summary: "the `begin...end while`/`until` do-while form is not supported",
+        why: "This form is easy to misread — the loop body runs once " \
+             "before the condition is checked at all, unlike every " \
+             "other `while`/`until`, which checks first. It's also " \
+             "rarely used and generally discouraged in Ruby style " \
+             "guides for that exact reason.",
+        help: "Use `loop` with a `break` for the exit check instead — " \
+              "it runs the body once by construction, with no " \
+              "repetition: `loop do; body; break unless cond; end`."
+      ),
       "R001" => Entry.new(
         code: "R001",
         summary: "constant `{name}` is already initialized",

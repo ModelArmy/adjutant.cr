@@ -351,7 +351,7 @@ module Adjutant
       when TokenKind::KwDef     then parse_def
       when TokenKind::KwClass   then parse_class
       when TokenKind::KwModule  then parse_module
-      when TokenKind::KwBegin   then parse_begin
+      when TokenKind::KwBegin   then reject_do_while(parse_begin)
       when TokenKind::KwReturn  then parse_return
       when TokenKind::KwBreak   then parse_break(BreakNode)
       when TokenKind::KwNext    then parse_break(NextNode)
@@ -364,6 +364,49 @@ module Adjutant
       else
         parse_expr_statement
       end
+    end
+
+    # `begin...end while cond` / `begin...end until cond` (the do-while
+    # form — see UNSUPPORTED.md, U016) as a BARE statement (no
+    # assignment: `begin...end while cond` on its own, by far the more
+    # natural way to write this) never reaches compile_modifier_while's
+    # own U016 check at all: parse_statement's `KwBegin` case calls
+    # parse_begin directly and, before this guard existed, returned
+    # its bare BeginNode immediately — the trailing `while`/`until`
+    # was left dangling as what LOOKED like the start of a totally
+    # separate next statement, which the parser then reported as an
+    # unrelated, confusing "`while` is missing its `end`" (P003) with
+    # no hint that begin/rescue/ensure had anything to do with it.
+    # Found 2026-08-05 by the first tests in this repo's history to
+    # exercise this form at all.
+    #
+    # Deliberately does NOT build a ModifierWhile here the way a
+    # genuine parse (rather than a rejection) would need to — this
+    # form is never going to compile successfully, so there's
+    # nothing to hand off to compile_modifier_while's own check; this
+    # is simply the earlier of the two places that can recognize the
+    # shape (a `begin` immediately followed by while/until) and
+    # produce the same U016 with a precise span, rather than route
+    # through the assignment form's ModifierWhile detour just to reach
+    # a check with an identical outcome. `x = begin...end while cond`
+    # (the assigned form) still reaches compile_modifier_while's own
+    # U016 instead — this helper only covers the bare-statement
+    # form parse_statement's KwBegin case is responsible for.
+    private def reject_do_while(node : Node) : Node
+      if at_any?(TokenKind::KwWhile, TokenKind::KwUntil)
+        raise ParseError.new(
+          Diagnostic.new(
+            code: "U016",
+            primary: Span.new(
+              line: node.line,
+              column: node.column,
+              length: 5, # "begin"
+              label: "do-while form not supported"
+            )
+          )
+        )
+      end
+      node
     end
 
     # An expression that may be followed by a modifier (if/unless/while/until).

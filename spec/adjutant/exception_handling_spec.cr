@@ -645,4 +645,250 @@ module Adjutant
       eval(src).as_string.should eq "divided by 0"
     end
   end
+
+  # Regression coverage for the Must Fix bug found 2026-08-05: break/
+  # next inside a begin/rescue/ensure region compiled to a bare
+  # Op::Jump consulting only @loop_stack, with no awareness of the
+  # Try/SetEnsure handler the region had pushed — so the jump landed
+  # past Op::EnterEnsure, silently skipping the ensure body and
+  # leaving a stale HandlerEntry on Frame#handlers.
+  describe "break/next through begin/rescue/ensure" do
+    it "runs the ensure body when break exits through it" do
+      result = eval(<<-RUBY)
+        side = []
+        while true
+          begin
+            break 123
+          ensure
+            side << :ensure
+          end
+        end
+        side
+      RUBY
+      result.as_array.map(&.as_sym.name).should eq ["ensure"]
+    end
+
+    it "still evaluates break's own value when its ensure runs" do
+      eval(<<-RUBY).should eq Value.int(123_i64)
+        while true
+          begin
+            break 123
+          ensure
+            1 + 1
+          end
+        end
+      RUBY
+    end
+
+    it "runs the ensure body when next exits through it" do
+      result = eval(<<-RUBY)
+        side = []
+        count = 0
+        while count < 3
+          count += 1
+          begin
+            next
+          ensure
+            side << count
+          end
+        end
+        side
+      RUBY
+      result.as_array.map(&.as_int).should eq [1_i64, 2_i64, 3_i64]
+    end
+
+    it "runs nested ensures innermost-first when break exits through both" do
+      result = eval(<<-RUBY)
+        side = []
+        while true
+          begin
+            begin
+              break
+            ensure
+              side << :inner
+            end
+          ensure
+            side << :outer
+          end
+        end
+        side
+      RUBY
+      result.as_array.map(&.as_sym.name).should eq ["inner", "outer"]
+    end
+
+    it "does not run an ensure that encloses the loop itself, only ones opened inside it" do
+      # The begin/ensure here is OUTSIDE the loop, already fully
+      # "current" before the loop starts — ensure_depth_at_entry
+      # should treat it as already accounted for, not something the
+      # loop's own break needs to unwind through again.
+      result = eval(<<-RUBY)
+        side = []
+        begin
+          while true
+            break
+          end
+        ensure
+          side << :outer
+        end
+        side
+      RUBY
+      result.as_array.map(&.as_sym.name).should eq ["outer"]
+    end
+
+    it "does not leave a stale handler behind: an unrelated later error " \
+       "is not caught by the drained region" do
+      # Same regression shape as "runs an ensure exactly once and
+      # doesn't affect an unrelated later block" above, but via a
+      # break-exited region instead of normal fallthrough — the bug
+      # this guards against is specifically that break/next skipped
+      # the Op::EnterEnsure that pops the handler, so this second,
+      # textually unrelated begin/rescue could wrongly get caught by
+      # the first construct's stale entry instead of its own.
+      expect_raises(RuntimeError, /uncaught/) do
+        eval(<<-RUBY)
+          while true
+            begin
+              break
+            ensure
+              1 + 1
+            end
+          end
+
+          raise "uncaught"
+        RUBY
+      end
+    end
+
+    it "pops a rescue-only handler (no ensure clause) too, not just ensure-bearing ones" do
+      # No ensure body to run here, but the Try handler pushed for the
+      # rescue clause is just as stale if left on Frame#handlers after
+      # break jumps past it — same HandlerEntry, same pop, no ensure
+      # code to interleave.
+      result = eval(<<-RUBY)
+        count = 0
+        while true
+          begin
+            break
+          rescue
+            nil
+          end
+        end
+
+        begin
+          raise "second"
+        rescue e
+          count = 1
+        end
+        count
+      RUBY
+      result.should eq Value.int(1_i64)
+    end
+
+    it "lets an outer rescue still catch a real error after a sibling " \
+       "loop's break has drained its own ensure" do
+      result = eval(<<-RUBY)
+        side = []
+        begin
+          while true
+            begin
+              break
+            ensure
+              side << :loop_ensure
+            end
+          end
+
+          raise "boom"
+        rescue e
+          side << :outer_rescue
+        end
+        side
+      RUBY
+      result.as_array.map(&.as_sym.name).should eq ["loop_ensure", "outer_rescue"]
+    end
+
+    # NOTE: no modifier-while (`begin...end while`) coverage here.
+    # Found while testing this fix: `next`'s jump target for that loop
+    # form is @loop_stack.last.start_pos, which compile_modifier_while
+    # sets equal to the very top of the loop (loop_start == body_pos)
+    # rather than the condition check — pre-existing, present already
+    # in HEAD before this session's changes (confirmed via git stash),
+    # completely independent of break/next/ensure interaction. Any
+    # unconditional `next` in this loop form re-executes the body from
+    # scratch with no condition check in between, hanging forever —
+    # which is what locked up the first run of this fix's specs. Not
+    # fixed here: out of this session's scope (ensure-leak on break/
+    # next/redo), and fixing it needs its own careful look at what
+    # `next`/`redo` should each target for this form. Left as a gap
+    # for a future session — see SCOPE.md.
+
+    it "runs the ensure body on each pass when redo exits through it, " \
+       "and cleanly re-establishes the handler for the next pass — " \
+       "bounded so a real infinite loop fails loudly instead of hanging" do
+      # redo has the identical bug shape as break/next: body_pos is a
+      # jump target INSIDE the loop but before the begin/ensure is
+      # (re-)entered, so a redo from inside one needs the same
+      # handler-draining treatment. Guards against a stale handler
+      # surviving across the redo the same way the break/next
+      # regression above guards against one surviving past a break.
+      #
+      # KNOWN RISK: this is the first test anywhere in this repo's
+      # history to actually EXECUTE redo through the VM (confirmed via
+      # grep — every prior reference is either a compile-time
+      # rejection test for redo-outside-a-loop, or this session's own
+      # additions) — so redo's runtime target (LoopScope#body_pos) has
+      # never been runtime-verified, with or without ensure involved.
+      # Bounded via an explicit instruction_limit (see the plain-
+      # redo isolation test just below) for the same reason: if this
+      # hangs again, it should fail loudly, not lock up the runner a
+      # second time.
+      limits = ExecutionLimits.new(instruction_limit: 10_000_u64)
+      interp, _ = make_interp(limits)
+      result = interp.eval(<<-RUBY)
+        side = []
+        tries = 0
+        count = 0
+        while count < 1
+          begin
+            tries += 1
+            if tries < 3
+              redo
+            end
+          ensure
+            side << tries
+          end
+          count += 1
+        end
+        side
+      RUBY
+      result.as_array.map(&.as_int).should eq [1_i64, 2_i64, 3_i64]
+    end
+
+    it "a bare redo with no ensure involved terminates (isolates whether " \
+       "redo's own jump target is the problem, independent of ensure) " \
+       "— bounded so a real infinite loop fails loudly instead of hanging" do
+      # Deliberately minimal — no begin/ensure at all — to separate
+      # "redo's basic runtime jump target is broken" (pre-existing,
+      # this session never touched compile_while's body_pos value
+      # itself) from "the ensure-drain this session added breaks
+      # redo" (the thing actually in scope here). Uses an explicit
+      # instruction_limit (not the shared eval() helper, which has
+      # none) specifically because THIS test's whole purpose is
+      # checking whether redo terminates at all — an unbounded eval
+      # here would just reproduce the same hang blind a second time
+      # if the answer turns out to be "no."
+      limits = ExecutionLimits.new(instruction_limit: 10_000_u64)
+      interp, _ = make_interp(limits)
+      result = interp.eval(<<-RUBY)
+        tries = 0
+        while tries < 1
+          tries += 1
+          if tries < 3
+            redo
+          end
+        end
+        tries
+      RUBY
+      result.should eq Value.int(3_i64)
+    end
+  end
 end

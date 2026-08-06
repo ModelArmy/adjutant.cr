@@ -24,45 +24,6 @@ Blocking, or actively causing incorrect behavior in normal use. Ordered
 roughly by dependency, not necessarily by importance — an item lower down
 may unblock ones above it.
 
-- **`break`/`next` inside a `begin`/`rescue`/`ensure` region silently
-  skip the `ensure` body and leave a stale exception handler on the
-  stack.** Found 2026-08-05 during a full sweep of upstream mruby's
-  `test/t/exception.rb` (two tests not carried into
-  `spec/scripts/mruby/exception.rb`: "break value from begin/rescue/
-  ensure in while loop", "next inside rescue continues the loop").
-  `compile_break`/`compile_next` (`compiler.cr`) emit a bare
-  `Op::Jump` straight to the loop's break-list or start position,
-  consulting only `@loop_stack` — which has no interaction at all with
-  `begin`/`rescue`/`ensure` compilation. The VM's exception machinery
-  (`f.handlers`, pushed by `Op::Try`/`Op::SetEnsure`, popped by
-  `Op::EnterEnsure`) assumes control reaches `EnterEnsure` either
-  through normal fallthrough or the error-unwind loop — neither of
-  which a `break`/`next`-triggered jump goes through. Concretely:
-
-  ```ruby
-  while true
-    begin
-      break 123
-    ensure
-      side << :ensure   # never runs — silently skipped
-    end
-  end
-  ```
-
-  Two bugs bundled together: the `ensure` body's side effects are
-  silently dropped (no error, just skipped), and the `HandlerEntry` that
-  `Try`/`SetEnsure` pushed is never popped — a stale handler left on
-  `f.handlers` that could wrongly intercept a later, unrelated error in
-  the same frame. This is the same "silently do something different
-  from what was written" failure class as the `===` bug below, and
-  worse in one respect: there's no error at all to notice, so a script
-  author has no signal anything went wrong. Fix needs `break`/`next` to
-  route through the same ensure-running path `raise`/normal completion
-  already use, rather than a bare `Op::Jump`, when the jump target is
-  outside the current try/ensure region — likely means `@loop_stack`
-  (or a parallel structure) needs to track try/ensure nesting depth at
-  the point a `break`/`next` is compiled, not just loop nesting.
-
 - **Multi-target assignment (`a, b = 1, 2`, `a, b = some_array`)
   doesn't parse at all.** Found 2026-08-05 in the same mruby sweep,
   superseding and more severe than the `c = b = 5`

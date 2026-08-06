@@ -520,6 +520,67 @@ errors if a script tries to define `self.method_added` expecting it to
 be called automatically — nothing currently invokes it either way, so
 defining it silently does nothing rather than erroring.
 
+### U016 — `begin...end while cond` / `begin...end until cond` (do-while)
+
+Real Ruby gives this one specific form of the `while`/`until`
+modifier different semantics than every other use of the same keyword:
+wrapping a `begin...end` block runs the body once *before* the first
+condition check (do-while), where `expr while cond` for any other
+expression always checks first and may run zero times — `x -= 1 while
+x > 10` never touches `x` if `x` starts at `10`, but `begin; x -= 1;
+end while x > 10` decrements it once regardless. Adjutant supports the
+ordinary form (`expr while cond`, checking first, same as `while
+cond...end` written postfix); this entry excludes only the `begin`-
+wrapped form.
+
+**Why:** decided 2026-08-06. Found while tracing a bug in
+`compile_modifier_while` (`compiler.cr`): that method compiled every
+`ModifierWhile` node with check-*last* semantics unconditionally,
+correct only for the `begin`-wrapped form and silently wrong for
+the far more common plain-expression one — no test anywhere had
+exercised either form at the VM level before, so neither the bug
+nor the distinction it depended on had ever surfaced. Fixing the
+plain-expression case properly meant deciding what to do with the
+do-while case it had been conflated with, rather than trying to make
+one AST shape (`ModifierWhile` wrapping a `BeginNode`) silently mean
+something different from every other `ModifierWhile` depending on what
+it happens to wrap. The do-while form is also easy to misread — the
+body always runs once before the condition is checked at all, unlike
+every other `while`/`until` — and it's rarely used and generally
+discouraged in Ruby style guides for that exact reason. Adjutant
+already has `while`/`until` covering the same need with the check made
+explicit and visible rather than implied by which block-opening
+keyword was used.
+
+**Instead:** use `loop` with a `break` for the exit check — it runs
+the body once by construction, with no repetition of the body itself:
+`begin; body; end while cond` becomes `loop do; body; break unless
+cond; end`.
+
+**Enforcement — active since 2026-08-06, both forms, at the point
+each reaches the pipeline stage that can tell them apart.** A bare
+`begin...end while cond` statement (no assignment — by far the more
+natural way to write this) is caught at *parse* time
+(`Parser#reject_do_while`, checking for a `while`/`until` token
+immediately following a `begin...end` statement, before any
+`ModifierWhile` node is ever built for it) since that form would
+otherwise fall through to a confusing, unrelated "`while` is missing
+its `end`" (P003) with no hint that `begin`/`ensure` had anything to
+do with it. The assigned form (`x = begin...end while cond`, and its
+`+=`/`-=`/`*=`/`/=`/`%=`/`||=`/`&&=` siblings) does reach a real
+`ModifierWhile` node, so it's caught at *compile* time instead
+(`Compiler#compile_modifier_while`, via the `do_while_begin` helper,
+which unwraps one layer of assignment before checking for a
+`BeginNode` — an earlier version of this check tested the
+`ModifierWhile`'s body directly and missed every assigned case, since
+the body there is the assignment itself, not the `begin...end`) — two
+different pipeline stages for the same construct, not two different
+decisions; each is simply the earliest point that form's shape is
+actually knowable. Verified via `vm_spec.cr` (the check-first fix for
+the ordinary form), `parser_spec.cr` (the bare-statement rejection),
+and `compiler_spec.cr` (the assigned-form rejection, including the
+compound-assignment case).
+
 ---
 
 ## 2. Design decisions with no script-visible surface
