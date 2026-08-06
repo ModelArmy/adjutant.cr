@@ -282,5 +282,17 @@ module Adjutant
         result.as_array.map(&.as_int).should eq [10, 99, 30]
       end
     end
+
+    it "indexes into an array" do
+      eval("[10, 20, 30][1]").as_int.should eq 20_i64
+    end
+
+    it "indexes with negative index" do
+      eval("[1, 2, 3][-1]").as_int.should eq 3_i64
+    end
+
+    it "assigns to an array index" do
+      eval("a = [1, 2, 3]\na[0] = 99\na[0]").as_int.should eq 99_i64
+    end
   end
 end

@@ -1,4 +1,4 @@
-require "../spec_helper"
+require "../../spec_helper"
 
 module Adjutant
   # Chunk 1 of typed exceptions: begin/rescue actually catching a raised

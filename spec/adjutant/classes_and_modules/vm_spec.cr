@@ -1,6 +1,247 @@
-require "../spec_helper"
+require "../../spec_helper"
 
 module Adjutant
+  describe Interpreter do
+    # Op::SetConstant hardening, added 2026-07-18 ahead of Piece D (see
+    # SCOPE.md): real Ruby only WARNS on constant reassignment (still
+    # permits it); Adjutant deliberately makes it a hard error, so a
+    # constant-valued Lambda passed as a call argument can be trusted
+    # to be staticaly resolvable by RiskWalker — nothing else in the
+    # same script could have quietly reassigned it first. Covers both
+    # branches of Op::SetConstant's target-vs-@globals split: a
+    # top-level `FOO = 1` (target is nil — main is a RubyObject, not a
+    # RubyClass, and top-level code has no lexical_scope) and a
+    # constant defined inside a class/module body (target is that
+    # RubyClass, via target.constants) both need the same guard; this
+    # was a real bug in an earlier draft of the fix (the guard was
+    # first written narrowly, only catching @globals-routed
+    # reassignment for rclass-valued — i.e. class-name — constants,
+    # which would have silently let a plain top-level `FOO = 1; FOO =
+    # 2` back through).
+    describe "constants" do
+      it "a plain top-level constant assigned once works normally" do
+        eval("FOO = 1\nFOO").as_int.should eq 1
+      end
+
+      it "reassigning a plain top-level constant raises" do
+        expect_raises(RuntimeError, /already initialized/) do
+          eval("FOO = 1\nFOO = 2")
+        end
+      end
+
+      it "reassigning a constant defined inside a class body raises" do
+        expect_raises(RuntimeError, /already initialized/) do
+          eval(<<-RUBY)
+          class Foo
+            BAR = 1
+            BAR = 2
+          end
+          RUBY
+        end
+      end
+
+      it "the same constant name in two DIFFERENT classes does not collide" do
+        # target.constants is per-RubyClass — Foo::BAR and Baz::BAR are
+        # unrelated slots, confirming the guard checks the right Hash,
+        # not some shared/global one.
+        result = eval(<<-RUBY)
+        class Foo
+          BAR = 1
+        end
+        class Baz
+          BAR = 2
+        end
+        [Foo::BAR, Baz::BAR]
+        RUBY
+        result.as_array.map(&.as_int).should eq [1, 2]
+      end
+
+      it "defining a class once works normally" do
+        eval(<<-RUBY).as_int.should eq 5
+        class Foo
+          def five; 5; end
+        end
+        Foo.new.five
+        RUBY
+      end
+
+      it "reopening (redefining) a class raises rather than silently discarding the first body" do
+        # Previously: Op::MakeClass always allocated a fresh,
+        # disconnected RubyClass and Op::SetConstant just overwrote the
+        # constant slot — `five` from the first body was silently
+        # lost, not a compile/runtime error. See UNSUPPORTED.md's U003,
+        # class/module reopening, for why real reopening isn't being
+        # built instead.
+        # Reports as U003 (reopening) rather than the generic
+        # constant-reassignment fault: both come from the same
+        # assign-once guard, but a reader who reopened a class needs to
+        # know that construct is never coming, not that some constant
+        # rule fired. Asserting on the code, which is stable, rather
+        # than the wording, which is not.
+        error = expect_raises(RuntimeError) do
+          eval(<<-RUBY)
+          class Foo
+            def five; 5; end
+          end
+          class Foo
+            def six; 6; end
+          end
+          RUBY
+        end
+        error.diagnostic.not_nil!.code.should eq("U003")
+      end
+
+      it "reopening a builtin class also raises, same policy" do
+        # Builtin classes (Integer, String, Array, ...) are registered
+        # into the same @globals constant space as script-defined ones
+        # during Interpreter bootstrap (see
+        # Interpreter#define_global_class) — so this is the SAME
+        # SetConstant path and guard, not a special case. Real Ruby's
+        # most common reopening use case (monkey-patching a builtin) is
+        # therefore also a hard error now, consistent with the
+        # deliberate scope decision (UNSUPPORTED.md, U003), not an
+        # oversight.
+        error = expect_raises(RuntimeError) do
+          eval(<<-RUBY)
+          class String
+            def shout; upcase; end
+          end
+          RUBY
+        end
+        error.diagnostic.not_nil!.code.should eq("U003")
+      end
+
+      it "distinguishes an ordinary constant reassignment from a reopen" do
+        # Same guard, two different problems — the message used to
+        # conflate them, telling a script that had merely written
+        # `FOO = 1` twice about redefining classes.
+        error = expect_raises(RuntimeError) do
+          eval("FOO = 1\nFOO = 2")
+        end
+        error.diagnostic.not_nil!.code.should eq("R001")
+      end
+
+      it "attributes a native function's own failure to the native layer" do
+        # N001 exists so the provenance is unambiguous: Adjutant cannot
+        # tell whether the script passed something bad or the host's
+        # function is broken, and an R code would imply it had decided.
+        interp, _ = make_interp
+        interp.define_native("explode") { |_args| raise "boom" }
+        error = expect_raises(RuntimeError) { interp.eval("explode") }
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("N001")
+        diag.data["function"].should eq("explode")
+        diag.data["message"].should eq("boom")
+      end
+
+      it "reports a deliberately excluded method as excluded, not undefined" do
+        # The point of the whole exercise: "undefined" invites a retry
+        # with a variation, and every variation fails identically.
+        {"send" => "U005", "public_send" => "U005", "__send__" => "U005",
+         "method_missing" => "U005", "define_method" => "U005",
+         "eval" => "U006", "instance_eval" => "U006"}.each do |name, code|
+          error = expect_raises(RuntimeError) { eval(name) }
+          diag = error.diagnostic.not_nil!
+          diag.code.should eq(code)
+          diag.data["construct"].should eq(name)
+        end
+      end
+
+      it "lets a script define its own method that shares an excluded name" do
+        # This is why the check happens after resolution rather than at
+        # compile time. `class Mailer; def send; end; end` is valid Ruby
+        # and must stay valid here.
+        eval(<<-RUBY).as_string.should eq("delivered")
+          class Mailer
+            def send
+              "delivered"
+            end
+          end
+          Mailer.new.send
+        RUBY
+      end
+
+      it "still reports an ordinary unknown name as merely undefined" do
+        # The contrast that makes the distinction meaningful — an
+        # excluded name is permanent, a typo is not.
+        error = expect_raises(RuntimeError) { eval("no_such_thing") }
+        error.diagnostic.not_nil!.code.should eq("R008")
+      end
+
+      it "reports an excluded constant as excluded, not uninitialized" do
+        error = expect_raises(RuntimeError) { eval("ObjectSpace") }
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("U007")
+        diag.data["construct"].should eq("ObjectSpace")
+      end
+
+      it "stays rescuable as a NameError, like any unresolved name" do
+        # From the script's side the name genuinely does not resolve, so
+        # a script rescuing NameError should still catch it. The code is
+        # what says it will never resolve.
+        eval(<<-RUBY).as_string.should eq("caught")
+          begin
+            send(:anything)
+          rescue NameError
+            "caught"
+          end
+        RUBY
+      end
+
+      it "keeps NameError as the rescuable class for R008" do
+        # The diagnostic code and the script-visible class are set
+        # independently: R008 classifies the failure for the reader,
+        # while NameError is what real Ruby raises and therefore what a
+        # script must be able to rescue.
+        error = expect_raises(RuntimeError) do
+          eval("no_such_thing")
+        end
+        error.diagnostic.not_nil!.code.should eq("R008")
+        error.error_value.not_nil!.as_robject?.not_nil!.rclass.name.should eq("NameError")
+      end
+
+      it "names the type in script terms, not Crystal terms" do
+        # The old message interpolated `v.raw.class`, leaking Crystal
+        # type names at someone writing Ruby.
+        error = expect_raises(RuntimeError) do
+          eval("n = 0.0\n-n.to_s")
+        end
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("R005")
+        diag.data["operator"].should eq("-")
+        diag.data["type"].should eq("String")
+      end
+
+      it "collapses the four uninitialized-constant sites onto one code" do
+        error = expect_raises(RuntimeError) { eval("Nope") }
+        error.diagnostic.not_nil!.code.should eq("R003")
+        error.diagnostic.not_nil!.data["name"].should eq("Nope")
+      end
+
+      it "names the method that yielded without a block" do
+        error = expect_raises(RuntimeError) do
+          eval("def needs_block\n  yield\nend\nneeds_block")
+        end
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("R007")
+        diag.data["method"].should eq("needs_block")
+      end
+
+      it "reports U002 for Class.new, with a line but no column" do
+        # First VM-raised diagnostic: Frame records a line and no
+        # column, so this is the real exercise of the renderer's
+        # line-only degradation rather than a synthetic one.
+        error = expect_raises(RuntimeError) do
+          eval("x = Class.new")
+        end
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("U002")
+        diag.primary.not_nil!.column.should be_nil
+        diag.data["class"].should eq("Class")
+      end
+    end
+  end
+
   describe "Object model" do
     describe "class creation" do
       it "class becomes a real RubyClass, not a stub" do
