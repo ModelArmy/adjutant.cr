@@ -24,37 +24,6 @@ Blocking, or actively causing incorrect behavior in normal use. Ordered
 roughly by dependency, not necessarily by importance — an item lower down
 may unblock ones above it.
 
-- **Multi-target assignment (`a, b = 1, 2`, `a, b = some_array`)
-  doesn't parse at all.** Found 2026-08-05 in the same mruby sweep,
-  superseding and more severe than the `c = b = 5`
-  assignment-as-expression note in the Long-standing language gaps
-  bundle below (that note undersold this — chained assignment and
-  multi-target assignment are different gaps, and this one is the
-  more commonly hit of the two). Traced precisely: `ast.cr` has a full
-  `MultiAssign` node, and `compiler.cr` has a full
-  `compile_multi_assign` backed by a real `Op::MultiUnpack` opcode —
-  the machinery exists end to end and is presumably exercised by
-  something (worth confirming what, given nothing constructs the
-  node). The gap is narrowly in the parser: `maybe_assignment`
-  (`parser.cr`), the only place `Assign`/`MultiAssign` nodes get
-  built, is only ever entered with a single already-parsed `lhs` and
-  only checks for a bare `=` immediately after it — it never branches
-  on a following `Comma`. `parse_multi_rhs`'s own comment claims it
-  "wraps in MultiAssign if needed," but the actual code wraps in
-  `ArrayLiteral` instead — stale comment, not stale behavior; confirm
-  this doesn't reflect some other intended design before assuming it's
-  simply wrong. `for k, v in pairs` is unaffected — `ForNode` carries
-  `vars : Array(String)` independently of this path.
-
-  High value (basic, extremely common Ruby idiom — value-swapping,
-  unpacking a multi-value return, small-array destructuring — with no
-  clean workaround) against apparently low cost (the backing
-  implementation looks fully built; the fix may be limited to
-  detecting the comma in `maybe_assignment` and dispatching into the
-  existing `MultiAssign`/`Op::MultiUnpack` path) — worth confirming
-  that cost estimate holds up, but promising enough to prioritize
-  investigating first.
-
 - **`<=>` as the sole overloadable comparison hook; `<`/`<=`/`>`/`>=`
   dispatch through it for custom objects.** Decided 2026-08-05, in a
   design conversation prompted by the mruby-spec/operator survey (see

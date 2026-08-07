@@ -135,7 +135,7 @@ module Adjutant
     BlockBreak # break from a block iterator (value on stack)
 
     # Multi-assign
-    MultiUnpack # a=target_count, b=value_count — normalise RHS on stack
+    MultiUnpack # a=target_count, b=value_count — normalise RHS on stack; splats a single Array value when b=1 and a>1
 
     # Misc
     GetMethodName # push current method name as symbol

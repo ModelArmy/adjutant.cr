@@ -1147,6 +1147,13 @@ module Adjutant
             vc = inst.b.to_i
             values = @stack.last(vc)
             @stack.pop(vc) if vc > 0
+            # Real Ruby implicitly splats a single Array-valued RHS
+            # across multiple targets (`a, b = some_array`) — distinct
+            # from the vc > 1 case (`a, b = 1, 2`), where each value
+            # was already pushed separately by the compiler and is
+            # used as-is, matching Ruby's own asymmetry here (`a, b =
+            # [1, 2]` splats; `a, b = [1, 2], 3` does not).
+            values = values[0].as_array.to_a if vc == 1 && tc > 1 && values[0].array?
             # Pad or truncate to target count
             padded = Array(Value).new(tc) { |i| i < values.size ? values[i] : Value.nil_value }
             padded.each { |value| push(value) }

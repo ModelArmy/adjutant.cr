@@ -31,5 +31,21 @@ module Adjutant
         o.should_not contain(Op::SetGlobal)
       end
     end
+
+    describe "multi-target assignment" do
+      it "compiles a, b = 1, 2 with MultiUnpack, target_count 2, value_count 2" do
+        chunk = compile("a, b = 1, 2")
+        inst = chunk.code.find { |i| i.op == Op::MultiUnpack }.not_nil!
+        inst.a.should eq 2
+        inst.b.should eq 2
+      end
+
+      it "compiles a, b = xs with value_count 1 (splat is the VM's job, not the compiler's)" do
+        chunk = compile("a, b = xs")
+        inst = chunk.code.find { |i| i.op == Op::MultiUnpack }.not_nil!
+        inst.a.should eq 2
+        inst.b.should eq 1
+      end
+    end
   end
 end
