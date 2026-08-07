@@ -56,6 +56,56 @@ module Adjutant
         diag.data["method"].should eq("foo")
       end
 
+      # UNSUPPORTED.md, U017: every operator-token method name except
+      # `<=>` is rejected at compile time — real Ruby operator
+      # overloading Adjutant deliberately doesn't support, since every
+      # one of these compiles to a fixed opcode that never consults a
+      # class's method table. Found via a concrete example script
+      # defining X#<=/X#== that parsed cleanly and then silently
+      # evaluated both comparisons wrong, with no error anywhere —
+      # exactly the trap this guard exists to close.
+      it "rejects def == at compile time" do
+        expect_raises(CompileError, /cannot be redefined as a method/) do
+          compile("class X\ndef ==(o)\nend\nend")
+        end
+      end
+
+      it "rejects every overloadable operator name" do
+        %w(== < <= > >= + - * / % & | ^ << >>).each do |op|
+          expect_raises(CompileError) do
+            compile("class X\ndef #{op}(o)\nend\nend")
+          end
+        end
+      end
+
+      it "carries a U017 diagnostic naming the operator, caret on `def`" do
+        error = expect_raises(CompileError) do
+          compile("class X\ndef ==(o)\nend\nend")
+        end
+        diag = error.diagnostic
+        diag.should_not be_nil
+        diag = diag.not_nil!
+        diag.code.should eq("U017")
+        span = diag.primary.not_nil!
+        span.line.should eq(2)
+        span.column.should eq(1)
+        span.length.should eq(3)
+        diag.data["operator"].should eq("==")
+      end
+
+      it "does NOT reject <=> — the one deliberate exception" do
+        o = ops("class X\ndef <=>(o)\nend\nend")
+        o.should contain(Op::DefMethod)
+      end
+
+      it "does not reject an ordinary comparison method with a different name" do
+        # Regression check: the guard matches on exact operator names
+        # only — a same-shaped but differently-named method (the
+        # UNSUPPORTED.md-recommended workaround for ==) is untouched.
+        o = ops("class X\ndef eql_value?(o)\nend\nend")
+        o.should contain(Op::DefMethod)
+      end
+
       it "does not reject an ordinary block-consuming def that uses yield" do
         # Regression check for the guard above — yield doesn't declare
         # &blk as a param at all, so it must be completely unaffected.

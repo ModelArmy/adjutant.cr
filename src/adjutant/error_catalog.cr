@@ -510,6 +510,19 @@ module Adjutant
               "it runs the body once by construction, with no " \
               "repetition: `loop do; body; break unless cond; end`."
       ),
+      "U017" => Entry.new(
+        code: "U017",
+        summary: "`{operator}` cannot be redefined as a method",
+        why: "`{operator}` compiles to a fixed operation and never " \
+             "consults a class's own methods, so a method named " \
+             "`{operator}` would never actually run when the operator " \
+             "is used. `<=>` is the one exception — defining it lets " \
+             "`<`, `<=`, `>`, and `>=` use it automatically.",
+        help: "Define `<=>` instead if this is about ordering. " \
+              "Otherwise, use a differently-named method (e.g. " \
+              "`eql_value?`) and call it explicitly rather than via " \
+              "`{operator}`."
+      ),
       "R001" => Entry.new(
         code: "R001",
         summary: "constant `{name}` is already initialized",

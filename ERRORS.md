@@ -177,11 +177,13 @@ points because the two forms reach the point where the shape is
 knowable at two different stages of the pipeline, not two different
 decisions. See [UNSUPPORTED.md](./UNSUPPORTED.md) for the reasoning.
 
-**U017 status: decided, not yet enforced.** `def ==`/`def <`/`def +`/etc.
-currently parse successfully and silently do nothing — every operator
-except `<=>` compiles to a fixed opcode that never consults a class's
-method table. Tracked as a `Must Fix` item in [SCOPE.md](./SCOPE.md).
-See [UNSUPPORTED.md](./UNSUPPORTED.md) for the reasoning.
+**U017 status: actively enforced, compile time.** `def ==`/`def <`/
+`def +`/etc. (every operator except `<=>`) now raise U017 in
+`Compiler#compile_def` before the method is ever defined. `[]`/`[]=`
+need no enforcement of their own — like `===`, there's no combined
+`[]`/`[]=` lexer token, so `def [](i)` already fails to parse before
+reaching this check. See [UNSUPPORTED.md](./UNSUPPORTED.md) for the
+reasoning.
 
 ## F — Risk flow
 

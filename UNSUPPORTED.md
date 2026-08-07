@@ -590,9 +590,11 @@ compound-assignment case).
 ### U017 — Operator-method overloading (`def ==`, `def <`, `def +`, ...)
 
 Defining a method whose name is an operator token (`==`, `<`, `<=`, `>`,
-`>=`, `+`, `-`, `*`, `/`, `%`, `&`, `|`, `^`, `<<`, `>>`, `[]`, `[]=`, ...)
-on a script class, intending the corresponding infix operator to invoke
-it — real Ruby's operator-overloading mechanism.
+`>=`, `+`, `-`, `*`, `/`, `%`, `&`, `|`, `^`, `<<`, `>>`, ...) on a
+script class, intending the corresponding infix operator to invoke
+it — real Ruby's operator-overloading mechanism. `[]`/`[]=` are the
+same idea but structurally can't even be written — see the
+Enforcement note below.
 
 **Why:** decided 2026-08-06, found while working the `<=>` item above.
 Every one of these operators (`==` included) compiles to a dedicated
@@ -626,8 +628,22 @@ failed two assertions silently (`x <= 5` evaluated to `false`,
 operands). For `==`, define a differently-named method (`eql_value?`,
 `same_as?`, ...) and call it explicitly rather than via `==`.
 
-**Enforcement — not yet enforced.** Tracked as a `Must Fix` item in
-[SCOPE.md](./SCOPE.md).
+**Enforcement — active since 2026-08-06, compile time, for every name
+in the set** (`==`, `<`, `<=`, `>`, `>=`, `+`, `-`, `*`, `/`, `%`, `&`,
+`|`, `^`, `<<`, `>>`). `Compiler#compile_def` (`OVERLOADABLE_OPERATOR_
+NAMES`) checks the method name before anything else about the def,
+raising a structured `U017` with a caret on the `def` keyword (same
+tradeoff `U004` already makes — no end position for the name token
+itself, and three characters that are always right beats a longer
+span that's only usually right). `[]`/`[]=` are deliberately absent
+from that set, not an oversight: like `===`, there's no combined
+`[]`/`[]=` lexer token — `[`/`]` are separate tokens, so `parse_def`
+(which blindly takes whatever single token follows `def` as the name)
+already can't produce a `DefNode` named `[]` at all; it grabs `[`
+alone and trips on the stray `]` with an unrelated, confusing parse
+error before ever reaching this check. Verified via
+`methods_and_calls/compiler_spec.cr`'s U017 specs, covering the
+`<=>`-is-exempt regression case directly.
 
 ---
 
