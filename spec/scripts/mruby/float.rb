@@ -113,19 +113,19 @@ assert('Float#%', '15.2.9.3.5') do
   assert_float(0.125, b)
 end
 
-# assert('Float#<=>', '15.2.9.3.6') do
-#   a = 3.125 <=> 3.123
-#   b = 3.125 <=> 3.125
-#   c = 3.125 <=> 3.126
-#   a2 = 3.125 <=> 3
-#   c2 = 3.125 <=> 4
+assert('Float#<=>', '15.2.9.3.6') do
+  a = 3.125 <=> 3.123
+  b = 3.125 <=> 3.125
+  c = 3.125 <=> 3.126
+  a2 = 3.125 <=> 3
+  c2 = 3.125 <=> 4
 
-#   assert_equal( 1, a)
-#   assert_equal( 0, b)
-#   assert_equal(-1, c)
-#   assert_equal( 1, a2)
-#   assert_equal(-1, c2)
-# end
+  assert_equal( 1, a)
+  assert_equal( 0, b)
+  assert_equal(-1, c)
+  assert_equal( 1, a2)
+  assert_equal(-1, c2)
+end
 
 assert('Float#==', '15.2.9.3.7') do
   assert_true 3.1 == 3.1
