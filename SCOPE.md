@@ -198,30 +198,6 @@ may unblock ones above it.
   runtime check per operand kind (literal/expression, `self`, local,
   method, constant, global — the last excluded per U011 either way).
 
-- **Reject operator-method overloading (`def ==`, `def <`, `def +`, and
-  every other operator-token method name except `<=>`) at compile
-  time.** Found 2026-08-06, while working the `<=>` item above — a
-  concrete example script defined `X#<=` and `X#==`, both parsed
-  successfully with no error, and both silently did nothing (`x <= 5`
-  and `3 == x` each evaluated to `false` with no hint why), because
-  every operator except `<=>` compiles to a fixed opcode
-  (`Op::Eq`/`Op::Lt`/`Op::Add`/...) that never consults a class's
-  method table. Unlike `===` (which can't even be written — no `===`
-  lexer token exists), every one of these operators already has its
-  own real token, and `parse_def` accepts any token as a method name
-  with no restriction — so the trap is real and reachable today, not
-  hypothetical. Direct violation of `UNSUPPORTED.md`'s own stated
-  principle: an unsupported construct must fail loudly, never
-  silently do something different from what was written. See
-  `UNSUPPORTED.md`'s new `U017` entry for the reasoning and full
-  operator list; this item is the enforcement work for it —
-  `Compiler#compile_def` is the natural site, same place `U001`/`U004`
-  already reject their own constructs, checking the method name
-  against the operator token set (with `<=>` explicitly exempted, per
-  the item above).
-
-
-
 Real gaps, not currently blocking anything, no active design conversation
 yet. Promote to `Must Fix` when something starts depending on it.
 

@@ -1013,6 +1013,34 @@ module Adjutant
     # How the definition was written, for diagnostics: `def foo`,
     # `def self.foo`, `def obj.foo`. Reconstructed rather than sliced
     # out of the source, since the compiler has no access to it.
+    # Every operator-token method name except `<=>` — see
+    # UNSUPPORTED.md's U017. `<=>` is the one deliberate exception (see
+    # SCOPE.md's Must Fix entry): `Op::Lt`/`Le`/`Gt`/`Ge` dispatch
+    # through a script-defined `<=>` for `RubyObject` operands, but
+    # every other operator (arithmetic, `==`, indexing) compiles to a
+    # fixed opcode that never consults a class's method table, so a
+    # method by one of these names would parse cleanly and then never
+    # actually run — exactly the silent trap this set exists to catch
+    # instead. Real Ruby's `<=>`/`Comparable` split is the model:
+    # `<=>` is overridable, plain `==` (`Object#==`, identity by
+    # default) deliberately is not derived from it, and neither is
+    # anything else here.
+    #
+    # `[]`/`[]=` are deliberately NOT in this set, alongside `===`
+    # (see UNSUPPORTED.md) — same reason, not an oversight: `[` and
+    # `]` are separate lexer tokens with no combined `[]`/`[]=` token,
+    # so `parse_def` (which takes whatever single token follows `def`
+    # as the name, unconditionally) already can't produce a `DefNode`
+    # with that name at all; it grabs `[` alone, then trips on the
+    # stray `]` with a confusing, unrelated parse error, structurally
+    # identical to the `===` case. A name this check will never see
+    # doesn't belong in the set actually being checked against.
+    OVERLOADABLE_OPERATOR_NAMES = Set{
+      "==", "<", "<=", ">", ">=",
+      "+", "-", "*", "/", "%",
+      "&", "|", "^", "<<", ">>",
+    }
+
     private def def_signature(node : DefNode) : String
       prefix =
         case recv = node.receiver
@@ -1024,6 +1052,31 @@ module Adjutant
     end
 
     private def compile_def(node : DefNode) : Nil
+      if OVERLOADABLE_OPERATOR_NAMES.includes?(node.name)
+        # Checked before @def_depth (below) and before any other
+        # compile_def work — this rejects the method name itself,
+        # independent of nesting or anything else about the def.
+        # Carets the `def` keyword, not the operator name itself:
+        # `DefNode` has no end position, and the name's own column
+        # would need reconstructing through an optional `self.`/
+        # `recv.` prefix of variable width to land correctly (see
+        # def_signature above) — same tradeoff U004 below already
+        # makes for the identical reason, three characters that are
+        # always right beating a longer span that's only usually
+        # right.
+        raise CompileError.new(
+          Diagnostic.new(
+            code: "U017",
+            primary: Span.new(
+              line: node.line,
+              column: node.column,
+              length: 3,
+              label: "not overloadable"
+            ),
+            data: {"operator" => node.name}
+          )
+        )
+      end
       if @def_depth > 0
         # Rejects `def`/`def self.foo` lexically nested inside ANOTHER
         # `def`'s (or lambda's) body — e.g. `def outer; def inner;
