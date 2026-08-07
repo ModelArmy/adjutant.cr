@@ -67,6 +67,24 @@ may unblock ones above it.
   general operator overloading" decision. This item is the one
   deliberate, narrow exception, not a step toward broader overloading.
 
+  **Confirmed explicitly, 2026-08-06 — `==` stays out too, and the
+  scope question was asked directly and declined.** A concrete example
+  surfaced during this item's own implementation: a script defining
+  both `X#<=` and `X#==`, expecting real operator overloading (`x <=
+  5`, `3 == x`) — today both parse (see `UNSUPPORTED.md`'s new `U017`)
+  and silently evaluate to `false`. The question of whether to widen
+  this item's scope to make `==` (or the rest) genuinely overridable
+  too was raised and explicitly declined: `<=>` remains the *only*
+  overridable comparison. `Op::Lt`/`Le`/`Gt`/`Ge` check for `<=>`
+  availability and dispatch through it *only* when a `RubyObject`
+  operand is actually involved — ordinary Integer/Float/String
+  comparison is completely untouched by this item, still going
+  straight through `ValueOps` exactly as before. `def ==`/`def <`/etc.
+  on a script class remain inert, and `UNSUPPORTED.md`'s `U017` (new,
+  same session) is what turns that from a silent trap into a loud,
+  named error — see this file's own new Must Fix entry above for that
+  enforcement work.
+
 - **`===` fallback semantics for `Class` and `Range` — a correctness
   bug, not a new capability.** Also surfaced 2026-08-05 in the same
   session. `case/when` already compiles to a genuine `Op::Call` of
@@ -180,9 +198,29 @@ may unblock ones above it.
   runtime check per operand kind (literal/expression, `self`, local,
   method, constant, global — the last excluded per U011 either way).
 
-Empty otherwise as of 2026-08-04
+- **Reject operator-method overloading (`def ==`, `def <`, `def +`, and
+  every other operator-token method name except `<=>`) at compile
+  time.** Found 2026-08-06, while working the `<=>` item above — a
+  concrete example script defined `X#<=` and `X#==`, both parsed
+  successfully with no error, and both silently did nothing (`x <= 5`
+  and `3 == x` each evaluated to `false` with no hint why), because
+  every operator except `<=>` compiles to a fixed opcode
+  (`Op::Eq`/`Op::Lt`/`Op::Add`/...) that never consults a class's
+  method table. Unlike `===` (which can't even be written — no `===`
+  lexer token exists), every one of these operators already has its
+  own real token, and `parse_def` accepts any token as a method name
+  with no restriction — so the trap is real and reachable today, not
+  hypothetical. Direct violation of `UNSUPPORTED.md`'s own stated
+  principle: an unsupported construct must fail loudly, never
+  silently do something different from what was written. See
+  `UNSUPPORTED.md`'s new `U017` entry for the reasoning and full
+  operator list; this item is the enforcement work for it —
+  `Compiler#compile_def` is the natural site, same place `U001`/`U004`
+  already reject their own constructs, checking the method name
+  against the operator token set (with `<=>` explicitly exempted, per
+  the item above).
 
-## Will Fix
+
 
 Real gaps, not currently blocking anything, no active design conversation
 yet. Promote to `Must Fix` when something starts depending on it.

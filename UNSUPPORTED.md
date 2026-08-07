@@ -587,6 +587,50 @@ compound-assignment case).
 
 ---
 
+### U017 — Operator-method overloading (`def ==`, `def <`, `def +`, ...)
+
+Defining a method whose name is an operator token (`==`, `<`, `<=`, `>`,
+`>=`, `+`, `-`, `*`, `/`, `%`, `&`, `|`, `^`, `<<`, `>>`, `[]`, `[]=`, ...)
+on a script class, intending the corresponding infix operator to invoke
+it — real Ruby's operator-overloading mechanism.
+
+**Why:** decided 2026-08-06, found while working the `<=>` item above.
+Every one of these operators (`==` included) compiles to a dedicated
+opcode (`Op::Eq`, `Op::Lt`, `Op::Add`, ...) that goes straight to
+`ValueOps`, which never consults a class's method table — this is the
+same "arithmetic and indexing stay fixed-opcode" reaffirmation the
+`<=>` decision above already makes, extended explicitly to cover `==`
+too, which that decision's own text deliberately excludes from
+`<=>`-derivation (real Ruby's plain `Object#==` is identity, not
+`Comparable`-derived). `<=>` remains the one, sole exception — this
+entry closes the door on every other operator, including `==`, not
+just the ones `<=>` doesn't already cover.
+
+**The concrete trap this closes:** unlike `===` (U-series' other
+operator-shaped exclusion, which can't even be written — no `===`
+lexer token exists), every operator above already has its own real
+token, and `parse_def` accepts any token as a method name with no
+restriction — so `def ==(other)`/`def <=(other)`/etc. parse
+successfully today, get stored as real methods on the class, and are
+never called by the corresponding infix operator. This is a direct
+violation of this file's own stated principle ("never silently do
+something different from what was written") — worse than an outright
+parse error, since it looks like correct, working Ruby right up until
+a comparison silently returns the wrong answer. Found via a concrete
+example script defining `X#<=`/`X#==` that parsed cleanly and then
+failed two assertions silently (`x <= 5` evaluated to `false`,
+`3 == x` evaluated to `false`) with no error anywhere.
+
+**Instead:** define `<=>` for ordering (see the `Must Fix` entry above
+— `<`/`<=`/`>`/`>=` will dispatch through it for `RubyObject`
+operands). For `==`, define a differently-named method (`eql_value?`,
+`same_as?`, ...) and call it explicitly rather than via `==`.
+
+**Enforcement — not yet enforced.** Tracked as a `Must Fix` item in
+[SCOPE.md](./SCOPE.md).
+
+---
+
 ## 2. Design decisions with no script-visible surface
 
 These are closed decisions about Adjutant's own API shape. No script can
