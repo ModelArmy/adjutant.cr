@@ -165,6 +165,8 @@ may unblock ones above it.
   runtime check per operand kind (literal/expression, `self`, local,
   method, constant, global — the last excluded per U011 either way).
 
+## Will Fix
+
 Real gaps, not currently blocking anything, no active design conversation
 yet. Promote to `Must Fix` when something starts depending on it.
 
@@ -175,6 +177,32 @@ still roughly ordered by how cheap/independent the fix is.
 
 Small, mechanical, independent of each other — good candidates for quick
 wins.
+
+- **A real `"==="` lexer token, so `def ===` gets a clean `U017`
+  rejection instead of a confusing parse error.** Noted 2026-08-06,
+  during the `<=>` item's own work. `"==="` isn't a real token today —
+  the lexer only has `EqEq`/`Eq`, so `def ===(n)` splits into those
+  two and fails with `P002` (`` `=` can't start an expression here``)
+  pointing at the stray third `=`, not at `===` itself — confirmed via
+  a live repro. `U017` already rejects every other operator-token
+  method name at compile time with a clear, named error; `===` is the
+  one operator in that family that can't reach `U017`'s check at all,
+  because it can't even finish parsing far enough to get there. Same
+  diagnostic-quality reasoning `U017` itself was built on (a
+  script/LLM hitting a confusing, unrelated-looking error is worse
+  than one hitting a clear, named one) — this is that same fix,
+  applied to the one operator it missed for a structural reason, not a
+  design one.
+
+  Scope: a new lexer token for `"==="` (maximal-munch ahead of the
+  existing `EqEq` case — `"===" ` must win over `"=="` + stray `"="`),
+  and `"==="` added to `compiler.cr`'s `OVERLOADABLE_OPERATOR_NAMES`
+  set alongside the others. Deliberately NOT added to the
+  `PRECEDENCE` table — `a === b` as general infix syntax isn't being
+  requested and isn't how real Ruby scripts normally write it either
+  (`case/when` is); adding the token only for `def` name-position
+  parsing avoids reopening any "is `===` becoming a real operator"
+  question this doesn't need to ask.
 
 - **Call-site splat/double-splat expansion (`foo(*args)`,
   `foo(**opts)`), and `def foo(...); bar(...); end` argument-forwarding
