@@ -180,6 +180,35 @@ module Adjutant
       end
     end
 
+    # `<=>`'s own dispatch for base types — what `<`/`<=`/`>`/`>=`
+    # (above) are themselves defined FROM in real Ruby, and the piece
+    # that was actually missing until now: `compare` gives one boolean
+    # per op, but the literal `<=>` operator (compile_spaceship, in
+    # compiler.cr) needs a real sign, and had nothing to call — no
+    # opcode, no exec_builtin case, nothing (see builtins/float.cr's
+    # own note, which already flagged this). Mirrors `compare`'s type
+    # cases exactly, but returns nil for a pairing it doesn't
+    # recognize rather than a boolean default — deriving from
+    # `compare(:<)`/`compare(:>)` directly would conflate "genuinely
+    # equal" with "genuinely incomparable" (both look like neither
+    # `<` nor `>`), which real Ruby's own `<=>` (nil for incomparable)
+    # distinguishes and script code can reasonably depend on.
+    # ameba:disable Metrics/CyclomaticComplexity
+    def self.spaceship(a : Value, b : Value) : Int32?
+      case
+      when a.int? && b.int?
+        a.as_int <=> b.as_int
+      when (a.int? || a.float?) && (b.int? || b.float?)
+        fa = a.int? ? a.as_int.to_f64 : a.as_float
+        fb = b.int? ? b.as_int.to_f64 : b.as_float
+        fa <=> fb
+      when a.string? && b.string?
+        a.as_string <=> b.as_string
+      else
+        nil
+      end
+    end
+
     # Never fails — an unrecognized/mismatched type pairing is simply
     # `false`, matching real Ruby's `==` (never raises by default). No
     # `on_error` to thread through.

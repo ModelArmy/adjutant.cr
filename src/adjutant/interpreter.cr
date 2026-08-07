@@ -124,7 +124,7 @@ module Adjutant
     end
 
     def compare(a : Value, b : Value, op : Symbol) : Bool
-      @vm.compare(a, b, op)
+      @vm.compare(a, b, op, filename, line)
     end
 
     def call_method(recv : Value, name : String, args : Array(Value)) : Value

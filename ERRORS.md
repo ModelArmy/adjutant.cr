@@ -85,20 +85,21 @@ The script parsed, but was rejected before running.
 
 Something went wrong while the script was running.
 
-|Code|Meaning                                               |Placeholders      |
-|----|------------------------------------------------------|------------------|
-|R001|Constant assigned a second time                       |`name`            |
-|R002|Class variable used outside a class or module body    |—                 |
-|R003|Uninitialized constant                                |`name`            |
-|R004|`::` used on something that isn't a class or module   |`value`           |
-|R005|Unary operator not applicable to this type            |`operator`, `type`|
-|R006|Method definition with no class or module to attach to|`definition`      |
-|R007|`yield` reached, but no block was passed              |`method`          |
-|R008|Undefined method or variable                          |`name`            |
-|R009|Modules cannot be instantiated                        |`module`          |
-|R010|`require` cannot find the named module                |`path`            |
-|R011|Missing a required keyword argument                   |`name`, `method`  |
-|R012|Passed a keyword argument the method doesn't declare  |`name`, `method`  |
+|Code|Meaning                                               |Placeholders            |
+|----|------------------------------------------------------|------------------------|
+|R001|Constant assigned a second time                       |`name`                  |
+|R002|Class variable used outside a class or module body    |—                       |
+|R003|Uninitialized constant                                |`name`                  |
+|R004|`::` used on something that isn't a class or module   |`value`                 |
+|R005|Unary operator not applicable to this type            |`operator`, `type`      |
+|R006|Method definition with no class or module to attach to|`definition`            |
+|R007|`yield` reached, but no block was passed              |`method`                |
+|R008|Undefined method or variable                          |`name`                  |
+|R009|Modules cannot be instantiated                        |`module`                |
+|R010|`require` cannot find the named module                |`path`                  |
+|R011|Missing a required keyword argument                   |`name`, `method`        |
+|R012|Passed a keyword argument the method doesn't declare  |`name`, `method`        |
+|R013|`<=>` returned a non-integer for `<`/`<=`/`>`/`>=`    |`left`, `right`, `value`|
 
 Scripts can `rescue` these. R008 raises a `NameError`, matching Ruby;
 R011 and R012 raise `ArgumentError`, also matching Ruby; the rest raise

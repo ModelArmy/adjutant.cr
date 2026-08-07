@@ -677,7 +677,17 @@ module Adjutant
       nil_idx = @chunk.add_const(Value.nil_value)
       @chunk.emit(Op::Const, node.line, c: nil_idx)
       @chunk.emit(Op::SetBlock, node.line)
-      @chunk.emit(Op::Call, node.line, a: 2_u8, c: sym_idx)
+      # `b: 0b10` marks `node.left` (already on the stack, pushed first
+      # above) as the RECEIVER, not a plain argument — the same
+      # receiver bit `compile_call` sets for every ordinary `.` call.
+      # Without it, `dispatch_call` never even attempts receiver-based
+      # method lookup on `left`; it falls through to implicit-self
+      # dispatch against whatever frame happens to be compiling `<=>`,
+      # which is essentially never `left`'s own class. Found
+      # 2026-08-06 while wiring `<`/`<=`/`>`/`>=` through `<=>` (see
+      # SCOPE.md) — a real, independent bug that predates this item:
+      # `a <=> b` has never actually dispatched on `a` at all.
+      @chunk.emit(Op::Call, node.line, a: 2_u8, b: 0b10_u16, c: sym_idx)
     end
 
     # ameba:disable Metrics/CyclomaticComplexity

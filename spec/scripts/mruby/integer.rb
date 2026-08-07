@@ -87,15 +87,15 @@ assert('Integer#%', '15.2.8.3.5') do
   assert_equal 0.0, j
 end
 
-# assert('Integer#<=>', '15.2.9.3.6') do
-#   a = 1<=>0
-#   b = 1<=>1
-#   c = 1<=>2
+assert('Integer#<=>', '15.2.9.3.6') do
+  a = 1<=>0
+  b = 1<=>1
+  c = 1<=>2
 
-#   assert_equal  1, a
-#   assert_equal  0, b
-#   assert_equal(-1, c)
-# end
+  assert_equal  1, a
+  assert_equal  0, b
+  assert_equal(-1, c)
+end
 
 assert('Integer#==', '15.2.8.3.7') do
   a = 1==0

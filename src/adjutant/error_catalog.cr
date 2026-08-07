@@ -173,6 +173,18 @@ module Adjutant
         help: "Check the spelling against `{method}`'s declared " \
               "parameters, or drop the keyword if it isn't needed."
       ),
+      "R013" => Entry.new(
+        code: "R013",
+        summary: "comparison of {left} with {right} failed",
+        why: "`<`/`<=`/`>`/`>=` derive their result from `<=>`'s " \
+             "return value, which has to be a real integer sign " \
+             "(negative/zero/positive). `{left}#<=>` returned `{value}` " \
+             "instead, which doesn't say which side is greater.",
+        help: "Make `{left}#<=>` return an integer for every input it " \
+              "accepts, or `nil` only for genuinely unorderable pairs " \
+              "the caller should be prepared to handle separately " \
+              "rather than compare directly with `<`/`<=`/`>`/`>=`."
+      ),
 
       # --- L: limits reached ----------------------------------------
       #
