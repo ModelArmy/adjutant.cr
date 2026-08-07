@@ -35,8 +35,8 @@ module Adjutant
         # bytecode (one Const, not Const+Neg) — and, more importantly,
         # this is what makes `-0.0.to_s` group as `(-0.0).to_s` instead
         # of `-(0.0.to_s)` (see the "does not compile Op::Neg" spec
-        # right below, and vm_spec.cr's coverage of the actual
-        # to_s-grouping bug this was found from).
+        # right below, and operators/vm_spec.cr's coverage of the
+        # actual to_s-grouping bug this was found from).
         chunk = compile("-7")
         chunk.code.map(&.op).should_not contain(Op::Neg)
         chunk.consts.first.as_int.should eq -7_i64

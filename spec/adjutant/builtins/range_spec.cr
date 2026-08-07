@@ -12,10 +12,11 @@ module Adjutant
   # works the same way.
   #
   # for-loop-over-a-Range integration (compile_for's `expr.each`
-  # desugar) is covered in vm_spec.cr's "for loop"/"Range" describe
-  # blocks alongside the other for/while loop-construct specs, not
-  # here — this file is about Range's own native methods in
-  # isolation.
+  # desugar) is covered in control_flow/vm_spec.cr's "for loop"
+  # describe block, alongside the other for/while loop-construct
+  # specs, not here — this file is about Range's own native methods
+  # and #each in isolation, independent of any particular loop
+  # construct driving it.
   describe "Range" do
     it "1..5.class is Range" do
       eval("(1..5).class == Range").truthy?.should be_true

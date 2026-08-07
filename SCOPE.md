@@ -280,7 +280,8 @@ same as fine.
 - **`case`/`when` has no VM-level test anywhere in the repo.** Found
   2026-08-06 while surveying spec coverage for an unrelated reorg.
   `compile_case` (`compiler.cr`) is a real, seemingly complete
-  implementation, and `parser_spec.cr` covers its parsing — but no
+  implementation, and `control_flow/parser_spec.cr` covers its parsing —
+  but no
   spec anywhere actually runs a `case` statement through `eval()` and
   checks the result. Not reported as broken, since nothing points at
   a specific bug the way the two precedents above did before they were

@@ -22,12 +22,13 @@ module Adjutant
 
       # Moved here from spec/scripts/block_param_capture.rb (2026-07-27)
       # — same reason as the keyword-argument call-site spec in
-      # parser_spec.cr: test_runner's assert framework can't intercept a
-      # CompileError either (same file-level, parse/compile-before-any-
-      # execution blast radius as a ParseError) — expect_raises directly
-      # against the compiler is the only way to actually assert on this.
-      # `&blk` capture is a deliberate scope decision (see
-      # UNSUPPORTED.md, U001) — this confirms it's rejected immediately
+      # methods_and_calls/parser_spec.cr: test_runner's assert framework
+      # can't intercept a CompileError either (same file-level, parse/
+      # compile-before-any-execution blast radius as a ParseError) —
+      # expect_raises directly against the compiler is the only way to
+      # actually assert on this. `&blk` capture is a deliberate scope
+      # decision (see UNSUPPORTED.md, U001) — this confirms it's rejected
+      # immediately
       # at compile time now, not left to silently bind nothing.
       it "rejects &blk param capture at compile time" do
         expect_raises(CompileError, /block parameter capture/) do
@@ -298,8 +299,8 @@ module Adjutant
 
       it "compiles index access with GetIndex" do
         # `arr` must be a known local first, or `arr[0]` parses as a
-        # bare call (see parser_spec.cr's "identifier vs. index
-        # disambiguation" describe block and parser.cr's
+        # bare call (see methods_and_calls/parser_spec.cr's "identifier
+        # vs. index disambiguation" describe block and parser.cr's
         # @local_scopes comment) — matches real Ruby's own parse-time
         # rule, fixed 2026-07-21.
         ops("arr = []\narr[0]").should contain(Op::GetIndex)

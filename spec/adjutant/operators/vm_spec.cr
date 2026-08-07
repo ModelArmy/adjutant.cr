@@ -38,8 +38,8 @@ module Adjutant
       it "evaluates a negative integer literal" do
         # Name updated 2026-07-25 — `-7` no longer literally negates
         # anything at runtime (it's a fused negative IntLiteral, see
-        # compiler_spec.cr's "fused literal, not Unary+Neg" spec); this
-        # assertion itself is unaffected either way.
+        # literals/compiler_spec.cr's "fused literal, not Unary+Neg"
+        # spec); this assertion itself is unaffected either way.
         eval("-7").as_int.should eq -7_i64
       end
 
@@ -70,11 +70,11 @@ module Adjutant
       # test) — String#to_f64 raised ArgumentError on all three
       # (confirmed via the person's own error output:
       # `Invalid Float64: "-92170141183460469231731687303715884105729e-383"`).
-      # See compiler_spec.cr's "underflow/overflow" describe block for
-      # narrower, more exhaustive coverage of the fix itself (including
-      # two edge cases found while implementing it: an all-zero
-      # mantissa with a huge exponent, and a near-boundary literal the
-      # approximate safety margin alone doesn't catch).
+      # See literals/compiler_spec.cr's "underflow/overflow" describe
+      # block for narrower, more exhaustive coverage of the fix itself
+      # (including two edge cases found while implementing it: an
+      # all-zero mantissa with a huge exponent, and a near-boundary
+      # literal the approximate safety margin alone doesn't catch).
       it "evaluates the person's exact reported underflow/overflow literals without raising" do
         eval("1.0e-400").as_float.should eq 0.0
         eval("9.99e-344").as_float.should eq 0.0
@@ -86,10 +86,11 @@ module Adjutant
       # End-to-end regression for the exact bug the person found
       # (2026-07-25): a bare (no-paren) call whose first argument is a
       # negative literal used to raise a parse error — see
-      # parser_spec.cr's "parses a bare call whose first argument is a
-      # negative literal" for the narrower parser-level coverage and
-      # the full root-cause trace (including the known_local?-based
-      # first attempt that was caught and discarded before shipping).
+      # methods_and_calls/parser_spec.cr's "parses a bare call whose
+      # first argument is a negative literal" for the narrower
+      # parser-level coverage and the full root-cause trace (including
+      # the known_local?-based first attempt that was caught and
+      # discarded before shipping).
       it "calls a bare (no-paren) method whose arguments are negative literals" do
         result = eval(<<-RUBY)
           def eq(a, b)

@@ -378,10 +378,11 @@ module Adjutant
       # going past the closing `|`, consuming into the block BODY and
       # eventually erroring on an unexpected `}`. Fixed via @no_pipe
       # (parser.cr, see that flag's own comment for the full
-      # mechanism) — these pin the parse-level shape; vm_spec.cr's
-      # "argument binding — defaults and splats" and
-      # compiler_spec.cr's "default-parameter prologue" cover that the
-      # VALUE actually binds correctly at runtime.
+      # mechanism) — these pin the parse-level shape;
+      # methods_and_calls/vm_spec.cr's "argument binding — defaults and
+      # splats" and methods_and_calls/compiler_spec.cr's
+      # "default-parameter prologue" cover that the VALUE actually
+      # binds correctly at runtime.
       it "parses a block param with a default value" do
         node = parse_expr("[1].each { |x = 9| x }")
         call = node.as(Call)

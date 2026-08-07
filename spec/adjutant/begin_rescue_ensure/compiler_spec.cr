@@ -14,8 +14,8 @@ module Adjutant
       # of the while/until modifier different (check-last) semantics
       # than every other use of the same keyword (check-first). The
       # BARE-statement form never reaches the compiler at all — it
-      # is rejected earlier, at parse time (see parser_spec.cr's own
-      # U016 coverage) — so these tests cover the ASSIGNED forms
+      # is rejected earlier, at parse time (see control_flow/parser_spec.cr's
+      # own U016 coverage) — so these tests cover the ASSIGNED forms
       # (`x = begin...end while cond` and its compound-assignment
       # siblings), the only ways this construct successfully parses
       # into a real ModifierWhile node at all.
