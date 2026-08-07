@@ -413,7 +413,14 @@ module Adjutant
     # Modifiers are checked AFTER assignment so `x -= 1 while x > 0` works.
     private def parse_expr_statement : Node
       expr = parse_expression(0)
-      result = maybe_assignment(expr)
+      # A comma here can't mean anything else at statement level — the
+      # Pratt parser already stops `parse_expression` short of `,` (it
+      # carries no PRECEDENCE entry), so seeing one now means a
+      # multi-target assignment's target list (`a, b = ...`), not some
+      # other comma-bearing construct. Committing on sight (no
+      # backtracking) mirrors `parse_multi_rhs` below doing the same
+      # thing on the rhs side.
+      result = at_kind?(TokenKind::Comma) ? parse_multi_assign(expr) : maybe_assignment(expr)
       l, c = result.line, result.column
       case current_kind
       when TokenKind::KwIf
@@ -462,6 +469,25 @@ module Adjutant
       else
         lhs
       end
+    end
+
+    # Parse the remainder of a multi-target assignment once a `,` has
+    # been seen after the first already-parsed target. Lvalue-ness
+    # isn't checked here — same as the single-target path, that's left
+    # to `emit_store` at compile time (C001), so `1, 2 = 3, 4` fails
+    # there rather than here, consistent with how `1 = 2` already
+    # behaves.
+    private def parse_multi_assign(first : Node) : Node
+      l, c = first.line, first.column
+      targets = [first] of Node
+      while match(TokenKind::Comma)
+        targets << parse_expression(0)
+      end
+      expect(TokenKind::Eq)
+      rhs = parse_multi_rhs
+      values = rhs.is_a?(ArrayLiteral) ? rhs.elements : [rhs]
+      targets.each { |target| register_local_if_identifier(target) }
+      MultiAssign.new(targets, values, l, c)
     end
 
     private def compound_base_op(op : TokenKind) : TokenKind
