@@ -66,7 +66,7 @@ module Adjutant
         # lambda instead of the method. Now genuinely separate
         # bindings (Object#methods vs. a CompilerScope local) —
         # dbl(3) (explicit parens — always parses as a Call, see
-        # parser_spec.cr) reliably means the method.
+        # methods_and_calls/parser_spec.cr) reliably means the method.
         src = <<-RUBY
         dbl = ->(n) { n + n }
         def dbl(n); n * 10; end

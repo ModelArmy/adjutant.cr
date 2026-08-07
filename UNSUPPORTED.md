@@ -82,7 +82,8 @@ structured `U001` diagnostic 2026-07-28.** Until then,
 only discovered the gap if it later tried to use `blk`, where `blk.call`
 raised a generic "undefined method or variable: call" with no hint that
 `&blk` was the real problem. Now rejected outright in `compile_def`
-(`compiler.cr`). Verified via `compiler_spec.cr`'s "rejects &blk param
+(`compiler.cr`). Verified via `methods_and_calls/compiler_spec.cr`'s
+"rejects &blk param
 capture at compile time", plus a sibling regression check confirming
 ordinary `yield` — a separate mechanism — is untouched by the guard.
 
@@ -192,7 +193,7 @@ corrected the step before it rather than merely narrowing it:
    instead of the receiver itself. Believed to mean the method "leaks"
    onto every instance of that class.
 2. **Corrected by running a script** (`singleton_instance_methods.rb`, now
-   folded into `compiler_spec.cr`): that's wrong. `Op::DefSingleton`
+   folded into `methods_and_calls/compiler_spec.cr`): that's wrong. `Op::DefSingleton`
    writes into the class's SINGLETON table, which only a
    `RubyClass`-receiver call (`A.foo`) ever consults — never an instance
    call (`a.foo`). So `class A; def test; def self.hello; end; end; end`
@@ -232,7 +233,8 @@ runtime guard it replaced, which it subsumes by construction, since `self`
 can only be a non-`main` `RubyObject` inside another method's body to
 begin with. Ordinary top-level `def`, top-level `def self.foo`, and `def`
 directly inside a `class`/`module` body are all unaffected. Verified via
-`compiler_spec.cr`'s nested-def specs, covering the `def self.foo` shape,
+`methods_and_calls/compiler_spec.cr`'s nested-def specs, covering the
+`def self.foo` shape,
 the plain-`def` shape, a def-inside-a-lambda shape, and regression checks
 for both unaffected cases.
 
@@ -271,7 +273,8 @@ Adjutant), and rejecting the name outright would break it. Reaching the
 check means the name resolved to nothing, so the script meant Ruby's
 construct. Raised as a `NameError` like any unresolved name, so a script
 rescuing `NameError` still catches it; the code is what says it will never
-resolve. Verified via `vm_spec.cr`, including the own-method case.
+resolve. Verified via `classes_and_modules/vm_spec.cr`, including the
+own-method case.
 
 The enforced set is deliberately narrow — `send`, `public_send`,
 `__send__`, `method_missing`, `define_method`. Names like `class_eval`,
@@ -576,9 +579,10 @@ which unwraps one layer of assignment before checking for a
 the body there is the assignment itself, not the `begin...end`) — two
 different pipeline stages for the same construct, not two different
 decisions; each is simply the earliest point that form's shape is
-actually knowable. Verified via `vm_spec.cr` (the check-first fix for
-the ordinary form), `parser_spec.cr` (the bare-statement rejection),
-and `compiler_spec.cr` (the assigned-form rejection, including the
+actually knowable. Verified via `control_flow/vm_spec.cr` (the
+check-first fix for the ordinary form), `control_flow/parser_spec.cr`
+(the bare-statement rejection), and `begin_rescue_ensure/compiler_spec.cr`
+(the assigned-form rejection, including the
 compound-assignment case).
 
 ---

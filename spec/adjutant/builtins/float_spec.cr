@@ -3,10 +3,10 @@ require "../../spec_helper"
 module Adjutant
   # Covers Phase 3 of the base-types work: Float. Mirrors Integer's
   # existing coverage closely — arithmetic/comparison are opcodes, not
-  # methods, and already handle Integer/Float mixing (see vm_spec.cr
-  # for those); this file covers Float's own RubyClass (.class,
-  # is_a?, superclass) and its three native methods (to_s, to_i,
-  # to_f).
+  # methods, and already handle Integer/Float mixing (see
+  # operators/vm_spec.cr for those); this file covers Float's own
+  # RubyClass (.class, is_a?, superclass) and its three native methods
+  # (to_s, to_i, to_f).
   describe "Float" do
     it "2.5.class is Float" do
       interp, _ = make_interp

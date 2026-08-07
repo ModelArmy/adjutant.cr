@@ -1281,7 +1281,7 @@ module Adjutant
       # loop for any redo whose only exit condition depended on such a
       # counter ever advancing. Never caught before because no test in
       # this repo's history had ever executed `redo` through the VM at
-      # all (see spec/adjutant/exception_handling_spec.cr's redo tests
+      # all (see spec/adjutant/begin_rescue_ensure/vm_spec.cr's redo tests
       # for the confirming grep and the bounded regression coverage).
       #
       # Fixed by a read-modify-write through the array INDEX

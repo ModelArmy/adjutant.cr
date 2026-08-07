@@ -169,5 +169,9 @@ module Adjutant
         arr[2].truthy?.should be_true
       end
     end
+
+    it "indexes into a hash" do
+      eval(%({ "k" => 42 }["k"])).as_int.should eq 42_i64
+    end
   end
 end

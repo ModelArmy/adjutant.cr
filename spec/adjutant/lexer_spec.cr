@@ -54,8 +54,8 @@ module Adjutant
 
     # `Token#space_before?`, added alongside the whitespace-sensitive
     # parser rules it now backs (`eq -1, -1` vs `n - 1`, `-0.0.to_s`
-    # literal fusion, `eq (6/3), 2`) — see parser_spec.cr for the
-    # actual disambiguation behavior these tokens enable. This block
+    # literal fusion, `eq (6/3), 2`) — see operators/parser_spec.cr for
+    # the actual disambiguation behavior these tokens enable. This block
     # only tests the LEXER's own responsibility: does each token
     # correctly report whether whitespace (or a comment) immediately
     # preceded it.

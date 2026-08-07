@@ -262,6 +262,32 @@ Symbol-shorthand hash literal syntax (`{k: v}`) — same underlying gap
 as originally filed here — was promoted to `Must Fix` 2026-08-05; see
 that entry above for current status.
 
+### Verified only up to compile time, never actually run
+
+Constructs the parser and compiler both have real, non-trivial code
+paths for, but with zero test coverage that actually executes them
+through the VM — so "does this work" is currently an assumption, not a
+checked fact. Worth taking seriously as its own category rather than
+folding into ordinary missing-feature gaps: this exact shape (a
+complete-looking implementation nobody had ever actually run) is
+precisely what `redo`'s `LoopScope#body_pos` bug and
+`compile_modifier_while`'s check-last-for-everything bug both turned
+out to be, found 2026-08-06 only because that session's fix happened
+to need a test that finally exercised them. Nothing here is *known*
+broken — only unconfirmed, which the pattern above suggests is not the
+same as fine.
+
+- **`case`/`when` has no VM-level test anywhere in the repo.** Found
+  2026-08-06 while surveying spec coverage for an unrelated reorg.
+  `compile_case` (`compiler.cr`) is a real, seemingly complete
+  implementation, and `control_flow/parser_spec.cr` covers its parsing —
+  but no
+  spec anywhere actually runs a `case` statement through `eval()` and
+  checks the result. Not reported as broken, since nothing points at
+  a specific bug the way the two precedents above did before they were
+  found — just unverified, and worth a pass to either confirm it's
+  fine or catch whatever it turns out not to handle.
+
 ### Error reporting
 
 Runtime diagnostic carets — same underlying gap as originally filed

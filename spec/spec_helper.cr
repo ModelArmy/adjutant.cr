@@ -44,6 +44,57 @@ module Adjutant
     interp.eval(source)
   end
 
+  # Helper: parse source into a full Body — shared across every parser
+  # spec file (previously local to the single, now-split parser_spec.cr;
+  # moved here so each split-out file can use it without redefining it,
+  # which would be a duplicate top-level method across files compiled
+  # into the same module).
+  private def self.parse(source : String) : Body
+    Parser.new(source).parse
+  end
+
+  # Helper: parse source and return just its first top-level statement —
+  # for specs asserting on a single expression/statement's AST shape
+  # rather than a whole program. Moved here alongside `parse` for the
+  # same reason.
+  private def self.parse_expr(source : String) : Node
+    body = parse(source)
+    body.stmts.first
+  end
+
+  # Shared symbol table for compiler specs — simulates multiple scripts
+  # compiled against the same interpreter instance. Moved here alongside
+  # `compile`/`ops`/`def_proc_chunk` for the same reason as `parse`/
+  # `parse_expr` above — was local to the single, now-split
+  # compiler_spec.cr.
+  COMPILER_SPEC_SYMBOLS = SymbolTable.new
+
+  # Helper: parse source and compile to a Chunk.
+  private def self.compile(source : String) : Chunk
+    body = Parser.new(source).parse
+    chunk, _local_count = Compiler.compile(body, COMPILER_SPEC_SYMBOLS)
+    chunk
+  end
+
+  # Helper: return just the opcode sequence (excluding Const setup noise).
+  private def self.ops(source : String) : Array(Op)
+    compile(source).code.map(&.op)
+  end
+
+  # Helper: compile source whose LAST top-level statement is expected to
+  # be a `def`, call literal block, `for`, or lambda assignment, and
+  # return the compiled PROC BODY's own chunk (not the outer chunk) —
+  # i.e. what Compiler.compile_proc actually produced for it, including
+  # any default-value prologue emit_default_prologue emitted. Finds the
+  # nearest Op::MakeProc in the outer chunk and follows its const-pool
+  # index into the ScriptProc it pushes.
+  private def self.def_proc_chunk(source : String) : Chunk
+    chunk = compile(source)
+    make_proc = chunk.code.reverse.find { |inst| inst.op == Op::MakeProc } ||
+                raise "no Op::MakeProc in compiled output for #{source.inspect}"
+    chunk.consts[make_proc.c].as_proc.chunk
+  end
+
   # A minimal but real NativeCallContext for specs that call a
   # NativeCallable directly (bypassing VM#dispatch_call/the real VM
   # entirely) — used where a test wants to exercise a single native
