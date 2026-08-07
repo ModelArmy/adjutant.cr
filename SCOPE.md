@@ -24,78 +24,37 @@ Blocking, or actively causing incorrect behavior in normal use. Ordered
 roughly by dependency, not necessarily by importance — an item lower down
 may unblock ones above it.
 
-- **`<=>` as the sole overloadable comparison hook; `<`/`<=`/`>`/`>=`
-  dispatch through it for custom objects.** Decided 2026-08-05, in a
-  design conversation prompted by the mruby-spec/operator survey (see
-  that session's chat; not yet written up as a standalone doc). Today
-  `Op::Lt`/`Op::Le`/`Op::Gt`/`Op::Ge` go straight to
-  `ValueOps.compare`, which explicitly does not handle `RubyObject`
-  operands (see `value_ops.cr`'s own header comment, "a script class
-  overriding `+`/`<=>`/etc. isn't supported yet") — so a script's own
-  `def <=>(other)` is currently dead code for infix comparison; only
-  `case/when`'s `compile_spaceship` path actually calls it.
-
-  **The decision, precisely:**
-  - `<=>` is the one script-definable comparison method. This is not
-    general operator overloading — it's a single fixed VM hook, the
-    same category as `to_s` already being consulted for string
-    conversion.
-  - `Op::Lt`/`Op::Le`/`Op::Gt`/`Op::Ge` — when either operand is a
-    `RubyObject` — dispatch a real `<=>` call and derive the boolean
-    result from its sign, instead of falling into `ValueOps`'s
-    existing "cannot compare" error. No "is `<=>` defined?" pre-check
-    needed: dispatch unconditionally for `RubyObject` operands and let
-    an absent `<=>` fail the same way any undefined method call
-    already does (`Op::Call`'s existing NameError-equivalent path) —
-    consistent with the rest of the language, no new error shape.
-  - **`Op::Eq`/`==` is deliberately NOT part of this.** Real Ruby's
-    plain `Object#==` is identity, not derived from `<=>` — only
-    `Comparable#==` (which Adjutant doesn't have, no mixins) does
-    that. Folding `==` into this hook would make it mean something for
-    custom classes it doesn't mean in real Ruby, cutting against the
-    proper-subset mandate. Whatever `Op::Eq`/`values_equal?` currently
-    does for `RubyObject` operands is unchanged by this item.
-  - The derived comparison logic should be exposed for native/host
-    code to call directly, the same way `ValueOps` already is —
-    something a native method can use to compare two `Value`s without
-    going through bytecode, rather than being wired only into the
-    three opcodes.
-
-  Explicitly reaffirms, rather than reopens: arithmetic (`+ - * / %
-  & | ^ << >>`) and indexing (`[] []=`) stay fixed-opcode, no
-  script-level override, matching the standing "no monkey-patching, no
-  general operator overloading" decision. This item is the one
-  deliberate, narrow exception, not a step toward broader overloading.
-
-  **Confirmed explicitly, 2026-08-06 — `==` stays out too, and the
-  scope question was asked directly and declined.** A concrete example
-  surfaced during this item's own implementation: a script defining
-  both `X#<=` and `X#==`, expecting real operator overloading (`x <=
-  5`, `3 == x`) — today both parse (see `UNSUPPORTED.md`'s new `U017`)
-  and silently evaluate to `false`. The question of whether to widen
-  this item's scope to make `==` (or the rest) genuinely overridable
-  too was raised and explicitly declined: `<=>` remains the *only*
-  overridable comparison. `Op::Lt`/`Le`/`Gt`/`Ge` check for `<=>`
-  availability and dispatch through it *only* when a `RubyObject`
-  operand is actually involved — ordinary Integer/Float/String
-  comparison is completely untouched by this item, still going
-  straight through `ValueOps` exactly as before. `def ==`/`def <`/etc.
-  on a script class remain inert, and `UNSUPPORTED.md`'s `U017` (new,
-  same session) is what turns that from a silent trap into a loud,
-  named error — see this file's own new Must Fix entry above for that
-  enforcement work.
-
 - **`===` fallback semantics for `Class` and `Range` — a correctness
   bug, not a new capability.** Also surfaced 2026-08-05 in the same
   session. `case/when` already compiles to a genuine `Op::Call` of
-  `"==="` per branch (`compiler.cr`'s `compile_case`), and a script's
-  own `def ===` already works — the dispatch mechanism itself is not
-  the problem. The bug is the *built-in* fallback: `vm.cr`'s `when
-  "==="` branch is just `values_equal?`, i.e. plain `==`, for every
-  receiver. Concretely, `case x; when Integer` and `case x; when
-  1..10` both compile and run with no error, and never match, because
-  `x == Integer` and `x == (1..10)` are always false — a silent wrong
-  answer on two of the most idiomatic `case/when` forms in real Ruby.
+  `"==="` per branch (`compiler.cr`'s `compile_case`). The bug is the
+  *built-in* fallback: `vm.cr`'s `when "==="` branch is just
+  `values_equal?`, i.e. plain `==`, for every receiver. Concretely,
+  `case x; when Integer` and `case x; when 1..10` both compile and run
+  with no error, and never match, because `x == Integer` and `x ==
+  (1..10)` are always false — a silent wrong answer on two of the most
+  idiomatic `case/when` forms in real Ruby.
+
+  **Correction, 2026-08-06 — the dispatch mechanism IS also part of
+  the problem, not just the fallback.** Found while tracing the `<=>`
+  item above, which had the identical bug in its own
+  `compile_spaceship`: `compile_case` never sets the receiver bit
+  (`0b10`) on its `Op::Call` either, so `dispatch_call` never even
+  attempts receiver-based method lookup for `"==="` — every `case`
+  branch falls straight to the generic `values_equal?` fallback below
+  regardless of what's registered on the pattern's own class. Today
+  this is low-consequence only because nothing CAN register a real
+  `"==="` yet — no script class can (`U017`, structural: no `"==="`
+  lexer token exists at all, confirmed via a live parse-error repro),
+  and no native class does either — but the fix for `Class`/`Range`
+  below must ALSO set this bit, or it will silently break the moment
+  anything else ever tries to register a real `===`, the same shape
+  of bug all over again. `is_a_target?`, the class already has for
+  `is_a?`/`kind_of?` and the fix below reuses, dispatches directly by
+  Crystal method call rather than through `Op::Call` at all, so it
+  is NOT affected by this specific bit — but wiring `Class#===`/
+  `Range#===` in as real `native_methods` entries (the more
+  Ruby-consistent option, open question below) would be.
 
   Fix is narrowly scoped to native semantics for two receiver types,
   no opcode changes, no new overloadability:
@@ -108,10 +67,18 @@ may unblock ones above it.
     back to `==`, which is correct — real Ruby's default
     `Object#===` genuinely is `==`, so this case needs no change.
 
-  Depends loosely on the `<=>` item above: `Range#===` against custom
-  Comparable-style objects benefits from `<=>` dispatch existing, but
-  the common integer/float range case doesn't need it and can land
-  independently.
+  Open question carried over from the `<=>` item's own discussion,
+  not yet decided: implement `Class#===`/`Range#===` as genuine
+  `native_methods` entries (reachable via `obj.===(x)` too, matching
+  how `is_a?`/`kind_of?` already work, and requiring the receiver-bit
+  fix above) or as another special-cased branch inside `exec_builtin`
+  alongside the `==` fallback (simpler, but `case/when`-only). Lean
+  toward the former for consistency, but worth confirming before
+  starting.
+
+  Depends loosely on the `<=>` item (now done): `Range#===` against
+  custom Comparable-style objects benefits from `<=>` dispatch
+  existing, but the common integer/float range case doesn't need it.
 
 - **Multiple `rescue` clauses per `begin`, and `rescue A, B` (multiple
   exception types on one clause).** Promoted from the long-standing
@@ -462,16 +429,22 @@ chat history).
 - assignment-as-real-expression (`c = b = 5` doesn't parse)
 - `include`/mixins — real gap, but the specific case that most often
   motivates it (sharing comparison behavior via `Comparable`) is now
-  covered by the narrower `<=>` hook (see `Must Fix`, above); what's
-  left is general code-sharing, which reopens some of the same
-  static-resolvability tension the `send`/`eval` exclusions (U005/U006)
-  exist to avoid — worth its own scoping pass before promoting, not a
-  drop-in fix. Noted 2026-08-05.
+  covered by the `<=>` hook (implemented 2026-08-06 — see git history,
+  no longer a `Must Fix` entry); what's left is general code-sharing,
+  which reopens some of the same static-resolvability tension the
+  `send`/`eval` exclusions (U005/U006) exist to avoid — worth its own
+  scoping pass before promoting, not a drop-in fix. Noted 2026-08-05.
 - heredocs/`%w[]` literals
 - multi-level closures
 - `Range` for non-`Integer`/non-`succ`-having bound types beyond what's
   already generic
-- `<=>` for `Integer`/`Float`, a shared `Numeric` ancestor
+- a real `Numeric` ancestor class in the `RubyClass` hierarchy (so
+  `5.is_a?(Numeric)` etc. would work) — narrowed 2026-08-06: `<=>`
+  itself now works for `Integer`/`Float`/`String` (`ValueOps.spaceship`,
+  `exec_builtin`'s `"<=>"` case), which was this bullet's original
+  practical motivation and is no longer the gap; what's left is
+  specifically the class-hierarchy piece, a smaller and more optional
+  want than before.
 - `respond_to?`'s blind spot (`x.respond_to?(:to_s)` is `false` even
   though `x.to_s` works)
 

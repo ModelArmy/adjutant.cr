@@ -37,6 +37,19 @@ module Adjutant
         ops("a < b").should contain(Op::Lt)
       end
 
+      it "compiles <=> as a real receiver call on the left operand" do
+        # Found 2026-08-06 while wiring `<`/`<=`/`>`/`>=` through
+        # `<=>` (see SCOPE.md): compile_spaceship never set the
+        # receiver bit, so `a <=> b` never actually dispatched `<=>`
+        # ON `a` — it fell through to implicit-self dispatch against
+        # whatever frame happened to be running the comparison. Op is
+        # still a plain Op::Call (no dedicated spaceship opcode); the
+        # receiver bit is what makes it a real `a.<=>(b)`.
+        chunk = compile("a <=> b")
+        inst = chunk.code.find { |i| i.op == Op::Call }.not_nil!
+        (inst.b & 0b10_u16).should_not eq(0_u16)
+      end
+
       it "compiles short-circuit || with Dup and JumpIfFalse" do
         o = ops("a || b")
         o.should contain(Op::Dup)

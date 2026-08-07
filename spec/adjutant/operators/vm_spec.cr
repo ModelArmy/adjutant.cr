@@ -175,6 +175,162 @@ module Adjutant
       end
     end
 
+    describe "<=> and comparisons on script objects" do
+      # SCOPE.md's `<=>` item: real Ruby's own answer to "how do
+      # </<=/>/>= work for a custom object" is the Comparable mixin,
+      # deriving all four from one `<=>` — Adjutant has no mixins, so
+      # `<`/`<=`/`>`/`>=` dispatch through a script-defined `<=>`
+      # directly for RubyObject operands, as a fixed VM rule standing
+      # in for it.
+      it "dispatches < through a script-defined <=>" do
+        src = <<-RUBY
+        class Box
+          def initialize(v); @v = v; end
+          def v; @v; end
+          def <=>(other); @v <=> other.v; end
+        end
+        Box.new(1) < Box.new(2)
+        RUBY
+        eval(src).as_bool.should be_true
+      end
+
+      it "dispatches <=, >, >= through the same <=>" do
+        src = <<-RUBY
+        class Box
+          def initialize(v); @v = v; end
+          def v; @v; end
+          def <=>(other); @v <=> other.v; end
+        end
+        [Box.new(2) <= Box.new(2), Box.new(3) > Box.new(2), Box.new(2) >= Box.new(2)]
+        RUBY
+        result = eval(src).as_array
+        result[0].as_bool.should be_true
+        result[1].as_bool.should be_true
+        result[2].as_bool.should be_true
+      end
+
+      it "dispatches <=> itself as a real receiver call, not implicit self" do
+        # Regression check for compile_spaceship's missing receiver
+        # bit (found while implementing this item) — before the fix,
+        # `a <=> b` never actually called `<=>` ON `a` at all, so this
+        # would have failed to resolve rather than returning 0.
+        src = <<-RUBY
+        class Box
+          def initialize(v); @v = v; end
+          def <=>(other); @v <=> other; end
+        end
+        b = Box.new(5)
+        b <=> 5
+        RUBY
+        eval(src).as_int.should eq(0_i64)
+      end
+
+      it "leaves ordinary Integer/Float/String comparisons untouched" do
+        # Regression check: the RubyObject branch must not be taken
+        # for base types — these still go straight through ValueOps,
+        # same as before this item.
+        eval("1 < 2").as_bool.should be_true
+        eval("1.5 <= 1.5").as_bool.should be_true
+        eval("\"a\" < \"b\"").as_bool.should be_true
+      end
+
+      it "raises like an ordinary undefined method when <=> isn't defined" do
+        # No "is <=> defined?" pre-check, per SCOPE.md's decision — an
+        # absent <=> fails the same way any other undefined method
+        # call already does. This also confirms exec_builtin's own new
+        # "<=>" fallback (added below, for base types) correctly stays
+        # out of a RubyObject's way rather than silently returning nil
+        # in its place, AND is call_method's own regression case for
+        # the "nothing resolves, must raise cleanly through an
+        # isolated frame stack" path — found failing with a raw
+        # Crystal IndexError (current_frame crashing on a genuinely
+        # empty @frames) before call_method grew its sentinel frame.
+        error = expect_raises(RuntimeError) do
+          eval("class Bare; end\nBare.new < Bare.new")
+        end
+        error.diagnostic.not_nil!.code.should eq("R008")
+      end
+
+      it "raises R013 when <=> returns something other than an Integer" do
+        # Confirmed against real Ruby (irb, with Comparable included):
+        # ArgumentError: comparison of Foo with Foo failed.
+        src = <<-RUBY
+        class Foo
+          def <=>(other); nil; end
+        end
+        Foo.new < Foo.new
+        RUBY
+        error = expect_raises(RuntimeError) do
+          eval(src)
+        end
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("R013")
+        diag.data["left"].should eq("Foo")
+        diag.data["right"].should eq("Foo")
+      end
+    end
+
+    describe "VM#call_method against a script-defined method (regression)" do
+      # Found 2026-08-06 while testing the <=> item above, but not
+      # specific to <=> at all — a real, general bug in call_method
+      # itself: dispatch_call's script-method branch only pushes a
+      # frame and returns a sentinel (Value.nil_value), trusting the
+      # caller to be the main execute loop, which naturally continues
+      # on to run it. call_method's one prior real caller (Range#each,
+      # via #succ — see builtins/range.cr) only ever targeted NATIVE
+      # methods (Integer#succ), so this never got exercised until a
+      # script-defined <=> became the first script-method caller.
+      # Range#each's own #succ dispatch is call_method's OTHER real
+      # caller and a completely independent way to prove the general
+      # fix, decoupled from <=> entirely.
+      it "lets Range#each advance via a script-defined #succ, not just Integer's native one" do
+        src = <<-RUBY
+        class Ticker
+          def initialize(n); @n = n; end
+          def n; @n; end
+          def succ; Ticker.new(@n + 1); end
+          def <=>(other); @n <=> other.n; end
+        end
+        total = 0
+        (Ticker.new(1)..Ticker.new(3)).each { |t| total += t.n }
+        total
+        RUBY
+        eval(src).as_int.should eq(6_i64)
+      end
+    end
+
+    describe "<=> on base types (Integer/Float/String)" do
+      # Found while testing the item above: the literal `<=>`
+      # operator had no implementation at all for base types before
+      # this — not a separate feature, a hard dependency of the one
+      # above, since a script's own `<=>` almost always delegates to
+      # a numeric `<=>` internally (real Ruby's own idiomatic
+      # Comparable pattern). See ValueOps.spaceship and
+      # exec_builtin's "<=>" case.
+      it "returns -1, 0, 1 for Integer <=> Integer" do
+        eval("1 <=> 2").as_int.should eq(-1_i64)
+        eval("2 <=> 2").as_int.should eq(0_i64)
+        eval("3 <=> 2").as_int.should eq(1_i64)
+      end
+
+      it "returns a sign for Float <=> Float, and mixed Integer/Float" do
+        eval("1.5 <=> 2.5").as_int.should eq(-1_i64)
+        eval("1 <=> 1.5").as_int.should eq(-1_i64)
+      end
+
+      it "returns a sign for String <=> String" do
+        eval("\"a\" <=> \"b\"").as_int.should eq(-1_i64)
+        eval("\"b\" <=> \"a\"").as_int.should eq(1_i64)
+      end
+
+      it "returns nil for genuinely incomparable operands" do
+        # Matches real Ruby: 5 <=> "a" is nil, not an error and not 0
+        # — distinguishing "incomparable" from "equal" is exactly why
+        # ValueOps.spaceship isn't just derived from compare(:<)/(:>).
+        eval("(1 <=> \"a\").nil?").as_bool.should be_true
+      end
+    end
+
     describe "boolean logic" do
       it "short-circuits ||" do
         eval("true || false").as_bool.should be_true

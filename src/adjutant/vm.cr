@@ -230,6 +230,16 @@ module Adjutant
   class VM
     MAX_STACK = 4096
 
+    # A single shared empty Chunk/ScriptProc pair, used only to build
+    # a "sentinel" Frame for call_method's isolated execution (below)
+    # — a frame that carries a real filename/line for diagnostics but
+    # has NO bytecode of its own to run. Sharing one instance is safe:
+    # nothing ever mutates a Chunk after construction, or reads
+    # anything from this particular ScriptProc besides its (empty)
+    # chunk.
+    SENTINEL_CHUNK = Chunk.new
+    SENTINEL_PROC  = ScriptProc.new(SENTINEL_CHUNK, "<native>")
+
     getter instruction_count : UInt64
     getter globals : Hash(Int32, Value)
     getter risk_flow_log : RiskFlowLog
@@ -839,10 +849,10 @@ module Adjutant
             result = Value.bool(ValueOps.equal?(a, b), RiskFlowLabel.join(a.label, b.label))
             @risk_flow_log.record("Eq", [a.label, b.label], result.label, f.line)
             push(result)
-          when Op::Lt  then exec_binary(inst) { |lhs, rhs| Value.bool(ValueOps.compare(lhs, rhs, :<)) }
-          when Op::Lte then exec_binary(inst) { |lhs, rhs| Value.bool(ValueOps.compare(lhs, rhs, :<=)) }
-          when Op::Gt  then exec_binary(inst) { |lhs, rhs| Value.bool(ValueOps.compare(lhs, rhs, :>)) }
-          when Op::Gte then exec_binary(inst) { |lhs, rhs| Value.bool(ValueOps.compare(lhs, rhs, :>=)) }
+          when Op::Lt  then exec_binary(inst) { |lhs, rhs| Value.bool(compare(lhs, rhs, :<)) }
+          when Op::Lte then exec_binary(inst) { |lhs, rhs| Value.bool(compare(lhs, rhs, :<=)) }
+          when Op::Gt  then exec_binary(inst) { |lhs, rhs| Value.bool(compare(lhs, rhs, :>)) }
+          when Op::Gte then exec_binary(inst) { |lhs, rhs| Value.bool(compare(lhs, rhs, :>=)) }
             # --- Unary ----------------------------------------------------------
 
           when Op::Not
@@ -1246,9 +1256,92 @@ module Adjutant
     # and call it" case — needed so Range#each can advance via #succ
     # without hardcoding Integer#succ specifically, keeping it generic
     # over any bound type that defines #succ.
+    #
+    # Real Ruby semantics only since 2026-08-06 — before this, a
+    # NATIVE-method target (found via `find_native_method`, a
+    # synchronous Crystal call) worked fine, but a SCRIPT-defined
+    # method target silently didn't: `dispatch_call`'s robject branch
+    # resolves it via `call_script_proc`, which — by design, see that
+    # method's own comment — only PUSHES a frame and returns a
+    # sentinel (`Value.nil_value`), trusting the caller to be the main
+    # `execute` dispatch loop, which naturally continues on to run
+    # that pushed frame next. Called synchronously from arbitrary
+    # Crystal code instead (as this method's every real caller does —
+    # NativeCallContext#call_method, and now VM#compare_via_spaceship
+    # for a script `<=>`), that trust doesn't hold: nothing drives the
+    # pushed frame forward, so the sentinel gets treated as the real
+    # result. Never caught before because call_method's one prior
+    # real-world user (Range#each's #succ advance, the very case this
+    # method exists for) only ever targets NATIVE methods (Integer
+    # registers #succ natively); a script-defined `<=>` was the first
+    # caller to actually hit the script-method branch. Same shape as
+    # the handoff's own case/when-VM-test gap: complete-looking,
+    # never-actually-run code.
+    #
+    # Fixed the same way `invoke_internal` (above) already solves the
+    # identical problem for calling a stored block/proc from native
+    # code: isolate `@frames`/`@stack` so a freshly pushed frame is
+    # the ONLY thing in them, drive it to completion with a bare
+    # `execute` call, then restore the caller's real state. Skipped
+    # entirely when `dispatch_call` resolved natively (no frame
+    # pushed, `@frames` still empty after it returns) — that path's
+    # result is already correct and complete, so re-running `execute`
+    # against an empty frame stack would be wasted work at best.
     protected def call_method(recv : Value, name : String, args : Array(Value),
                               filename : String = "<native>", line : Int32 = 0) : Value
-      dispatch_call(name, [recv] + args, safe: false, filename: filename, line: line, has_receiver: true)
+      saved_frames = @frames
+      saved_stack = @stack
+      saved_ins_count = @instruction_count
+      saved_cur_block = @current_block
+      saved_cur_block_locals = @current_block_locals
+      saved_pending_kwargs = @pending_kwargs
+      # A sentinel frame, not a truly empty @frames, so `current_frame`
+      # (used pervasively for diagnostics, including dispatch_call's
+      # own "no local, no native, no global, no builtin" raise) has
+      # something real to read even if dispatch_call fails to resolve
+      # anything at all — nothing gets pushed in that case, and a
+      # genuinely empty @frames would crash `current_frame` before the
+      # diagnostic could even be built. Its empty chunk (`f.ip 0 >=
+      # chunk.code.size 0`) is what lets `execute`'s own loop
+      # terminate cleanly afterward — see below.
+      sentinel = Frame.new(SENTINEL_PROC, SENTINEL_CHUNK, 0, filename)
+      sentinel.line = line
+      @frames = [sentinel]
+      @stack = Array(Value).new(256)
+      begin
+        result = dispatch_call(name, [recv] + args, safe: false, filename: filename, line: line, has_receiver: true)
+        # `dispatch_call` either (a) resolved natively/globally and
+        # returned the real result directly, with @frames still just
+        # [sentinel] — return it as-is — or (b) resolved to a script
+        # method via call_script_proc, which — by design, see that
+        # method's own comment — only PUSHES a frame and returns a
+        # sentinel VALUE (Value.nil_value, an unrelated use of the
+        # word from this Frame), trusting the caller to be the main
+        # execute loop, which naturally continues on to run it next.
+        # Drive it to completion here instead — the same technique
+        # invoke_internal (above) uses for calling a stored proc from
+        # native code: isolated @frames/@stack so a bare `execute`
+        # call only ever sees this one real frame's own bytecode.
+        #
+        # Op::Ret's `push(result) unless @frames.empty?` will NOT fire
+        # when the real frame pops back down to [sentinel] (not
+        # empty) — deliberately: that's what lets the sentinel's own
+        # empty-chunk break end the loop cleanly next, rather than
+        # `execute` trying to run real_frame's caller's bytecode too.
+        # The real return value survives anyway, via execute's OTHER,
+        # already-existing fallback: `@stack.last? || result` at its
+        # very end, where `result` is Op::Ret's own local — exactly
+        # the path this already takes for a genuinely value-less
+        # sentinel-frame return, no special-casing needed here.
+        @frames.size <= 1 ? result : execute
+      ensure
+        @frames = saved_frames
+        @stack = saved_stack
+        @instruction_count = saved_ins_count
+        @current_block = saved_cur_block
+        @current_block_locals = saved_cur_block_locals
+        @pending_kwargs = saved_pending_kwargs
+      end
     end
 
     # The display name a native call shows in an error message or a
@@ -1982,6 +2075,26 @@ module Adjutant
         a = args[0]? || Value.nil_value
         b = args[1]? || Value.nil_value
         Value.bool(values_equal?(a, b))
+      when "<=>"
+        a = args[0]? || Value.nil_value
+        b = args[1]? || Value.nil_value
+        if a.robject? || b.robject?
+          # A RubyObject with no `<=>` of its own isn't this
+          # fallback's business — return Crystal `nil` (NOT
+          # Value.nil_value) so dispatch_call's caller sees this as
+          # "unhandled" and falls through to the ordinary undefined-
+          # method raise (R008) below, per SCOPE.md's decision: no
+          # implicit default `<=>`, an absence fails exactly like any
+          # other undefined method call. (A RubyObject that DOES
+          # define `<=>` never reaches exec_builtin at all —
+          # dispatch_call's receiver-based step finds and calls it
+          # directly, before falling back this far.)
+          nil
+        elsif sign = ValueOps.spaceship(a, b)
+          Value.int(sign.to_i64)
+        else
+          Value.nil_value
+        end
       when "require"
         path = args.first? ? args.first.as_string : ""
         if interp = @interpreter
@@ -2117,8 +2230,77 @@ module Adjutant
     # to `@vm.compare`/`@vm.values_equal?` by name — the delegation
     # contract stays the same, the logic behind it moved.
 
-    protected def compare(a : Value, b : Value, op : Symbol) : Bool
-      ValueOps.compare(a, b, op)
+    # `filename`/`line` default to the current frame's own position —
+    # right for every VM-opcode call site (Op::Lt/Le/Gt/Ge below,
+    # already inside whatever frame is being compared) — and
+    # `NativeFunctionCall#compare` (interpreter.cr) passes its own
+    # explicit `@filename`/`@line` instead, same pattern `call_method`
+    # already uses, so an R013 raised from a native method's own
+    # comparison points at the native call site, not wherever the VM
+    # last happened to be.
+    protected def compare(a : Value, b : Value, op : Symbol,
+                          filename : String = current_frame.filename,
+                          line : Int32 = current_frame.line) : Bool
+      # Real Ruby's own answer to "how do `</<=/>/>=` work for a
+      # custom object" is the `Comparable` mixin, deriving all four
+      # from one `<=>` — Adjutant has no mixins, so this is the fixed
+      # VM rule standing in for it (see SCOPE.md's `<=>` decision).
+      # Only reached for a RubyObject operand: ValueOps.compare
+      # already handles every base-type pairing correctly and cheaply,
+      # so this extra dispatch is skipped entirely for the overwhelming
+      # majority of comparisons.
+      if a.robject? || b.robject?
+        compare_via_spaceship(a, b, op, filename, line)
+      else
+        ValueOps.compare(a, b, op)
+      end
+    end
+
+    # `a` is always the receiver — `a < b` reads as `a.<=>(b)`, the
+    # same left-to-right receiver convention every other infix
+    # operator in Adjutant already uses. No "is `<=>` defined?"
+    # pre-check: dispatch unconditionally, and let an absent `<=>`
+    # fail exactly the way any other undefined method call already
+    # does (an ordinary NameError-equivalent from `call_method`) —
+    # consistent with the rest of the language, no new error shape for
+    # this one case.
+    private def compare_via_spaceship(a : Value, b : Value, op : Symbol,
+                                      filename : String, line : Int32) : Bool
+      sign_val = call_method(a, "<=>", [b], filename, line)
+      unless sign_val.int?
+        # Mirrors real Ruby exactly: `<=>` returning anything other
+        # than an Integer (`nil` for a genuinely unorderable pair, or
+        # any other value) makes `<`/`<=`/`>`/`>=` raise, confirmed
+        # directly against a real `Comparable`-including class in
+        # `irb` (`ArgumentError: comparison of Foo with Foo failed`) —
+        # not a case ValueOps's own "never raises" comparison
+        # philosophy extends to, since that philosophy is about an
+        # unrecognized TYPE PAIRING (a base-type default), not a
+        # script's own method returning a value that breaks its own
+        # contract.
+        raise runtime_diagnostic(
+          Diagnostic.new(
+            code: "R013",
+            primary: Span.new(line: line, filename: filename),
+            data: {
+              "left"  => describe_value(a),
+              "right" => describe_value(b),
+              "value" => sign_val.inspect,
+            }
+          ),
+          current_frame,
+          error_class: "ArgumentError"
+        )
+      end
+      sign = sign_val.as_int
+      case op
+      when :<  then sign < 0
+      when :<= then sign <= 0
+      when :>  then sign > 0
+      when :>= then sign >= 0
+      else
+        false
+      end
     end
 
     protected def values_equal?(a : Value, b : Value) : Bool

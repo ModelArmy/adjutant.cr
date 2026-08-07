@@ -15,16 +15,13 @@ module Adjutant::Builtins
   # `2.5.is_a?(Float)`, `2.5.to_s`, etc. work against a real RubyClass
   # rather than exec_builtin's receiver-agnostic fallback.
   #
-  # `<=>` is NOT included: it doesn't exist as an opcode OR a method
-  # for Integer either (a pre-existing gap, not introduced here) — see
-  # SCOPE.md's `Will Fix` list for the note on why this wasn't added
-  # just for Float alone, to avoid the two numeric types silently
-  # diverging in what they support.
-  #
-  # Deliberately points at SCOPE.md, not UNSUPPORTED.md: `<=>` is a gap
-  # that will be filled, not a construct that has been declined. The
-  # earlier wording sent readers to the out-of-scope list, which said
-  # the opposite of what is true here.
+  # `<=>` is NOT registered here either, for the same reason as the
+  # operators above: it's handled centrally, not per-class — see
+  # ValueOps.spaceship (value_ops.cr) and exec_builtin's `"<=>"` case
+  # (vm.cr), added 2026-08-06 alongside the `<=>`-derived comparison
+  # work in SCOPE.md. Previously a real, open gap (no opcode, no
+  # method, nothing) — `<=>` wasn't just unregistered here, it did not
+  # work for Integer or Float at all.
   def self.bootstrap_float(interp : Adjutant::Interpreter) : Adjutant::RubyClass
     cls = Adjutant::RubyClass.new("Float")
 
