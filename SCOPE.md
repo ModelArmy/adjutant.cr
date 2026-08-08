@@ -24,62 +24,6 @@ Blocking, or actively causing incorrect behavior in normal use. Ordered
 roughly by dependency, not necessarily by importance — an item lower down
 may unblock ones above it.
 
-- **`===` fallback semantics for `Class` and `Range` — a correctness
-  bug, not a new capability.** Also surfaced 2026-08-05 in the same
-  session. `case/when` already compiles to a genuine `Op::Call` of
-  `"==="` per branch (`compiler.cr`'s `compile_case`). The bug is the
-  *built-in* fallback: `vm.cr`'s `when "==="` branch is just
-  `values_equal?`, i.e. plain `==`, for every receiver. Concretely,
-  `case x; when Integer` and `case x; when 1..10` both compile and run
-  with no error, and never match, because `x == Integer` and `x ==
-  (1..10)` are always false — a silent wrong answer on two of the most
-  idiomatic `case/when` forms in real Ruby.
-
-  **Correction, 2026-08-06 — the dispatch mechanism IS also part of
-  the problem, not just the fallback.** Found while tracing the `<=>`
-  item above, which had the identical bug in its own
-  `compile_spaceship`: `compile_case` never sets the receiver bit
-  (`0b10`) on its `Op::Call` either, so `dispatch_call` never even
-  attempts receiver-based method lookup for `"==="` — every `case`
-  branch falls straight to the generic `values_equal?` fallback below
-  regardless of what's registered on the pattern's own class. Today
-  this is low-consequence only because nothing CAN register a real
-  `"==="` yet — no script class can (`U017`, structural: no `"==="`
-  lexer token exists at all, confirmed via a live parse-error repro),
-  and no native class does either — but the fix for `Class`/`Range`
-  below must ALSO set this bit, or it will silently break the moment
-  anything else ever tries to register a real `===`, the same shape
-  of bug all over again. `is_a_target?`, the class already has for
-  `is_a?`/`kind_of?` and the fix below reuses, dispatches directly by
-  Crystal method call rather than through `Op::Call` at all, so it
-  is NOT affected by this specific bit — but wiring `Class#===`/
-  `Range#===` in as real `native_methods` entries (the more
-  Ruby-consistent option, open question below) would be.
-
-  Fix is narrowly scoped to native semantics for two receiver types,
-  no opcode changes, no new overloadability:
-  - `Class#===` → is-instance-of. `vm.cr` already has a reusable
-    `is_a_target?` helper backing `is_a?`/`kind_of?` — reuse it here
-    rather than writing new logic.
-  - `Range#===` → is-member-of (`<=`/`>=` against the range bounds, or
-    `<=>` if bounds aren't plain numerics).
-  - Every other receiver (no built-in `===` of its own) keeps falling
-    back to `==`, which is correct — real Ruby's default
-    `Object#===` genuinely is `==`, so this case needs no change.
-
-  Open question carried over from the `<=>` item's own discussion,
-  not yet decided: implement `Class#===`/`Range#===` as genuine
-  `native_methods` entries (reachable via `obj.===(x)` too, matching
-  how `is_a?`/`kind_of?` already work, and requiring the receiver-bit
-  fix above) or as another special-cased branch inside `exec_builtin`
-  alongside the `==` fallback (simpler, but `case/when`-only). Lean
-  toward the former for consistency, but worth confirming before
-  starting.
-
-  Depends loosely on the `<=>` item (now done): `Range#===` against
-  custom Comparable-style objects benefits from `<=>` dispatch
-  existing, but the common integer/float range case doesn't need it.
-
 - **Multiple `rescue` clauses per `begin`, and `rescue A, B` (multiple
   exception types on one clause).** Promoted from the long-standing
   language-gaps backlog 2026-08-05, after a design conversation about
@@ -204,6 +148,29 @@ wins.
   parsing avoids reopening any "is `===` becoming a real operator"
   question this doesn't need to ask.
 
+- **`compile_case`'s missing receiver bit on its `"==="` `Op::Call`.**
+  Found 2026-08-06 while implementing the (now-done) `Class#===`/
+  `Range#===` fix — same shape of bug `compile_spaceship` had for
+  `<=>`, but NOT the same cheap fix: real Ruby's `case/when` calls
+  `pattern === subject` (pattern is the receiver), while
+  `compile_case` currently pushes subject-then-pattern, the reverse
+  of what a receiver-based call needs (the receiver must be pushed
+  first, matching `compile_call`'s own convention) — so a real fix
+  needs a new `Swap` opcode or a synthetic local to hold the subject
+  across the `when` chain, not a one-line flag addition like
+  `compile_spaceship`'s was.
+
+  Deliberately left unfixed when the `Class`/`Range` item above
+  shipped, not an oversight: nothing today can register a real
+  `"==="` for this bit to matter to — no script class can (see the
+  lexer-token item above; `Class#===`/`Range#===` are implemented
+  directly in `exec_builtin`, not as `native_methods` entries,
+  specifically so they don't depend on this bit either). Worth
+  reopening if either of those ever changes — a future native module
+  registering its own `"==="` `native_methods` entry would silently
+  never be reached without this fix, the exact shape of bug this
+  whole family (`compile_spaceship`, `compile_case`) keeps producing.
+
 - **Call-site splat/double-splat expansion (`foo(*args)`,
   `foo(**opts)`), and `def foo(...); bar(...); end` argument-forwarding
   shorthand.** Def-site `*args` collection already works; what's
@@ -255,16 +222,16 @@ to need a test that finally exercised them. Nothing here is *known*
 broken — only unconfirmed, which the pattern above suggests is not the
 same as fine.
 
-- **`case`/`when` has no VM-level test anywhere in the repo.** Found
-  2026-08-06 while surveying spec coverage for an unrelated reorg.
-  `compile_case` (`compiler.cr`) is a real, seemingly complete
-  implementation, and `control_flow/parser_spec.cr` covers its parsing —
-  but no
-  spec anywhere actually runs a `case` statement through `eval()` and
-  checks the result. Not reported as broken, since nothing points at
-  a specific bug the way the two precedents above did before they were
-  found — just unverified, and worth a pass to either confirm it's
-  fine or catch whatever it turns out not to handle.
+Empty as of 2026-08-06 — `case`/`when` was this category's one
+remaining entry (found earlier the same day, no VM-level test anywhere in the
+repo despite a real, seemingly complete `compile_case`), and this
+session's `===` work closed it properly: `control_flow/vm_spec.cr` now
+covers literal matching, `else` fallthrough, `Class#===`, `Range#===`
+(inclusive and exclusive), and the plain-`==` fallback. Confirms the
+category's own framing was right to take seriously — this wasn't
+"probably fine," it was hiding the exact `===` fallback bug the
+adjacent `Must Fix` item existed to fix, undiscovered specifically
+because nothing had ever run it.
 
 ### Error reporting
 

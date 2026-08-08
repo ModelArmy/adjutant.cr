@@ -183,5 +183,58 @@ module Adjutant
         eval(src).as_int.should eq 5
       end
     end
+
+    describe "case/when" do
+      # No VM-level test for case/when existed anywhere in the repo
+      # before this (see SCOPE.md, "Verified only up to compile time,
+      # never actually run") — found while surveying spec coverage for
+      # a prior session's test-spec reorg, never actually addressed
+      # until now, working the === item this depends on directly.
+
+      it "matches a literal value" do
+        eval("case 5\nwhen 5\n  \"five\"\nelse\n  \"other\"\nend").as_string.should eq("five")
+      end
+
+      it "falls through to else when no pattern matches" do
+        eval("case 5\nwhen 1\n  \"one\"\nelse\n  \"other\"\nend").as_string.should eq("other")
+      end
+
+      # SCOPE.md's === item: exec_builtin's "===" fallback used to be
+      # plain values_equal? (==) for every receiver, so `when
+      # Integer`/`when a_range` compiled and ran with no error but
+      # never matched — a silent wrong answer, not a crash, which is
+      # exactly why it went unnoticed without a VM-level test.
+      it "matches by type with a Class pattern (Class#===)" do
+        eval("case 5\nwhen Integer\n  \"matched\"\nelse\n  \"no match\"\nend")
+          .as_string.should eq("matched")
+      end
+
+      it "does not match a Class pattern for the wrong type" do
+        eval("case \"x\"\nwhen Integer\n  \"matched\"\nelse\n  \"no match\"\nend")
+          .as_string.should eq("no match")
+      end
+
+      it "matches by membership with a Range pattern (Range#===)" do
+        eval("case 5\nwhen 1..10\n  \"in range\"\nelse\n  \"out of range\"\nend")
+          .as_string.should eq("in range")
+      end
+
+      it "respects an exclusive Range's upper bound" do
+        eval("case 10\nwhen 1...10\n  \"in range\"\nelse\n  \"out of range\"\nend")
+          .as_string.should eq("out of range")
+      end
+
+      it "does not match a Range pattern outside its bounds" do
+        eval("case 20\nwhen 1..10\n  \"in range\"\nelse\n  \"out of range\"\nend")
+          .as_string.should eq("out of range")
+      end
+
+      it "still falls back to == for an ordinary literal pattern" do
+        # Regression check: the Class/Range special-casing in
+        # exec_builtin's "===" must not touch the plain-value path.
+        eval("case 5\nwhen 3, 5, 7\n  \"odd\"\nelse\n  \"other\"\nend")
+          .as_string.should eq("odd")
+      end
+    end
   end
 end
