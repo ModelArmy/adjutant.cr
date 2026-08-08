@@ -300,3 +300,24 @@ assert "signed no-paren parameter to method" do
   eq(5, 5)
   eq 5, 5
 end
+
+assert "case/when matches a literal value" do
+  x = 5
+  result = case x
+  when 5
+    "five"
+  else
+    "other"
+  end
+  assert_equal result, "five"
+end
+
+assert "case/when matches by type, not equality" do
+  result = case 5
+  when Integer
+    "matched"
+  else
+    "no match"
+  end
+  assert_equal result, "matched"
+end
