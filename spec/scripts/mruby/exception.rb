@@ -274,21 +274,19 @@ end
 # end
 # ----
 
-# ---- TODO: rescue with multiple types not supported
-# assert('Exception 13') do
-#   a = :ng
-#   begin
-#     raise StandardError
-#   rescue TypeError, ArgumentError
-#     a = :ng
-#   rescue
-#     a = :ok
-#   else
-#     a = :ng
-#   end
-#   assert_equal :ok, a
-# end
-# -----
+assert('Exception 13') do
+  a = :ng
+  begin
+    raise StandardError
+  rescue TypeError, ArgumentError
+    a = :ng
+  rescue
+    a = :ok
+  else
+    a = :ng
+  end
+  assert_equal :ok, a
+end
 
 # ----- WONTFIX: dynamic object method def
 #       WONTFIX: dynamic method dispatch via send() or __send__()
@@ -338,36 +336,35 @@ assert('Exception 16') do
   end
 end
 
-# ---- TODO: Multiple rescue in block
-# assert('Exception 17') do
-# r=begin
-#     raise "a"  # RuntimeError
-#   rescue ArgumentError
-#     1
-#   rescue StandardError
-#     2
-#   else
-#     3
-#   ensure
-#     4
-#   end
-#   assert_equal 2, r
-# end
+assert('Exception 17') do
+r=begin
+    raise "a"  # RuntimeError
+  rescue ArgumentError
+    1
+  rescue StandardError
+    2
+  else
+    3
+  ensure
+    4
+  end
+  assert_equal 2, r
+end
 
-# assert('Exception 18') do
-# r=begin
-#     0
-#   rescue ArgumentError
-#     1
-#   rescue StandardError
-#     2
-#   else
-#     3
-#   ensure
-#     4
-#   end
-#   assert_equal 3, r
-# end
+assert('Exception 18') do
+r=begin
+    0
+  rescue ArgumentError
+    1
+  rescue StandardError
+    2
+  else
+    3
+  ensure
+    4
+  end
+  assert_equal 3, r
+end
 
 # ---- BLOCKED: Pending chained-assign statement
 # assert('Exception 19') do
