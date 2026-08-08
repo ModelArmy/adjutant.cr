@@ -59,6 +59,61 @@ module Adjutant
         node.as(HashLiteral).pairs.size.should eq 1
       end
 
+      it "parses symbol-shorthand hash literal syntax ({k: v})" do
+        node = parse_expr("{ a: 1, b: 2 }").as(HashLiteral)
+        node.pairs.size.should eq 2
+        key0, val0 = node.pairs[0]
+        key0.should be_a(SymbolLiteral)
+        key0.as(SymbolLiteral).value.should eq "a"
+        val0.should be_a(IntLiteral)
+        key1, _ = node.pairs[1]
+        key1.as(SymbolLiteral).value.should eq "b"
+      end
+
+      it "allows a reserved word as a symbol-shorthand label, same as " \
+         "real Ruby (`class:`, not just ordinary identifiers)" do
+        node = parse_expr("{ class: Foo }").as(HashLiteral)
+        key, _ = node.pairs[0]
+        key.as(SymbolLiteral).value.should eq "class"
+      end
+
+      it "mixes symbol-shorthand and hash-rocket entries in one literal" do
+        node = parse_expr(%({ a: 1, "b" => 2 })).as(HashLiteral)
+        node.pairs.size.should eq 2
+        node.pairs[0][0].as(SymbolLiteral).value.should eq "a"
+        node.pairs[1][0].should be_a(StringLiteral)
+      end
+
+      it "does not treat `key :` (with a space before the colon) as " \
+         "shorthand — requires the colon to hug the label, same as real " \
+         "Ruby's own label-token rule" do
+        # Falls through to the ordinary expression+hash-rocket path,
+        # so a bare `a` with no `=>` following is simply a parse
+        # error here, not a symbol-shorthand match — confirms the
+        # space-before check is actually gating something, rather
+        # than this test accidentally passing for an unrelated reason.
+        expect_raises(ParseError) do
+          parse_expr("{ a : 1 }")
+        end
+      end
+
+      it "a ternary inside a hash value is not mistaken for label syntax " \
+         "(the label check only fires on the KEY position, so a bare `?` " \
+         "immediately after a would-be label never gets this far)" do
+        node = parse_expr("{ a: cond ? 1 : 2 }").as(HashLiteral)
+        key, val = node.pairs[0]
+        key.as(SymbolLiteral).value.should eq "a"
+        val.should be_a(Ternary)
+      end
+
+      it "a ternary as a hash-rocket KEY still parses correctly — the " \
+         "label check requires an immediately-hugging colon, which a " \
+         "spaced-out ternary `?  :` never produces at key position" do
+        node = parse_expr(%({ (cond ? "x" : "y") => 1 })).as(HashLiteral)
+        key, _ = node.pairs[0]
+        key.should be_a(Ternary)
+      end
+
       it "parses an inclusive range" do
         node = parse_expr("1..10")
         node.should be_a(RangeLiteral)
