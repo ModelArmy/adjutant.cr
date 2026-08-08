@@ -71,11 +71,25 @@ module Adjutant
       end
 
       it "rejects every overloadable operator name" do
-        %w(== < <= > >= + - * / % & | ^ << >>).each do |op|
+        %w(== === < <= > >= + - * / % & | ^ << >>).each do |op|
           expect_raises(CompileError) do
             compile("class X\ndef #{op}(o)\nend\nend")
           end
         end
+      end
+
+      it "rejects def === specifically with U017, not a parse error" do
+        # Regression check: before the lexer grew a real TripleEq
+        # token, `def ===(x)` split into EqEq + a stray Eq and failed
+        # with an unrelated, confusing P002 partway through the
+        # method body instead of reaching this check at all. Now it
+        # should parse cleanly and be rejected here, same as every
+        # other operator.
+        error = expect_raises(CompileError) do
+          compile("class X\ndef ===(o)\nend\nend")
+        end
+        error.diagnostic.not_nil!.code.should eq("U017")
+        error.diagnostic.not_nil!.data["operator"].should eq("===")
       end
 
       it "carries a U017 diagnostic naming the operator, caret on `def`" do

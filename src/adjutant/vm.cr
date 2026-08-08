@@ -488,6 +488,35 @@ module Adjutant
       false
     end
 
+    # Shared by the "===" exec_builtin case's Range branch (above).
+    # `true` only for a genuine Range instance — every other robject
+    # (including one that happens to define its own ivars named
+    # `__min` etc., unlikely but not impossible) must NOT match, so
+    # this checks the actual rclass identity via builtin_class_by_name
+    # rather than duck-typing on ivar presence.
+    private def range_receiver?(v : Value) : Bool
+      obj = v.as_robject?
+      !!(obj && obj.rclass == builtin_class_by_name("Range"))
+    end
+
+    # Bound check for Range#=== — real Ruby's own logic: `min <= x`
+    # (or `min < x` doesn't apply; Range has no exclusive-start
+    # concept) and, depending on exclusivity, `x < max` or `x <= max`.
+    # Goes through `compare` (not `ValueOps` directly) so a
+    # Comparable-style custom bound type dispatches through its own
+    # `<=>` here too — see this method's own doc comment above.
+    # Ivar names/lookup mirror make_range_object's own (vm.cr, further
+    # down) and builtins/range.cr's accessors — all three must stay in
+    # sync on the `__min`/`__max`/`__exclusive` naming.
+    private def range_include?(range : Value, x : Value) : Bool
+      obj = range.as_robject
+      min = obj.ivars[@symbols.intern("__min").value]
+      max = obj.ivars[@symbols.intern("__max").value]
+      exclusive = obj.ivars[@symbols.intern("__exclusive").value].as_bool
+      return false unless compare(x, min, :>=)
+      exclusive ? compare(x, max, :<) : compare(x, max, :<=)
+    end
+
     # Shared by the "respond_to?" exec_builtin case — mirrors
     # dispatch_call's own receiver-based resolution order (RubyObject:
     # find_method then find_native_method; RubyClass: find_singleton_
@@ -2072,9 +2101,38 @@ module Adjutant
         # wrap it in our Runtime error
         raise RuntimeError.new(msg, filename, line, error_value: err_val)
       when "==="
-        a = args[0]? || Value.nil_value
-        b = args[1]? || Value.nil_value
-        Value.bool(values_equal?(a, b))
+        # compile_case pushes [subject, pattern] (Op::Dup subject,
+        # then compile_node(pat)) with no receiver bit — see
+        # SCOPE.md's note on why that's deliberately not fixed here —
+        # so these arrive as plain positional args in PUSH order:
+        # args[0] is the subject being tested, args[1] is the `when`
+        # pattern itself. Real Ruby's own `pattern === subject` reads
+        # the OPPOSITE way once you think of `pattern` as a receiver,
+        # which is exactly the confusion worth a comment: `subject`
+        # and `pattern` below are named for what they ARE, not for
+        # their arg-list position, to keep that straight.
+        subject = args[0]? || Value.nil_value
+        pattern = args[1]? || Value.nil_value
+        if cls = pattern.as_rclass?
+          # `Class#===` — is-instance-of. Real Ruby: `SomeClass ===
+          # x` and `x.is_a?(SomeClass)` ask the exact same question,
+          # just with the receiver/target roles swapped — reuse
+          # is_a_target? rather than re-deriving the same
+          # three-receiver-shape walk it already does.
+          Value.bool(is_a_target?(subject, cls))
+        elsif range_receiver?(pattern)
+          # `Range#===` — is-member-of. Bound check goes through
+          # `compare` (this file, above — the same dispatch `<=>`'s
+          # own item wired up), not `ValueOps` directly, so a
+          # Comparable-style custom bound type works here for free,
+          # exactly like Range#each already gets for #succ.
+          Value.bool(range_include?(pattern, subject))
+        else
+          # Every other receiver: real Ruby's own default `Object#===`
+          # genuinely is `==` — not a fallback standing in for a
+          # missing feature, the actually-correct behavior here.
+          Value.bool(values_equal?(subject, pattern))
+        end
       when "<=>"
         a = args[0]? || Value.nil_value
         b = args[1]? || Value.nil_value

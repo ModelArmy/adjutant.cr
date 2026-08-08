@@ -393,6 +393,7 @@ module Adjutant
         "|"   => TokenKind::Pipe,
         "="   => TokenKind::Eq,
         "=="  => TokenKind::EqEq,
+        "===" => TokenKind::TripleEq,
         "!="  => TokenKind::NEq,
         "<"   => TokenKind::Lt,
         "<="  => TokenKind::LtE,
