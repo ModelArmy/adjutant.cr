@@ -26,19 +26,19 @@ may unblock ones above it.
 
 - **Array/hash literal elements are invisible to the static risk
   walker.** Found 2026-08-08, while landing symbol-shorthand hash
-  literal syntax (below) — not new (applied identically to the old
-  `{ "a" => dangerous_delete() }` spelling too), but that work raises
-  the real-world odds of hitting it, since `{k: v}` is the spelling
-  any Ruby-trained model reaches for first. `HashLiteral`/
-  `ArrayLiteral` both fall through `RiskWalker#walk_node`'s generic
-  `else` branch (risk_walker.cr), which only calls
-  `@inference.infer_node` for env-tracking — and `infer_node` itself
-  (type_inference.cr's `infer_simple`) just returns a fixed
-  `"Array"`/`"Hash"` `TypeHint` without recursing into elements at
-  all. Net effect: a risky call embedded in a literal — `{ path:
-  dangerous_delete() }`, `[dangerous_delete()]` — produces zero
-  findings from `RiskAggregator.summarize`, a false negative in the
-  safety-facing static pass specifically (runtime enforcement is
+  literal syntax (shipped this session, see below) — not new (applied
+  identically to the old `{ "a" => dangerous_delete() }` spelling
+  too), but that work raises the real-world odds of hitting it, since
+  `{k: v}` is the spelling any Ruby-trained model reaches for first.
+  `HashLiteral`/`ArrayLiteral` both fall through
+  `RiskWalker#walk_node`'s generic `else` branch (risk_walker.cr),
+  which only calls `@inference.infer_node` for env-tracking — and
+  `infer_node` itself (type_inference.cr's `infer_simple`) just
+  returns a fixed `"Array"`/`"Hash"` `TypeHint` without recursing into
+  elements at all. Net effect: a risky call embedded in a literal —
+  `{ path: dangerous_delete() }`, `[dangerous_delete()]` — produces
+  zero findings from `RiskAggregator.summarize`, a false negative in
+  the safety-facing static pass specifically (runtime enforcement is
   unaffected — `VM#call_native`'s `check_risk_flow` fires regardless
   of AST position, so a rejection-policy script still correctly
   rejects the call when it actually runs; this is a blind spot in
@@ -47,20 +47,6 @@ may unblock ones above it.
   recursing into each pair's key+value or each element as a
   `RiskSequence` — same pattern `walk_multi_assign`/`walk_index_assign`
   (risk_walker.cr) already use for their own sub-expressions.
-
-- **Symbol-shorthand hash literal syntax** (`{k: v}`). Promoted from
-  Parser/lexer gaps 2026-08-05 — not because the fix is hard (it
-  isn't; see the original entry below, unchanged in substance), but
-  because of hit-probability: this is the overwhelmingly dominant
-  hash-literal spelling in the Ruby corpus any Ruby-trained model
-  draws on, more so than hash-rocket. Left as `Will Fix`, this is a
-  silent parse-failure risk on the single most probable way an agent
-  writes a hash literal — including the option-hash shape (`retries:
-  3, timeout: 10`) the upcoming core API work will lean on directly,
-  both in the API's own sample/test scripts and in agent-generated
-  calls against it. `Parser#parse_hash_or_block_brace`
-  (parser.cr) only ever calls `expect(TokenKind::HashRocket)` today —
-  see the original Parser/lexer entry for the precise gap, unchanged.
 
 - **`Class.new(name: ...)` can't reach a keyword-declaring
   `initialize`.** Promoted from Object model 2026-08-05, ahead of the
@@ -188,8 +174,10 @@ wins.
   trailing `do` — not verified beyond `while`/`for`.
 
 Symbol-shorthand hash literal syntax (`{k: v}`) — same underlying gap
-as originally filed here — was promoted to `Must Fix` 2026-08-05; see
-that entry above for current status.
+as originally filed here — was promoted to `Must Fix` 2026-08-05 and
+shipped 2026-08-08 (`Parser#parse_hash_key`/`#label_follows?`,
+parser.cr). See DEVELOPMENT.md's hash-literal note for the final
+shape.
 
 ### Verified only up to compile time, never actually run
 

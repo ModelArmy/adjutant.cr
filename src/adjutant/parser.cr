@@ -1139,8 +1139,7 @@ module Adjutant
       pairs = [] of {Node, Node}
       skip_newlines
       until at_kind?(TokenKind::RBrace) || at_kind?(TokenKind::EOF)
-        key = parse_expression(0)
-        expect(TokenKind::HashRocket)
+        key = parse_hash_key
         val = parse_expression(0)
         pairs << {key, val}
         skip_newlines
@@ -1149,6 +1148,34 @@ module Adjutant
       end
       expect(TokenKind::RBrace)
       HashLiteral.new(pairs, l, c)
+    end
+
+    # A hash entry's key, either spelling: `key => val` (any
+    # expression as key), or the symbol-shorthand `key: val` — an
+    # identifier, constant, or keyword immediately hugging a `:` (no
+    # space, same adjacency test `operand_immediately_follows?` uses
+    # for unary `-`/`+`) becomes `SymbolLiteral.new(key)`, consuming
+    # BOTH the label and its colon so the caller only ever parses the
+    # value. Real Ruby allows any reserved word as a label
+    # (`class:`, `if:`, ...), hence the generic `Kw`-prefix check
+    # rather than a hand-maintained keyword list.
+    private def label_follows? : Bool
+      return false unless at_kind?(TokenKind::Identifier) || at_kind?(TokenKind::Constant) ||
+                          @current.kind.to_s.starts_with?("Kw")
+      @next.kind == TokenKind::Colon && !@next.space_before?
+    end
+
+    private def parse_hash_key : Node
+      if label_follows?
+        l, c = line, col
+        name = @current.lexeme
+        advance # the label itself
+        advance # its hugging `:`
+        return SymbolLiteral.new(name, l, c)
+      end
+      key = parse_expression(0)
+      expect(TokenKind::HashRocket)
+      key
     end
 
     # --- Definitions --------------------------------------------------------

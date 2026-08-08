@@ -44,6 +44,37 @@ module Adjutant
         v.hash?.should be_true
         v.as_hash.size.should eq 1
       end
+
+      it "evaluates symbol-shorthand hash literal syntax ({k: v}) to real " \
+         "symbol keys, indexable the same as :key => val would produce" do
+        v = eval("{ a: 1, b: 2 }")
+        v.hash?.should be_true
+        v.as_hash.size.should eq 2
+        keys = v.as_hash.keys.map(&.as_sym.name)
+        keys.should eq ["a", "b"]
+      end
+
+      it "a symbol-shorthand key and its explicit :key => val equivalent " \
+         "produce the same symbol name and value at runtime" do
+        shorthand = eval("{ a: 1 }").as_hash
+        explicit = eval("{ :a => 1 }").as_hash
+        shorthand.size.should eq explicit.size
+        s_key, s_val = shorthand.keys.first, shorthand.values.first
+        e_key, e_val = explicit.keys.first, explicit.values.first
+        s_key.as_sym.name.should eq e_key.as_sym.name
+        s_val.as_int.should eq e_val.as_int
+      end
+
+      it "the option-hash shape (retries: 3, timeout: 10) parses and " \
+         "evaluates end to end — the concrete motivating case for this " \
+         "feature, not just the minimal {k: v} shape" do
+        v = eval("{ retries: 3, timeout: 10 }")
+        h = v.as_hash
+        h.size.should eq 2
+        pairs = [] of {String, Int64}
+        h.each { |k, val| pairs << {k.as_sym.name, val.as_int} }
+        pairs.to_set.should eq Set{ {"retries", 3_i64}, {"timeout", 10_i64} }
+      end
     end
 
     describe "string interpolation" do
