@@ -1027,26 +1027,38 @@ module Adjutant
     # UNSUPPORTED.md's U017. `<=>` is the one deliberate exception (see
     # SCOPE.md's Must Fix entry): `Op::Lt`/`Le`/`Gt`/`Ge` dispatch
     # through a script-defined `<=>` for `RubyObject` operands, but
-    # every other operator (arithmetic, `==`, indexing) compiles to a
-    # fixed opcode that never consults a class's method table, so a
-    # method by one of these names would parse cleanly and then never
-    # actually run — exactly the silent trap this set exists to catch
-    # instead. Real Ruby's `<=>`/`Comparable` split is the model:
-    # `<=>` is overridable, plain `==` (`Object#==`, identity by
-    # default) deliberately is not derived from it, and neither is
-    # anything else here.
+    # every other operator (arithmetic, `==`, `===`, indexing)
+    # compiles to a fixed opcode that never consults a class's method
+    # table, so a method by one of these names would parse cleanly and
+    # then never actually run — exactly the silent trap this set
+    # exists to catch instead. Real Ruby's `<=>`/`Comparable` split is
+    # the model: `<=>` is overridable, plain `==` (`Object#==`,
+    # identity by default) deliberately is not derived from it, and
+    # neither is anything else here.
     #
-    # `[]`/`[]=` are deliberately NOT in this set, alongside `===`
-    # (see UNSUPPORTED.md) — same reason, not an oversight: `[` and
-    # `]` are separate lexer tokens with no combined `[]`/`[]=` token,
-    # so `parse_def` (which takes whatever single token follows `def`
-    # as the name, unconditionally) already can't produce a `DefNode`
-    # with that name at all; it grabs `[` alone, then trips on the
-    # stray `]` with a confusing, unrelated parse error, structurally
-    # identical to the `===` case. A name this check will never see
-    # doesn't belong in the set actually being checked against.
+    # `"==="` joined this set 2026-08-07, once the lexer grew a real
+    # `TripleEq` token (`lexer.cr`'s `scan_eq`) for the sole purpose of
+    # letting `def ===` reach this check at all — before that, `"==="`
+    # split into `EqEq` + a stray `Eq`, and `def ===(x)` failed with a
+    # confusing, unrelated-looking `P002` partway through the method
+    # body instead of this clean, named rejection. `Class#===`/
+    # `Range#===` (see `vm.cr`'s `exec_builtin`) are unaffected — those
+    # are native, VM-internal dispatch for `case/when`, not a
+    # script-definable method, so this rejection and that feature
+    # coexist without conflict, same as every other operator here.
+    #
+    # `[]`/`[]=` are the one remaining case deliberately NOT in this
+    # set (see UNSUPPORTED.md) — same reason `"==="` needed a token
+    # first: `[` and `]` are separate lexer tokens with no combined
+    # `[]`/`[]=` token, so `parse_def` (which takes whatever single
+    # token follows `def` as the name, unconditionally) already can't
+    # produce a `DefNode` with that name at all; it grabs `[` alone,
+    # then trips on the stray `]` with the same shape of confusing,
+    # unrelated parse error `"==="` used to. A name this check will
+    # never see doesn't belong in the set actually being checked
+    # against — unless, like `"==="`, it gets its own token someday.
     OVERLOADABLE_OPERATOR_NAMES = Set{
-      "==", "<", "<=", ">", ">=",
+      "==", "===", "<", "<=", ">", ">=",
       "+", "-", "*", "/", "%",
       "&", "|", "^", "<<", ">>",
     }

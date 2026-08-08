@@ -445,6 +445,20 @@ module Adjutant
     private def scan_eq(start : Int32, line : Int32, col : Int32) : Token
       if current_char == '='
         advance
+        # A third `=` makes `===` — checked here, not given its own
+        # PRECEDENCE table entry: `"==="` has no meaning as a general
+        # infix expression in Adjutant (case/when's real dispatch is
+        # compiler-generated, not parsed from `a === b` script syntax
+        # — see compile_case), so this token exists ONLY so `def
+        # ===(x)` can parse far enough to reach U017's clean, named
+        # rejection instead of splitting into EqEq + a stray Eq and
+        # failing with a confusing, unrelated-looking P002 partway
+        # through the method body. See SCOPE.md's Will Fix entry for
+        # the full reasoning.
+        if current_char == '='
+          advance
+          return make_token(TokenKind::TripleEq, "===", line, col)
+        end
         return make_token(TokenKind::EqEq, "==", line, col)
       end
       if current_char == '>'

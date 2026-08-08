@@ -589,12 +589,12 @@ compound-assignment case).
 
 ### U017 — Operator-method overloading (`def ==`, `def <`, `def +`, ...)
 
-Defining a method whose name is an operator token (`==`, `<`, `<=`, `>`,
-`>=`, `+`, `-`, `*`, `/`, `%`, `&`, `|`, `^`, `<<`, `>>`, ...) on a
-script class, intending the corresponding infix operator to invoke
-it — real Ruby's operator-overloading mechanism. `[]`/`[]=` are the
-same idea but structurally can't even be written — see the
-Enforcement note below.
+Defining a method whose name is an operator token (`==`, `===`, `<`,
+`<=`, `>`, `>=`, `+`, `-`, `*`, `/`, `%`, `&`, `|`, `^`, `<<`, `>>`,
+...) on a script class, intending the corresponding infix operator (or,
+for `===`, `case/when`) to invoke it — real Ruby's operator-overloading
+mechanism. `[]`/`[]=` are the same idea but structurally can't even be
+written — see the Enforcement note below.
 
 **Why:** decided 2026-08-06, found while working the `<=>` item above.
 Every one of these operators (`==` included) compiles to a dedicated
@@ -608,11 +608,9 @@ too, which that decision's own text deliberately excludes from
 entry closes the door on every other operator, including `==`, not
 just the ones `<=>` doesn't already cover.
 
-**The concrete trap this closes:** unlike `===` (U-series' other
-operator-shaped exclusion, which can't even be written — no `===`
-lexer token exists), every operator above already has its own real
-token, and `parse_def` accepts any token as a method name with no
-restriction — so `def ==(other)`/`def <=(other)`/etc. parse
+**The concrete trap this closes:** every operator above already has
+its own real token, and `parse_def` accepts any token as a method name
+with no restriction — so `def ==(other)`/`def <=(other)`/etc. parse
 successfully today, get stored as real methods on the class, and are
 never called by the corresponding infix operator. This is a direct
 violation of this file's own stated principle ("never silently do
@@ -623,20 +621,39 @@ example script defining `X#<=`/`X#==` that parsed cleanly and then
 failed two assertions silently (`x <= 5` evaluated to `false`,
 `3 == x` evaluated to `false`) with no error anywhere.
 
+**`===` joined this set 2026-08-07,** once the lexer grew a real
+`TripleEq` token (`lexer.cr`'s `scan_eq`, maximal-munch ahead of the
+existing `EqEq` case) — before that, `"==="` split into `EqEq` + a
+stray `Eq`, and `def ===(x)` failed with a confusing, unrelated-looking
+`P002` partway through the method body (the same shape of trap this
+whole entry exists to prevent, just reached through a parse failure
+instead of a silent no-op) rather than this clean, named rejection.
+The token exists ONLY for `def`-name-position parsing — deliberately
+not added to the `PRECEDENCE` table, since `a === b` as general infix
+script syntax isn't something Adjutant supports or real Ruby scripts
+normally write either (`case/when` is the real caller, and that's
+compiler-generated dispatch, not parsed from script syntax — see
+`compile_case`). `Class#===`/`Range#===` (`vm.cr`'s `exec_builtin`) are
+unaffected by this entry: those are native, VM-internal dispatch for
+`case/when`'s own patterns, not a script-definable method, so the
+rejection and that feature coexist without conflict, same as every
+other operator here.
+
 **Instead:** define `<=>` for ordering (see the `Must Fix` entry above
 — `<`/`<=`/`>`/`>=` will dispatch through it for `RubyObject`
 operands). For `==`, define a differently-named method (`eql_value?`,
 `same_as?`, ...) and call it explicitly rather than via `==`.
 
-**Enforcement — active since 2026-08-06, compile time, for every name
-in the set** (`==`, `<`, `<=`, `>`, `>=`, `+`, `-`, `*`, `/`, `%`, `&`,
-`|`, `^`, `<<`, `>>`). `Compiler#compile_def` (`OVERLOADABLE_OPERATOR_
-NAMES`) checks the method name before anything else about the def,
-raising a structured `U017` with a caret on the `def` keyword (same
-tradeoff `U004` already makes — no end position for the name token
-itself, and three characters that are always right beats a longer
-span that's only usually right). `[]`/`[]=` are deliberately absent
-from that set, not an oversight: like `===`, there's no combined
+**Enforcement — active since 2026-08-06 (2026-08-07 for `===`),
+compile time, for every name in the set** (`==`, `===`, `<`, `<=`, `>`,
+`>=`, `+`, `-`, `*`, `/`, `%`, `&`, `|`, `^`, `<<`, `>>`).
+`Compiler#compile_def` (`OVERLOADABLE_OPERATOR_NAMES`) checks the
+method name before anything else about the def, raising a structured
+`U017` with a caret on the `def` keyword (same tradeoff `U004` already
+makes — no end position for the name token itself, and three
+characters that are always right beats a longer span that's only
+usually right). `[]`/`[]=` are deliberately absent from that set, not
+an oversight: like `"==="` before it got a token, there's no combined
 `[]`/`[]=` lexer token — `[`/`]` are separate tokens, so `parse_def`
 (which blindly takes whatever single token follows `def` as the name)
 already can't produce a `DefNode` named `[]` at all; it grabs `[`
