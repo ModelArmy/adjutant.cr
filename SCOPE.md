@@ -122,32 +122,6 @@ still roughly ordered by how cheap/independent the fix is.
 Small, mechanical, independent of each other — good candidates for quick
 wins.
 
-- **A real `"==="` lexer token, so `def ===` gets a clean `U017`
-  rejection instead of a confusing parse error.** Noted 2026-08-06,
-  during the `<=>` item's own work. `"==="` isn't a real token today —
-  the lexer only has `EqEq`/`Eq`, so `def ===(n)` splits into those
-  two and fails with `P002` (`` `=` can't start an expression here``)
-  pointing at the stray third `=`, not at `===` itself — confirmed via
-  a live repro. `U017` already rejects every other operator-token
-  method name at compile time with a clear, named error; `===` is the
-  one operator in that family that can't reach `U017`'s check at all,
-  because it can't even finish parsing far enough to get there. Same
-  diagnostic-quality reasoning `U017` itself was built on (a
-  script/LLM hitting a confusing, unrelated-looking error is worse
-  than one hitting a clear, named one) — this is that same fix,
-  applied to the one operator it missed for a structural reason, not a
-  design one.
-
-  Scope: a new lexer token for `"==="` (maximal-munch ahead of the
-  existing `EqEq` case — `"===" ` must win over `"=="` + stray `"="`),
-  and `"==="` added to `compiler.cr`'s `OVERLOADABLE_OPERATOR_NAMES`
-  set alongside the others. Deliberately NOT added to the
-  `PRECEDENCE` table — `a === b` as general infix syntax isn't being
-  requested and isn't how real Ruby scripts normally write it either
-  (`case/when` is); adding the token only for `def` name-position
-  parsing avoids reopening any "is `===` becoming a real operator"
-  question this doesn't need to ask.
-
 - **`compile_case`'s missing receiver bit on its `"==="` `Op::Call`.**
   Found 2026-08-06 while implementing the (now-done) `Class#===`/
   `Range#===` fix — same shape of bug `compile_spaceship` had for
@@ -160,16 +134,18 @@ wins.
   across the `when` chain, not a one-line flag addition like
   `compile_spaceship`'s was.
 
-  Deliberately left unfixed when the `Class`/`Range` item above
-  shipped, not an oversight: nothing today can register a real
-  `"==="` for this bit to matter to — no script class can (see the
-  lexer-token item above; `Class#===`/`Range#===` are implemented
-  directly in `exec_builtin`, not as `native_methods` entries,
-  specifically so they don't depend on this bit either). Worth
-  reopening if either of those ever changes — a future native module
-  registering its own `"==="` `native_methods` entry would silently
-  never be reached without this fix, the exact shape of bug this
-  whole family (`compile_spaceship`, `compile_case`) keeps producing.
+  Deliberately left unfixed when the `Class`/`Range` item shipped, not
+  an oversight: nothing today can register a real `"==="` for this bit
+  to matter to — no script class can (`"==="` gained a real lexer
+  token 2026-08-07, specifically so `def ===` reaches `U017`'s
+  rejection rather than becoming definable; see `UNSUPPORTED.md`), and
+  `Class#===`/`Range#===` are implemented directly in `exec_builtin`,
+  not as `native_methods` entries, specifically so they don't depend
+  on this bit either. Worth reopening if either of those ever changes
+  — a future native module registering its own `"==="`
+  `native_methods` entry would silently never be reached without this
+  fix, the exact shape of bug this whole family (`compile_spaceship`,
+  `compile_case`) keeps producing.
 
 - **Call-site splat/double-splat expansion (`foo(*args)`,
   `foo(**opts)`), and `def foo(...); bar(...); end` argument-forwarding
