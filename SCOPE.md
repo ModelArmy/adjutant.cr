@@ -24,30 +24,6 @@ Blocking, or actively causing incorrect behavior in normal use. Ordered
 roughly by dependency, not necessarily by importance — an item lower down
 may unblock ones above it.
 
-- **Array/hash literal elements are invisible to the static risk
-  walker.** Found 2026-08-08, while landing symbol-shorthand hash
-  literal syntax (shipped this session, see below) — not new (applied
-  identically to the old `{ "a" => dangerous_delete() }` spelling
-  too), but that work raises the real-world odds of hitting it, since
-  `{k: v}` is the spelling any Ruby-trained model reaches for first.
-  `HashLiteral`/`ArrayLiteral` both fall through
-  `RiskWalker#walk_node`'s generic `else` branch (risk_walker.cr),
-  which only calls `@inference.infer_node` for env-tracking — and
-  `infer_node` itself (type_inference.cr's `infer_simple`) just
-  returns a fixed `"Array"`/`"Hash"` `TypeHint` without recursing into
-  elements at all. Net effect: a risky call embedded in a literal —
-  `{ path: dangerous_delete() }`, `[dangerous_delete()]` — produces
-  zero findings from `RiskAggregator.summarize`, a false negative in
-  the safety-facing static pass specifically (runtime enforcement is
-  unaffected — `VM#call_native`'s `check_risk_flow` fires regardless
-  of AST position, so a rejection-policy script still correctly
-  rejects the call when it actually runs; this is a blind spot in
-  what a script author sees BEFORE running it). Fix shape: give
-  `HashLiteral`/`ArrayLiteral` their own case in `walk_node`,
-  recursing into each pair's key+value or each element as a
-  `RiskSequence` — same pattern `walk_multi_assign`/`walk_index_assign`
-  (risk_walker.cr) already use for their own sub-expressions.
-
 - **`Class.new(name: ...)` can't reach a keyword-declaring
   `initialize`.** Promoted from Object model 2026-08-05, ahead of the
   core-API-library work: an options-heavy native class
