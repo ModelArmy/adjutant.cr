@@ -954,5 +954,103 @@ module Adjutant
         summary.path.count(&.includes?("unresolved")).should eq 0
       end
     end
+
+    describe "collection literal elements (array/hash) are walked for risk" do
+      it "a risky call inside an array literal is found — regression guard " \
+         "for the 2026-08-08 gap where ArrayLiteral fell through walk_node's " \
+         "generic else branch entirely" do
+        interp, _ = make_interp
+        register_risky_module(interp, "dangerous_delete",
+          RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error))
+        walker = RiskWalker.new(interp)
+        body = risk_walker_test_parse(<<-RUBY)
+          [dangerous_delete(), 1, 2]
+        RUBY
+        summary = RiskAggregator.summarize(walker.walk_body(body))
+        summary.tags.should eq Set{RiskTag::DeletesFiles}
+        summary.severity.should eq Severity::Error
+      end
+
+      it "a risky call inside a hash literal (hash-rocket spelling) is found" do
+        interp, _ = make_interp
+        register_risky_module(interp, "dangerous_delete",
+          RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error))
+        walker = RiskWalker.new(interp)
+        body = risk_walker_test_parse(<<-RUBY)
+          { "path" => dangerous_delete() }
+        RUBY
+        summary = RiskAggregator.summarize(walker.walk_body(body))
+        summary.tags.should eq Set{RiskTag::DeletesFiles}
+      end
+
+      it "a risky call inside a hash literal (symbol-shorthand spelling) is " \
+         "found — the concrete case from samples/scripts/risk_static/" \
+         "risk_static_hash_literal.rb that confirmed this gap" do
+        interp, _ = make_interp
+        register_risky_module(interp, "dangerous_delete",
+          RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error))
+        walker = RiskWalker.new(interp)
+        body = risk_walker_test_parse(<<-RUBY)
+          { path: dangerous_delete() }
+        RUBY
+        summary = RiskAggregator.summarize(walker.walk_body(body))
+        summary.tags.should eq Set{RiskTag::DeletesFiles}
+      end
+
+      it "a risky call inside a hash literal's KEY position is found too, " \
+         "not just the value" do
+        interp, _ = make_interp
+        register_risky_module(interp, "dangerous_delete",
+          RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error))
+        walker = RiskWalker.new(interp)
+        body = risk_walker_test_parse(<<-RUBY)
+          { dangerous_delete() => "ok" }
+        RUBY
+        summary = RiskAggregator.summarize(walker.walk_body(body))
+        summary.tags.should eq Set{RiskTag::DeletesFiles}
+      end
+
+      it "a risky call nested inside a literal inside another literal is " \
+         "still found — confirms recursion, not just one level deep" do
+        interp, _ = make_interp
+        register_risky_module(interp, "dangerous_delete",
+          RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error))
+        walker = RiskWalker.new(interp)
+        body = risk_walker_test_parse(<<-RUBY)
+          { targets: [1, dangerous_delete()] }
+        RUBY
+        summary = RiskAggregator.summarize(walker.walk_body(body))
+        summary.tags.should eq Set{RiskTag::DeletesFiles}
+      end
+
+      it "an array/hash literal with no calls at all still reports Info, " \
+         "no false positives introduced by walking every element" do
+        interp, _ = make_interp
+        walker = RiskWalker.new(interp)
+        body = risk_walker_test_parse(<<-RUBY)
+          [1, 2, { a: 3, "b" => 4 }]
+        RUBY
+        summary = RiskAggregator.summarize(walker.walk_body(body))
+        summary.severity.should eq Severity::Info
+        summary.tags.should be_empty
+      end
+
+      it "multiple risky calls across array elements and hash pairs all " \
+         "contribute — tags union, not just the worst one, since every " \
+         "element genuinely evaluates" do
+        interp, _ = make_interp
+        register_risky_module(interp, "dangerous_delete",
+          RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error))
+        register_risky_module(interp, "fetch_url",
+          RiskProfile.new(tags: Set{RiskTag::NetworkEgress}, severity: Severity::Warning))
+        walker = RiskWalker.new(interp)
+        body = risk_walker_test_parse(<<-RUBY)
+          { deleted: dangerous_delete(), fetched: fetch_url() }
+        RUBY
+        summary = RiskAggregator.summarize(walker.walk_body(body))
+        summary.tags.should eq Set{RiskTag::DeletesFiles, RiskTag::NetworkEgress}
+        summary.severity.should eq Severity::Error
+      end
+    end
   end
 end

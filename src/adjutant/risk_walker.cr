@@ -163,6 +163,8 @@ module Adjutant
       when DefNode    then walk_def(node)
       when ClassNode  then walk_class(node)
       when ModuleNode then walk_module(node)
+      when ArrayLiteral, HashLiteral
+        walk_collection_literal(node, env)
       else
         # Any other node kind (literals, etc.) carries no risk of its
         # own, but may still affect var types (rare outside Assign) —
@@ -488,6 +490,33 @@ module Adjutant
         walk_node(node.index, env).as(RiskNode),
         walk_node(node.value, env).as(RiskNode),
       ]
+      RiskSequence.new(children, node.line)
+    end
+
+    # `[a, b]` / `{k => v, ...}` — every element (or key AND value, for
+    # a hash) is walked for risk, since all of them evaluate
+    # unconditionally when the literal is built. Found 2026-08-08:
+    # before this, ArrayLiteral/HashLiteral fell through walk_node's
+    # generic `else` branch, which only runs type inference (a fixed
+    # "Array"/"Hash" TypeHint, no recursion) — so a risky call sitting
+    # inside a collection literal (`{ path: dangerous_delete() }`,
+    # `[dangerous_delete()]`) produced zero findings from
+    # RiskAggregator.summarize, a real gap in the static pass
+    # specifically (VM#call_native's runtime enforcement was always
+    # unaffected, since it fires from the call itself regardless of
+    # AST position). Same Sequence-of-sub-expressions shape as
+    # walk_multi_assign/walk_index_assign just above — nothing here is
+    # conditional, so nothing here is a Choice.
+    private def walk_collection_literal(node : Node, env : TypeInference::Env) : RiskNode
+      children =
+        case node
+        when ArrayLiteral
+          node.elements.map { |elem| walk_node(elem, env).as(RiskNode) }
+        when HashLiteral
+          node.pairs.flat_map { |k, v| [walk_node(k, env).as(RiskNode), walk_node(v, env).as(RiskNode)] }
+        else
+          [] of RiskNode
+        end
       RiskSequence.new(children, node.line)
     end
 
