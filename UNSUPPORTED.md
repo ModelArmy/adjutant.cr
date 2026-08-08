@@ -403,13 +403,17 @@ construct on its own.
 explicitly rather than via `super`, or move the `super` call outside the
 `rescue`/`begin` entirely if the intent allows it.
 
-**Enforcement — not yet enforced.** Calling `super` inside a
-multi-clause `rescue` today either behaves unpredictably or resolves to
-whatever `super`'s ordinary (single-clause-unaware) implementation
-does — not yet audited precisely, since multiple `rescue` clauses
-themselves don't parse yet (see the `Must Fix` item). Enforcement here
-is gated on that item landing first, and is tracked as part of the
-U008–U011 batch in [SCOPE.md](./SCOPE.md)'s Error reporting group.
+**Enforcement — not yet enforced, and now reachable.** Multiple `rescue`
+clauses per `begin` shipped 2026-08-07 (see `SCOPE.md`'s former `Must
+Fix` entry, now removed), so this is no longer a theoretical gap gated
+on that landing — a script can write `super` inside a multi-clause
+`rescue` today and get whatever `super`'s ordinary
+(clause-unaware) implementation resolves to, unaudited. Flagging for a
+follow-up decision rather than silently leaving it: worth a real `U010`
+diagnostic now that the shape is reachable, or an explicit call that
+it's low-enough risk to leave unenforced a while longer. Tracked as
+part of the U008–U011 batch in [SCOPE.md](./SCOPE.md)'s Error reporting
+group.
 
 ### U011 — `$globals`
 

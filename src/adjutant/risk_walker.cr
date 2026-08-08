@@ -234,36 +234,57 @@ module Adjutant
       RiskSequence.new([body_risk] of RiskNode, node.line, iterated: true)
     end
 
-    # begin/rescue/ensure: body and rescue_body are mutually exclusive
-    # (Choice — exactly one runs), ensure_body always runs afterward
-    # regardless of which (Sequence wrapping the Choice). No rescue
-    # clause at all degrades to a plain Sequence(body, ensure) — there's
-    # nothing to choose between.
+    # begin/rescue/else/ensure: (body [+ else]) and each rescue clause
+    # are mutually exclusive (Choice — exactly one runs), ensure_body
+    # always runs afterward regardless of which (Sequence wrapping the
+    # Choice). No rescue clause at all degrades to a plain
+    # Sequence(body, ensure) — there's nothing to choose between (and
+    # `else` can't appear without a `rescue`; see the parser's P004).
     private def walk_begin(node : BeginNode, env : TypeInference::Env) : RiskNode
       body_env = env.dup
       body_risk = walk_body(node.body, body_env)
 
-      try_result =
-        if rescue_body = node.rescue_body
-          rescue_env = env.dup
-          # The caught exception, if named (`rescue => e` / `rescue
-          # Foo => e`), is a real local for the rescue body — found
-          # 2026-07-18 alongside walk_identifier: without this, a bare
-          # `e` reference inside the rescue body would now (correctly
-          # for genuinely-unbound names, but wrongly here) resolve as
-          # an implicit zero-arg method call attempt instead of the
-          # local read it actually is. UnknownType since Adjutant has
-          # no way to know the exception's real class here beyond
-          # rescue_class's name (not itself resolved to a RubyClass by
-          # this walker), same imprecision every other untyped binding
-          # already carries.
-          if rescue_var = node.rescue_var
-            rescue_env[rescue_var] = UnknownType.new
-          end
-          rescue_risk = walk_body(rescue_body, rescue_env)
-          RiskChoice.new([body_risk, rescue_risk] of RiskNode, "rescue", node.line)
+      # `else` only runs once the body has fully succeeded — unlike
+      # every rescue/ensure branch below (each of which forks fresh
+      # from the OUTER env, since the walker can't know how far body
+      # got before an error), `else` is guaranteed to see body's
+      # completed bindings, so it chains from body_env directly
+      # rather than a fresh dup of env.
+      success_risk =
+        if else_body = node.else_body
+          RiskSequence.new([body_risk, walk_body(else_body, body_env.dup)] of RiskNode, node.line)
         else
           body_risk
+        end
+
+      try_result =
+        if node.rescue_clauses.empty?
+          success_risk
+        else
+          branches = [success_risk] of RiskNode
+          node.rescue_clauses.each do |clause|
+            rescue_env = env.dup
+            # The caught exception, if named (`rescue => e` / `rescue
+            # Foo => e`), is a real local for that clause's body —
+            # found 2026-07-18 alongside walk_identifier: without
+            # this, a bare `e` reference inside the rescue body would
+            # now (correctly for genuinely-unbound names, but wrongly
+            # here) resolve as an implicit zero-arg method call
+            # attempt instead of the local read it actually is.
+            # UnknownType since Adjutant has no way to know the
+            # exception's real class here beyond the clause's class
+            # name(s) (not themselves resolved to a RubyClass by this
+            # walker), same imprecision every other untyped binding
+            # already carries.
+            if rescue_var = clause.var
+              rescue_env[rescue_var] = UnknownType.new
+            end
+            branches << walk_body(clause.body, rescue_env)
+          end
+          # Only one clause ever actually runs — same Choice
+          # semantics as before, just with one branch per clause
+          # instead of a single fixed rescue branch.
+          RiskChoice.new(branches, "rescue", node.line)
         end
 
       if ensure_body = node.ensure_body

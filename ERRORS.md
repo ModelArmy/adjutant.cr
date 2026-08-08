@@ -61,16 +61,23 @@ report it.
 
 The script could not be parsed. Nothing ran.
 
-|Code|Meaning                               |Placeholders                    |
-|----|--------------------------------------|--------------------------------|
-|P001|Expected one thing, found another     |`expected`, `found`             |
-|P002|This can't start an expression        |`found`                         |
-|P003|A block construct is missing its `end`|`construct`, `found`, `expected`|
+|Code|Meaning                                        |Placeholders                    |
+|----|-----------------------------------------------|--------------------------------|
+|P001|Expected one thing, found another              |`expected`, `found`             |
+|P002|This can't start an expression                 |`found`                         |
+|P003|A block construct is missing its `end`         |`construct`, `found`, `expected`|
+|P004|`else` without `rescue` is useless             |—                               |
+|P005|A `begin` block can have only one `else` clause|—                               |
 
 P003 points at two places: where the parser ran out of input, and the
 `def`, `class`, `if`, or other construct that was never closed. The second
 is usually the one to fix. Note that an `end` arriving *too early* also
 produces this — it closes the innermost block, leaving an outer one open.
+
+P004 and P005 match real Ruby's own `SyntaxError`s exactly (confirmed
+against `irb`) — `else` in a `begin` block is only meaningful paired with
+at least one `rescue` clause, and a `begin` allows at most one `else`,
+the same as it allows at most one `ensure`.
 
 ## C — Static semantics
 

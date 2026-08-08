@@ -1562,43 +1562,97 @@ module Adjutant
       open_block("begin", l, c)
       expect(TokenKind::KwBegin)
       skip_terminators
-      body = parse_body_until_any(TokenKind::KwRescue, TokenKind::KwEnsure, TokenKind::KwEnd)
-      rescue_class = nil
-      rescue_var = nil
-      rescue_body = nil
-      ensure_body = nil
-      if match(TokenKind::KwRescue)
-        if at_kind?(TokenKind::Constant)
-          # Reuses the normal expression parser so `rescue Foo::Bar`
-          # gets full constant-path support for free.
-          rescue_class = parse_expression(0)
-          if match(TokenKind::HashRocket)
-            rescue_var = @current.lexeme
-            advance
-          end
-        elsif match(TokenKind::HashRocket)
-          rescue_var = @current.lexeme
-          advance
-        elsif at_kind?(TokenKind::Identifier)
-          # Legacy/bare form: `rescue e` binds a variable with no class
-          # filter (catches everything) — kept for backward compat.
-          rescue_var = @current.lexeme
-          advance
-        end
-        skip_terminators
-        # Registered into the CURRENT scope, not a new one — a rescue
-        # clause does not open its own scope in Ruby (same reasoning
-        # as the for-loop variable above; a rescue-bound variable
-        # remains a real local after the whole begin/rescue/end too).
-        rescue_var.try { |v| register_local(v) }
-        rescue_body = parse_body_until_any(TokenKind::KwEnsure, TokenKind::KwEnd, TokenKind::KwEnd)
+      body = parse_body_until_any(TokenKind::KwRescue, TokenKind::KwElse, TokenKind::KwEnsure, TokenKind::KwEnd)
+      rescue_clauses = [] of RescueClause
+      while at_kind?(TokenKind::KwRescue)
+        rescue_clauses << parse_rescue_clause
       end
+      else_body = parse_begin_else(rescue_clauses)
+      ensure_body = nil
       if match(TokenKind::KwEnsure)
         skip_terminators
         ensure_body = parse_body_until(TokenKind::KwEnd)
       end
       close_block
-      BeginNode.new(body, rescue_class, rescue_var, rescue_body, ensure_body, l, c)
+      BeginNode.new(body, rescue_clauses, else_body, ensure_body, l, c)
+    end
+
+    # One `rescue` clause: optional comma-separated class list (`rescue
+    # A, B` — OR'd left-to-right against the raised error, same as
+    # real Ruby), optional `=> var` binding, then its body. Split out
+    # of parse_begin purely to keep its cyclomatic complexity down.
+    private def parse_rescue_clause : RescueClause
+      expect(TokenKind::KwRescue)
+      classes = [] of Node
+      rescue_var = nil
+      if at_kind?(TokenKind::Constant)
+        # Reuses the normal expression parser so `rescue Foo::Bar`
+        # gets full constant-path support for free.
+        classes << parse_expression(0)
+        while match(TokenKind::Comma)
+          classes << parse_expression(0)
+        end
+        if match(TokenKind::HashRocket)
+          rescue_var = @current.lexeme
+          advance
+        end
+      elsif match(TokenKind::HashRocket)
+        rescue_var = @current.lexeme
+        advance
+      elsif at_kind?(TokenKind::Identifier)
+        # Legacy/bare form: `rescue e` binds a variable with no class
+        # filter (catches everything) — kept for backward compat.
+        rescue_var = @current.lexeme
+        advance
+      end
+      skip_terminators
+      # Registered into the CURRENT scope, not a new one — a rescue
+      # clause does not open its own scope in Ruby (same reasoning as
+      # the for-loop variable above; a rescue-bound variable remains a
+      # real local after the whole begin/rescue/end too).
+      rescue_var.try { |v| register_local(v) }
+      rescue_body = parse_body_until_any(TokenKind::KwRescue, TokenKind::KwElse, TokenKind::KwEnsure, TokenKind::KwEnd)
+      RescueClause.new(classes, rescue_var, rescue_body)
+    end
+
+    # `begin`'s optional `else` clause. Split out of parse_begin purely
+    # to keep its cyclomatic complexity down.
+    private def parse_begin_else(rescue_clauses : Array(RescueClause)) : Body?
+      return nil unless at_kind?(TokenKind::KwElse)
+      # Matches real Ruby's own SyntaxError exactly (confirmed against
+      # `irb`, 2026-08-07): `else` only means something as the "body
+      # raised nothing" branch of an actual rescue/else pairing — a
+      # `begin` with no `rescue` clause at all has nothing for it to
+      # attach to.
+      raise else_without_rescue_error if rescue_clauses.empty?
+      advance
+      skip_terminators
+      else_body = parse_body_until_any(TokenKind::KwElse, TokenKind::KwEnsure, TokenKind::KwEnd)
+      # A second `else` — also a real Ruby SyntaxError (confirmed
+      # against `irb`, 2026-08-07): a `begin` allows at most one, the
+      # same as it allows at most one `ensure`.
+      raise duplicate_else_error if at_kind?(TokenKind::KwElse)
+      else_body
+    end
+
+    private def else_without_rescue_error : ParseError
+      span = Span.new(
+        line: @current.line,
+        column: @current.column,
+        length: caret_width(@current),
+        label: "else without rescue is useless"
+      )
+      ParseError.new(Diagnostic.new(code: "P004", primary: span))
+    end
+
+    private def duplicate_else_error : ParseError
+      span = Span.new(
+        line: @current.line,
+        column: @current.column,
+        length: caret_width(@current),
+        label: "a begin block can have only one else clause"
+      )
+      ParseError.new(Diagnostic.new(code: "P005", primary: span))
     end
 
     private def parse_require : RequireNode
@@ -1631,11 +1685,11 @@ module Adjutant
       Body.new(stmts, l, c)
     end
 
-    private def parse_body_until_any(a : TokenKind, b : TokenKind, c_kind : TokenKind) : Body
+    private def parse_body_until_any(*kinds : TokenKind) : Body
       l, c = line, col
       stmts = [] of Node
       skip_terminators
-      until at_any?(a, b, c_kind) || at_kind?(TokenKind::EOF)
+      until at_any?(*kinds) || at_kind?(TokenKind::EOF)
         stmts << parse_statement
         skip_terminators
       end

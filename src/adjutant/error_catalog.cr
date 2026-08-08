@@ -466,6 +466,38 @@ module Adjutant
               "too early closes the innermost block, and everything after " \
               "it then belongs to the wrong place."
       ),
+      # Matches real Ruby's own SyntaxError exactly (confirmed against
+      # `irb`, 2026-08-07) — `else` only means something as the
+      # "body raised nothing" branch of an actual rescue/else pairing,
+      # so a `begin` with no `rescue` clause at all has nothing for
+      # `else` to attach to.
+      "P004" => Entry.new(
+        code: "P004",
+        summary: "`else` without `rescue` is useless",
+        why: "`else` in a `begin` block only runs when the body raised " \
+             "nothing, as the complement to a `rescue` clause catching " \
+             "when it did. With no `rescue` clause at all, the body " \
+             "either always reaches `else` (nothing was there to catch) " \
+             "or the whole `begin` propagates an error past `else` " \
+             "entirely — either way `else` adds nothing a plain trailing " \
+             "statement wouldn't already do.",
+        help: "Add a `rescue` clause if you meant to handle an error, or " \
+              "just move `else`'s body to the end of the `begin` body " \
+              "directly."
+      ),
+      # Also matches real Ruby's own SyntaxError exactly (confirmed
+      # against `irb`, 2026-08-07) — a `begin` grammatically allows at
+      # most one `else`, same as at most one `ensure`.
+      "P005" => Entry.new(
+        code: "P005",
+        summary: "a `begin` block can have only one `else` clause",
+        why: "`else` marks the single \"body raised nothing\" branch of a " \
+             "`begin`/`rescue`, not a chain like `rescue` clauses form — " \
+             "there is only one such branch to have, so a second `else` " \
+             "has nothing left to mean.",
+        help: "Merge the two `else` bodies into one, or remove the " \
+              "second `else` entirely."
+      ),
       "U001" => Entry.new(
         code: "U001",
         summary: "block parameter capture (`&{param}`) is not supported",

@@ -256,5 +256,189 @@ module Adjutant
         result.as_int.should eq 2_i64
       end
     end
+
+    # A rejected risk-flow call is a real, script-catchable error
+    # (RiskFlowRejectedError < RiskFlowPolicyError < StandardError —
+    # see the single-clause coverage above). Multiple rescue clauses
+    # landed this session (see SCOPE.md), so this is the actual
+    # runtime interaction, not just the static walker's view of it:
+    # does a multi-clause rescue correctly single out a policy
+    # rejection from other error types, in real class-filter order?
+    describe "multiple rescue clauses catching a rejected risk flow call" do
+      it "a later, more specific clause catches the rejection when an " \
+         "earlier clause's class doesn't match" do
+        interp, _ = make_enforcement_interp(enforcement_policy_for(RiskFlowAction::Reject))
+        result = interp.eval(<<-RUBY)
+          begin
+            delete_file(tainted_path("/etc/passwd"))
+          rescue TypeError => e
+            "wrong branch"
+          rescue RiskFlowPolicyError => e
+            "caught: " + e.message
+          end
+        RUBY
+        result.as_string.should contain("delete_file")
+        result.as_string.should start_with("caught: ")
+      end
+
+      it "an earlier, broader clause intercepts the rejection before a later, " \
+         "more specific one gets a chance — real Ruby order-not-specificity, " \
+         "worth knowing as a script-authoring pitfall for this error family " \
+         "specifically" do
+        # Same "first match wins, never most-specific" semantics
+        # confirmed for ordinary classes in begin_rescue_ensure/vm_spec.cr
+        # ("picks first-listed on order, not most-specific"), but here
+        # with StandardError positioned first, ahead of the narrower
+        # RiskFlowPolicyError a script author might expect to run
+        # instead. Worth its own test: this is exactly the shape a
+        # generated script could get wrong if it lists a catch-all
+        # rescue before a specific policy-rejection handler.
+        interp, _ = make_enforcement_interp(enforcement_policy_for(RiskFlowAction::Reject))
+        result = interp.eval(<<-RUBY)
+          begin
+            delete_file(tainted_path("/etc/passwd"))
+          rescue StandardError => e
+            "generic"
+          rescue RiskFlowPolicyError => e
+            "specific"
+          end
+        RUBY
+        result.as_string.should eq "generic"
+      end
+
+      it "rescue RiskFlowPolicyError, TypeError catches the rejection via the " \
+         "multiple-classes-on-one-clause form" do
+        interp, _ = make_enforcement_interp(enforcement_policy_for(RiskFlowAction::Reject))
+        result = interp.eval(<<-RUBY)
+          begin
+            delete_file(tainted_path("/etc/passwd"))
+          rescue RiskFlowPolicyError, TypeError => e
+            "caught"
+          end
+        RUBY
+        result.as_string.should eq "caught"
+      end
+
+      it "falls through every mismatched clause and still re-raises the " \
+         "rejection uncaught when nothing matches" do
+        interp, _ = make_enforcement_interp(enforcement_policy_for(RiskFlowAction::Reject))
+        # A reraise past a mismatched clause loses the original
+        # Diagnostic by design (Op::Reraise's RuntimeError.new(message,
+        # frame, error_value:) sets @diagnostic = nil — see vm.cr; the
+        # diagnostic is a report about a fresh VM-classified failure,
+        # and this is the script's own error re-propagating, not a
+        # new one). So this checks the message, same as every other
+        # uncaught-mismatch test in this file, rather than .diagnostic.
+        expect_raises(RuntimeError, /risk flow policy rejected/) do
+          interp.eval(<<-RUBY)
+            begin
+              delete_file(tainted_path("/etc/passwd"))
+            rescue TypeError => e
+              "wrong"
+            rescue ArgumentError => e
+              "also wrong"
+            end
+          RUBY
+        end
+      end
+
+      it "the call's side effect still does not happen, now behind two " \
+         "mismatched clauses before the one that matches" do
+        interp, _ = make_enforcement_interp(enforcement_policy_for(RiskFlowAction::Reject))
+        result = interp.eval(<<-RUBY)
+          deleted = false
+          begin
+            delete_file(tainted_path("/etc/passwd"))
+            deleted = true
+          rescue TypeError => e
+            nil
+          rescue ArgumentError => e
+            nil
+          rescue RiskFlowPolicyError => e
+            nil
+          end
+          deleted
+        RUBY
+        result.as_bool.should be_false
+      end
+    end
+
+    # `else` runs bytecode through the exact same VM#call_native path
+    # as anywhere else in a script — enforcement needed no changes for
+    # it. These confirm that directly, plus the one genuinely
+    # else-specific interaction: a rejection raised INSIDE else must
+    # NOT be caught by that same begin's own rescue clauses (see
+    # begin_rescue_ensure/vm_spec.cr's equivalent coverage for a plain
+    # `raise`; this is the same rule, exercised through real risk-flow
+    # rejection instead).
+    describe "a rejected risk flow call inside an else clause" do
+      it "a tainted call inside else is rejected the same as anywhere else" do
+        interp, _ = make_enforcement_interp(enforcement_policy_for(RiskFlowAction::Reject))
+        error = expect_raises(RuntimeError, /risk flow policy rejected/) do
+          interp.eval(<<-RUBY)
+            begin
+              1 + 1
+            rescue e
+              "rescued"
+            else
+              delete_file(tainted_path("/etc/passwd"))
+            end
+          RUBY
+        end
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("F001")
+      end
+
+      it "is NOT caught by that same begin's own rescue clause" do
+        interp, _ = make_enforcement_interp(enforcement_policy_for(RiskFlowAction::Reject))
+        expect_raises(RuntimeError, /risk flow policy rejected/) do
+          interp.eval(<<-RUBY)
+            begin
+              1 + 1
+            rescue RiskFlowPolicyError => e
+              "should not catch this"
+            else
+              delete_file(tainted_path("/etc/passwd"))
+            end
+          RUBY
+        end
+      end
+
+      it "IS catchable by an outer begin's rescue, since it's an ordinary " \
+         "propagating error by the time it's past this begin's else" do
+        interp, _ = make_enforcement_interp(enforcement_policy_for(RiskFlowAction::Reject))
+        result = interp.eval(<<-RUBY)
+          begin
+            begin
+              1 + 1
+            rescue e
+              "inner rescued"
+            else
+              delete_file(tainted_path("/etc/passwd"))
+            end
+          rescue RiskFlowPolicyError => e
+            "outer caught"
+          end
+        RUBY
+        result.as_string.should eq "outer caught"
+      end
+
+      it "a tainted call in the body being rejected means else never runs " \
+         "at all — the call's own side effect proves it" do
+        interp, _ = make_enforcement_interp(enforcement_policy_for(RiskFlowAction::Reject))
+        result = interp.eval(<<-RUBY)
+          else_ran = false
+          begin
+            delete_file(tainted_path("/etc/passwd"))
+          rescue RiskFlowPolicyError => e
+            "rejected in body"
+          else
+            else_ran = true
+          end
+          else_ran
+        RUBY
+        result.as_bool.should be_false
+      end
+    end
   end
 end
