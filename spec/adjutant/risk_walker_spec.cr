@@ -498,6 +498,85 @@ module Adjutant
       summary.severity.should eq Severity::Info
     end
 
+    it "a risky call hidden inside a begin's else clause is still found — " \
+       "walk_begin folds else into the SAME success branch as the body, " \
+       "not a fresh alternative the aggregator could pick around" do
+      # The scenario this guards against: a generated script puts its
+      # dangerous work in `else` instead of the body (maybe because
+      # `else` reads as \"the happy path\" to whoever/whatever wrote
+      # it) and static assessment silently misses it because else
+      # isn't folded into the choice the same way the body is.
+      interp, _ = make_interp
+      register_risky_module(interp, "safe_setup", RiskProfile.new(tags: Set{RiskTag::ReadsFiles}, severity: Severity::Info))
+      register_risky_module(interp, "dangerous_delete",
+        RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error))
+      walker = RiskWalker.new(interp)
+      body = risk_walker_test_parse(<<-RUBY)
+        begin
+          safe_setup()
+        rescue
+          nil
+        else
+          dangerous_delete()
+        end
+      RUBY
+      summary = RiskAggregator.summarize(walker.walk_body(body))
+      # Both tags are real here: safe_setup() and dangerous_delete()
+      # both genuinely run together on the success path (body then
+      # else, in sequence) — RiskSequence unions tags from both
+      # children rather than picking one, same "both are real, not
+      # just the worst one" rule the existing ensure's-risk-always-
+      # applies test documents. The point of this test is that
+      # DeletesFiles shows up AT ALL — proving else's risky call
+      # wasn't silently dropped — not that it shows up alone.
+      summary.tags.should eq Set{RiskTag::ReadsFiles, RiskTag::DeletesFiles}
+      summary.severity.should eq Severity::Error
+    end
+
+    it "takes the worst of (body + else) vs rescue, not a union — same " \
+       "worst-case-branch aggregation as the plain body-vs-rescue case" do
+      interp, _ = make_interp
+      register_risky_module(interp, "safe_setup", RiskProfile.new(tags: Set{RiskTag::ReadsFiles}, severity: Severity::Info))
+      register_risky_module(interp, "safe_cleanup", RiskProfile.new(tags: Set{RiskTag::ReadsFiles}, severity: Severity::Info))
+      register_risky_module(interp, "dangerous_delete",
+        RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error))
+      walker = RiskWalker.new(interp)
+      body = risk_walker_test_parse(<<-RUBY)
+        begin
+          safe_setup()
+        rescue
+          dangerous_delete()
+        else
+          safe_cleanup()
+        end
+      RUBY
+      summary = RiskAggregator.summarize(walker.walk_body(body))
+      # The rescue branch is worse (DeletesFiles/Error) than the
+      # body+else branch (ReadsFiles/Info only) — worst-of-all-
+      # branches picks rescue here, same "not a union" contract the
+      # existing plain body-vs-rescue test already asserts.
+      summary.tags.should eq Set{RiskTag::DeletesFiles}
+      summary.path.should contain "rescue branch"
+    end
+
+    it "a local assigned in the body is visible to else's risk walk " \
+       "without a false-positive bare-call flag (body_env chaining, " \
+       "not a fresh env.dup the way rescue/ensure branches use)" do
+      interp, _ = make_interp
+      walker = RiskWalker.new(interp)
+      body = risk_walker_test_parse(<<-RUBY)
+        begin
+          x = 5
+        rescue
+          nil
+        else
+          x
+        end
+      RUBY
+      summary = RiskAggregator.summarize(walker.walk_body(body))
+      summary.severity.should eq Severity::Info
+    end
+
     it "ensure's risk always applies, regardless of the try/rescue outcome" do
       interp, _ = make_interp
       register_risky_module(interp, "safe_read", RiskProfile.new(tags: Set{RiskTag::ReadsFiles}, severity: Severity::Info))

@@ -234,20 +234,34 @@ module Adjutant
       RiskSequence.new([body_risk] of RiskNode, node.line, iterated: true)
     end
 
-    # begin/rescue/ensure: body and rescue_body are mutually exclusive
-    # (Choice — exactly one runs), ensure_body always runs afterward
-    # regardless of which (Sequence wrapping the Choice). No rescue
-    # clause at all degrades to a plain Sequence(body, ensure) — there's
-    # nothing to choose between.
+    # begin/rescue/else/ensure: (body [+ else]) and each rescue clause
+    # are mutually exclusive (Choice — exactly one runs), ensure_body
+    # always runs afterward regardless of which (Sequence wrapping the
+    # Choice). No rescue clause at all degrades to a plain
+    # Sequence(body, ensure) — there's nothing to choose between (and
+    # `else` can't appear without a `rescue`; see the parser's P004).
     private def walk_begin(node : BeginNode, env : TypeInference::Env) : RiskNode
       body_env = env.dup
       body_risk = walk_body(node.body, body_env)
 
+      # `else` only runs once the body has fully succeeded — unlike
+      # every rescue/ensure branch below (each of which forks fresh
+      # from the OUTER env, since the walker can't know how far body
+      # got before an error), `else` is guaranteed to see body's
+      # completed bindings, so it chains from body_env directly
+      # rather than a fresh dup of env.
+      success_risk =
+        if else_body = node.else_body
+          RiskSequence.new([body_risk, walk_body(else_body, body_env.dup)] of RiskNode, node.line)
+        else
+          body_risk
+        end
+
       try_result =
         if node.rescue_clauses.empty?
-          body_risk
+          success_risk
         else
-          branches = [body_risk] of RiskNode
+          branches = [success_risk] of RiskNode
           node.rescue_clauses.each do |clause|
             rescue_env = env.dup
             # The caught exception, if named (`rescue => e` / `rescue

@@ -485,9 +485,10 @@ module Adjutant
   class BeginNode < Node
     getter body : Body
     getter rescue_clauses : Array(RescueClause)
+    getter else_body : Body?
     getter ensure_body : Body?
 
-    def initialize(@body, @rescue_clauses, @ensure_body, line, column)
+    def initialize(@body, @rescue_clauses, @else_body, @ensure_body, line, column)
       super(line, column)
     end
   end

@@ -362,5 +362,83 @@ module Adjutant
         result.as_bool.should be_false
       end
     end
+
+    # `else` runs bytecode through the exact same VM#call_native path
+    # as anywhere else in a script — enforcement needed no changes for
+    # it. These confirm that directly, plus the one genuinely
+    # else-specific interaction: a rejection raised INSIDE else must
+    # NOT be caught by that same begin's own rescue clauses (see
+    # begin_rescue_ensure/vm_spec.cr's equivalent coverage for a plain
+    # `raise`; this is the same rule, exercised through real risk-flow
+    # rejection instead).
+    describe "a rejected risk flow call inside an else clause" do
+      it "a tainted call inside else is rejected the same as anywhere else" do
+        interp, _ = make_enforcement_interp(enforcement_policy_for(RiskFlowAction::Reject))
+        error = expect_raises(RuntimeError, /risk flow policy rejected/) do
+          interp.eval(<<-RUBY)
+            begin
+              1 + 1
+            rescue e
+              "rescued"
+            else
+              delete_file(tainted_path("/etc/passwd"))
+            end
+          RUBY
+        end
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("F001")
+      end
+
+      it "is NOT caught by that same begin's own rescue clause" do
+        interp, _ = make_enforcement_interp(enforcement_policy_for(RiskFlowAction::Reject))
+        expect_raises(RuntimeError, /risk flow policy rejected/) do
+          interp.eval(<<-RUBY)
+            begin
+              1 + 1
+            rescue RiskFlowPolicyError => e
+              "should not catch this"
+            else
+              delete_file(tainted_path("/etc/passwd"))
+            end
+          RUBY
+        end
+      end
+
+      it "IS catchable by an outer begin's rescue, since it's an ordinary " \
+         "propagating error by the time it's past this begin's else" do
+        interp, _ = make_enforcement_interp(enforcement_policy_for(RiskFlowAction::Reject))
+        result = interp.eval(<<-RUBY)
+          begin
+            begin
+              1 + 1
+            rescue e
+              "inner rescued"
+            else
+              delete_file(tainted_path("/etc/passwd"))
+            end
+          rescue RiskFlowPolicyError => e
+            "outer caught"
+          end
+        RUBY
+        result.as_string.should eq "outer caught"
+      end
+
+      it "a tainted call in the body being rejected means else never runs " \
+         "at all — the call's own side effect proves it" do
+        interp, _ = make_enforcement_interp(enforcement_policy_for(RiskFlowAction::Reject))
+        result = interp.eval(<<-RUBY)
+          else_ran = false
+          begin
+            delete_file(tainted_path("/etc/passwd"))
+          rescue RiskFlowPolicyError => e
+            "rejected in body"
+          else
+            else_ran = true
+          end
+          else_ran
+        RUBY
+        result.as_bool.should be_false
+      end
+    end
   end
 end

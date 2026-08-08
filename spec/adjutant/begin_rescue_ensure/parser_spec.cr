@@ -68,6 +68,38 @@ module Adjutant
         b.rescue_clauses[2].classes.should be_empty
         b.rescue_clauses[2].var.should be_nil
       end
+
+      it "parses begin/rescue/else" do
+        src = "begin\nfoo\nrescue\nbar\nelse\nbaz\nend"
+        b = parse_expr(src).as(BeginNode)
+        b.rescue_clauses.size.should eq 1
+        b.else_body.should_not be_nil
+      end
+
+      it "parses begin/rescue/else/ensure together" do
+        src = "begin\nfoo\nrescue\nbar\nelse\nbaz\nensure\nqux\nend"
+        b = parse_expr(src).as(BeginNode)
+        b.else_body.should_not be_nil
+        b.ensure_body.should_not be_nil
+      end
+
+      it "rejects else with no rescue clause at all (P004, matches real " \
+         "Ruby's SyntaxError — confirmed against irb)" do
+        error = expect_raises(ParseError) do
+          parse_expr("begin\nfoo\nelse\nbar\nend")
+        end
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("P004")
+      end
+
+      it "rejects a second else clause (P005, matches real Ruby's " \
+         "SyntaxError — confirmed against irb)" do
+        error = expect_raises(ParseError) do
+          parse_expr("begin\nfoo\nrescue\nbar\nelse\nbaz\nelse\nqux\nend")
+        end
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("P005")
+      end
     end
   end
 end

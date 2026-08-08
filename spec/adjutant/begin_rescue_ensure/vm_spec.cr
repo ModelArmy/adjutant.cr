@@ -513,6 +513,175 @@ module Adjutant
     end
   end
 
+  describe "begin/rescue/else" do
+    it "runs the else body when the begin body raises nothing" do
+      eval(<<-RUBY).should eq Value.string("else ran")
+        begin
+          1 + 1
+        rescue
+          "rescued"
+        else
+          "else ran"
+        end
+      RUBY
+    end
+
+    it "does not run the else body when the begin body raises" do
+      eval(<<-RUBY).should eq Value.string("rescued")
+        begin
+          raise "boom"
+        rescue
+          "rescued"
+        else
+          "not this"
+        end
+      RUBY
+    end
+
+    it "the overall expression's value is else's, not the body's, on success" do
+      eval(<<-RUBY).should eq Value.int(99_i64)
+        x = begin
+              1 + 1
+            rescue
+              -1
+            else
+              99
+            end
+        x
+      RUBY
+    end
+
+    it "does not run the else body when a specific rescue clause matches " \
+       "among several" do
+      result = eval(<<-RUBY)
+        begin
+          raise TypeError, "nope"
+        rescue TypeError => e
+          "caught type"
+        rescue ArgumentError => e
+          "caught arg"
+        else
+          "should not run"
+        end
+      RUBY
+      result.should eq Value.string("caught type")
+    end
+
+    it "an error raised inside else is NOT caught by this begin's own " \
+       "rescue clauses — matches real Ruby: else runs past the point " \
+       "this construct's protection was already torn down" do
+      expect_raises(RuntimeError, /boom/) do
+        eval(<<-RUBY)
+          begin
+            1 + 1
+          rescue
+            "rescued"
+          else
+            raise "boom"
+          end
+        RUBY
+      end
+    end
+
+    it "an outer begin's rescue CAN still catch an error raised inside an " \
+       "inner begin's else, since it's an ordinary propagating error by " \
+       "that point, just not caught by the SAME begin's own rescue" do
+      result = eval(<<-RUBY)
+        begin
+          begin
+            1 + 1
+          rescue
+            "inner rescued"
+          else
+            raise "boom"
+          end
+        rescue e
+          "outer caught: " + e.message
+        end
+      RUBY
+      result.should eq Value.string("outer caught: boom")
+    end
+
+    it "this begin's OWN ensure still runs when else itself raises — " \
+       "EndTry only clears the rescue portion of the handler entry, " \
+       "leaving a linked ensure_ip live for exactly this case" do
+      result = eval(<<-RUBY)
+        order = []
+        begin
+          begin
+            1 + 1
+          rescue
+            order << :rescue
+          else
+            order << :else
+            raise "boom"
+          ensure
+            order << :ensure
+          end
+        rescue e
+          order << ("outer caught: " + e.message)
+        end
+        order
+      RUBY
+      arr = result.as_array
+      arr[0].as_sym.name.should eq "else"
+      arr[1].as_sym.name.should eq "ensure"
+      arr[2].as_string.should eq "outer caught: boom"
+    end
+
+    it "runs ensure after else on the success path, and ensure's own " \
+       "trailing value doesn't clobber else's" do
+      result = eval(<<-RUBY)
+        order = []
+        x = begin
+              1 + 1
+            rescue
+              order << :rescue
+              -1
+            else
+              order << :else
+              99
+            ensure
+              order << :ensure
+            end
+        [x, order]
+      RUBY
+      arr = result.as_array
+      arr[0].should eq Value.int(99_i64)
+      arr[1].as_array.map(&.as_sym.name).should eq ["else", "ensure"]
+    end
+
+    it "still runs ensure when the rescue path is taken instead of else" do
+      result = eval(<<-RUBY)
+        order = []
+        begin
+          raise "boom"
+        rescue
+          order << :rescue
+        else
+          order << :else
+        ensure
+          order << :ensure
+        end
+        order
+      RUBY
+      result.as_array.map(&.as_sym.name).should eq ["rescue", "ensure"]
+    end
+
+    it "a local assigned in the body is visible inside else (else runs " \
+       "only after the body has fully completed)" do
+      eval(<<-RUBY).should eq Value.int(5_i64)
+        begin
+          x = 5
+        rescue
+          -1
+        else
+          x
+        end
+      RUBY
+    end
+  end
+
   describe "begin/ensure without rescue" do
     # Op::Try's jump target was only ever patched inside the
     # rescue_body branch. An ensure-only begin (no rescue clause) had

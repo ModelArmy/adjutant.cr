@@ -1656,6 +1656,18 @@ module Adjutant
       @ensure_stack.pop
       @chunk.emit(Op::EndTry, node.line) if has_rescue
 
+      # `else` only runs on the success path (body raised nothing) —
+      # by this point Op::EndTry has already cleared this construct's
+      # rescue protection, so an error raised inside `else_body` is
+      # correctly NOT caught by this begin's own rescue clauses,
+      # matching real Ruby exactly. `else`'s value replaces the
+      # body's as the overall expression's result when present, so
+      # the body's leftover value is discarded first.
+      if else_body = node.else_body
+        @chunk.emit(Op::Pop, node.line)
+        compile_body(else_body)
+      end
+
       if try_pos = try_at
         compile_rescue_clauses(node, try_pos)
       end
