@@ -244,26 +244,33 @@ module Adjutant
       body_risk = walk_body(node.body, body_env)
 
       try_result =
-        if rescue_body = node.rescue_body
-          rescue_env = env.dup
-          # The caught exception, if named (`rescue => e` / `rescue
-          # Foo => e`), is a real local for the rescue body — found
-          # 2026-07-18 alongside walk_identifier: without this, a bare
-          # `e` reference inside the rescue body would now (correctly
-          # for genuinely-unbound names, but wrongly here) resolve as
-          # an implicit zero-arg method call attempt instead of the
-          # local read it actually is. UnknownType since Adjutant has
-          # no way to know the exception's real class here beyond
-          # rescue_class's name (not itself resolved to a RubyClass by
-          # this walker), same imprecision every other untyped binding
-          # already carries.
-          if rescue_var = node.rescue_var
-            rescue_env[rescue_var] = UnknownType.new
-          end
-          rescue_risk = walk_body(rescue_body, rescue_env)
-          RiskChoice.new([body_risk, rescue_risk] of RiskNode, "rescue", node.line)
-        else
+        if node.rescue_clauses.empty?
           body_risk
+        else
+          branches = [body_risk] of RiskNode
+          node.rescue_clauses.each do |clause|
+            rescue_env = env.dup
+            # The caught exception, if named (`rescue => e` / `rescue
+            # Foo => e`), is a real local for that clause's body —
+            # found 2026-07-18 alongside walk_identifier: without
+            # this, a bare `e` reference inside the rescue body would
+            # now (correctly for genuinely-unbound names, but wrongly
+            # here) resolve as an implicit zero-arg method call
+            # attempt instead of the local read it actually is.
+            # UnknownType since Adjutant has no way to know the
+            # exception's real class here beyond the clause's class
+            # name(s) (not themselves resolved to a RubyClass by this
+            # walker), same imprecision every other untyped binding
+            # already carries.
+            if rescue_var = clause.var
+              rescue_env[rescue_var] = UnknownType.new
+            end
+            branches << walk_body(clause.body, rescue_env)
+          end
+          # Only one clause ever actually runs — same Choice
+          # semantics as before, just with one branch per clause
+          # instead of a single fixed rescue branch.
+          RiskChoice.new(branches, "rescue", node.line)
         end
 
       if ensure_body = node.ensure_body

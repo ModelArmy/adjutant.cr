@@ -1563,15 +1563,21 @@ module Adjutant
       expect(TokenKind::KwBegin)
       skip_terminators
       body = parse_body_until_any(TokenKind::KwRescue, TokenKind::KwEnsure, TokenKind::KwEnd)
-      rescue_class = nil
-      rescue_var = nil
-      rescue_body = nil
+      rescue_clauses = [] of RescueClause
       ensure_body = nil
-      if match(TokenKind::KwRescue)
+      while match(TokenKind::KwRescue)
+        classes = [] of Node
+        rescue_var = nil
         if at_kind?(TokenKind::Constant)
           # Reuses the normal expression parser so `rescue Foo::Bar`
-          # gets full constant-path support for free.
-          rescue_class = parse_expression(0)
+          # gets full constant-path support for free. `rescue A, B`
+          # collects each comma-separated type into `classes`, tried
+          # left-to-right (OR) against the raised error, same as real
+          # Ruby.
+          classes << parse_expression(0)
+          while match(TokenKind::Comma)
+            classes << parse_expression(0)
+          end
           if match(TokenKind::HashRocket)
             rescue_var = @current.lexeme
             advance
@@ -1591,14 +1597,15 @@ module Adjutant
         # as the for-loop variable above; a rescue-bound variable
         # remains a real local after the whole begin/rescue/end too).
         rescue_var.try { |v| register_local(v) }
-        rescue_body = parse_body_until_any(TokenKind::KwEnsure, TokenKind::KwEnd, TokenKind::KwEnd)
+        rescue_body = parse_body_until_any(TokenKind::KwRescue, TokenKind::KwEnsure, TokenKind::KwEnd)
+        rescue_clauses << RescueClause.new(classes, rescue_var, rescue_body)
       end
       if match(TokenKind::KwEnsure)
         skip_terminators
         ensure_body = parse_body_until(TokenKind::KwEnd)
       end
       close_block
-      BeginNode.new(body, rescue_class, rescue_var, rescue_body, ensure_body, l, c)
+      BeginNode.new(body, rescue_clauses, ensure_body, l, c)
     end
 
     private def parse_require : RequireNode

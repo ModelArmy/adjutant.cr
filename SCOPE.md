@@ -24,22 +24,6 @@ Blocking, or actively causing incorrect behavior in normal use. Ordered
 roughly by dependency, not necessarily by importance — an item lower down
 may unblock ones above it.
 
-- **Multiple `rescue` clauses per `begin`, and `rescue A, B` (multiple
-  exception types on one clause).** Promoted from the long-standing
-  language-gaps backlog 2026-08-05, after a design conversation about
-  whether Adjutant should keep real Ruby exception syntax at all
-  (decision: yes — an LLM's exception-handling fluency is
-  pattern-retrieval from a saturated Ruby training corpus, not novel
-  reasoning, so the usual "exceptions are hard for LLMs" argument
-  doesn't hold for a proper-Ruby-subset specifically; see that
-  session's chat). Currently a script can write exactly one `rescue`
-  per `begin`, catching one type — real Ruby's "catch this OR that
-  specific type, handle other types separately" is a basic
-  error-handling shape and not currently expressible at all. Also the
-  most-flagged single gap across the `spec/scripts/mruby/exception.rb`
-  survey (2026-08-05). `parse_begin`/`BeginNode` (parser.cr/ast.cr) is
-  where the single-clause assumption lives today.
-
 - **Symbol-shorthand hash literal syntax** (`{k: v}`). Promoted from
   Parser/lexer gaps 2026-08-05 — not because the fix is hard (it
   isn't; see the original entry below, unchanged in substance), but

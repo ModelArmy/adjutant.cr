@@ -428,6 +428,76 @@ module Adjutant
       summary.path.should contain "rescue branch"
     end
 
+    it "multiple rescue clauses: takes the worst across ALL clauses, not just " \
+       "the last one — regression guard for RiskChoice generalizing from a " \
+       "fixed 2-way (body, rescue) choice to N clause branches" do
+      interp, _ = make_interp
+      register_risky_module(interp, "safe_read", RiskProfile.new(tags: Set{RiskTag::ReadsFiles}, severity: Severity::Info))
+      register_risky_module(interp, "dangerous_delete",
+        RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error))
+      register_risky_module(interp, "log_fn", RiskProfile.none)
+      walker = RiskWalker.new(interp)
+      body = risk_walker_test_parse(<<-RUBY)
+        begin
+          safe_read()
+        rescue TypeError
+          log_fn()
+        rescue ArgumentError
+          dangerous_delete()
+        rescue
+          log_fn()
+        end
+      RUBY
+      summary = RiskAggregator.summarize(walker.walk_body(body))
+      # The risky call sits in the MIDDLE clause, not the first or
+      # last — confirms the walker isn't just checking the first and
+      # last branches, but genuinely folding in every clause.
+      summary.tags.should eq Set{RiskTag::DeletesFiles}
+      summary.path.should contain "rescue branch"
+    end
+
+    it "a rescue A, B clause with multiple classes still contributes exactly " \
+       "one RiskChoice branch, not one per listed class" do
+      interp, _ = make_interp
+      register_risky_module(interp, "dangerous_delete",
+        RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error))
+      walker = RiskWalker.new(interp)
+      body = risk_walker_test_parse(<<-RUBY)
+        begin
+          1
+        rescue TypeError, ArgumentError
+          dangerous_delete()
+        end
+      RUBY
+      choice = walker.walk_body(body).as(RiskSequence).children.first.as(RiskChoice)
+      # body + exactly one clause branch — the two-class list inside
+      # that one clause must not have produced two branches.
+      choice.children.size.should eq 2
+      summary = RiskAggregator.summarize(walker.walk_body(body))
+      summary.tags.should eq Set{RiskTag::DeletesFiles}
+    end
+
+    it "each rescue clause's bound variable is scoped independently — a name " \
+       "bound in one clause doesn't leak into a sibling clause's risk walk" do
+      interp, _ = make_interp
+      walker = RiskWalker.new(interp)
+      body = risk_walker_test_parse(<<-RUBY)
+        begin
+          1
+        rescue TypeError => e
+          e
+        rescue ArgumentError => f
+          f
+        end
+      RUBY
+      # Neither `e` nor `f` should be flagged as a bare-call attempt
+      # in its OWN clause — each is a real local there, same as the
+      # existing single-clause "rescue => e" bare-reference test
+      # above, just exercised across two independent clause envs.
+      summary = RiskAggregator.summarize(walker.walk_body(body))
+      summary.severity.should eq Severity::Info
+    end
+
     it "ensure's risk always applies, regardless of the try/rescue outcome" do
       interp, _ = make_interp
       register_risky_module(interp, "safe_read", RiskProfile.new(tags: Set{RiskTag::ReadsFiles}, severity: Severity::Info))

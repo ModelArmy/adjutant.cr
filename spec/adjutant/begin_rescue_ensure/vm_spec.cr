@@ -353,6 +353,166 @@ module Adjutant
     end
   end
 
+  describe "multiple rescue clauses" do
+    it "runs the first clause whose class matches" do
+      eval(<<-RUBY).should eq Value.string("type")
+        begin
+          raise TypeError, "nope"
+        rescue TypeError => e
+          "type"
+        rescue ArgumentError => e
+          "arg"
+        end
+      RUBY
+    end
+
+    it "falls through to a later clause when an earlier one doesn't match" do
+      eval(<<-RUBY).should eq Value.string("arg")
+        begin
+          raise ArgumentError, "nope"
+        rescue TypeError => e
+          "type"
+        rescue ArgumentError => e
+          "arg"
+        end
+      RUBY
+    end
+
+    it "runs a trailing bare rescue as a catch-all after typed clauses miss" do
+      eval(<<-RUBY).should eq Value.string("caught")
+        begin
+          raise IndexError, "nope"
+        rescue TypeError => e
+          "type"
+        rescue ArgumentError => e
+          "arg"
+        rescue
+          "caught"
+        end
+      RUBY
+    end
+
+    it "re-raises the original error when no clause matches" do
+      expect_raises(RuntimeError, /nope/) do
+        eval(<<-RUBY)
+          begin
+            raise TypeError, "nope"
+          rescue ArgumentError => e
+            "arg"
+          rescue NameError => e
+            "name"
+          end
+        RUBY
+      end
+    end
+
+    it "only runs the matching clause's body, not any other clause's" do
+      result = eval(<<-RUBY)
+        ran = []
+        begin
+          raise ArgumentError, "nope"
+        rescue TypeError => e
+          ran << :type
+        rescue ArgumentError => e
+          ran << :arg
+        rescue NameError => e
+          ran << :name
+        end
+        ran
+      RUBY
+      result.as_array.map(&.as_sym.name).should eq ["arg"]
+    end
+
+    it "picks first-listed on order, not most-specific (matches real Ruby)" do
+      # TypeError is-a StandardError, so a StandardError clause listed
+      # FIRST wins even though TypeError is the more specific match —
+      # Ruby tries clauses in source order, never reorders by
+      # specificity.
+      eval(<<-RUBY).should eq Value.string("broad")
+        begin
+          raise TypeError, "nope"
+        rescue StandardError => e
+          "broad"
+        rescue TypeError => e
+          "narrow"
+        end
+      RUBY
+    end
+
+    it "runs an ensure once, after whichever clause matched" do
+      result = eval(<<-RUBY)
+        order = []
+        begin
+          raise ArgumentError, "nope"
+        rescue TypeError => e
+          order << :type
+        rescue ArgumentError => e
+          order << :arg
+        ensure
+          order << :ensure
+        end
+        order
+      RUBY
+      result.as_array.map(&.as_sym.name).should eq ["arg", "ensure"]
+    end
+  end
+
+  describe "rescue A, B (multiple types on one clause)" do
+    it "catches when the raised class matches the first listed type" do
+      eval(<<-RUBY).should eq Value.string("caught")
+        begin
+          raise TypeError, "nope"
+        rescue TypeError, ArgumentError => e
+          "caught"
+        end
+      RUBY
+    end
+
+    it "catches when the raised class matches a later listed type" do
+      eval(<<-RUBY).should eq Value.string("caught")
+        begin
+          raise ArgumentError, "nope"
+        rescue TypeError, ArgumentError => e
+          "caught"
+        end
+      RUBY
+    end
+
+    it "does not catch a class absent from either listed type" do
+      expect_raises(RuntimeError, /nope/) do
+        eval(<<-RUBY)
+          begin
+            raise NameError, "nope"
+          rescue TypeError, ArgumentError => e
+            "caught"
+          end
+        RUBY
+      end
+    end
+
+    it "binds the rescue variable to the actual raised error regardless of which listed type matched" do
+      eval(<<-RUBY).should eq Value.string("nope")
+        begin
+          raise ArgumentError, "nope"
+        rescue TypeError, ArgumentError => e
+          e.message
+        end
+      RUBY
+    end
+
+    it "works as one clause among several, combined with a later fallback clause" do
+      eval(<<-RUBY).should eq Value.string("fallback")
+        begin
+          raise NameError, "nope"
+        rescue TypeError, ArgumentError => e
+          "combined"
+        rescue
+          "fallback"
+        end
+      RUBY
+    end
+  end
+
   describe "begin/ensure without rescue" do
     # Op::Try's jump target was only ever patched inside the
     # rescue_body branch. An ensure-only begin (no rescue clause) had

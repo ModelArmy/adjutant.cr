@@ -1635,12 +1635,12 @@ module Adjutant
     # --- Exception handling -------------------------------------------------
 
     private def compile_begin(node : BeginNode) : Nil
-      if node.rescue_body.nil? && node.ensure_body.nil?
+      if node.rescue_clauses.empty? && node.ensure_body.nil?
         compile_body(node.body)
         return
       end
 
-      has_rescue = !node.rescue_body.nil?
+      has_rescue = !node.rescue_clauses.empty?
       try_at, ensure_at = emit_try_and_ensure_setup(node, has_rescue)
 
       # Only node.body itself is lexically "inside" this construct's
@@ -1656,8 +1656,8 @@ module Adjutant
       @ensure_stack.pop
       @chunk.emit(Op::EndTry, node.line) if has_rescue
 
-      if (rescue_body = node.rescue_body) && (try_pos = try_at)
-        compile_rescue_clause(node, rescue_body, try_pos)
+      if try_pos = try_at
+        compile_rescue_clauses(node, try_pos)
       end
 
       if ensure_body = node.ensure_body
@@ -1702,49 +1702,81 @@ module Adjutant
       {try_at, ensure_at}
     end
 
-    private def compile_rescue_clause(node : BeginNode, rescue_body : Body, try_at : Int32) : Nil
+    # Chains every `rescue` clause in source order — the first whose
+    # class list matches the raised error wins, same as real Ruby
+    # (no "most specific first" reordering; clauses are just tried
+    # top to bottom). A clause with multiple classes (`rescue A, B`)
+    # OR's them together, left-to-right, short-circuiting on the
+    # first match. If no clause matches, the original error
+    # propagates via Reraise, same as the single-clause case before.
+    private def compile_rescue_clauses(node : BeginNode, try_at : Int32) : Nil
       jmp_past_rescue = @chunk.emit_jump(Op::Jump, node.line)
       @chunk.patch_jump(try_at, @chunk.pos)
 
+      match_done_jumps = [] of Int32
+      node.rescue_clauses.each do |clause|
+        no_match_jump = compile_rescue_clause_test(node, clause)
+        compile_rescue_bind_and_body(clause)
+        match_done_jumps << @chunk.emit_jump(Op::Jump, node.line)
+        @chunk.patch_jump(no_match_jump, @chunk.pos)
+      end
+
+      # Fell through every clause with no match — keep the error's
+      # original identity (class, message) alive as it propagates
+      # further out, rather than rebuilding a generic one via
+      # Op::Throw.
+      @chunk.emit(Op::PushError, node.line)
+      @chunk.emit(Op::Reraise, node.line)
+
+      match_done_jumps.each { |j| @chunk.patch_jump(j, @chunk.pos) }
+      @chunk.patch_jump(jmp_past_rescue, @chunk.pos)
+    end
+
+    # Emits the is_a?-OR test for one clause's class list and returns
+    # the jump to take on no match (falls through to whatever comes
+    # next — the clause's caller patches it to either the next
+    # clause's test or the final Reraise).
+    private def compile_rescue_clause_test(node : BeginNode, clause : RescueClause) : Int32
       # Ruby's bare `rescue` (no explicit class) only catches
       # StandardError and below — fatal Exception-only errors still
       # propagate. Defaulting here reuses the exact same is_a? check
       # as an explicit filter, rather than duplicating an unfiltered
       # "catch everything" path.
-      rcls = node.rescue_class || Constant.new("StandardError", node.line, node.column)
+      classes = clause.classes.empty? ? [Constant.new("StandardError", node.line, node.column)] of Node : clause.classes
 
-      @chunk.emit(Op::PushError, node.line)
-      compile_node(rcls)
-      # Call is_a?(error, rescue_class) using the same calling
-      # convention as `error.is_a?(rescue_class)`.
-      nil_idx = @chunk.add_const(Value.nil_value)
-      @chunk.emit(Op::Const, node.line, c: nil_idx)
-      @chunk.emit(Op::SetBlock, node.line)
-      is_a_sym = intern("is_a?")
-      @chunk.emit(Op::Call, node.line, a: 2_u8, b: 0b10_u16, c: is_a_sym)
-      no_match_jump = @chunk.emit_jump(Op::JumpIfFalse, node.line)
-
-      compile_rescue_bind_and_body(node, rescue_body)
-      match_done_jump = @chunk.emit_jump(Op::Jump, node.line)
-
-      @chunk.patch_jump(no_match_jump, @chunk.pos)
-      # Class didn't match — keep the error's original identity
-      # (class, message) alive as it propagates further out,
-      # rather than rebuilding a generic one via Op::Throw.
-      @chunk.emit(Op::PushError, node.line)
-      @chunk.emit(Op::Reraise, node.line)
-
-      @chunk.patch_jump(match_done_jump, @chunk.pos)
-      @chunk.patch_jump(jmp_past_rescue, @chunk.pos)
+      match_jumps = [] of Int32
+      no_match_jump = 0
+      classes.each_with_index do |cls, i|
+        @chunk.emit(Op::PushError, node.line)
+        compile_node(cls)
+        # Call is_a?(error, rescue_class) using the same calling
+        # convention as `error.is_a?(rescue_class)`.
+        nil_idx = @chunk.add_const(Value.nil_value)
+        @chunk.emit(Op::Const, node.line, c: nil_idx)
+        @chunk.emit(Op::SetBlock, node.line)
+        is_a_sym = intern("is_a?")
+        @chunk.emit(Op::Call, node.line, a: 2_u8, b: 0b10_u16, c: is_a_sym)
+        if i == classes.size - 1
+          # Last (or only) class in this clause — false here means
+          # the whole clause missed.
+          no_match_jump = @chunk.emit_jump(Op::JumpIfFalse, node.line)
+        else
+          # Not the last — a match short-circuits straight to the
+          # clause body; a miss falls through to try the next class.
+          match_jumps << @chunk.emit_jump(Op::JumpIfTrue, node.line)
+        end
+      end
+      match_jumps.each { |j| @chunk.patch_jump(j, @chunk.pos) }
+      no_match_jump
     end
 
-    private def compile_rescue_bind_and_body(node : BeginNode, rescue_body : Body) : Nil
-      if rvar = node.rescue_var
-        @chunk.emit(Op::PushError, node.line)
-        emit_store_name(rvar, node.line, force_define: true)
-        @chunk.emit(Op::Pop, node.line)
+    private def compile_rescue_bind_and_body(clause : RescueClause) : Nil
+      if rvar = clause.var
+        @chunk.emit(Op::PushError, clause.body.line)
+        emit_store_name(rvar, clause.body.line, force_define: true)
+        @chunk.emit(Op::Pop, clause.body.line)
       end
-      compile_body(rescue_body)
+      compile_body(clause.body)
     end
 
     private def compile_retry(node : RetryNode) : Nil

@@ -468,14 +468,26 @@ module Adjutant
   # Exception handling
   # -------------------------------------------------------------------------
 
+  # One `rescue` clause within a `begin`. `classes` holds one or more
+  # type expressions (`rescue A, B` — OR'd together, left-to-right,
+  # same as real Ruby); empty means a bare `rescue` (defaults to
+  # StandardError at compile time, same as before — see
+  # compile_rescue_clause). `var` is the optional `=> e` binding.
+  class RescueClause
+    getter classes : Array(Node)
+    getter var : String?
+    getter body : Body
+
+    def initialize(@classes, @var, @body)
+    end
+  end
+
   class BeginNode < Node
     getter body : Body
-    getter rescue_class : Node?
-    getter rescue_var : String?
-    getter rescue_body : Body?
+    getter rescue_clauses : Array(RescueClause)
     getter ensure_body : Body?
 
-    def initialize(@body, @rescue_class, @rescue_var, @rescue_body, @ensure_body, line, column)
+    def initialize(@body, @rescue_clauses, @ensure_body, line, column)
       super(line, column)
     end
   end
