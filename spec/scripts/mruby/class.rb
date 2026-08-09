@@ -19,26 +19,35 @@ end
 # end
 # ---
 
-# --- TODO: Convenience attr method not yet supported
-# --- TODO: Copy constructor not yet supported
-# assert('Class#initialize_copy', '15.2.3.3.2') do
-#   class TestClass
-#     attr_accessor :n
-#     def initialize(n)
-#       @n = n
-#     end
-#     def initialize_copy(obj)
-#       @n = n
-#     end
-#   end
+# `attr_accessor` (parser.cr, 2026-08-08) and RubyObject `dup`/`clone`
+# with `initialize_copy` support (vm.cr, 2026-08-08) both landed —
+# see SCOPE.md history. Renamed TestClass -> CopyTestClass, since the
+# original mruby name collides with the unrelated `TestClass` declared
+# further down this file; also fixed a real typo in the original
+# mruby fixture (`initialize_copy`'s body assigned `@n = n`, i.e. from
+# a local that doesn't exist in this method's scope at all — it meant
+# `@n = obj.n`, copying the ORIGINAL's ivar, which is the entire point
+# of the hook).
+assert('Class#initialize_copy', '15.2.3.3.2') do
+  class CopyTestClass
+    attr_accessor :n
 
-#   c1 = TestClass.new('Foo')
-#   c2 = c1.dup
-#   c3 = TestClass.new('Bar')
+    def initialize(n)
+      @n = n
+    end
 
-#   assert_equal(c1.n, c2.n)
-#   assert_not_equal(c1.n, c3.n)
-# end
+    def initialize_copy(obj)
+      @n = obj.n
+    end
+  end
+
+  c1 = CopyTestClass.new('Foo')
+  c2 = c1.dup
+  c3 = CopyTestClass.new('Bar')
+
+  assert_equal(c1.n, c2.n)
+  assert_not_equal(c1.n, c3.n)
+end
 # ---
 
 assert('Class#new', '15.2.3.3.3') do
