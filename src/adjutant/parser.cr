@@ -172,7 +172,7 @@ module Adjutant
       stmts = [] of Node
       skip_newlines
       until at_kind?(TokenKind::EOF)
-        stmts << parse_statement
+        append_statement(stmts, parse_statement)
         skip_terminators
       end
       Body.new(stmts, line, col)
@@ -361,6 +361,8 @@ module Adjutant
       when TokenKind::KwRequire then parse_require
       when TokenKind::KwYield   then parse_yield
       when TokenKind::KwSuper   then parse_super
+      when TokenKind::KwAttrReader, TokenKind::KwAttrWriter, TokenKind::KwAttrAccessor
+        parse_attr(current_kind)
       else
         parse_expr_statement
       end
@@ -447,6 +449,24 @@ module Adjutant
       when TokenKind::Eq
         advance
         rhs = parse_multi_rhs
+        # A receiver-based, arg-less `Call` (`recv.attr`) followed by
+        # `=` is a real attribute-assignment call (`recv.attr =
+        # value` really means `recv.attr=(value)`), NOT an ordinary
+        # lvalue — build the dedicated `AttrAssign` node directly here
+        # (same reasoning `parse_postfix`'s own `LBracket`-then-`Eq`
+        # check uses for `IndexAssign`, just one level up: `lhs` here
+        # is already the fully-parsed `Call`, which correctly handles
+        # a chained receiver like `a.b.c = 1` for free — `lhs.receiver`
+        # is `a.b`, already parsed). `args.empty?`/`kwargs.empty?`/
+        # `block.nil?` guards against something that genuinely isn't
+        # an attribute reference (`recv.foo(1) = x` was never valid
+        # Ruby either) — anything that fails the guard falls through
+        # to the ordinary `Assign` path below, where `emit_store`'s
+        # generic fallback raises a clear C001, same as it always has.
+        if lhs.is_a?(Call) && (call = lhs.as(Call)) && (recv = call.receiver) &&
+           call.args.empty? && call.kwargs.empty? && call.block.nil?
+          return AttrAssign.new(recv, call.method, rhs, l, c)
+        end
         # Registered AFTER rhs parses, not before — matches real Ruby's
         # own `x = x` behavior (an as-yet-unassigned `x` on the RHS of
         # its own first assignment is still a bare call/undefined-name
@@ -1198,6 +1218,38 @@ module Adjutant
         name_tok = @current
         advance
       end
+      # A setter method definition (`def name=(value)`) — the exact
+      # same class of bug `"==="` needed a dedicated `TripleEq` token
+      # for (see `OVERLOADABLE_OPERATOR_NAMES`'s own comment,
+      # compiler.cr): without this, `name_tok` above is just the bare
+      # identifier `name`, the following `=` is left as an ordinary
+      # `Eq` token, and `parse_def` — having no receiver-dot, and no
+      # `(` immediately after `name` — falls straight through to
+      # parsing the METHOD BODY starting at that stray `=`, which
+      # can't start an expression (`P002`), a confusing, unrelated-
+      # looking error with no hint that a setter-name shape was even
+      # attempted. Found 2026-08-08 while testing the (separately
+      # landed, same session) `AttrAssign`/`Op::SetAttr` work — a
+      # HAND-WRITTEN `def value=(v)` had never actually been
+      # exercised before; `attr_writer`/`attr_accessor` never hit
+      # this at all, since `Parser#parse_attr` builds its synthetic
+      # `DefNode`s with a `"name="`-suffixed Crystal string directly,
+      # bypassing this token-by-token path entirely.
+      #
+      # Fixed via adjacency (`Token#space_before?`), the same
+      # mechanism the unary-minus/plus ambiguities elsewhere in this
+      # parser already use, rather than a new lexer token: a plain
+      # `Identifier` name immediately (no space) followed by a lone
+      # `Eq` — never `EqEq`/`NEq`/`TripleEq`, which are their own
+      # distinct token kinds — unambiguously means a setter-name
+      # suffix in this position. `def foo == (x)` (a real `==`
+      # operator def, unaffected) tokenizes as `Identifier(foo)`,
+      # `EqEq`, never `Identifier` + adjacent lone `Eq`, so there is
+      # no ambiguity between the two shapes to resolve.
+      if name_tok.kind == TokenKind::Identifier && at_kind?(TokenKind::Eq) && !@current.space_before?
+        advance
+        name_tok = Token.new(TokenKind::Identifier, "#{name_tok.lexeme}=", name_tok.line, name_tok.column)
+      end
       push_local_scope(inherit: false)
       params = [] of Param
       if at_kind?(TokenKind::LParen)
@@ -1689,6 +1741,57 @@ module Adjutant
       RequireNode.new(path, l, c)
     end
 
+    # `attr_reader :x, :y`, `attr_writer :x, :y`, `attr_accessor :x, :y`
+    # — real Ruby implements these as ordinary (private) Kernel
+    # methods that call `define_method` at runtime; Adjutant desugars
+    # them at PARSE time instead, straight into the same DefNode shape
+    # an equivalent hand-written `def x; @x; end` would produce. No
+    # new AST node, no compiler/risk-walker/type-inference case
+    # needed anywhere — this returns a `Body` wrapping N synthetic
+    # DefNodes (same multi-statement-as-one-Node trick a class/def/
+    # module body itself is built from), and `append_statement`
+    # (below) flattens that back into the enclosing statement list
+    # before anything else ever sees it — see that method's own
+    # comment for why the flattening step itself is load-bearing, not
+    # cosmetic.
+    #
+    # Deliberately requires each name to be a literal `:symbol` —
+    # every real-world example (including this project's own
+    # UNSUPPORTED.md, U009) writes it that way, and accepting a
+    # runtime-computed String name would mean this couldn't desugar
+    # at parse time at all, a genuinely different (and much rarer)
+    # feature. Optional parens accepted (`attr_accessor(:x, :y)`),
+    # matching real Ruby's own optional-parens-on-any-method-call
+    # syntax, even though this isn't a real method call here.
+    private def parse_attr(kind : TokenKind) : Node
+      l, c = line, col
+      advance # consume attr_reader / attr_writer / attr_accessor itself
+      paren = match(TokenKind::LParen)
+      names = [] of String
+      loop do
+        tok = expect(TokenKind::Symbol)
+        names << tok.lexeme.lstrip(':').strip('"').strip('\'')
+        break unless match(TokenKind::Comma)
+      end
+      expect(TokenKind::RParen) if paren
+      defs = [] of Node
+      names.each do |name|
+        ivar_name = "@#{name}"
+        if kind == TokenKind::KwAttrReader || kind == TokenKind::KwAttrAccessor
+          reader_body = Body.new([IVar.new(ivar_name, l, c)] of Node, l, c)
+          defs << DefNode.new(name, nil, [] of Param, reader_body, l, c)
+        end
+        if kind == TokenKind::KwAttrWriter || kind == TokenKind::KwAttrAccessor
+          value_param = Param.new("value", nil, false, false, false, l, c)
+          setter_body = Body.new([
+            Assign.new(IVar.new(ivar_name, l, c), Identifier.new("value", l, c), l, c),
+          ] of Node, l, c)
+          defs << DefNode.new("#{name}=", nil, [value_param], setter_body, l, c)
+        end
+      end
+      Body.new(defs, l, c)
+    end
+
     private def parse_alias : AliasNode
       l, c = line, col
       expect(TokenKind::KwAlias)
@@ -1706,7 +1809,7 @@ module Adjutant
       stmts = [] of Node
       skip_terminators
       until at_kind?(stop) || at_kind?(TokenKind::EOF)
-        stmts << parse_statement
+        append_statement(stmts, parse_statement)
         skip_terminators
       end
       Body.new(stmts, l, c)
@@ -1717,10 +1820,40 @@ module Adjutant
       stmts = [] of Node
       skip_terminators
       until at_any?(*kinds) || at_kind?(TokenKind::EOF)
-        stmts << parse_statement
+        append_statement(stmts, parse_statement)
         skip_terminators
       end
       Body.new(stmts, l, c)
+    end
+
+    # A single call to `parse_statement` occasionally returns a bare
+    # `Body` rather than one real statement — currently only
+    # `parse_attr` (`attr_accessor :x, :y` desugars to N separate
+    # DefNodes, and a `Body` is the existing multi-statement-as-one-
+    # Node wrapper, same trick a class/def/module body itself already
+    # uses). Splicing its `stmts` in flat here, rather than nesting it
+    # as a single child, matters beyond tidiness: `RiskWalker#walk_class`
+    # (risk_walker.cr) specifically pattern-matches `stmt.is_a?(DefNode)`
+    # on each of a class body's DIRECT statements to register it as a
+    # real method on the static class model it builds — a DefNode
+    # buried one level inside a nested Body would silently fall through
+    # to that method's generic `else` branch instead (walked for risk,
+    # but never registered), so `Config.new.name` would raise
+    # "undefined method" even though the compiled bytecode (which
+    # dispatches generically via `compile_body`, no such flattening
+    # requirement) runs it fine — a real vs. static-model divergence,
+    # exactly the shape of bug this project's own design invariants
+    # (SCOPE.md/DEVELOPMENT.md) warn to watch for. Flattening once,
+    # here, at the single choke point every statement list already
+    # passes through, means no downstream consumer (walk_class today,
+    # anything else tomorrow) has to know `Body`-wrapping happens at
+    # all.
+    private def append_statement(stmts : Array(Node), stmt : Node) : Nil
+      if stmt.is_a?(Body)
+        stmts.concat(stmt.stmts)
+      else
+        stmts << stmt
+      end
     end
 
     # --- Utilities ----------------------------------------------------------

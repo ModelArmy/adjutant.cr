@@ -347,6 +347,7 @@ module Adjutant
       when Call           then compile_call(node)
       when Index          then compile_index(node)
       when IndexAssign    then compile_index_assign(node)
+      when AttrAssign     then compile_attr_assign(node)
       when DefNode        then compile_def(node)
       when ClassNode      then compile_class(node)
       when ModuleNode     then compile_module(node)
@@ -818,9 +819,49 @@ module Adjutant
         sym_idx = intern(target.name)
         @chunk.emit(Op::SetCvar, line, c: sym_idx)
       when Index
+        # NOT Op::SetIndex (see compile_index_assign, above/below,
+        # for the ONLY other emitter of that opcode) — a genuinely
+        # different opcode, `Op::SetIndexFromValue`, because this
+        # branch runs in a genuinely different STACK STATE than
+        # `compile_index_assign` does.
+        #
+        # `compile_index_assign` pushes `[target, index, value]`, in
+        # that order — value LAST, matching `Op::SetIndex`'s pop
+        # contract (`val = pop; idx = pop; target = pop`) exactly.
+        # This branch, by contrast, is reached only from
+        # `compile_op_assign`/`compile_cond_assign`/
+        # `compile_multi_assign`, every one of which has ALREADY
+        # pushed the value being assigned before `emit_store` ever
+        # runs (see each of their own top-of-method `compile_node
+        # (node.value)`/equivalent) — so by the time control reaches
+        # HERE, the value is sitting at the BOTTOM of what will become
+        # a 3-element group, not the top. Pushing `target` then
+        # `index` on top of it gives `[value, target, index]` — the
+        # OPPOSITE order from `compile_index_assign`'s.
+        #
+        # Found 2026-08-08, entirely by accident, via an unrelated
+        # spec (`x[i] += 1` inside a receiver-side-effect regression
+        # for the same session's `AttrAssign` work) — before this fix,
+        # BOTH call sites emitted the identical `Op::SetIndex`, so the
+        # VM's single, fixed pop order (`val, idx, target`) was only
+        # ever correct for ONE of them. For this branch's actual
+        # `[value, target, index]` stack shape, that fixed pop order
+        # reads: `val` ends up holding `index`, `idx` ends up holding
+        # `target`, and `target` ends up holding the ORIGINAL value —
+        # completely scrambled, then handed to `exec_set_index` as
+        # nonsense types. No test had ever exercised `x[i] += 1` (or
+        # `||=`/`&&=`/multi-assign into an index) before this,
+        # confirmed by grepping the full spec suite — this had been
+        # silently broken (in practice, a silent no-op, since
+        # `exec_set_index` on the resulting garbage types quietly
+        # does nothing rather than crashing) since whenever this
+        # branch was first written. See `Op::SetIndexFromValue`'s own
+        # comment (bytecode.cr) and its VM handler (vm.cr) for the
+        # matching pop-order fix; see assignment/vm_spec.cr and
+        # assignment/compiler_spec.cr for the regression coverage.
         compile_node(target.target)
         compile_node(target.index)
-        @chunk.emit(Op::SetIndex, line)
+        @chunk.emit(Op::SetIndexFromValue, line)
       else
         raise CompileError.new(
           Diagnostic.new(
@@ -944,6 +985,42 @@ module Adjutant
       compile_node(node.index)
       compile_node(node.value)
       @chunk.emit(Op::SetIndex, node.line)
+    end
+
+    # `recv.attr = value` (a real receiver-based setter call, dispatch
+    # resolved the same way any other method call is — user-defined
+    # `attr=`/`attr_writer`/`attr_accessor` first, R008 undefined-
+    # method if nothing answers). `receiver` is compiled exactly ONCE,
+    # before `value` — matching `compile_index_assign`'s own
+    # target-then-value push order immediately above, not the
+    # value-then-target order `emit_store`'s generic (OpAssign/
+    # CondAssign/MultiAssign-only) `Index` case uses; a `Call`
+    # receiver could have side effects (`get_config().name = x`), and
+    # evaluating it more than once, or in a different position each
+    # time, would silently diverge from real Ruby, which evaluates a
+    # receiver expression exactly once for any single assignment. This
+    # is exactly why `AttrAssign` is its own AST node built directly
+    # by the parser (see that node's own comment, ast.cr) rather than
+    # routed through `emit_store`'s generic per-target-kind dispatch,
+    # which — as things stand today (`Index`'s case, specifically) —
+    # is only ever reached from OpAssign/CondAssign/MultiAssign, never
+    # from a plain `Assign` (`a[i] = v` has its own dedicated
+    # `IndexAssign` node too, same reasoning), and pushes in the
+    # opposite order from `compile_index_assign`'s dedicated path —
+    # copying that shape here would have reproduced the same
+    # ordering inconsistency for attribute assignment instead of
+    # avoiding it.
+    #
+    # `Op::SetAttr` pops value then receiver (reverse of the push
+    # order above) and pushes `value` back — matching every other
+    # Set* opcode's convention (`Op::SetIvar`/`Op::SetIndex`/...): an
+    # assignment expression's own value is always the value assigned,
+    # never whatever the setter method itself happens to return.
+    private def compile_attr_assign(node : AttrAssign) : Nil
+      compile_node(node.receiver)
+      compile_node(node.value)
+      sym_idx = intern("#{node.method}=")
+      @chunk.emit(Op::SetAttr, node.line, c: sym_idx)
     end
 
     # --- Definitions --------------------------------------------------------

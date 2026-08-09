@@ -808,6 +808,40 @@ module Adjutant
             exec_set_index(target, idx, val)
             @risk_flow_log.record("SetIndex", [target.label, val.label], target.label, f.line)
             push(val)
+          when Op::SetIndexFromValue
+            # See emit_store's own `Index` case (compiler.cr) for the
+            # full trace of why this needs a DIFFERENT pop order from
+            # Op::SetIndex, not just a rename: this opcode's actual
+            # stack shape is `[value, target, index]` (value pushed
+            # FIRST, by the caller, before target/index) — the reverse
+            # of Op::SetIndex's `[target, index, value]`.
+            idx = pop
+            target = pop
+            val = pop
+            exec_set_index(target, idx, val)
+            @risk_flow_log.record("SetIndexFromValue", [target.label, val.label], target.label, f.line)
+            push(val)
+          when Op::SetAttr
+            # `call_method` (this file, above) — not a raw
+            # `dispatch_call` — specifically because it drives a
+            # script-defined setter to COMPLETION synchronously
+            # (isolated @frames/@stack, same technique VM#invoke uses)
+            # before this opcode's own next line runs. A raw
+            # `dispatch_call` would, for a script-defined setter,
+            # just PUSH a new Frame and return a sentinel — correct
+            # for Op::Call itself (the surrounding execute loop picks
+            # the pushed frame up next), but wrong here: this opcode
+            # needs the setter's real return value in hand immediately
+            # so it can be DISCARDED, in favor of pushing `val` back
+            # instead — matching every other Set* opcode's contract
+            # (assignment's own value is what was assigned, never
+            # whatever a called setter method itself returns).
+            sym = chunk.consts[inst.c].as_sym
+            val = pop
+            recv = pop
+            call_method(recv, sym.name, [val], f.filename, f.line)
+            @risk_flow_log.record("SetAttr", [recv.label, val.label], val.label, f.line)
+            push(val)
 
             # --- Calls ----------------------------------------------------------
           when Op::SetBlock
@@ -2258,6 +2292,61 @@ module Adjutant
         recv = args.first? || Value.nil_value
         other = args[1]? || Value.nil_value
         Value.bool(recv == other)
+      when "dup", "clone"
+        # RubyObject receivers only — see SCOPE.md's dup/clone entry.
+        # Allocates a fresh RubyObject of the SAME rclass and shallow-
+        # copies `ivars` (a new Hash, but the same Value references —
+        # matching real Ruby: a copied String ivar and the original
+        # still point at the same object until one is itself
+        # reassigned). `initialize` is deliberately NOT run — dup/
+        # clone construct a copy of existing state, not a new object
+        # via the class's own constructor contract (which might
+        # require args this call site doesn't have, or have side
+        # effects that shouldn't run twice).
+        #
+        # If the class (or an ancestor) defines `initialize_copy`, it
+        # runs after the shallow copy, receiving the ORIGINAL as its
+        # one argument, `self` bound to the new copy — matching real
+        # Ruby's hook for a class that needs to deep-copy a specific
+        # field (a Config wrapping a mutable Array ivar, say) rather
+        # than share it. Absent, the shallow copy above already IS
+        # the complete result — real Ruby's own default
+        # `Object#initialize_copy` does nothing beyond what dup/clone
+        # already do in C before ever calling it, so skipping the
+        # call entirely when undefined is equivalent, not a shortcut.
+        #
+        # Adjutant doesn't model frozen state at all (no `freeze`/
+        # `frozen?` yet), so `dup` and `clone` are behaviorally
+        # identical here — real Ruby's only difference between them
+        # (clone preserves frozen-ness and singleton class, dup never
+        # does) has nothing to attach to yet.
+        #
+        # Builtin-kind receivers (Integer, String, Array, Hash,
+        # Symbol, true/false/nil, ...) are deliberately OUT of scope
+        # here, not silently half-handled: real Ruby returns the
+        # receiver itself for a true immediate (Integer, Symbol,
+        # true/false/nil) but an independent copy for String/Array/
+        # Hash, and Adjutant's Value model can't yet tell two
+        # separately-boxed instances of the same collection apart at
+        # all (the exact gap `equal?`, above, already documents) —
+        # matching only the immediate half of that split would be
+        # actively wrong for the other half, worse than a clear
+        # NoMethodError. Falls through to `nil` (undefined method)
+        # below, same as any other genuinely unhandled case.
+        recv = args.first? || Value.nil_value
+        if obj = recv.as_robject?
+          copy = RubyObject.new(obj.rclass)
+          copy.ivars.merge!(obj.ivars)
+          copy_val = Value.robject(copy)
+          if sym_id = @symbols.lookup("initialize_copy").try(&.value)
+            if method = obj.rclass.find_method(sym_id)
+              invoke(method, [recv], self_val: copy_val)
+            end
+          end
+          copy_val
+        else
+          nil
+        end
       when "to_s"
         recv = args.first? || Value.nil_value
         Value.string(recv.to_s)

@@ -284,6 +284,23 @@ module Adjutant
     end
   end
 
+  # `recv.attr = value` — an attribute-assignment call, built directly
+  # by `Parser#maybe_assignment` when its lhs is a receiver-based,
+  # arg-less `Call` (mirroring how `parse_postfix` builds `IndexAssign`
+  # directly for `a[i] = v`, rather than reusing generic `Assign`
+  # with a `Call` target). A dedicated node, not `Assign` wrapping a
+  # `Call`, specifically so `receiver` is compiled exactly ONCE — see
+  # `Compiler#compile_attr_assign`'s own comment for why that matters.
+  class AttrAssign < Node
+    getter receiver : Node
+    getter method : String
+    getter value : Node
+
+    def initialize(@receiver, @method, @value, line, column)
+      super(line, column)
+    end
+  end
+
   # -------------------------------------------------------------------------
   # Definitions
   # -------------------------------------------------------------------------
