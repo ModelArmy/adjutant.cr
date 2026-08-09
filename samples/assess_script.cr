@@ -23,6 +23,26 @@ class RiskySampleModule < Adjutant::ScriptModule
         tags: Set{Adjutant::RiskTag::NetworkEgress},
         severity: Adjutant::Severity::Warning,
       )) { |args| Adjutant::Value.string("") }
+
+    # Native keyword argument support (2026-08-09) — `path:` arrives
+    # entirely as a keyword, no positional args at all. Registered
+    # here (mirroring run_script.cr's SampleModule) specifically so a
+    # script using it — see risk_static_kwargs.rb — gets a real,
+    # non-Unknown assessment from THIS tool too, not just run_script.
+    # `kwarg_names` is what RiskWalker needs nothing extra for: static
+    # assessment resolves a native call by its RiskProfile alone
+    # (RiskWalker#walk_call folds `node.kwargs`' VALUES into its own
+    # walk for nested risk, but doesn't care whether the callee
+    # declares kwarg_names — that's purely a call_native-time binding
+    # concern). Declared here anyway so this module stays a faithful,
+    # runnable registration example, not just a risk-profile stub.
+    interp.define_native("remove_path",
+      risk: Adjutant::RiskProfile.new(
+        tags: Set{Adjutant::RiskTag::DeletesFiles},
+        reversible: Adjutant::Reversibility::No,
+        severity: Adjutant::Severity::Error,
+      ),
+      kwarg_names: Set{"path"}) { |args| Adjutant::Value.nil_value }
   end
 end
 

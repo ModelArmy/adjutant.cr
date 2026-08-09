@@ -67,15 +67,50 @@ class SampleModule < Adjutant::ScriptModule
     # this is a real, separate gap dynamic IFC alone can't close: it
     # only ever tracks taint that flowed *through* a labeling call, not
     # the literal content of a value the script wrote directly.
+    #
+    # `reason:` (optional, declared via kwarg_names) demonstrates
+    # native keyword argument support (2026-08-09): passed through
+    # untouched, purely for logging — but a TAINTED value passed here
+    # (`delete_file(path, reason: read_file(...))`) still needs to
+    # trip VM#check_risk_flow's automatic label-driven check the same
+    # way a tainted POSITIONAL argument would, now that kwargs are
+    # scanned too, not just args.
     interp.define_native("delete_file",
       risk: Adjutant::RiskProfile.new(
         tags: Set{Adjutant::RiskTag::DeletesFiles},
         reversible: Adjutant::Reversibility::No,
         severity: Adjutant::Severity::Error,
-      )) do |args, _blk, ncc|
+      ),
+      kwarg_names: Set{"reason"}) do |args, _blk, ncc|
       path = args.first.as_string
       ncc.declare_sensitivity(Adjutant::RiskTag::DeletesFiles, Adjutant::ProvenanceKind::File, path)
-      puts "  [simulated] deleted #{path}"
+      if reason = ncc.kwargs.try(&.["reason"]?)
+        puts "  [simulated] deleted #{path} (reason: #{reason.raw.inspect})"
+      else
+        puts "  [simulated] deleted #{path}"
+      end
+      Adjutant::Value.bool(true)
+    end
+
+    # Same effect as delete_file, but the path arrives ENTIRELY via a
+    # keyword argument — no positional args at all (argc=0 at the
+    # call site). Exists specifically to exercise the all-kwarg /
+    # zero-positional-arg native call shape end to end: static
+    # assessment (RiskWalker#walk_call folding kwargs' values into its
+    # risk walk), dynamic enforcement (VM#check_risk_flow scanning
+    # kwargs, not just args, for a Reject/Ask match), and ordinary
+    # bytecode dispatch (Op::Call with argc=0, has_receiver=false) —
+    # see SCOPE.md/DEVELOPMENT.md's native keyword arguments note.
+    interp.define_native("remove_path",
+      risk: Adjutant::RiskProfile.new(
+        tags: Set{Adjutant::RiskTag::DeletesFiles},
+        reversible: Adjutant::Reversibility::No,
+        severity: Adjutant::Severity::Error,
+      ),
+      kwarg_names: Set{"path"}) do |args, _blk, ncc|
+      path = ncc.kwargs.try(&.["path"]?).try(&.as_string) || ""
+      ncc.declare_sensitivity(Adjutant::RiskTag::DeletesFiles, Adjutant::ProvenanceKind::File, path)
+      puts "  [simulated] removed #{path}"
       Adjutant::Value.bool(true)
     end
 
@@ -99,6 +134,17 @@ class SampleModule < Adjutant::ScriptModule
       data = args[1]?.try(&.as_string) || ""
       puts "  [simulated] posted #{data.size} bytes to #{url}"
       Adjutant::Value.bool(true)
+    end
+
+    # A plain, non-risky native kwarg example (RiskProfile.none) —
+    # demonstrates the mruby-style self-serve default convention
+    # DEVELOPMENT.md documents: no default-value mechanism on the
+    # NativeCallable side at all, the function reads ncc.kwargs itself
+    # and falls back in Crystal when a declared key is omitted.
+    interp.define_native("configure", kwarg_names: Set{"timeout"}) do |args, _blk, ncc|
+      timeout = ncc.kwargs.try(&.["timeout"]?).try(&.as_int) || 30_i64
+      puts "  [simulated] configured with timeout=#{timeout}"
+      Adjutant::Value.int(timeout)
     end
   end
 end

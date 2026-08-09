@@ -27,7 +27,7 @@ This document explains how `adjutant` works internally. It is written for contri
 
 #### Sample `run_script`
 
-The sample `run_script.cr` runs a script end to end through both risk layers: a static risk assessment pass before execution, then live risk flow (dynamic IFC) enforcement during execution, with an `IO.gets`-based approval prompt for any `Ask` decision. See the sample's own comments for how its native module (`read_file`, `fetch_url`, `delete_file`, `post_data`) labels data and declares sensitivity.
+The sample `run_script.cr` runs a script end to end through both risk layers: a static risk assessment pass before execution, then live risk flow (dynamic IFC) enforcement during execution, with an `IO.gets`-based approval prompt for any `Ask` decision. See the sample's own comments for how its native module (`read_file`, `fetch_url`, `delete_file`, `post_data`) labels data and declares sensitivity. `remove_path` and `configure` demonstrate native keyword arguments specifically (see "Native keyword arguments" above) — `remove_path(path:)` is risk-tagged and all-keyword (no positional args at all), `configure(timeout:)` is a plain, non-risky example of the self-serve-default convention. `samples/scripts/risk_static/risk_static_kwargs.rb` and `samples/scripts/risk_flow/risk_flow_kwargs_*.rb` exercise them through both risk layers.
 - Run `ops build`, then
 - run `bin/debug/run_script samples/scripts/risk_flow_ask.rb`
 
@@ -528,6 +528,36 @@ end
 ```
 
 A function can do both if it both consumes a risky argument and returns risky data.
+
+#### Native keyword arguments
+
+A native function can accept keyword arguments by declaring which names it will accept:
+
+```crystal
+interp.define_native("configure", kwarg_names: Set{"timeout"}) do |args, blk, ncc|
+  timeout = ncc.kwargs.try(&.["timeout"]?).try(&.as_int) || 30_i64
+  Adjutant::Value.int(timeout)
+end
+```
+
+An undeclared keyword still raises `R012` ("unknown keyword"), exactly the same diagnostic a script-defined method's `bind_args` would raise for the same mistake — a native function with no `kwarg_names` at all (the default) rejects every keyword, matching every native call's behavior before this existed.
+
+**Deliberately not modeled on `Param`/AST defaults.** A script-defined kwarg's default (`def f(x: 1); end`) is compiled bytecode — `Compiler#emit_default_prologue` turns the default expression into real instructions (`HasKwarg`/test, jump-if-supplied, compile the expression, `SetLocal`) spliced into the proc's own chunk, evaluated by `execute` when the frame runs. A native call has no compiled chunk and no frame to run a prologue in, so `Param#default : Node?` has nothing to evaluate against at a native call site — reusing it verbatim would be a type mismatch with no evaluator behind it.
+
+Instead, `NativeCallable#kwarg_names` is name-only — no declared default value or expression anywhere. A native function that wants a default for an omitted key reads `NativeCallContext#kwargs` itself and falls back in plain Crystal, as `configure` does above. This mirrors mruby's own `mrb_get_args` kwargs convention: the C function pre-fills a buffer with its own defaults *before* calling `mrb_get_args`, which then only overwrites the slots the caller actually supplied by name — there's no separate declarative default mechanism there either, the native function just self-serves. Same spirit here, and the same style `testing/assert_module.cr`'s `assert` already uses for positional presence checks (`args.first?.try { ... } || "assertion"`).
+
+`kwargs` is threaded through `NativeCallContext` (a `Hash(String, Value)?`, `nil` when the call passed none), **not** added as a parameter to `NativeFunc`'s own signature (`Proc(Array(Value), ScriptProc?, NativeCallContext, Value)`). Widening that `Proc`'s arity would touch every existing native function definition across the codebase for a capability most of them don't need; routing through the context instead makes it opt-in per function.
+
+A native `.new` (`define_native_singleton_method`) accepts `kwarg_names` the same way, and rides the exact same `call_native` path (`check_unknown_native_keywords!`, `check_risk_flow`) as any other native call — see `VM#construct`'s native-`.new` branch.
+
+**Risk-flow, both sides, extended to cover kwargs — not just positional args:**
+
+- **Static:** `RiskWalker#walk_call` folds keyword-argument VALUES into its risk walk (`node.kwargs`), not just `node.args`. This closed a real, pre-existing gap found while designing this feature: a risky expression in a keyword position (`configure(handler: delete_file(path))`) was completely invisible to static analysis before — `node.kwargs` was simply never walked at all, the same shape of blind spot the positional-args fix closed on 2026-07-18. Not previously load-bearing (natives always rejected kwargs outright before this session, so a risky native call reached via a kwarg value couldn't happen), but native kwarg support makes it a live path.
+- **Dynamic:** `VM#check_risk_flow` now scans `kwargs.values` labels alongside `args` — a labeled value reaching a risk-tagged native call via a keyword argument is enforced exactly like a positional one. Before this, `check_risk_flow` only ever looked at `args`.
+
+**A real, separate VM bug found and fixed while testing this** (not specific to native kwargs conceptually, just first exposed by it): `VM`'s `@pending_kwargs` instance variable — set by `Op::SetKwargNames` right before a call, read by `Op::Call`'s handler — was only ever cleared *after* `dispatch_call` returned normally. If `dispatch_call` raised instead (e.g. `check_risk_flow` rejecting a kwarg-carrying call), that reset was skipped entirely, leaving `@pending_kwargs` stale for whatever `Op::Call` executed *next* — including `compile_rescue_clause_test`'s own compiled `is_a?` check, used to match a raised exception against a `rescue ClassName => e` clause's class list. `is_a?` declares no `kwarg_names`, so the leaked keyword got spuriously rejected with `R012`, masking the real exception entirely. Fixed by wrapping the `dispatch_call` invocation in `begin/ensure` so `@current_block`/`@current_block_locals`/`@pending_kwargs` reset unconditionally. Worth noting for anyone touching `Op::Call` again: **any** raise mid-dispatch while VM-instance-variable-held per-call state is set will leak into whatever call runs next, script-visible exception or not — this wasn't reachable before native kwargs simply because every kwarg-carrying native call died synchronously at the old unconditional `reject_kwargs!` step, with no window for the state to survive into an unrelated later call.
+
+Native functions have no positional-arg defaults or arity binding of their own yet — see `SCOPE.md`'s "Standard library surface" entry; deliberately scoped separately from this work, since it would need a materially different, more invasive binding mechanism touching every existing native registration.
 
 ### Side-effect risk
 

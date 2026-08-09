@@ -96,10 +96,14 @@ module Adjutant
     # convention VM#exec_builtin already uses for receiver methods
     # (`to_s`, `length`, `is_a?`, etc.) — native methods have no
     # separate `self` binding the way ScriptProc methods do via Frame.
-    def define_native_method(sym_id : Int32, risk : RiskProfile,
+    #
+    # `kwarg_names` declares which keyword names this method accepts
+    # (see NativeCallable#kwarg_names) — empty by default, matching
+    # every pre-existing native method, which accepted none.
+    def define_native_method(sym_id : Int32, risk : RiskProfile, kwarg_names : Set(String) = Set(String).new,
                              &block : Array(Value), ScriptProc?, NativeCallContext -> Value) : Nil
       func = NativeFunc.new { |args, blk, ncc| block.call(args, blk, ncc) }
-      @native_methods[sym_id] = NativeCallable.new(func, risk)
+      @native_methods[sym_id] = NativeCallable.new(func, risk, kwarg_names)
     end
 
     # Register a Crystal-implemented singleton (class-level) method
@@ -119,10 +123,14 @@ module Adjutant
     # there isn't one yet, that's the point of `new`), followed by the
     # constructor arguments. It is responsible for its own allocation
     # and must return a Value.robject.
-    def define_native_singleton_method(sym_id : Int32, risk : RiskProfile,
+    #
+    # `kwarg_names` — see define_native_method's own note; lets a
+    # native `new` (e.g. `Config.new(retries:, timeout:)`) declare
+    # accepted keyword names the same way.
+    def define_native_singleton_method(sym_id : Int32, risk : RiskProfile, kwarg_names : Set(String) = Set(String).new,
                                        &block : Array(Value), ScriptProc?, NativeCallContext -> Value) : Nil
       func = NativeFunc.new { |args, blk, ncc| block.call(args, blk, ncc) }
-      @native_singleton_methods[sym_id] = NativeCallable.new(func, risk)
+      @native_singleton_methods[sym_id] = NativeCallable.new(func, risk, kwarg_names)
     end
 
     # Look up a native singleton method by symbol id, walking the

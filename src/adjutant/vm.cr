@@ -880,11 +880,36 @@ module Adjutant
             @stack.pop(argc) if argc > 0
 
             depth_before = @frames.size
-            result = dispatch_call(sym.name, args, safe, f.filename, inst.line, @current_block, has_receiver,
-              blk_outer: @current_block_locals, self_val: f.self_val, kwargs: @pending_kwargs)
-            @current_block = nil
-            @current_block_locals = nil
-            @pending_kwargs = nil
+            # `ensure`, not plain sequential code after the call: if
+            # dispatch_call RAISES (e.g. check_risk_flow rejecting a
+            # kwarg-carrying native call), a bare "reset these after
+            # the call" here is never reached — the exception unwinds
+            # straight past it, leaving @pending_kwargs (and
+            # @current_block/@current_block_locals) stale for
+            # whichever Op::Call instruction executes next, ANYWHERE,
+            # not just a retry of this same call. Found 2026-08-09:
+            # a rejected kwarg-carrying native call inside a
+            # script-level `begin/rescue` left @pending_kwargs
+            # holding the rejected call's kwargs; the very next
+            # Op::Call — compile_rescue_clause_test's own compiled
+            # `is_a?` check, used to match the raised exception
+            # against the rescue clause's class list — inherited
+            # those stale kwargs and got spuriously rejected with
+            # R012 for a keyword it never received, since `is_a?`
+            # declares no kwarg_names of its own. Not specific to
+            # kwargs REACHING a native call at all: the same leak
+            # shape is reachable via a script-defined kwarg method's
+            # own R011/R012 (VM#bind_args) raising mid-frame-push
+            # inside a begin/rescue too — this fix protects both,
+            # not just the native path that happened to surface it.
+            result = begin
+              dispatch_call(sym.name, args, safe, f.filename, inst.line, @current_block, has_receiver,
+                blk_outer: @current_block_locals, self_val: f.self_val, kwargs: @pending_kwargs)
+            ensure
+              @current_block = nil
+              @current_block_locals = nil
+              @pending_kwargs = nil
+            end
             # If dispatch pushed a new ScriptProc frame, do NOT push the
             # sentinel return value — Op::Ret will push the real result.
             push(result) if @frames.size == depth_before
@@ -1447,8 +1472,10 @@ module Adjutant
           # check_unknown_keywords!) does the real name-matching
           # exactly as it already does for any other method call.
           # `construct` itself still fails loudly (R012) when there's
-          # nowhere for a keyword arg to go: native construction
-          # (call_native's own reject_kwargs!) or a class with no
+          # nowhere for a keyword arg to go: native construction whose
+          # NativeCallable declares no kwarg_names (call_native's own
+          # check_unknown_native_keywords!, same as any other native
+          # call — see NativeCallable#kwarg_names) or a class with no
           # `initialize` at all (construct_object's own
           # reject_kwargs!, mirroring the same guard).
           return construct(recv.as_rclass, args[1..], filename, line, blk, kwargs: kwargs)
@@ -1654,9 +1681,9 @@ module Adjutant
     private def call_native(native : NativeCallable, args : Array(Value),
                             filename : String, line : Int32, blk : ScriptProc?, name : String,
                             kwargs : Hash(String, Value)? = nil) : Value
-      reject_kwargs!(kwargs, name, filename, line)
-      check_risk_flow(native, args, name, filename, line)
-      NativeFunctionCall.new(self, native, filename, line, name).call(args, blk)
+      check_unknown_native_keywords!(kwargs, native.kwarg_names, name, filename, line)
+      check_risk_flow(native, args, kwargs, name, filename, line)
+      NativeFunctionCall.new(self, native, filename, line, name, kwargs).call(args, blk)
     rescue ex : RuntimeError
       raise ex
     rescue ex
@@ -1681,14 +1708,27 @@ module Adjutant
     # no-op (cheap: one empty-tags check, no allocation) for the
     # overwhelming majority of native calls, which either have no
     # RiskTag at all (RiskProfile.none) or receive no labeled arguments.
-    private def check_risk_flow(native : NativeCallable, args : Array(Value), name : String,
-                                filename : String, line : Int32) : Nil
+    private def check_risk_flow(native : NativeCallable, args : Array(Value), kwargs : Hash(String, Value)?,
+                                name : String, filename : String, line : Int32) : Nil
       return if native.risk.tags.empty?
-      return unless args.any?(&.label)
+      kwarg_values = kwargs.try(&.values)
+      labeled_args = args.any?(&.label)
+      labeled_kwargs = kwarg_values.try(&.any?(&.label)) || false
+      return unless labeled_args || labeled_kwargs
 
       matches = [] of RiskFlowMatch
       native.risk.tags.each do |tag|
-        args.each do |arg|
+        # kwargs are folded in here (not just `args`) so a labeled
+        # value reaching a risk-tagged native call via a keyword
+        # argument gets the exact same enforcement a positional
+        # argument already did — before native kwargs existed at all,
+        # this was moot (reject_kwargs! fired first); now that a
+        # native callable can legitimately declare kwarg_names, a
+        # value in a keyword slot is just as real a risk-flow input as
+        # one in `args`, and skipping it here would silently bypass
+        # enforcement for exactly the calls this feature exists to
+        # support.
+        (args + (kwarg_values || [] of Value)).each do |arg|
           label = arg.label
           next unless label
           label.tags.each do |provenance_tag|
@@ -1810,13 +1850,15 @@ module Adjutant
       end
       if sym_id = @symbols.lookup("new").try(&.value)
         if native_new = cls.find_native_singleton_method(sym_id)
-          # Native construction has no keyword-param concept at all
-          # (see call_native's own unconditional reject_kwargs! —
-          # NativeCallable has no Param list to check names against,
-          # same reasoning as any other native call). Threading
-          # `kwargs` through here just lets call_native's existing
-          # guard produce the right R012 instead of this call site
-          # silently dropping them before call_native ever sees them.
+          # A native `new` is just another NativeCallable — kwargs
+          # thread straight through to the same call_native (and its
+          # check_unknown_native_keywords!/check_risk_flow) every other
+          # native call already goes through. A native `new` that
+          # wants keyword args (e.g. `Config.new(retries:, timeout:)`
+          # backed by Crystal) declares them via `kwarg_names` on
+          # define_native_singleton_method, same as an instance native
+          # method would; one that declares none gets the same R012
+          # any other kwarg-less native call gets.
           return call_native(native_new, [Value.rclass(cls)] + args, filename, line, blk, "#{cls.name}.new", kwargs: kwargs)
         end
       end
@@ -2042,8 +2084,8 @@ module Adjutant
     end
 
     # Guards a call site that has no `Param` list to check keyword
-    # names against at all — a native function, a builtin, or (for
-    # now — see dispatch_call's `.new` branch) construction. Every
+    # names against at all — a class with no `initialize` (nowhere
+    # for a keyword arg to bind; construct_object's own guard). Every
     # supplied name is therefore unsupported here; reports the first,
     # same one-name style as bind_args's own R011/R012. A no-op
     # (returns immediately) for the overwhelming majority of calls,
@@ -2055,6 +2097,32 @@ module Adjutant
           code: "R012",
           primary: Span.new(line: line, filename: filename),
           data: {"name" => kwargs.first_key, "method" => method}
+        ),
+        current_frame,
+        error_class: "ArgumentError"
+      )
+    end
+
+    # Native-call counterpart to check_unknown_keywords! — same
+    # unknown-name-reports-first R012 shape, but checked against a
+    # NativeCallable's declared `kwarg_names : Set(String)` (see that
+    # getter's doc comment) instead of a ScriptProc's ast_params. A
+    # native callable that declares no kwarg_names at all (the
+    # default, and every pre-existing native registration) rejects
+    # every supplied name — behaviorally identical to the old
+    # unconditional reject_kwargs! for those callables, just expressed
+    # as "declared set happens to be empty" rather than a separate
+    # unconditional guard.
+    private def check_unknown_native_keywords!(kwargs : Hash(String, Value)?, declared : Set(String),
+                                               method : String, filename : String, line : Int32) : Nil
+      return if kwargs.nil? || kwargs.empty?
+      unknown = kwargs.keys.find { |k| !declared.includes?(k) }
+      return unless unknown
+      raise runtime_diagnostic(
+        Diagnostic.new(
+          code: "R012",
+          primary: Span.new(line: line, filename: filename),
+          data: {"name" => unknown, "method" => method}
         ),
         current_frame,
         error_class: "ArgumentError"
