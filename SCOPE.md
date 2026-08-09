@@ -103,6 +103,65 @@ still roughly ordered by how cheap/independent the fix is.
 Small, mechanical, independent of each other — good candidates for quick
 wins.
 
+- **Assignment isn't a real expression — promoted 2026-08-08 out of
+  the "Long-standing language gaps" bundle below, where it had sat as
+  a single untriaged line (`assignment-as-real-expression`) since the
+  original 2026-07-14 handoff.** Two concrete manifestations, both
+  the SAME root cause, found on different dates:
+  - **Chained assignment** (`c = b = 5` doesn't parse) — the original
+    2026-07-14 finding.
+  - **Parenthesized/nested assignment** (`x = (w.attr = 5)` doesn't
+    parse either) — found 2026-08-08 while spec'ing the new
+    `AttrAssign` work (`assignment/vm_spec.cr`): a test wanted to
+    capture an attribute-assignment's own expression VALUE the
+    natural way, `result = (w.value = 5)`, and hit `P001` ("expected
+    `)`, found `=`") instead. Reworked that spec to check the same
+    contract via `eval`'s own return value instead of depending on
+    this — see that spec's own comment for why it doesn't need to
+    wait on this fix.
+
+  Root cause, confirmed by tracing both: assignment is built ONLY at
+  the STATEMENT level. `Parser#parse_expr_statement` calls
+  `parse_expression(0)` for a bare expression, THEN checks for `=`/
+  compound-assign tokens itself and calls `maybe_assignment` — but
+  `parse_expression`'s own precedence chain never invokes
+  `maybe_assignment` anywhere inside it. So an assignment can only
+  ever be the OUTERMOST node of a top-level statement; anything that
+  parses a sub-expression via `parse_expression` (a parenthesized
+  group in `parse_primary`, an argument in a call, either side of a
+  chained `=`, ...) structurally cannot contain one. A real fix
+  likely means giving `=` its own (low-precedence, right-associative,
+  matching real Ruby) level INSIDE `parse_expression`'s own chain,
+  rather than handling it as a bolted-on statement-level afterthought
+  the way `maybe_assignment` currently does — worth scoping BOTH
+  manifestations together, since whatever mechanism fixes one fixes
+  the other for free; they're one gap, not two.
+
+- **`obj.attr += 1` / `obj.attr ||= x` / `obj.attr &&= x`** — compound
+  and conditional assignment through an attribute-setter call. Found
+  2026-08-08 landing plain `recv.attr = value` (the new `AttrAssign`
+  node, ast.cr/parser.cr/compiler.cr/vm.cr — see `DEVELOPMENT.md`'s
+  Parser section for the full trace). `Parser#maybe_assignment` only
+  builds `AttrAssign` for its plain-`=` branch; the `PlusEq`/`MinusEq`/
+  .../`OrAssign`/`AndAssign` branches immediately below still build an
+  ordinary `OpAssign`/`CondAssign` with the `Call` as `target`, which
+  `Compiler#emit_store`'s generic per-target-kind dispatch has no case
+  for — falls to the same `C001` ("cannot assign to a method call") it
+  always has. Not simply a matter of adding an `emit_store` `Call`
+  case the way `Index`'s case already exists: `OpAssign`/`CondAssign`
+  both read the target ONCE (`compile_node(node.target)`, at the very
+  top of `compile_op_assign`/`compile_cond_assign`) before computing
+  anything — for a `Call` target that means calling the GETTER — and
+  then need to call the SETTER afterward with the combined result,
+  which means the receiver expression needs evaluating exactly once
+  and reusing (not recompiling) for both the getter and setter calls,
+  the same single-evaluation requirement `AttrAssign` was built to
+  satisfy for plain `=`. Needs a dedicated desugar/AST shape of its
+  own (something that computes the receiver once, calls the getter
+  off a stack-held copy, computes the op, then calls the setter off
+  the SAME copy) — a genuinely different shape from `AttrAssign`, not
+  a small extension to it.
+
 - **`compile_case`'s missing receiver bit on its `"==="` `Op::Call`.**
   Found 2026-08-06 while implementing the (now-done) `Class#===`/
   `Range#===` fix — same shape of bug `compile_spaceship` had for
@@ -324,6 +383,23 @@ entry above for current status.
   the `String` builtin class (Phase 4a of base types); out of scope there
   since that work only wires up native METHODS, not opcodes.
 
+- **`dup`/`clone` on a builtin-kind receiver** (Integer, String, Array,
+  Hash, Symbol, true/false/nil, ...) raise `NoMethodError` rather than
+  copying. Found 2026-08-08 landing `dup`/`clone` for RubyObject
+  receivers (`exec_builtin`'s new `"dup", "clone"` case, vm.cr) — a
+  RubyObject copy is a clean shallow-`ivars`-copy question, but a
+  builtin receiver isn't: real Ruby returns the receiver itself for a
+  true immediate (Integer, Symbol, true/false/nil) but an independent
+  copy for String/Array/Hash, and Adjutant's `Value` model can't yet
+  tell two separately-boxed instances of the same collection apart at
+  all — the exact identity gap the entry above and `equal?`'s own
+  comment (vm.cr's `exec_builtin`) already document. Matching only the
+  immediate half of that split would be actively wrong for the other
+  half, so both were left raising rather than half-implemented.
+  Depends on (or at least belongs right alongside) resolving that
+  underlying content-vs-reference identity question, not a fix of its
+  own.
+
 ### IFC / risk-flow
 
 Carried forward from the original 2026-07-14 handoff — the oldest items,
@@ -373,14 +449,16 @@ not touched by any session since — genuinely a backlog rather than
 active work. Worth splitting into individual entries if any one becomes
 a priority; currently untriaged relative to each other.
 
-Two items originally listed here left this bundle 2026-08-05: multiple
-`rescue` clauses (promoted to `Must Fix`, see above) and `super` across
-multiple `rescue` clauses / `$globals` (moved to `UNSUPPORTED.md` as
-U010/U011 — see that file; `Struct.new`, U009 in the same batch, was
-never listed in this bundle and is noted separately in the gap-survey
-chat history).
+Three items originally listed here have left this bundle: multiple
+`rescue` clauses (promoted to `Must Fix`, 2026-08-05, see above);
+`super` across multiple `rescue` clauses / `$globals` (moved to
+`UNSUPPORTED.md` as U010/U011 — see that file; `Struct.new`, U009 in
+the same batch, was never listed in this bundle and is noted
+separately in the gap-survey chat history); and
+assignment-as-real-expression (promoted to its own entry under
+"Parser / lexer gaps" above, 2026-08-08, once a second manifestation
+made it concrete enough to scope).
 
-- assignment-as-real-expression (`c = b = 5` doesn't parse)
 - `include`/mixins — real gap, but the specific case that most often
   motivates it (sharing comparison behavior via `Comparable`) is now
   covered by the `<=>` hook (implemented 2026-08-06 — see git history,
