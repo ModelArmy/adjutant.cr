@@ -24,19 +24,6 @@ Blocking, or actively causing incorrect behavior in normal use. Ordered
 roughly by dependency, not necessarily by importance — an item lower down
 may unblock ones above it.
 
-- **`dup`/`clone`/`initialize_copy`.** Promoted from the mruby-derived
-  gap survey 2026-08-05, ahead of the core-API-library work. No
-  object-copying mechanism exists at all today — a script wanting a
-  modified variant of an object (a config, a response-shaped object)
-  has to hand-write a copy constructor per class, which is exactly the
-  kind of boilerplate an LLM either omits or gets subtly wrong (misses
-  a field added later). Narrow and mechanical, no design question, and
-  stdlib objects that hold state are exactly where this gap will bite
-  once real APIs exist to copy. Not yet traced to a specific file/
-  method — starting point is wherever `RubyObject` instance fields are
-  enumerated for construction (see `#construct_object`/`#invoke` in
-  `vm.cr`, already touched by the kwargs item above).
-
 - **Runtime diagnostics have no carets** (`Frame` records a line but no
   column). Promoted from Error reporting 2026-08-05 on a
   turn-churn argument specific to this use case: the cost of an
@@ -68,8 +55,9 @@ may unblock ones above it.
 
 - **Native methods have no way to declare or receive `kwargs` at
   all.** Found 2026-08-08 while threading kwargs through
-  `Class.new(name: ...)` for a script-defined `initialize` (see the
-  entry above, now resolved). `NativeCallable` only ever receives
+  `Class.new(name: ...)` for a script-defined `initialize` (that item
+  has since shipped and been removed from this file — see git
+  history/`DEVELOPMENT.md`'s "Argument binding" section). `NativeCallable` only ever receives
   `args : Array(Value)` — there's no `Param` list, and so no
   `kwarg?`/name-matching machinery, for anything implemented in
   Crystal rather than compiled from `def...end`. `VM#call_native`
@@ -351,8 +339,9 @@ Per-instance singleton methods became a deliberate non-goal 2026-07-27
 (see [UNSUPPORTED.md](./UNSUPPORTED.md), U004). Implicit-`self`
 privacy/visibility (`private`/`public`/`protected`) became a deliberate
 non-goal 2026-08-05 (see UNSUPPORTED.md, U008). `Class.new(kwargs)` →
-`initialize` binding was promoted to `Must Fix` 2026-08-05; see that
-entry above for current status.
+`initialize` binding was promoted to `Must Fix` 2026-08-05 and has
+since shipped (see git history/`DEVELOPMENT.md`'s "Argument binding"
+section).
 
 
 ### Data & builtin types
