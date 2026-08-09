@@ -276,6 +276,48 @@ module Adjutant
         node.as(DefNode).params.size.should eq 2
       end
 
+      # Found 2026-08-08: the same class of bug `"==="` needed a
+      # dedicated `TripleEq` token for (see
+      # OVERLOADABLE_OPERATOR_NAMES's own comment, compiler.cr) —
+      # `def name=(v)` had never actually been parseable at all.
+      # Without adjacency-based recognition, the `name` token and the
+      # following `Eq` token were simply grabbed and dropped
+      # separately: `name` became the whole method name, params
+      # parsing found no `(` immediately after (it saw `Eq` instead)
+      # and stayed empty, and the parser then tried to parse the
+      # METHOD BODY starting at the stray `=`, raising a confusing,
+      # unrelated-looking P002. `attr_writer`/`attr_accessor` never
+      # hit this, since `Parser#parse_attr` builds its synthetic
+      # DefNodes with a "name="-suffixed Crystal string directly,
+      # bypassing this token-by-token path entirely — a HAND-WRITTEN
+      # setter def was the first thing to actually exercise it.
+      it "parses a hand-written setter method def (name=) as a single method name" do
+        node = parse_expr("def value=(v)\n@value = v\nend")
+        node.should be_a(DefNode)
+        d = node.as(DefNode)
+        d.name.should eq "value="
+        d.params.size.should eq 1
+        d.params.first.name.should eq "v"
+      end
+
+      it "a setter def works with a receiver too (def self.value=(v))" do
+        node = parse_expr("def self.value=(v)\nend")
+        d = node.as(DefNode)
+        d.name.should eq "value="
+        d.receiver.should be_a(SelfNode)
+      end
+
+      it "does NOT confuse a real == operator def with a setter-name shape" do
+        # `def ==` tokenizes as Identifier + EqEq, not Identifier +
+        # adjacent lone Eq — no ambiguity for the fix to resolve here,
+        # but worth a regression: OVERLOADABLE_OPERATOR_NAMES rejects
+        # `==` at COMPILE time (U017), so this should still parse
+        # successfully as a DefNode named "==" and fail only later,
+        # at compile time — not get misparsed as some "= =" shape.
+        node = parse_expr("def ==(other)\nend")
+        node.as(DefNode).name.should eq "=="
+      end
+
       it "parses a def with a default param" do
         node = parse_expr("def greet(name = \"world\")\nend")
         param = node.as(DefNode).params.first

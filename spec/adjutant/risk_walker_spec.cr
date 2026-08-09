@@ -669,6 +669,80 @@ module Adjutant
       summary.tags.should eq Set{RiskTag::NetworkEgress}
     end
 
+    # AttrAssign (2026-08-08) — same shape of regression as
+    # IndexAssign above, plus a second one specific to attr_accessor:
+    # see the two specs below.
+    it "an AttrAssign's risky VALUE is not silently dropped" do
+      interp, _ = make_interp
+      register_risky_module(interp, "fetch_fn", RiskProfile.new(tags: Set{RiskTag::NetworkEgress}, severity: Severity::Warning))
+      walker = RiskWalker.new(interp)
+      body = risk_walker_test_parse(<<-RUBY)
+        class Box
+          attr_accessor :value
+        end
+        b = Box.new
+        b.value = fetch_fn()
+      RUBY
+      summary = RiskAggregator.summarize(walker.walk_body(body))
+      summary.tags.should eq Set{RiskTag::NetworkEgress}
+    end
+
+    it "an AttrAssign's risky RECEIVER expression is also walked, not just the value" do
+      interp, _ = make_interp
+      register_risky_module(interp, "fetch_fn", RiskProfile.new(tags: Set{RiskTag::NetworkEgress}, severity: Severity::Warning))
+      walker = RiskWalker.new(interp)
+      body = risk_walker_test_parse(<<-RUBY)
+        class Box
+          attr_accessor :value
+        end
+        def get_box
+          fetch_fn()
+        end
+        get_box.value = 1
+      RUBY
+      summary = RiskAggregator.summarize(walker.walk_body(body))
+      summary.tags.should eq Set{RiskTag::NetworkEgress}
+    end
+
+    # The actual bug this session's attr_accessor work introduced and
+    # caught before shipping (see append_statement's own comment,
+    # parser.cr, and DEVELOPMENT.md's Parser section for the full
+    # trace): a DefNode arriving inside a class body via a nested
+    # Body (unflattened) would silently fall through walk_class's
+    # `stmt.is_a?(DefNode)` check and never get registered on the
+    # static class model at all — the compiled bytecode would still
+    # run the method fine (compile_class dispatches Body generically),
+    # but RiskWalker's OWN model of the class wouldn't know it
+    # existed, surfacing as a false "unresolved" here even though the
+    # method genuinely exists and would run correctly.
+    it "a method defined via attr_accessor is registered on the static class model, not left unresolved" do
+      interp, _ = make_interp
+      walker = RiskWalker.new(interp)
+      body = risk_walker_test_parse(<<-RUBY)
+        class Box
+          attr_accessor :value
+        end
+        b = Box.new
+        b.value
+      RUBY
+      summary = RiskAggregator.summarize(walker.walk_body(body))
+      summary.path.none? { |p| p.includes?("unresolved") }.should be_true
+    end
+
+    it "attr_writer's generated setter is likewise registered (not just attr_reader's getter)" do
+      interp, _ = make_interp
+      walker = RiskWalker.new(interp)
+      body = risk_walker_test_parse(<<-RUBY)
+        class Box
+          attr_writer :value
+        end
+        b = Box.new
+        b.value = 1
+      RUBY
+      summary = RiskAggregator.summarize(walker.walk_body(body))
+      summary.path.none? { |p| p.includes?("unresolved") }.should be_true
+    end
+
     # Piece D (SCOPE.md, 2026-07-18): Call#args were never walked at
     # all before this — a risky call used as a plain ARGUMENT, no
     # lambda/block involved, was completely invisible to the walker.

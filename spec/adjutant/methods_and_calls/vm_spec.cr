@@ -13,6 +13,27 @@ module Adjutant
         eval(src).as_int.should eq 7_i64
       end
 
+      # See methods_and_calls/parser_spec.cr's own comment on the
+      # matching parser fix for the full trace — a hand-written
+      # `def name=(v)` had never been parseable before this session.
+      it "calls a hand-written setter method def (name=) via recv.attr = value" do
+        src = <<-RUBY
+        class Box
+          def value=(v)
+            @stored = v * 2
+          end
+
+          def stored
+            @stored
+          end
+        end
+        b = Box.new
+        b.value = 21
+        b.stored
+        RUBY
+        eval(src).as_int.should eq 42_i64
+      end
+
       it "isolates method locals from global scope" do
         src = <<-RUBY
         x = 1
