@@ -23,6 +23,41 @@ module Adjutant
       end
     end
 
+    describe "attribute assignment (recv.attr = value)" do
+      it "parses recv.attr = value as a dedicated AttrAssign, not a generic Assign" do
+        node = parse_expr("obj.x = 1")
+        node.should be_a(AttrAssign)
+        aa = node.as(AttrAssign)
+        aa.receiver.as(Identifier).name.should eq "obj"
+        aa.method.should eq "x"
+        aa.value.as(IntLiteral).value.should eq "1"
+      end
+
+      it "resolves the receiver correctly for a chained receiver (a.b.c = 1)" do
+        node = parse_expr("a.b.c = 1")
+        aa = node.as(AttrAssign)
+        aa.method.should eq "c"
+        recv = aa.receiver.as(Call)
+        recv.method.should eq "b"
+        recv.receiver.as(Identifier).name.should eq "a"
+      end
+
+      it "does NOT build AttrAssign when the call has real arguments (not a bare attribute)" do
+        # `foo(1) = 2` was never valid Ruby either — falls back to an
+        # ordinary Assign wrapping the Call as its target, which
+        # Compiler#emit_store's generic fallback then correctly
+        # rejects at compile time (see compiler_spec.cr).
+        node = parse_expr("obj.foo(1) = 2")
+        node.should be_a(Assign)
+        node.as(Assign).target.should be_a(Call)
+      end
+
+      it "does NOT build AttrAssign when the call has a block" do
+        node = parse_expr("obj.foo { 1 } = 2")
+        node.should be_a(Assign)
+      end
+    end
+
     describe "multi-target assignment" do
       it "parses two targets with two literal values" do
         node = parse_expr("a, b = 1, 2").as(MultiAssign)

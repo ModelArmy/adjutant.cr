@@ -491,6 +491,190 @@ module Adjutant
       end
     end
 
+    describe "instantiation (.new) with keyword arguments" do
+      it "a keyword-declaring initialize binds kwargs passed to .new" do
+        val = eval(<<-RUBY)
+          class Config
+            def initialize(retries:, timeout: 10)
+              @retries = retries
+              @timeout = timeout
+            end
+
+            def summary
+              "retries=\#{@retries} timeout=\#{@timeout}"
+            end
+          end
+          Config.new(retries: 3, timeout: 5).summary
+          RUBY
+        val.as_string.should eq "retries=3 timeout=5"
+      end
+
+      it "a kwarg's default applies when .new doesn't supply it" do
+        val = eval(<<-RUBY)
+          class Config
+            def initialize(retries:, timeout: 10)
+              @retries = retries
+              @timeout = timeout
+            end
+
+            def summary
+              "retries=\#{@retries} timeout=\#{@timeout}"
+            end
+          end
+          Config.new(retries: 1).summary
+          RUBY
+        val.as_string.should eq "retries=1 timeout=10"
+      end
+
+      it "a required kwarg never supplied to .new raises ArgumentError (R011)" do
+        expect_raises(RuntimeError) do
+          eval(<<-RUBY)
+            class Config
+              def initialize(retries:)
+                @retries = retries
+              end
+            end
+            Config.new
+            RUBY
+        end
+      end
+
+      it "an unknown keyword to .new raises ArgumentError (R012)" do
+        expect_raises(RuntimeError) do
+          eval(<<-RUBY)
+            class Config
+              def initialize(retries:)
+                @retries = retries
+              end
+            end
+            Config.new(retries: 1, colour: "red")
+            RUBY
+        end
+      end
+
+      it "a keyword arg to .new on a class with no initialize at all still raises, not silently dropped" do
+        expect_raises(RuntimeError) do
+          eval("class Bare\nend\nBare.new(anything: 1)")
+        end
+      end
+
+      it "positional and keyword args combine at a constructor" do
+        val = eval(<<-RUBY)
+          class Point
+            def initialize(x, y, label: "point")
+              @x = x
+              @y = y
+              @label = label
+            end
+
+            def describe
+              "\#{@label}(\#{@x}, \#{@y})"
+            end
+          end
+          Point.new(1, 2, label: "origin").describe
+          RUBY
+        val.as_string.should eq "origin(1, 2)"
+      end
+    end
+
+    describe "dup / clone" do
+      it "dup copies ivars into a new instance of the same class" do
+        val = eval(<<-RUBY)
+          class Point
+            attr_accessor :x, :y
+            def initialize(x, y)
+              @x = x
+              @y = y
+            end
+          end
+          original = Point.new(1, 2)
+          copy = original.dup
+          [copy.is_a?(Point), copy.x, copy.y]
+          RUBY
+        arr = val.as_array
+        arr[0].as_bool.should be_true
+        arr[1].as_int.should eq 1_i64
+        arr[2].as_int.should eq 2_i64
+      end
+
+      it "dup's copy is independent of the original" do
+        val = eval(<<-RUBY)
+          class Point
+            attr_accessor :x
+            def initialize(x)
+              @x = x
+            end
+          end
+          original = Point.new(1)
+          copy = original.dup
+          copy.x = 99
+          [original.x, copy.x]
+          RUBY
+        arr = val.as_array
+        arr[0].as_int.should eq 1_i64
+        arr[1].as_int.should eq 99_i64
+      end
+
+      it "clone behaves the same as dup" do
+        val = eval(<<-RUBY)
+          class Point
+            attr_accessor :x
+            def initialize(x)
+              @x = x
+            end
+          end
+          Point.new(3).clone.x
+          RUBY
+        val.as_int.should eq 3_i64
+      end
+
+      it "does not re-run initialize" do
+        val = eval(<<-RUBY)
+          class Counter
+            @@count = 0
+            def initialize
+              @@count += 1
+            end
+            def self.count
+              @@count
+            end
+          end
+          Counter.new
+          before = Counter.count
+          Counter.new.dup
+          Counter.count - before
+          RUBY
+        # One real .new (already counted in `before`), plus exactly
+        # one more .new — the .dup on THAT instance must not trigger
+        # a third initialize call.
+        val.as_int.should eq 1_i64
+      end
+
+      it "a class-defined initialize_copy runs on dup, original passed as its argument" do
+        val = eval(<<-RUBY)
+          class Wrapper
+            attr_accessor :tag
+            def initialize(tag)
+              @tag = tag
+            end
+            def initialize_copy(original)
+              @tag = "copy of \#{original.tag}"
+            end
+          end
+          original = Wrapper.new("first")
+          copy = original.dup
+          [copy.tag, original.tag]
+          RUBY
+        arr = val.as_array
+        arr[0].as_string.should eq "copy of first"
+        arr[1].as_string.should eq "first"
+      end
+
+      it "dup on a builtin-kind receiver still raises (deliberately out of scope, see SCOPE.md)" do
+        expect_raises(RuntimeError) { eval("5.dup") }
+      end
+    end
+
     describe "instance method dispatch" do
       it "calls a method defined on the instance's class" do
         val = eval("class Foo\ndef bar\n42\nend\nend\nFoo.new.bar")

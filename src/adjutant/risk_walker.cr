@@ -155,7 +155,7 @@ module Adjutant
       case node
       when IfNode, UnlessNode, CaseNode, WhileNode, LoopNode, ForNode, ModifierIf, ModifierWhile, BeginNode
         walk_control_flow(node, env)
-      when Assign, OpAssign, CondAssign, MultiAssign, IndexAssign
+      when Assign, OpAssign, CondAssign, MultiAssign, IndexAssign, AttrAssign
         walk_assignment(node, env)
       when Call       then walk_call(node, env)
       when Identifier then walk_identifier(node, env)
@@ -196,6 +196,7 @@ module Adjutant
       when CondAssign  then walk_cond_assign(node, env)
       when MultiAssign then walk_multi_assign(node, env)
       when IndexAssign then walk_index_assign(node, env)
+      when AttrAssign  then walk_attr_assign(node, env)
       else                  RiskSequence.new([] of RiskNode, node.line)
       end
     end
@@ -488,6 +489,28 @@ module Adjutant
       children = [
         walk_node(node.target, env).as(RiskNode),
         walk_node(node.index, env).as(RiskNode),
+        walk_node(node.value, env).as(RiskNode),
+      ]
+      RiskSequence.new(children, node.line)
+    end
+
+    # `recv.attr = value` — same flat-Sequence shape as
+    # `walk_index_assign` immediately above (both sub-expressions
+    # evaluate unconditionally): the receiver and the value each need
+    # their own risk walked, since either could embed a risky call
+    # (`get_config().name = dangerous_delete()`, or the receiver
+    # expression itself being the risky part). The setter call ITSELF
+    # (`recv.attr=`) carries no risk of its own to walk here — unlike
+    # an ordinary `Call`, this never resolves to a native method
+    # (native receivers have no user-definable `attr=` mechanism; see
+    # SCOPE.md's "native methods have no kwargs" entry for the
+    # adjacent native-extensibility gap), so there is no
+    # `NativeCallable.risk` to consult, only a script-defined setter,
+    # whose OWN body is walked separately when ITS `DefNode` is
+    # walked, not from every call site that happens to invoke it.
+    private def walk_attr_assign(node : AttrAssign, env : TypeInference::Env) : RiskNode
+      children = [
+        walk_node(node.receiver, env).as(RiskNode),
         walk_node(node.value, env).as(RiskNode),
       ]
       RiskSequence.new(children, node.line)

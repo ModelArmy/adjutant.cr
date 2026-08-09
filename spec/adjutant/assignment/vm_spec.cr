@@ -24,6 +24,44 @@ module Adjutant
       end
     end
 
+    describe "compound/conditional assignment into an index target" do
+      # Found 2026-08-08: this shape (`x[i] += 1`, `x[i] ||= v`, and
+      # a MultiAssign target that's an Index) went through a
+      # completely different, silently-broken code path from plain
+      # `x[i] = v` — see Op::SetIndexFromValue's own comment
+      # (bytecode.cr) for the full trace. No spec had ever exercised
+      # any of these three shapes before.
+      it "x[i] += 1 actually increments the element, not silently no-ops" do
+        eval("x = [10]\nx[0] += 5\nx[0]").as_int.should eq 15_i64
+      end
+
+      it "x[i] -= n works too, not just +=" do
+        eval("x = [10]\nx[0] -= 3\nx[0]").as_int.should eq 7_i64
+      end
+
+      it "x[i] ||= v assigns when the element is nil" do
+        eval("x = [nil]\nx[0] ||= 42\nx[0]").as_int.should eq 42_i64
+      end
+
+      it "x[i] ||= v leaves an already-truthy element untouched" do
+        eval("x = [1]\nx[0] ||= 99\nx[0]").as_int.should eq 1_i64
+      end
+
+      it "works on a Hash index target too, not just Array" do
+        eval(%(h = {"a" => 1}\nh["a"] += 10\nh["a"])).as_int.should eq 11_i64
+      end
+
+      it "does not disturb an UNRELATED element" do
+        eval("x = [1, 2, 3]\nx[1] += 100\nx[0]").as_int.should eq 1_i64
+      end
+
+      it "also fixed for a MultiAssign target that's an index (the third affected call site)" do
+        result = eval("x = [0, 0]\nb = nil\nx[0], b = 5, 9\n[x[0], b]").as_array
+        result[0].as_int.should eq 5_i64
+        result[1].as_int.should eq 9_i64
+      end
+    end
+
     describe "multi-target assignment" do
       it "assigns from a literal comma list" do
         eval("a, b = 1, 2\n[a, b]").as_array[0].as_int.should eq 1_i64
@@ -71,6 +109,99 @@ module Adjutant
         result[0].as_array[0].as_int.should eq 1_i64
         result[0].as_array[1].as_int.should eq 2_i64
         result[1].as_int.should eq 3_i64
+      end
+    end
+
+    describe "attribute assignment (recv.attr = value)" do
+      it "calls the setter, and it's visible via the getter afterward" do
+        val = eval(<<-RUBY)
+          class Box
+            attr_accessor :value
+          end
+          b = Box.new
+          b.value = 42
+          b.value
+          RUBY
+        val.as_int.should eq 42_i64
+      end
+
+      it "the assignment expression's own value is what was assigned, never the setter's return value" do
+        # `value=`'s body deliberately returns something else — real
+        # Ruby (and this) still evaluates a `recv.attr = value`
+        # expression to `value`, not to the setter's own return
+        # value. Same contract every other Set* opcode already has
+        # (Op::SetIvar/Op::SetIndex/...). Asserted via eval's own
+        # return (the value of the script's LAST top-level statement)
+        # rather than `x = (w.value = 5)` — a parenthesized/nested
+        # assignment expression is a genuinely separate, pre-existing
+        # gap (parse_primary's `(` case calls parse_expression, which
+        # never invokes maybe_assignment — that only runs at the
+        # statement level), unrelated to AttrAssign, not something
+        # this spec needs to depend on to make its actual point.
+        val = eval(<<-RUBY)
+          class Weird
+            def value=(v)
+              @value = v
+              "something else entirely"
+            end
+
+            def value
+              @value
+            end
+          end
+          w = Weird.new
+          w.value = 5
+          RUBY
+        val.as_int.should eq 5_i64
+      end
+
+      it "evaluates a receiver expression with side effects exactly once, not twice" do
+        # Regression for the exact bug `compile_attr_assign` exists to
+        # avoid (see that method's own comment, compiler.cr): a naive
+        # "reuse emit_store's generic dispatch" approach would have
+        # recompiled the receiver expression, calling it twice.
+        val = eval(<<-RUBY)
+          class Config
+            attr_accessor :value
+          end
+
+          CFG = Config.new
+          CALLS = [0]
+
+          def get_cfg
+            CALLS[0] += 1
+            CFG
+          end
+
+          get_cfg.value = 42
+          [CALLS[0], CFG.value]
+          RUBY
+        arr = val.as_array
+        arr[0].as_int.should eq 1_i64
+        arr[1].as_int.should eq 42_i64
+      end
+
+      it "raises when the receiver's class defines no matching setter" do
+        expect_raises(RuntimeError) do
+          eval("class Empty\nend\nEmpty.new.foo = 1")
+        end
+      end
+
+      it "resolves through a chained receiver (a.b.c = 1)" do
+        val = eval(<<-RUBY)
+          class Inner
+            attr_accessor :c
+          end
+          class Outer
+            def b
+              @b ||= Inner.new
+            end
+          end
+          a = Outer.new
+          a.b.c = 7
+          a.b.c
+          RUBY
+        val.as_int.should eq 7_i64
       end
     end
   end
