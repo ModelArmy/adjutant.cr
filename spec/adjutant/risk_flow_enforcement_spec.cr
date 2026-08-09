@@ -440,5 +440,74 @@ module Adjutant
         result.as_bool.should be_false
       end
     end
+
+    # Op::SetAttr (2026-08-08) reaching a NATIVE setter — currently
+    # dormant in practice (no `native_methods` entry ending in `=` is
+    # registered anywhere in this codebase today, confirmed by grep),
+    # but the path is real: `VM#call_method` (what `Op::SetAttr` uses
+    # to dispatch a setter call) reuses the exact same `dispatch_call`
+    # -> `call_native` -> `check_risk_flow` chain every other native
+    # call goes through — see `Interpreter#define_native`'s own
+    # comment (it always registers onto `Object`'s native_methods
+    # table, found via `RubyClass#find_native_method`'s ordinary
+    # ancestor walk, so ANY receiver class picks it up, exactly like
+    # a real inherited method would). This describe block proves that
+    # reused path actually enforces correctly starting from
+    # `Op::SetAttr` specifically, not just from an ordinary `Op::Call`
+    # — nothing had exercised it from this direction before.
+    describe "Op::SetAttr reaching a native setter (dormant today, real path)" do
+      it "raises when a tainted value assigned via recv.attr = value matches a Reject rule" do
+        interp, _ = make_enforcement_interp(enforcement_policy_for(RiskFlowAction::Reject))
+        interp.define_native("value=", risk: RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)) do |args|
+          Value.bool(true)
+        end
+        error = expect_raises(RuntimeError, /risk flow policy rejected/) do
+          interp.eval(<<-RUBY)
+            class Box
+            end
+            Box.new.value = tainted_path("/etc/passwd")
+            RUBY
+        end
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("F001")
+        # "Box#value=", not bare "value=" — dispatch_call's own
+        # existing naming convention for a receiver-based instance
+        # method call ("#{cls.name}##{name}", matching Ruby's own
+        # Box#value= convention), same as any other native call
+        # through a receiver; nothing Op::SetAttr-specific about it.
+        diag.data["call"].should eq("Box#value=")
+      end
+
+      it "the call's side effect does not happen when rejected, same as any other native call" do
+        interp, _ = make_enforcement_interp(enforcement_policy_for(RiskFlowAction::Reject))
+        effect_ran = false
+        interp.define_native("value=", risk: RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)) do |args|
+          effect_ran = true
+          Value.bool(true)
+        end
+        interp.eval(<<-RUBY)
+          class Box
+          end
+          begin
+            Box.new.value = tainted_path("/etc/passwd")
+          rescue RiskFlowPolicyError => e
+          end
+          RUBY
+        effect_ran.should be_false
+      end
+
+      it "an untainted value assigned via recv.attr = value proceeds normally" do
+        interp, _ = make_enforcement_interp(enforcement_policy_for(RiskFlowAction::Reject))
+        interp.define_native("value=", risk: RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)) do |args|
+          Value.bool(true)
+        end
+        result = interp.eval(<<-RUBY)
+          class Box
+          end
+          Box.new.value = "clean"
+          RUBY
+        result.as_string.should eq "clean"
+      end
+    end
   end
 end

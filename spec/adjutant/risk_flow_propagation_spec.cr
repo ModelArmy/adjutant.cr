@@ -263,6 +263,177 @@ module Adjutant
       end
     end
 
+    # Op::SetIndexFromValue (2026-08-08) — the compound/conditional/
+    # multi-assign-into-an-index sibling of Op::SetIndex directly
+    # above. Both opcodes call the exact same exec_set_index, so the
+    # accumulation behavior itself is not new — this describe block
+    # exists because, until now, NOTHING exercised that shared join
+    # logic from this opcode specifically. That gap is exactly how
+    # this session's SetIndexFromValue bug (target/index/value
+    # scrambled at runtime — see compiler.cr's emit_store `Index`
+    # case comment for the full trace) went unnoticed for as long as
+    # it did: a propagation test here would have caught the join
+    # running on garbage operands directly, independent of whether
+    # anyone happened to also write a purely functional regression
+    # for the same shape.
+    describe "Op::SetIndexFromValue (compound/conditional assignment into an index)" do
+      it "accumulates a tainted value's label onto the array via +=" do
+        interp, _ = make_tainted_interp
+        result = interp.eval(<<-RUBY)
+          arr = [1, 2, 3]
+          arr[0] += tainted("/etc/passwd")
+          arr
+        RUBY
+        result.array?.should be_true
+        result.label.not_nil!.sensitivity.should eq Sensitivity::High
+      end
+
+      it "accumulates via ||= too, not just +=" do
+        interp, _ = make_tainted_interp
+        result = interp.eval(<<-RUBY)
+          arr = [nil, 2, 3]
+          arr[0] ||= tainted("/etc/passwd")
+          arr
+        RUBY
+        result.label.not_nil!.sensitivity.should eq Sensitivity::High
+      end
+
+      it "the accumulated label is visible via a later GetLocal read of the same array" do
+        interp, _ = make_tainted_interp
+        result = interp.eval(<<-RUBY)
+          arr = [1, 2, 3]
+          arr[0] += tainted("/etc/passwd")
+          post_target = arr
+          post_target
+        RUBY
+        result.label.not_nil!.sensitivity.should eq Sensitivity::High
+      end
+
+      it "does not taint the array when the assigned value is unlabeled" do
+        interp, _ = make_tainted_interp
+        result = interp.eval(<<-RUBY)
+          arr = [1, 2, 3]
+          arr[0] += 1
+          arr
+        RUBY
+        result.label.should be_nil
+      end
+
+      it "accumulates onto a Hash's own label the same way" do
+        interp, _ = make_tainted_interp
+        result = interp.eval(<<-RUBY)
+          h = {"a" => 1}
+          h["a"] += tainted("/etc/passwd")
+          h
+        RUBY
+        result.hash?.should be_true
+        result.label.not_nil!.sensitivity.should eq Sensitivity::High
+      end
+
+      it "records a RiskFlowEvent for SetIndexFromValue, distinct from plain SetIndex" do
+        interp, _ = make_tainted_interp
+        interp.eval(<<-RUBY)
+          arr = [1, 2, 3]
+          arr[0] += tainted("/etc/passwd")
+        RUBY
+        events = interp.risk_flow_log.events.select { |e| e.op == "SetIndexFromValue" }
+        events.size.should eq 1
+        events.first.result.not_nil!.sensitivity.should eq Sensitivity::High
+        interp.risk_flow_log.events.any? { |e| e.op == "SetIndex" }.should be_false
+      end
+
+      it "labels accumulate monotonically here too — a later clean += does not clear the array's label" do
+        interp, _ = make_tainted_interp
+        result = interp.eval(<<-RUBY)
+          arr = [1, 2, 3]
+          arr[0] += tainted("/etc/passwd")
+          arr[0] += 1
+          arr
+        RUBY
+        result.label.not_nil!.sensitivity.should eq Sensitivity::High
+      end
+
+      it "a MultiAssign target that's an index accumulates the same way (the third affected call site)" do
+        interp, _ = make_tainted_interp
+        result = interp.eval(<<-RUBY)
+          arr = [0, 0]
+          b = nil
+          arr[0], b = tainted("/etc/passwd"), 9
+          arr
+        RUBY
+        result.label.not_nil!.sensitivity.should eq Sensitivity::High
+      end
+    end
+
+    # Op::SetAttr (2026-08-08) — recv.attr = value dispatching to a
+    # real (script-defined) setter method. Unlike Op::SetIndex/
+    # Op::SetIndexFromValue, there is no container-level label to
+    # accumulate here — a RubyObject's ivars are independently
+    # labeled, each via its own ordinary Op::SetIvar write inside the
+    # called setter's body (see that opcode's own comment, vm.cr, for
+    # why it does no join of its own). What IS worth a direct test:
+    # that the label survives the round trip through Op::SetAttr's
+    # VM#call_method dispatch (an isolated @frames/@stack swap) and
+    # is still readable afterward via the generated getter.
+    describe "Op::SetAttr (recv.attr = value)" do
+      it "a tainted value assigned through a setter is still tainted when read back via the getter" do
+        interp, _ = make_tainted_interp
+        result = interp.eval(<<-RUBY)
+          class Box
+            attr_accessor :value
+          end
+          b = Box.new
+          b.value = tainted("/etc/passwd")
+          b.value
+        RUBY
+        result.label.not_nil!.sensitivity.should eq Sensitivity::High
+      end
+
+      it "an unlabeled value assigned through a setter stays unlabeled" do
+        interp, _ = make_tainted_interp
+        result = interp.eval(<<-RUBY)
+          class Box
+            attr_accessor :value
+          end
+          b = Box.new
+          b.value = 42
+          b.value
+        RUBY
+        result.label.should be_nil
+      end
+
+      it "the assignment expression's own value carries the label too, not just the later read" do
+        interp, _ = make_tainted_interp
+        result = interp.eval(<<-RUBY)
+          class Box
+            attr_accessor :value
+          end
+          b = Box.new
+          b.value = tainted("/etc/passwd")
+          RUBY
+        result.label.not_nil!.sensitivity.should eq Sensitivity::High
+      end
+
+      it "a hand-written setter with extra logic still preserves the label on its own ivar write" do
+        interp, _ = make_tainted_interp
+        result = interp.eval(<<-RUBY)
+          class Box
+            def value=(v)
+              @stored = v
+            end
+
+            def stored
+              @stored
+            end
+          end
+          b = Box.new
+          b.value = tainted("/etc/passwd")
+          b.stored
+        RUBY
+        result.label.not_nil!.sensitivity.should eq Sensitivity::High
+      end
+    end
+
     describe "Op::Shl (<<, container accumulation)" do
       it "accumulates a pushed tainted value's label onto the array" do
         interp, _ = make_tainted_interp
