@@ -53,31 +53,6 @@ may unblock ones above it.
   runtime check per operand kind (literal/expression, `self`, local,
   method, constant, global — the last excluded per U011 either way).
 
-- **Native methods have no way to declare or receive `kwargs` at
-  all.** Found 2026-08-08 while threading kwargs through
-  `Class.new(name: ...)` for a script-defined `initialize` (that item
-  has since shipped and been removed from this file — see git
-  history/`DEVELOPMENT.md`'s "Argument binding" section). `NativeCallable` only ever receives
-  `args : Array(Value)` — there's no `Param` list, and so no
-  `kwarg?`/name-matching machinery, for anything implemented in
-  Crystal rather than compiled from `def...end`. `VM#call_native`
-  reflects this honestly today (`reject_kwargs!` fires unconditionally
-  on any native call, `.new` included when it resolves to a native
-  singleton method — see `VM#construct`'s native-`.new` branch), but
-  that's a real ceiling, not just an unimplemented nicety: the
-  upcoming core-API-library work is exactly the kind of surface where
-  a Ruby-compatible native method (`Config.new(retries:, timeout:)`
-  backed by Crystal rather than script, or any other native method
-  wanting an options-hash-shaped call) would need this and can't get
-  it today. Not yet traced to a starting file/method — needs some
-  `NativeCallable`-side way to declare accepted keyword names (an
-  analogue to `Param#kwarg?`/`Param#default`, but for a Crystal
-  function signature rather than an AST), and `call_native` taught to
-  check against it instead of rejecting outright. Worth deferring
-  until a concrete native API actually needs it, so the shape isn't
-  designed in the abstract — but flagged now so it isn't rediscovered
-  cold mid-core-API-library work.
-
 ## Will Fix
 
 Real gaps, not currently blocking anything, no active design conversation
@@ -416,6 +391,31 @@ individually.
   new opcodes — natural fit for the core-API-library work rather than
   a standalone language-layer item. Filed here rather than under a
   language-gap group for that reason.
+- **Native functions have no positional-arg defaults or arity
+  binding — everything is hand-rolled `args` indexing today.** Found
+  2026-08-09 while designing native keyword argument support (see
+  git history/`DEVELOPMENT.md`'s "Native keyword arguments" section
+  for what DID ship): a native function reads `args` directly with
+  its own ad-hoc "was this supplied" convention inline (e.g.
+  `testing/assert_module.cr`'s `assert`: `args.first?.try { ... } ||
+  "assertion"`) — there's no `Param`-equivalent list, no arity check,
+  no declared-default concept at all for POSITIONAL native args
+  (kwargs now have declared names via `NativeCallable#kwarg_names`,
+  but still no defaults of their own either — see that section).
+  Deliberately scoped OUT of the kwargs work rather than done
+  together: real positional defaults would need a `bind_args`-
+  equivalent binding layer for native calls (a `Param`-like list
+  matched by POSITION, evaluated/defaulted before the Crystal block
+  runs), almost certainly a changed native function signature (a
+  pre-bound, defaults-already-applied `Array(Value)` rather than raw
+  `args`, since asking every native function to keep hand-rolling
+  `args.first?` defeats the point), and would touch every existing
+  `define_native`/`define_native_method` call site to adopt the new
+  shape (or leave two conventions live side by side indefinitely) —
+  a materially larger, more invasive change than kwargs turned out to
+  be. Not blocking anything today; flagged for whoever next writes a
+  native function wanting this so it isn't rediscovered cold.
+
 - **No native File IO/HTTP module — really a scoping question, not a
   missing-feature bug.** Only `SampleModule`'s simulated I/O exists
   today. Reframed 2026-07-27 (previously filed as a plain missing-
