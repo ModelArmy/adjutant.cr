@@ -24,19 +24,6 @@ Blocking, or actively causing incorrect behavior in normal use. Ordered
 roughly by dependency, not necessarily by importance — an item lower down
 may unblock ones above it.
 
-- **`Class.new(name: ...)` can't reach a keyword-declaring
-  `initialize`.** Promoted from Object model 2026-08-05, ahead of the
-  core-API-library work: an options-heavy native class
-  (`Config.new(retries: 3, timeout: 10)`-shaped) is the natural
-  constructor pattern that work will reach for, and today any keyword
-  argument to `.new` raises `R012` unconditionally regardless of
-  whether the target class declares matching keyword params. Blocks
-  the *shape* of the API being designed, not just a script author's
-  convenience — see the original Object model entry below (unchanged)
-  for the precise trace (`VM#invoke` needs `kwargs` threaded through
-  its own signature, one layer the 2026-08-04 keyword-args arc didn't
-  touch).
-
 - **`dup`/`clone`/`initialize_copy`.** Promoted from the mruby-derived
   gap survey 2026-08-05, ahead of the core-API-library work. No
   object-copying mechanism exists at all today — a script wanting a
@@ -78,6 +65,30 @@ may unblock ones above it.
   method — needs a new keyword/token, parser support, and a real
   runtime check per operand kind (literal/expression, `self`, local,
   method, constant, global — the last excluded per U011 either way).
+
+- **Native methods have no way to declare or receive `kwargs` at
+  all.** Found 2026-08-08 while threading kwargs through
+  `Class.new(name: ...)` for a script-defined `initialize` (see the
+  entry above, now resolved). `NativeCallable` only ever receives
+  `args : Array(Value)` — there's no `Param` list, and so no
+  `kwarg?`/name-matching machinery, for anything implemented in
+  Crystal rather than compiled from `def...end`. `VM#call_native`
+  reflects this honestly today (`reject_kwargs!` fires unconditionally
+  on any native call, `.new` included when it resolves to a native
+  singleton method — see `VM#construct`'s native-`.new` branch), but
+  that's a real ceiling, not just an unimplemented nicety: the
+  upcoming core-API-library work is exactly the kind of surface where
+  a Ruby-compatible native method (`Config.new(retries:, timeout:)`
+  backed by Crystal rather than script, or any other native method
+  wanting an options-hash-shaped call) would need this and can't get
+  it today. Not yet traced to a starting file/method — needs some
+  `NativeCallable`-side way to declare accepted keyword names (an
+  analogue to `Param#kwarg?`/`Param#default`, but for a Crystal
+  function signature rather than an AST), and `call_native` taught to
+  check against it instead of rejecting outright. Worth deferring
+  until a concrete native API actually needs it, so the shape isn't
+  designed in the abstract — but flagged now so it isn't rediscovered
+  cold mid-core-API-library work.
 
 ## Will Fix
 

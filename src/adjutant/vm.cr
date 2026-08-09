@@ -342,8 +342,9 @@ module Adjutant
     # (see the 2026-07-20 closure-capture bug, research/IFC_DESIGN.md,
     # and the follow-up conversation on this same VM#invoke that led
     # to this split).
-    protected def invoke(proc : ScriptProc, args : Array(Value), self_val : Value? = nil) : Value
-      invoke_internal(proc, args, self_val, outer_locals: nil)
+    protected def invoke(proc : ScriptProc, args : Array(Value), self_val : Value? = nil,
+                         kwargs : Hash(String, Value)? = nil) : Value
+      invoke_internal(proc, args, self_val, outer_locals: nil, kwargs: kwargs)
     end
 
     # The only correct way for a native function to call a stored
@@ -401,7 +402,7 @@ module Adjutant
     # supply a non-nil override, since only it has a RubyObject to
     # pull one from).
     private def invoke_internal(proc : ScriptProc, args : Array(Value), self_val : Value? = nil,
-                                outer_locals : Array(Value)? = nil) : Value
+                                outer_locals : Array(Value)? = nil, kwargs : Hash(String, Value)? = nil) : Value
       saved_frames = @frames
       saved_stack = @stack
       saved_ins_count = @instruction_count
@@ -441,7 +442,7 @@ module Adjutant
         # around a nested `.call` exposed it.
         @stack = Array(Value).new(256)
         call_script_proc(proc, args, f.filename, nil, effective_outer, self_val: inherited_self,
-          lexical_scope: inherited_lexical, lexical_override: true)
+          lexical_scope: inherited_lexical, lexical_override: true, kwargs: kwargs)
         # Let the VM execute the chunk
         result = execute
       ensure
@@ -1406,13 +1407,17 @@ module Adjutant
       if has_receiver && !args.empty?
         recv = args.first
         if recv.rclass? && name == "new"
-          # `.new`/`initialize` doesn't thread kwargs through to a
-          # script-defined `initialize` yet — deliberately deferred,
-          # not silently dropped: any keyword arg fails loudly (R012)
-          # rather than vanishing unused. Follow-up, not a design
-          # decision — see DEVELOPMENT.md's "Argument binding".
-          reject_kwargs!(kwargs, name, filename, line)
-          return construct(recv.as_rclass, args[1..], filename, line, blk)
+          # kwargs now thread all the way through to a script-defined
+          # `initialize` (see construct/construct_object below) —
+          # bind_args's existing per-Param machinery (bind_kwarg_param,
+          # check_unknown_keywords!) does the real name-matching
+          # exactly as it already does for any other method call.
+          # `construct` itself still fails loudly (R012) when there's
+          # nowhere for a keyword arg to go: native construction
+          # (call_native's own reject_kwargs!) or a class with no
+          # `initialize` at all (construct_object's own
+          # reject_kwargs!, mirroring the same guard).
+          return construct(recv.as_rclass, args[1..], filename, line, blk, kwargs: kwargs)
         end
         if recv.robject?
           cls = recv.as_robject.rclass
@@ -1750,7 +1755,8 @@ module Adjutant
     # subclass carrying real state) and return value; the generic path
     # cannot express that, since it always allocates a bare
     # RubyObject.
-    private def construct(cls : RubyClass, args : Array(Value), filename : String, line : Int32, blk : ScriptProc?) : Value
+    private def construct(cls : RubyClass, args : Array(Value), filename : String, line : Int32, blk : ScriptProc?,
+                          kwargs : Hash(String, Value)? = nil) : Value
       raise script_diagnostic("R009", {"module" => cls.name}, current_frame) if cls.is_module?
       if cls.uninstantiable?
         # `Class.new`/`Module.new` — see RubyClass#uninstantiable? and
@@ -1770,10 +1776,17 @@ module Adjutant
       end
       if sym_id = @symbols.lookup("new").try(&.value)
         if native_new = cls.find_native_singleton_method(sym_id)
-          return call_native(native_new, [Value.rclass(cls)] + args, filename, line, blk, "#{cls.name}.new")
+          # Native construction has no keyword-param concept at all
+          # (see call_native's own unconditional reject_kwargs! —
+          # NativeCallable has no Param list to check names against,
+          # same reasoning as any other native call). Threading
+          # `kwargs` through here just lets call_native's existing
+          # guard produce the right R012 instead of this call site
+          # silently dropping them before call_native ever sees them.
+          return call_native(native_new, [Value.rclass(cls)] + args, filename, line, blk, "#{cls.name}.new", kwargs: kwargs)
         end
       end
-      construct_object(cls, args)
+      construct_object(cls, args, filename, line, kwargs)
     end
 
     # The generic construction path: allocates a bare RubyObject and,
@@ -1781,13 +1794,22 @@ module Adjutant
     # synchronously via `invoke` so its return value can be discarded
     # and the object returned regardless of what `initialize` itself
     # returns.
-    private def construct_object(cls : RubyClass, args : Array(Value)) : Value
+    private def construct_object(cls : RubyClass, args : Array(Value), filename : String, line : Int32,
+                                 kwargs : Hash(String, Value)? = nil) : Value
       obj_val = Value.robject(RubyObject.new(cls))
       if sym_id = @symbols.lookup("initialize").try(&.value)
         if init = cls.find_method(sym_id)
-          invoke(init, args, self_val: obj_val)
+          invoke(init, args, self_val: obj_val, kwargs: kwargs)
+          return obj_val
         end
       end
+      # No user-defined `initialize` to bind keyword args against —
+      # unlike bind_args's check_unknown_keywords! (which raises R012
+      # by NAME once it knows the declared param set), there's no
+      # Param list here at all, same gap call_native's own
+      # reject_kwargs! exists for. Without this, kwargs would be
+      # silently discarded instead of failing loudly.
+      reject_kwargs!(kwargs, "#{cls.name}.new", filename, line)
       obj_val
     end
 
