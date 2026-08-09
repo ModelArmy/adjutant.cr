@@ -509,5 +509,91 @@ module Adjutant
         result.as_string.should eq "clean"
       end
     end
+
+    # Native kwarg support (2026-08-09): a labeled value passed as a
+    # KEYWORD argument to a risk-tagged native call must be enforced
+    # exactly like a positional one — see VM#check_risk_flow's own
+    # comment for why this wasn't previously reachable at all (native
+    # calls unconditionally rejected any kwargs before this session).
+    describe "a tainted value reaching a risk-tagged native call via a keyword argument" do
+      it "raises when a tainted kwarg value matches a Reject rule" do
+        interp, _ = make_enforcement_interp(enforcement_policy_for(RiskFlowAction::Reject))
+        interp.define_native("delete_at", risk: RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error),
+          kwarg_names: Set{"path"}) do |args, blk, ncc|
+          Value.bool(true)
+        end
+        error = expect_raises(RuntimeError, /risk flow policy rejected/) do
+          interp.eval(%(delete_at(path: tainted_path("/etc/passwd"))))
+        end
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("F001")
+        diag.data["call"].should eq("delete_at")
+      end
+
+      it "the call's side effect does not happen when the kwarg value is rejected" do
+        interp, _ = make_enforcement_interp(enforcement_policy_for(RiskFlowAction::Reject))
+        effect_ran = false
+        interp.define_native("delete_at", risk: RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error),
+          kwarg_names: Set{"path"}) do |args, blk, ncc|
+          effect_ran = true
+          Value.bool(true)
+        end
+        interp.eval(<<-RUBY)
+          begin
+            delete_at(path: tainted_path("/etc/passwd"))
+          rescue RiskFlowPolicyError => e
+          end
+          RUBY
+        effect_ran.should be_false
+      end
+
+      it "an untainted kwarg value proceeds normally" do
+        interp, _ = make_enforcement_interp(enforcement_policy_for(RiskFlowAction::Reject))
+        interp.define_native("delete_at", risk: RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error),
+          kwarg_names: Set{"path"}) do |args, blk, ncc|
+          Value.bool(true)
+        end
+        result = interp.eval(%(delete_at(path: "/tmp/scratch")))
+        result.as_bool.should be_true
+      end
+
+      it "a tainted POSITIONAL argument alongside an untainted kwarg is still enforced (kwargs don't crowd out args)" do
+        interp, _ = make_enforcement_interp(enforcement_policy_for(RiskFlowAction::Reject))
+        interp.define_native("delete_with_mode", risk: RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error),
+          kwarg_names: Set{"mode"}) do |args, blk, ncc|
+          Value.bool(true)
+        end
+        error = expect_raises(RuntimeError, /risk flow policy rejected/) do
+          interp.eval(%(delete_with_mode(tainted_path("/etc/passwd"), mode: "force")))
+        end
+        error.diagnostic.not_nil!.code.should eq("F001")
+      end
+    end
+
+    describe "a native call with kwarg_names declared" do
+      it "an unknown keyword name still raises R012, same as any other native call" do
+        interp, _ = make_enforcement_interp(RiskFlowPolicy.reject_all)
+        interp.define_native("configure", kwarg_names: Set{"timeout"}) do |args, blk, ncc|
+          Value.bool(true)
+        end
+        error = expect_raises(RuntimeError) do
+          interp.eval(%(configure(retries: 3)))
+        end
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("R012")
+        diag.data["name"].should eq("retries")
+      end
+
+      it "a declared keyword name is accessible via NativeCallContext#kwargs" do
+        interp, _ = make_enforcement_interp(RiskFlowPolicy.reject_all)
+        seen = nil
+        interp.define_native("configure", kwarg_names: Set{"timeout"}) do |args, blk, ncc|
+          seen = ncc.kwargs.try(&.["timeout"]?).try(&.as_int)
+          Value.nil_value
+        end
+        interp.eval(%(configure(timeout: 30)))
+        seen.should eq(30)
+      end
+    end
   end
 end

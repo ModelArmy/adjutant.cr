@@ -616,7 +616,21 @@ module Adjutant
       # is later confirmed to invoke it we can't tell here, so
       # walk_call_arg wraps a Lambda's walked body in RiskDeferred
       # rather than returning it plain — see walk_call_arg below.
-      arg_risks = node.args.map { |arg| walk_call_arg(arg, env) }
+      # Keyword-argument VALUES run synchronously at this call site
+      # exactly as positional args do — see this method's own doc
+      # comment above. Folded in here rather than left unwalked: found
+      # while designing native kwarg support (SCOPE.md) that this was
+      # a real, pre-existing static-analysis gap — `node.kwargs`
+      # (Array({String, Node})) was never walked at all, so a risky
+      # expression in a keyword position (`configure(handler:
+      # delete_file(path))`) was completely invisible to static
+      # analysis, the same kind of blind spot walk_call's own args
+      # fix closed for positional args on 2026-07-18. Not previously
+      # load-bearing (natives always rejected kwargs outright, so a
+      # real risky native call reached via a kwarg value couldn't
+      # happen), but native kwarg support makes it a live path.
+      arg_risks = node.args.map { |arg| walk_call_arg(arg, env) } +
+                  node.kwargs.map { |(_, value)| walk_call_arg(value, env) }
 
       resolved = case receiver = node.receiver
                  when Nil

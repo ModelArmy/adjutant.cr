@@ -127,6 +127,48 @@ module Adjutant
       summary.tags.should eq Set{RiskTag::NetworkEgress}
     end
 
+    describe "keyword argument VALUES are walked (native kwargs support, 2026-08-09)" do
+      # Found while designing native kwarg support: `node.kwargs` was
+      # never walked at all before this — a risky call in a keyword
+      # position was completely invisible to static analysis, the
+      # same shape of gap the positional-args fix (2026-07-18, see
+      # "risky call used as an assignment's value" above) closed for
+      # `node.args`. See risk_walker.cr's walk_call for the fix.
+      it "a risky call passed as a keyword argument's value surfaces its tags" do
+        interp, _ = make_interp
+        risk = RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
+        register_risky_module(interp, "delete_fn", risk)
+        interp.define_native("configure", kwarg_names: Set{"handler"}) { |_| Value.nil_value }
+        walker = RiskWalker.new(interp)
+        body = risk_walker_test_parse("configure(handler: delete_fn())")
+        summary = RiskAggregator.summarize(walker.walk_body(body))
+        summary.tags.should eq Set{RiskTag::DeletesFiles}
+      end
+
+      it "a pure call passed as a keyword argument's value stays clean" do
+        interp, _ = make_interp
+        interp.define_native("safe_fn", risk: RiskProfile.none) { |_| Value.nil_value }
+        interp.define_native("configure", kwarg_names: Set{"handler"}) { |_| Value.nil_value }
+        walker = RiskWalker.new(interp)
+        body = risk_walker_test_parse("configure(handler: safe_fn())")
+        summary = RiskAggregator.summarize(walker.walk_body(body))
+        summary.severity.should eq Severity::Info
+      end
+
+      it "a risky kwarg value is caught alongside a risky positional arg, not instead of it" do
+        interp, _ = make_interp
+        delete_risk = RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
+        network_risk = RiskProfile.new(tags: Set{RiskTag::NetworkEgress}, severity: Severity::Warning)
+        register_risky_module(interp, "delete_fn", delete_risk)
+        register_risky_module(interp, "fetch_fn", network_risk)
+        interp.define_native("configure", kwarg_names: Set{"handler"}) { |_| Value.nil_value }
+        walker = RiskWalker.new(interp)
+        body = risk_walker_test_parse("configure(fetch_fn(), handler: delete_fn())")
+        summary = RiskAggregator.summarize(walker.walk_body(body))
+        summary.tags.should eq Set{RiskTag::DeletesFiles, RiskTag::NetworkEgress}
+      end
+    end
+
     it "a top-level def, called later in the SAME walked body, resolves (not RiskUnresolved)" do
       interp, _ = make_interp
       risk = RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)

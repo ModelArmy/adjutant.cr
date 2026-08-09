@@ -18,6 +18,23 @@ module Adjutant
     getter filename : String
     getter line : Int32
 
+    # The caller's keyword arguments, if any — nil when the call site
+    # passed none at all (same nil-vs-empty-Hash convention `bind_args`
+    # and `check_risk_flow` already use elsewhere). Deliberately NOT a
+    # parameter on NativeFunc itself (Array(Value), ScriptProc?,
+    # NativeCallContext -> Value) — widening that Proc's arity would
+    # touch every existing native function definition across the
+    # codebase (testing/assert_module.cr, builtins/*.cr) for a
+    # capability most of them don't need. Routing kwargs through the
+    # context instead means only a native function that actually
+    # declares kwarg_names (see NativeCallable) needs to read this;
+    # everyone else is unaffected. A native function that wants a
+    # default value for an omitted key reads this Hash directly
+    # (`ncc.kwargs.try(&.["timeout"]?) || default_value`) — see
+    # NativeCallable#kwarg_names's own comment for why no separate
+    # default-declaration mechanism exists.
+    getter kwargs : Hash(String, Value)?
+
     # Use this method to yield / call a LIVE call-site block (`{ }`/
     # `do...end`) from a native function — Array#each/Range#each/
     # Hash#each's `blk` param, etc. Never use this for a stored `Proc`
@@ -104,7 +121,7 @@ module Adjutant
     @callable : NativeCallable
     @name : String
 
-    protected def initialize(@vm, @callable, @filename, @line, @name); end
+    protected def initialize(@vm, @callable, @filename, @line, @name, @kwargs : Hash(String, Value)? = nil); end
 
     protected def call(args : Array(Value), blk : ScriptProc?) : Value
       @callable.call(args, blk, self)
@@ -363,10 +380,18 @@ module Adjutant
     # a native function callable via implicit self from anywhere,
     # the same mechanism a bare top-level `def` uses (see
     # Op::DefMethod / dispatch_call's implicit-self step).
-    def define_native(name : String, risk : RiskProfile = RiskProfile.none,
+    #
+    # `kwarg_names` declares which keyword names this function accepts
+    # (see NativeCallable#kwarg_names) — empty by default, matching
+    # every pre-existing `define_native` call. A function that accepts
+    # kwargs reads them via `ncc.kwargs` (NativeCallContext) inside
+    # the block; NativeFunc's own signature is unchanged, so this is
+    # opt-in per function, not a blast-radius change to every existing
+    # native function body.
+    def define_native(name : String, risk : RiskProfile = RiskProfile.none, kwarg_names : Set(String) = Set(String).new,
                       &block : Array(Value), ScriptProc?, NativeCallContext -> Value) : Nil
       sym = @symbols.intern(name)
-      object_class.define_native_method(sym.value, risk, &block)
+      object_class.define_native_method(sym.value, risk, kwarg_names, &block)
     end
 
     # Look up a native callable by symbol ID — called by VM dispatch.
