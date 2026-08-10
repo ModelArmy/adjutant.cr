@@ -75,5 +75,26 @@ module Adjutant
         o.should contain(Op::JumpIfFalse)
       end
     end
+
+    describe "method-body (implicit) rescue/else/ensure" do
+      it "compiles identically to an explicit begin/end wrapper" do
+        implicit = def_proc_chunk("def foo\n1/0\nrescue ZeroDivisionError\n2\nend")
+        explicit = def_proc_chunk(<<-RUBY)
+          def foo
+            begin
+              1/0
+            rescue ZeroDivisionError
+              2
+            end
+          end
+        RUBY
+        implicit.code.map(&.op).should eq explicit.code.map(&.op)
+      end
+
+      it "a plain def with no rescue compiles without Try/EndTry" do
+        chunk = def_proc_chunk("def foo\n1 + 1\nend")
+        chunk.code.map(&.op).should_not contain(Op::Try)
+      end
+    end
   end
 end

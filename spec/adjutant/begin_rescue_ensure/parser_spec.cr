@@ -101,5 +101,57 @@ module Adjutant
         diag.code.should eq("P005")
       end
     end
+
+    describe "method-body (implicit) rescue/else/ensure" do
+      # Real Ruby treats a `def` body as an implicit `begin` — no
+      # `begin`/`end` wrapper needed to attach rescue/else/ensure.
+      # Previously unsupported entirely (P002 at the `rescue` keyword
+      # — see SCOPE.md's Must Fix entry, filed 2026-08-10, found while
+      # testing `super` inside a rescue clause).
+      it "wraps the body in a BeginNode when rescue is present" do
+        src = "def foo\nrisky\nrescue Bar => e\nhandle\nend"
+        node = parse_expr(src).as(DefNode)
+        node.body.stmts.size.should eq 1
+        wrapped = node.body.stmts.first.as(BeginNode)
+        wrapped.rescue_clauses.size.should eq 1
+        wrapped.rescue_clauses[0].var.should eq "e"
+      end
+
+      it "wraps the body when only ensure is present, no rescue at all" do
+        src = "def foo\nrisky\nensure\ncleanup\nend"
+        node = parse_expr(src).as(DefNode)
+        wrapped = node.body.stmts.first.as(BeginNode)
+        wrapped.rescue_clauses.should be_empty
+        wrapped.ensure_body.should_not be_nil
+      end
+
+      it "does NOT wrap a plain def with no rescue/ensure at all" do
+        src = "def foo\nx\ny\nend"
+        node = parse_expr(src).as(DefNode)
+        node.body.stmts.size.should eq 2
+        node.body.stmts.any?(&.is_a?(BeginNode)).should be_false
+      end
+
+      it "supports multiple rescue clauses and an else, same as explicit begin" do
+        src = "def foo\nrisky\nrescue TypeError\na\nrescue ArgumentError\nb\nelse\nc\nend"
+        node = parse_expr(src).as(DefNode)
+        wrapped = node.body.stmts.first.as(BeginNode)
+        wrapped.rescue_clauses.size.should eq 2
+        wrapped.else_body.should_not be_nil
+      end
+
+      it "rejects else with no rescue clause, same P004 real begin gets" do
+        error = expect_raises(ParseError) do
+          parse_expr("def foo\nrisky\nelse\nbar\nend")
+        end
+        error.diagnostic.not_nil!.code.should eq("P004")
+      end
+
+      it "def self.foo (a singleton method) supports implicit rescue too" do
+        src = "def self.foo\nrisky\nrescue\nhandle\nend"
+        node = parse_expr(src).as(DefNode)
+        node.body.stmts.first.as(BeginNode).rescue_clauses.size.should eq 1
+      end
+    end
   end
 end
