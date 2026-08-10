@@ -63,7 +63,27 @@ module Adjutant
 
     Call     # call method constants[c], argc=a, b bit0=safe(&.), bit1=has_receiver
     SafeCall # &. nil-safe call
-    Ret      # return top of stack from current frame
+
+    # call the method with the CURRENT frame's own method name,
+    # starting resolution at the current frame's lexical_scope's
+    # superclass rather than self's own class. Unlike Call, no name
+    # is carried in constants[c]: the method name is read from the
+    # running frame (Frame#proc#name) at the point Super executes,
+    # not baked into the instruction, since it's always "whatever
+    # method this bytecode is itself running inside." self stays the
+    # original receiver (Frame#self_val) — only the lookup's STARTING
+    # class moves up one level.
+    #
+    # b bit0 = zsuper (bare `super`, no parens): when set, argc(a) is
+    # always 0 and no args are read from the stack at all — instead
+    # the CURRENT values of the enclosing method's own parameters
+    # (Frame#locals, matching Frame#proc#ast_params — the same slots
+    # bind_args filled at call time, possibly reassigned since) are
+    # forwarded live, real Ruby's zsuper semantics. When clear,
+    # explicit args were compiled and pushed as usual — argc=a.
+    Super
+
+    Ret # return top of stack from current frame
 
     # Classes and methods
     GetClass     # push current frame's self

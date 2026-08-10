@@ -913,6 +913,15 @@ module Adjutant
             # If dispatch pushed a new ScriptProc frame, do NOT push the
             # sentinel return value — Op::Ret will push the real result.
             push(result) if @frames.size == depth_before
+          when Op::Super
+            zsuper = inst.b & 0b1_u16 != 0
+            argc = inst.a.to_i
+            args = @stack.last(argc)
+            @stack.pop(argc) if argc > 0
+
+            depth_before = @frames.size
+            result = dispatch_super(f, args, f.filename, inst.line, zsuper: zsuper)
+            push(result) if @frames.size == depth_before
           when Op::Ret
             result = pop
             # Drain locals back to stack_base
@@ -1443,6 +1452,112 @@ module Adjutant
     # what's actually in the source, not an internal dispatch detail.
     private def display_name_for_implicit_self(name : String) : String
       name
+    end
+
+    # Resolves and invokes a `super` call (Op::Super). Unlike
+    # dispatch_call, the method NAME is never carried by the
+    # instruction — it's always "whatever method this bytecode is
+    # itself running inside," read off the current frame's own proc.
+    # Resolution starts at that proc's lexical_scope's SUPERCLASS
+    # (not self's own class, which is where an ordinary call would
+    # start) — self stays the original receiver throughout; only the
+    # starting point of the method-table walk moves up one level.
+    #
+    # A proc with no lexical_scope (a top-level function, or a block)
+    # has no "class above" to start from at all — treated the same as
+    # a lookup that starts but finds nothing, below.
+    private def dispatch_super(f : Frame, args : Array(Value), filename : String, line : Int32,
+                               zsuper : Bool = false) : Value
+      proc = f.proc
+      name = proc.name
+      call_args, call_kwargs =
+        if zsuper
+          zsuper_bindings(f, filename, line)
+        else
+          {args, nil}
+        end
+      start_cls = proc.lexical_scope.try(&.superclass)
+      sym_id = start_cls ? @symbols.lookup(name).try(&.value) : nil
+
+      if start_cls && sym_id
+        if method = start_cls.find_method(sym_id)
+          # f.block/f.block_outer_locals implicitly forward the
+          # CURRENT method's own block onward, real Ruby's default —
+          # super (either form) passes the enclosing method's block
+          # along unless a different one is given explicitly. Reusing
+          # f.block_outer_locals (not f.locals) matters: it's the
+          # closure context the block was ORIGINALLY attached with,
+          # at its own creation site, same reuse Op::Yield's own
+          # call_script_proc call makes when actually invoking a
+          # block — passing f.locals instead would silently rebind
+          # the block to the wrong enclosing scope.
+          return call_script_proc(method, call_args, filename, f.block,
+            self_val: f.self_val, block_outer: f.block_outer_locals, kwargs: call_kwargs)
+        end
+        if native = start_cls.find_native_method(sym_id)
+          # Native methods read their receiver as args.first by
+          # convention (see call_native's other callers in
+          # dispatch_call) — super has no receiver on the stack to
+          # reuse, so f.self_val is prepended explicitly here.
+          return call_native(native, [f.self_val] + call_args, filename, line, f.block, "#{start_cls.name}##{name}", kwargs: call_kwargs)
+        end
+      end
+
+      # No ancestor defines a method by this name — real Ruby raises
+      # NoMethodError ("super: no superclass method '{method}'") here,
+      # not NameError (R008's class): the name resolved to a REAL
+      # method once, the one `super` is being called FROM, so this
+      # isn't "unresolved," it's "resolved, then deliberately looked
+      # one level up, and found nothing there."
+      raise runtime_diagnostic(
+        Diagnostic.new(
+          code: "R014",
+          primary: Span.new(line: line, filename: filename),
+          data: {"method" => name}
+        ),
+        error_class: "NoMethodError"
+      )
+    end
+
+    # Builds the (args, kwargs) a bare `super` (zsuper) forwards —
+    # the enclosing method's OWN parameters, read at their CURRENT
+    # value (Frame#locals, possibly reassigned since the method
+    # started), not the originally-passed values. Walks
+    # Frame#proc#ast_params in declared order, matching the exact
+    # slot layout VM#bind_args filled at call time:
+    #
+    #   - a plain/default param forwards its current local value as
+    #     one positional arg
+    #   - a splat param (`*args`) forwards each of its CURRENT
+    #     array's elements as separate positional args (real Ruby
+    #     re-expands it, it isn't passed on as one array)
+    #   - a kwarg param forwards as a keyword argument, not
+    #     positional — collected into a separate Hash, same shape
+    #     ordinary keyword calls already use
+    #
+    # A proc with no ast_params (built directly from a Chunk, no AST
+    # — see ScriptProc's own doc comment) has nothing to forward;
+    # returns empty, same defensive fallback VM#bind_args itself uses
+    # in that case.
+    private def zsuper_bindings(f : Frame, filename : String, line : Int32) : {Array(Value), Hash(String, Value)?}
+      ast_params = f.proc.ast_params
+      return {[] of Value, nil} unless ast_params
+
+      args = [] of Value
+      kwargs = nil
+      ast_params.each_with_index do |param, slot|
+        next if param.block_param? # can't occur (U001), skipped defensively
+        val = slot < f.locals.size ? f.locals[slot] : Value.nil_value
+        if param.splat?
+          val.as_array?.try(&.each { |item| args << item })
+        elsif param.kwarg?
+          kwargs ||= {} of String => Value
+          kwargs[param.name] = val
+        else
+          args << val
+        end
+      end
+      {args, kwargs}
     end
 
     # ameba:disable Metrics/CyclomaticComplexity - Clear steps, better together

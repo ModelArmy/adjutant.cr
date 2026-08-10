@@ -88,6 +88,33 @@ module Adjutant
         diag.data["call"].should eq("delete_file")
       end
 
+      it "raises when a tainted argument matches a Reject rule, reached via super" do
+        # define_native registers onto Object's own native_methods
+        # table, so a plain script class inherits delete_file/
+        # tainted_path from its default Object superclass — a script
+        # method overriding delete_file and calling `super(path)`
+        # dispatches through VM#dispatch_super's native-method branch
+        # (Op::Super), NOT the ordinary Op::Call path every other
+        # test in this file exercises. Passes because dispatch_super
+        # routes through the exact same call_native — and therefore
+        # the exact same check_risk_flow — every other native call
+        # already goes through; nothing dispatch_super-specific was
+        # needed. Proven here rather than only reasoned about.
+        interp, _ = make_enforcement_interp(enforcement_policy_for(RiskFlowAction::Reject))
+        error = expect_raises(RuntimeError, /risk flow policy rejected/) do
+          interp.eval(<<-RUBY)
+            class Wrapper
+              def delete_file(path)
+                super(path)
+              end
+            end
+            Wrapper.new.delete_file(tainted_path("/etc/passwd"))
+          RUBY
+        end
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("F001")
+      end
+
       it "the raised error is a script-visible RiskFlowRejectedError" do
         interp, _ = make_enforcement_interp(enforcement_policy_for(RiskFlowAction::Reject))
         result = interp.eval(<<-RUBY)

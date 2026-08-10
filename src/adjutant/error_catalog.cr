@@ -185,6 +185,15 @@ module Adjutant
               "the caller should be prepared to handle separately " \
               "rather than compare directly with `<`/`<=`/`>`/`>=`."
       ),
+      "R014" => Entry.new(
+        code: "R014",
+        summary: "`super` called in `{method}`, but no ancestor defines it",
+        why: "`super` calls `{method}` on the parent class, but no " \
+             "class above this one defines `{method}`.",
+        help: "Check that a superclass actually defines `{method}`, or " \
+              "remove the `super` call if this method has nothing to " \
+              "extend."
+      ),
 
       # --- L: limits reached ----------------------------------------
       #

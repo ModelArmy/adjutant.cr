@@ -360,10 +360,27 @@ module Adjutant
       when TokenKind::KwAlias   then parse_alias
       when TokenKind::KwRequire then parse_require
       when TokenKind::KwYield   then parse_yield
-      when TokenKind::KwSuper   then parse_super
       when TokenKind::KwAttrReader, TokenKind::KwAttrWriter, TokenKind::KwAttrAccessor
         parse_attr(current_kind)
       else
+        # KwSuper deliberately NOT its own case here (was, until this
+        # fix): this table's shortcut cases return immediately,
+        # bypassing parse_expr_statement's full pipeline (parse_expression's
+        # operator-precedence climbing, assignment, trailing if/
+        # unless/while/until modifiers) entirely. Harmless for most
+        # of these (return/break/next/... aren't meaningfully combined
+        # with a following binary operator), but `super` routinely is
+        # — `super + 4` at STATEMENT position (not a sub-expression)
+        # hit this shortcut, consumed only `super` itself, and left
+        # `+ 4` to be parsed as a completely independent SECOND
+        # statement, silently discarding super's value. parse_primary
+        # already has its own `KwSuper => parse_super` case (added
+        # earlier in the super-dispatch rewrite — see SCOPE.md) for
+        # exactly this reason; falling through to parse_expr_statement
+        # here reaches that same case via the normal
+        # parse_expression → parse_unary → parse_primary chain,
+        # so `super` gets full expression-parsing treatment uniformly,
+        # whether it starts a statement or not.
         parse_expr_statement
       end
     end
@@ -780,6 +797,16 @@ module Adjutant
         parse_begin
       when TokenKind::KwRaise
         parse_raise(l, c)
+      when TokenKind::KwSuper
+        # `super` was previously only reachable via parse_statement's
+        # own dispatch (see that table, above) — fine for `super()`
+        # as a whole statement/line, but not as a sub-expression like
+        # `"B-" + super()` or `x = super`, which route through
+        # parse_unary → parse_primary instead. Same shape as
+        # `KwRaise` just above, added here for the same reason: any
+        # keyword-headed construct that's a real expression, not just
+        # a statement, needs a case in BOTH dispatch tables.
+        parse_super
       else
         raise ParseError.new(
           Diagnostic.new(
@@ -1606,14 +1633,31 @@ module Adjutant
         end
         expect(TokenKind::RParen)
         SuperNode.new(args, false, l, c)
-      elsif at_any?(TokenKind::Newline, TokenKind::Semi, TokenKind::EOF, TokenKind::KwEnd)
-        SuperNode.new([] of Node, true, l, c)
-      else
+      elsif arg_follows_no_paren?
+        # Same guard parse_raise already uses for the identical
+        # ambiguity — without it, `super + 4` (bare `super`, then a
+        # binary `+`) was indistinguishable from `super +4` (explicit
+        # unary-plus argument), and this branch always guessed the
+        # latter: it swallowed `+ 4` as an argument to super, silently
+        # discarded it (a zero-param method just ignores an extra
+        # arg), and left nothing for `+` to apply to but super's own
+        # return value — `super + 4` quietly behaved as plain
+        # `super`. arg_follows_no_paren? deliberately excludes
+        # `+`/`-` (needs adjacency/whitespace context it doesn't have
+        # — see its own comment), so `super + 4`/`super - 4` now fall
+        # through to the zsuper branch below instead, correctly
+        # leaving `+`/`-` for the surrounding expression parser.
         args = [parse_expression(0)] of Node
         while match(TokenKind::Comma)
           args << parse_expression(0)
         end
         SuperNode.new(args, false, l, c)
+      else
+        # Bare `super` with nothing that unambiguously starts an
+        # argument following — real Ruby's zsuper: forward the
+        # enclosing method's own current parameter values (see
+        # VM#zsuper_bindings), not "explicit call with zero args."
+        SuperNode.new([] of Node, true, l, c)
       end
     end
 

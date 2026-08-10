@@ -385,35 +385,32 @@ undefined-constant error rather than one naming `Struct` specifically as
 a deliberate exclusion. Tracked as part of the U008–U011 batch in
 [SCOPE.md](./SCOPE.md)'s Error reporting group.
 
-### U010 — `super` across multiple `rescue` clauses per `begin`
+### U010 — retired, not an exclusion
 
-Calling `super` from within one `rescue` clause of a `begin` that has
-more than one `rescue` clause, where the semantics of which superclass
-method `super` should reach depend on which clause is active.
+Originally filed 2026-08-05 as a possible exclusion: calling `super`
+from within one `rescue` clause of a `begin` with more than one
+`rescue` clause, on the theory that which superclass method `super`
+reaches might depend on which clause matched.
 
-**Why:** decided 2026-08-05, in the same session multiple `rescue`
-clauses themselves were promoted to `Must Fix` (see
-[SCOPE.md](./SCOPE.md)). Genuinely obscure even in human-written Ruby —
-the ordinary combination of `super` and `rescue` (a `rescue` clause that
-doesn't itself call `super`) is unaffected and remains fully supported;
-this exclusion is narrowly the *interaction* of the two, not either
-construct on its own.
+**Resolution, 2026-08-09/10 (the same session `super` itself was
+built — see `DEVELOPMENT.md`'s "Super dispatch" section): the concern
+doesn't hold up.** `super`'s resolution depends entirely on the
+running method's own frame (which method it's defined as, and what
+class it was defined inside) — never on which `rescue` clause
+happens to be executing. Every `rescue` clause of a given `begin`
+runs in the SAME frame as the method body itself (no separate frame
+per clause), so `super` written in any clause of a method resolves
+identically no matter which one matches. Confirmed empirically, not
+just by design: `spec/adjutant/super/vm_spec.cr` calls `super` from
+two different clauses of the same method, matched by raising two
+different exception types, and both reach the same superclass
+method.
 
-**Instead:** restructure the rescue body to call the intended method
-explicitly rather than via `super`, or move the `super` call outside the
-`rescue`/`begin` entirely if the intent allows it.
-
-**Enforcement — not yet enforced, and now reachable.** Multiple `rescue`
-clauses per `begin` shipped 2026-08-07 (see `SCOPE.md`'s former `Must
-Fix` entry, now removed), so this is no longer a theoretical gap gated
-on that landing — a script can write `super` inside a multi-clause
-`rescue` today and get whatever `super`'s ordinary
-(clause-unaware) implementation resolves to, unaudited. Flagging for a
-follow-up decision rather than silently leaving it: worth a real `U010`
-diagnostic now that the shape is reachable, or an explicit call that
-it's low-enough risk to leave unenforced a while longer. Tracked as
-part of the U008–U011 batch in [SCOPE.md](./SCOPE.md)'s Error reporting
-group.
+There is nothing to enforce and nothing unsupported here — an
+ordinary `super` call works exactly the same inside a `rescue` clause
+as anywhere else in the method. **`U010` itself is retired and will
+not be reassigned to a different construct** (see `ERRORS.md`'s
+identity-stability guarantee for error codes).
 
 ### U011 — `$globals`
 

@@ -1701,12 +1701,21 @@ module Adjutant
     end
 
     private def compile_super(node : SuperNode) : Nil
+      # STEP 3 of the super-dispatch rewrite (see SCOPE.md): bare
+      # `super` (`node.forwarded?` — real Ruby's "zsuper") now
+      # forwards the enclosing method's CURRENT parameter values,
+      # rather than compiling as a fake zero-arg call (Step 1's
+      # temporary shape). No args are compiled/pushed for this form
+      # at all — dispatch_super reads them straight off the running
+      # frame's locals at the point `super` executes, so a param
+      # reassigned earlier in the method body is correctly forwarded
+      # with its NEW value, matching Ruby.
+      if node.forwarded?
+        @chunk.emit(Op::Super, node.line, b: 1_u16)
+        return
+      end
       node.args.each { |arg| compile_node(arg) }
-      sym_idx = intern("super")
-      nil_idx = @chunk.add_const(Value.nil_value)
-      @chunk.emit(Op::Const, node.line, c: nil_idx)
-      @chunk.emit(Op::SetBlock, node.line)
-      @chunk.emit(Op::Call, node.line, a: node.args.size.to_u8, c: sym_idx)
+      @chunk.emit(Op::Super, node.line, a: node.args.size.to_u8)
     end
 
     # --- Exception handling -------------------------------------------------
