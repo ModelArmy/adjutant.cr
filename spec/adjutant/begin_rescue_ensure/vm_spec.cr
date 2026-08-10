@@ -1220,4 +1220,133 @@ module Adjutant
       result.should eq Value.int(3_i64)
     end
   end
+
+  describe "method-body (implicit) rescue/else/ensure" do
+    # Real Ruby treats a `def` body as an implicit `begin`. Fixed by
+    # having the parser wrap the parsed body in a synthetic BeginNode
+    # when rescue/ensure is actually present (see parser.cr's
+    # parse_def) — everything below exercises the exact same
+    # compile/runtime path an explicit `begin`/`end` already used,
+    # just reached without writing one.
+    it "catches an error raised in the method body" do
+      # Adjutant doesn't have a distinct ZeroDivisionError class —
+      # division by zero raises a plain RuntimeError (see VM#runtime_error).
+      # Worth its own SCOPE.md item separately; not this fix's concern.
+      eval(<<-RUBY).should eq Value.int(1_i64)
+        def risky
+          1 / 0
+        rescue RuntimeError
+          1
+        end
+        risky
+      RUBY
+    end
+
+    it "filters by exception class, same as an explicit begin" do
+      expect_raises(RuntimeError) do
+        eval(<<-RUBY)
+          def risky
+            raise TypeError, "nope"
+          rescue ZeroDivisionError
+            :wrong_type
+          end
+          risky
+        RUBY
+      end
+    end
+
+    it "runs `else` only when the body raised nothing" do
+      eval(<<-RUBY).should eq Value.string("else ran")
+        def safe
+          1 + 1
+        rescue
+          "rescued"
+        else
+          "else ran"
+        end
+        safe
+      RUBY
+    end
+
+    it "runs `ensure` on both the success and rescue paths" do
+      eval(<<-RUBY).should eq Value.int(2_i64)
+        class Counter
+          def self.run(fail_it)
+            c = Counter.new
+            c.go(fail_it)
+            c.count
+          end
+          def go(fail_it)
+            @count = 0
+            raise "boom" if fail_it
+          rescue
+            nil
+          ensure
+            @count += 1
+          end
+          def count
+            @count
+          end
+        end
+        Counter.run(true) + Counter.run(false)
+      RUBY
+    end
+
+    it "supports multiple rescue clauses, first match wins, same as explicit begin" do
+      eval(<<-RUBY).should eq Value.string("type")
+        def risky(cls)
+          raise cls, "boom"
+        rescue TypeError
+          "type"
+        rescue ArgumentError
+          "arg"
+        end
+        risky(TypeError)
+      RUBY
+    end
+
+    it "a plain def with no rescue/ensure at all is completely unaffected" do
+      eval(<<-RUBY).should eq Value.int(3_i64)
+        def add(x, y)
+          x + y
+        end
+        add(1, 2)
+      RUBY
+    end
+
+    it "works on a singleton method (def self.foo) too" do
+      eval(<<-RUBY).should eq Value.string("caught")
+        class A
+          def self.risky
+            1 / 0
+          rescue RuntimeError
+            "caught"
+          end
+        end
+        A.risky
+      RUBY
+    end
+
+    it "super still resolves correctly from inside an implicit rescue clause" do
+      # Ties back to the U010 investigation (see UNSUPPORTED.md) —
+      # confirms the same "resolution depends only on the frame, not
+      # which clause is active" property holds here too, now that
+      # this shape doesn't need an explicit begin/end wrapper at all.
+      eval(<<-RUBY).should eq Value.string("A-caught")
+        class A
+          def handle
+            "A"
+          end
+        end
+        class B < A
+          def handle
+            raise "boom"
+          rescue
+            super + "-caught"
+          end
+        end
+        B.new.handle
+      RUBY
+    end
+  end
 end

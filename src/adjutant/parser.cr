@@ -1286,7 +1286,31 @@ module Adjutant
       end
       params.each { |param| register_local(param.name) }
       skip_terminators
-      body = parse_body_until(TokenKind::KwEnd)
+      body = parse_body_until_any(TokenKind::KwRescue, TokenKind::KwElse, TokenKind::KwEnsure, TokenKind::KwEnd)
+      rescue_clauses, else_body, ensure_body = parse_rescue_else_ensure
+      # Real Ruby treats a method body as an IMPLICIT `begin` — `def
+      # foo; risky; rescue Bar; ...; end`, no explicit begin/end
+      # wrapper needed. Previously unsupported entirely (P002 at the
+      # `rescue` keyword — see SCOPE.md's Must Fix entry, filed
+      # 2026-08-10). Fixed by wrapping the parsed body in a synthetic
+      # BeginNode when rescue/ensure was actually present, rather than
+      # teaching the compiler or VM anything new: DefNode#body is
+      # already just an ordinary Body, compiled via plain
+      # compile_body — a Body containing one BeginNode statement
+      # compiles (compile_begin) and walks (RiskWalker#walk_begin)
+      # through the EXACT same paths a hand-written `begin`/`end`
+      # already does, both already fully implemented and tested. Only
+      # wrapped when something was actually there to wrap
+      # (rescue_clauses non-empty or an ensure present) — a plain
+      # `def foo; x; end` with no rescue/ensure at all stays a bare
+      # Body, unchanged from before this fix. (`else_body` alone can't
+      # trigger this on its own: parse_rescue_else_ensure's own
+      # parse_begin_else already raises if `else` appears with no
+      # `rescue` clause before it, matching real Ruby.)
+      unless rescue_clauses.empty? && ensure_body.nil?
+        begin_node = BeginNode.new(body, rescue_clauses, else_body, ensure_body, l, c)
+        body = Body.new([begin_node.as(Node)], l, c)
+      end
       close_block
       pop_local_scope
       DefNode.new(name_tok.lexeme, recv, params, body, l, c)
@@ -1686,6 +1710,27 @@ module Adjutant
       expect(TokenKind::KwBegin)
       skip_terminators
       body = parse_body_until_any(TokenKind::KwRescue, TokenKind::KwElse, TokenKind::KwEnsure, TokenKind::KwEnd)
+      rescue_clauses, else_body, ensure_body = parse_rescue_else_ensure
+      close_block
+      BeginNode.new(body, rescue_clauses, else_body, ensure_body, l, c)
+    end
+
+    # The rescue/else/ensure tail shared by an explicit `begin` and a
+    # method body's IMPLICIT one (real Ruby's "bodystmt" — a `def`
+    # body is itself a begin, without writing `begin`/`end` around
+    # it). Assumes the caller already parsed everything up to
+    # whichever of KwRescue/KwElse/KwEnsure/KwEnd stopped it (e.g. via
+    # parse_body_until_any with all three) and does NOT consume the
+    # final KwEnd — that stays the caller's own job (close_block),
+    # since parse_begin and parse_def have different bookkeeping
+    # (open_block naming, local-scope push/pop) around that point.
+    # Safe to call unconditionally even when none of
+    # rescue/else/ensure are actually present: parse_begin_else
+    # itself already no-ops when not at KwElse, and the `while
+    # at_kind?(KwRescue)`/`if match(KwEnsure)` checks below do the
+    # same for their own keywords — so a plain body with nothing
+    # trailing it costs nothing extra to check for.
+    private def parse_rescue_else_ensure : {Array(RescueClause), Body?, Body?}
       rescue_clauses = [] of RescueClause
       while at_kind?(TokenKind::KwRescue)
         rescue_clauses << parse_rescue_clause
@@ -1696,8 +1741,7 @@ module Adjutant
         skip_terminators
         ensure_body = parse_body_until(TokenKind::KwEnd)
       end
-      close_block
-      BeginNode.new(body, rescue_clauses, else_body, ensure_body, l, c)
+      {rescue_clauses, else_body, ensure_body}
     end
 
     # One `rescue` clause: optional comma-separated class list (`rescue
