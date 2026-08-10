@@ -389,5 +389,65 @@ module Adjutant
         RUBY
       end
     end
+
+    describe "super (Step 7 — U010 revisit: super inside a multi-clause rescue)" do
+      # U010 (see UNSUPPORTED.md) filed a concern that WHICH
+      # rescue clause is active might affect what superclass method
+      # `super` reaches, when a `begin` has more than one `rescue`
+      # clause. It doesn't: `super`'s resolution (VM#dispatch_super)
+      # depends entirely on the FRAME it runs in
+      # (Frame#proc#name/Frame#proc#lexical_scope) — and every
+      # rescue clause of the same `begin` executes in the SAME frame
+      # as the method body itself (compile_rescue_clauses chains
+      # them behind one shared Op::Try, no separate frame per
+      # clause — see DEVELOPMENT.md). So `super` written inside ANY
+      # rescue clause of a given method resolves IDENTICALLY,
+      # regardless of which clause actually matched — proven here by
+      # putting `super` in two different clauses of the SAME method
+      # and confirming both reach the same superclass method.
+      it "super resolves identically no matter which rescue clause is active" do
+        eval(<<-RUBY).as_string.should eq "A-arg"
+        class A
+          def handle
+            "A"
+          end
+        end
+        class B < A
+          def handle
+            begin
+              raise ArgumentError, "boom"
+            rescue TypeError
+              super + "-type"
+            rescue ArgumentError
+              super + "-arg"
+            end
+          end
+        end
+        B.new.handle
+        RUBY
+      end
+
+      it "the SAME method, with a DIFFERENT clause matching, still reaches the same superclass method" do
+        eval(<<-RUBY).as_string.should eq "A-type"
+        class A
+          def handle
+            "A"
+          end
+        end
+        class B < A
+          def handle
+            begin
+              raise TypeError, "boom"
+            rescue TypeError
+              super + "-type"
+            rescue ArgumentError
+              super + "-arg"
+            end
+          end
+        end
+        B.new.handle
+        RUBY
+      end
+    end
   end
 end

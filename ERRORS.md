@@ -144,37 +144,42 @@ Adjutant is a subset of Ruby. These constructs are not missing features
 awaiting implementation — they will not be added, and each has a documented
 alternative in [UNSUPPORTED.md](./UNSUPPORTED.md).
 
-|Code|Construct                                  |Placeholders     |
-|----|-------------------------------------------|-----------------|
-|U001|`&blk` parameter capture                   |`param`, `method`|
-|U002|`Class.new` / `Module.new`                 |`class`          |
-|U003|Reopening a class or module                |`name`           |
-|U004|Defining a method inside another method    |`definition`     |
-|U005|Calling a method by computed name          |`construct`      |
-|U006|`eval` / `instance_eval`                   |—                |
-|U007|Reflection into the host's internals       |—                |
-|U008|`private`/`protected`/`public`             |`construct`      |
-|U009|`Struct.new`                               |—                |
-|U010|`super` across multiple `rescue` clauses   |—                |
-|U011|`$globals`                                 |`name`           |
-|U012|Numbered block parameters (`_1`, `_2`)     |—                |
-|U013|Endless method definitions                 |—                |
-|U014|`class << self` singleton-class syntax     |—                |
-|U015|`undef` / method-added hooks               |`construct`      |
-|U016|`begin...end while`/`until` (do-while)     |—                |
-|U017|Operator-method overloading (`def ==`, ...)|`operator`       |
+|Code|Construct                                       |Placeholders     |
+|----|------------------------------------------------|-----------------|
+|U001|`&blk` parameter capture                        |`param`, `method`|
+|U002|`Class.new` / `Module.new`                      |`class`          |
+|U003|Reopening a class or module                     |`name`           |
+|U004|Defining a method inside another method         |`definition`     |
+|U005|Calling a method by computed name               |`construct`      |
+|U006|`eval` / `instance_eval`                        |—                |
+|U007|Reflection into the host's internals            |—                |
+|U008|`private`/`protected`/`public`                  |`construct`      |
+|U009|`Struct.new`                                    |—                |
+|U010|_retired — see UNSUPPORTED.md, not an exclusion_|—                |
+|U011|`$globals`                                      |`name`           |
+|U012|Numbered block parameters (`_1`, `_2`)          |—                |
+|U013|Endless method definitions                      |—                |
+|U014|`class << self` singleton-class syntax          |—                |
+|U015|`undef` / method-added hooks                    |`construct`      |
+|U016|`begin...end while`/`until` (do-while)          |—                |
+|U017|Operator-method overloading (`def ==`, ...)     |`operator`       |
 
 U005 and U006 are reported when a name that would resolve to one of them
 resolves to nothing else. A script is still free to define its own method
 with one of those names — `def send` on your own class works, and calling
 it works.
 
-**U008–U015 status: decided, not yet enforced.** Using one of these
-constructs today falls through to an ordinary undefined-name or generic
-parse error rather than naming the construct specifically — expect a
-less-specific error than the table above until enforcement lands. See
-[UNSUPPORTED.md](./UNSUPPORTED.md) for the reasoning behind each and
-what to write instead.
+U010 was investigated and found not to be a real gap — see
+[UNSUPPORTED.md](./UNSUPPORTED.md) for what changed. The code is
+retired, not reassigned: codes are never reused for a different
+problem once allocated (see "Reading a code" above).
+
+**U008, U009, U011–U015 status: decided, not yet enforced.** Using one
+of these constructs today falls through to an ordinary undefined-name
+or generic parse error rather than naming the construct specifically —
+expect a less-specific error than the table above until enforcement
+lands. See [UNSUPPORTED.md](./UNSUPPORTED.md) for the reasoning behind
+each and what to write instead.
 
 **U016 status: actively enforced.** Both the do-while statement
 (`begin...end while cond`) and its assigned-expression form

@@ -220,25 +220,30 @@ Runtime diagnostic carets — same underlying gap as originally filed
 here — were promoted to `Must Fix` 2026-08-05; see that entry above for
 current status.
 
-- **U008–U015 are decided but not enforced.** Filed 2026-08-05 in two
-  sessions (U008–U011, then U012–U015 added the same day after the
-  mruby full-repo sweep) — see `UNSUPPORTED.md` for all eight entries
-  (`private`/`protected`/`public`, `Struct.new`, `super` across
-  multiple `rescue`, `$globals`, numbered block params, endless `def`,
-  `class << self`, `undef`/method-added hooks). Each currently falls
-  through to a generic undefined-name/undefined-method/parse error
-  rather than naming the construct — the same gap U001–U004 had before
-  their 2026-07-27/28 enforcement pass, and the exact failure shape
-  `UNSUPPORTED.md`'s own design principle warns against. Follows the
-  established decide-first-enforce-second pattern rather than waiting
-  on enforcement to write the entries (see U007's own precedent —
-  already partially enforced/partially not, same file). Most of the
-  eight are a lookup-after-resolution-fails check, same mechanism as
-  U005–U007 (`dispatch_call`/constant resolution, `vm.cr`); U012–U015
-  are parse-time rather than resolution-time (numbered params/`undef`/
-  `class << self`/endless-`def` all fail differently at the parser
-  today, not via name lookup) — worth confirming the right enforcement
-  point per item rather than assuming all eight share one mechanism.
+- **U008, U009, U011–U015 are decided but not enforced.** Filed
+  2026-08-05 in two sessions (U008–U011, then U012–U015 added the same
+  day after the mruby full-repo sweep) — see `UNSUPPORTED.md` for all
+  seven remaining entries (`private`/`protected`/`public`,
+  `Struct.new`, `$globals`, numbered block params, endless `def`,
+  `class << self`, `undef`/method-added hooks). `U010` (originally
+  "`super` across multiple `rescue` clauses") was retired 2026-08-10,
+  the same session `super` itself was built and shipped — the
+  concern turned out not to be a real gap once `super` actually
+  worked; see `UNSUPPORTED.md`'s U010 entry. Each of the remaining
+  seven currently falls through to a generic undefined-name/
+  undefined-method/parse error rather than naming the construct — the
+  same gap U001–U004 had before their 2026-07-27/28 enforcement pass,
+  and the exact failure shape `UNSUPPORTED.md`'s own design principle
+  warns against. Follows the established decide-first-enforce-second
+  pattern rather than waiting on enforcement to write the entries (see
+  U007's own precedent — already partially enforced/partially not,
+  same file). Most of the seven are a lookup-after-resolution-fails
+  check, same mechanism as U005–U007 (`dispatch_call`/constant
+  resolution, `vm.cr`); U012–U015 are parse-time rather than
+  resolution-time (numbered params/`undef`/`class << self`/endless-
+  `def` all fail differently at the parser today, not via name
+  lookup) — worth confirming the right enforcement point per item
+  rather than assuming all seven share one mechanism.
 
 - **U007's reflection exclusion is a category, not a list, so only
   `ObjectSpace` is enforced.** Added 2026-07-29 while enforcing U005–U007.
