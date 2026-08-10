@@ -246,5 +246,92 @@ module Adjutant
         RUBY
       end
     end
+
+    describe "multi-level closures (Step 4 — write-back is real reference sharing, not a copy)" do
+      # Step 1 deliberately chose "a chain of REFERENCES to each
+      # level's real locals array" over "flatten into one merged
+      # array" specifically so mutations from arbitrarily deep inside
+      # a closure land on the actual ancestor variable, not a
+      # snapshot. Steps 2/3 already proved a write is visible when
+      # read back through the SAME path that wrote it — these push
+      # further: do genuinely SEPARATE closures actually observe each
+      # other's writes (true shared reference), and does state
+      # persist correctly across REPEATED calls to the same closure
+      # (not silently reset each time)? Neither follows automatically
+      # from the earlier tests passing.
+
+      it "two SEPARATE lambdas, created at the same depth, share the same outer variable — one writes, the other reads" do
+        eval(<<-RUBY).should eq Value.int(42_i64)
+        def outer
+          x = 0
+          result = nil
+          [1].each do |i|
+            setter = -> { x = 42 }
+            getter = -> { result = x }
+            setter.call
+            getter.call
+          end
+          result
+        end
+        outer
+        RUBY
+      end
+
+      it "a write made through one closure two levels deep is visible to a DIFFERENT closure at a different depth" do
+        eval(<<-RUBY).should eq Value.int(7_i64)
+        def outer
+          x = 0
+          result = nil
+          [1].each do |i|
+            [1].each do |j|
+              deep_setter = -> { x = 7 }
+              deep_setter.call
+            end
+            result = x
+          end
+          result
+        end
+        outer
+        RUBY
+      end
+
+      it "state accumulates correctly across REPEATED calls to the same closure, not reset each time" do
+        eval(<<-RUBY).should eq Value.int(3_i64)
+        def make_counter
+          count = 0
+          fn = nil
+          [1].each do |i|
+            fn = -> { count += 1 }
+          end
+          fn
+        end
+
+        def run_thrice(counters)
+          incr = counters[0]
+          incr.call
+          incr.call
+          incr.call
+        end
+
+        run_thrice([make_counter])
+        RUBY
+      end
+
+      it "a plain (non-closure) read of the variable, after all closures have finished, sees every accumulated write" do
+        eval(<<-RUBY).should eq Value.int(6_i64)
+        def outer
+          total = 0
+          [1, 2, 3].each do |n|
+            [1].each do |j|
+              adder = -> { total += n }
+              adder.call
+            end
+          end
+          total
+        end
+        outer
+        RUBY
+      end
+    end
   end
 end
