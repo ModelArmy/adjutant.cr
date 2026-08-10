@@ -92,6 +92,17 @@ module Adjutant
     # fell through to RiskUnresolved even with self_class correctly set.
     @current_self_is_singleton : Bool = false
 
+    # The ScriptProc whose body is currently being walked — nil
+    # outside any method body (e.g. top-level statements, a class
+    # body's own bare statements). `super`'s target resolution needs
+    # this for the CURRENT method's own name (SuperNode carries none
+    # of its own — see VM#dispatch_super's identical reasoning at
+    # runtime), the same way @current_self_class supplies the class
+    # context. Saved/restored alongside @current_self_class in
+    # walk_script_method, for the same nesting reasons that one's own
+    # comment gives.
+    @current_method_proc : ScriptProc?
+
     def initialize(@interp : Interpreter)
       @inference = TypeInference.new(@interp)
       @method_cache = {} of ScriptProc => RiskNode
@@ -151,6 +162,7 @@ module Adjutant
       RiskSequence.new(children, body.line)
     end
 
+    # ameba:disable Metrics/CyclomaticComplexity - one case per node kind, not tangled logic
     def walk_node(node : Node, env : TypeInference::Env) : RiskNode
       case node
       when IfNode, UnlessNode, CaseNode, WhileNode, LoopNode, ForNode, ModifierIf, ModifierWhile, BeginNode
@@ -158,6 +170,7 @@ module Adjutant
       when Assign, OpAssign, CondAssign, MultiAssign, IndexAssign, AttrAssign
         walk_assignment(node, env)
       when Call       then walk_call(node, env)
+      when SuperNode  then walk_super(node, env)
       when Identifier then walk_identifier(node, env)
       when Body       then walk_body(node, env)
       when DefNode    then walk_def(node)
@@ -601,6 +614,72 @@ module Adjutant
       RiskSequence.new([node.as(RiskNode)], line, iterated: true)
     end
 
+    # Was reaching walk_node's generic `else` branch entirely before
+    # this — SuperNode had no case of its own, so `super(risky_call)`
+    # was completely invisible to static analysis: no arg walked, no
+    # target resolved, same blind spot walk_call's own 2026-07-18 args
+    # fix closed for ordinary calls. See SCOPE.md's risk-flow-impact
+    # note for this session (super-dispatch rewrite).
+    #
+    # zsuper's forwarded params are deliberately NOT separately walked
+    # here — a bare reference to an already-bound param carries no
+    # risk of its OWN at the point it's referenced again (see
+    # walk_identifier: a known local resolves to an empty
+    # RiskSequence), the same as `some_call(x)` doesn't re-walk `x`
+    # beyond what walk_call_arg already does for it. Only EXPLICIT
+    # argument expressions actually written at this call site need
+    # walking, exactly like walk_call's own arg_risks.
+    private def walk_super(node : SuperNode, env : TypeInference::Env) : RiskNode
+      arg_risks = node.args.map { |arg| walk_call_arg(arg, env) }
+      resolved = walk_super_target(node)
+      children = arg_risks + [resolved]
+      return resolved if children.size == 1
+      RiskSequence.new(children, node.line)
+    end
+
+    # Resolves what `super` reaches: the CURRENT method's own name,
+    # looked up starting at the DEFINING class's superclass — the
+    # exact distinction VM#dispatch_super draws at runtime (see that
+    # method's own comment), mirrored here against
+    # walk_current_class_bare_call's shape (self's own class, one
+    # step up). self_class passed to walk_script_method stays `cls`
+    # (the ORIGINAL self, unchanged) — only the METHOD LOOKUP starts
+    # higher; a bare call inside the found method's own body still
+    # resolves against the real receiver's actual class, same virtual-
+    # dispatch behavior VM#dispatch_super preserves via `self_val`.
+    #
+    # @current_self_class/@current_method_proc are both nil outside
+    # any method body being walked — `super` used somewhere it has no
+    # meaning statically resolves Unresolved rather than crashing,
+    # consistent with every other resolution-failure case in this
+    # file.
+    private def walk_super_target(node : SuperNode) : RiskNode
+      cls = @current_self_class
+      proc = @current_method_proc
+      return RiskUnresolved.new("super", node.line) unless cls && proc
+      start_cls = cls.superclass
+      return RiskUnresolved.new("super", node.line) unless start_cls
+      sym = @interp.symbols.lookup(proc.name)
+      return RiskUnresolved.new("super", node.line) unless sym
+
+      if @current_self_is_singleton
+        if script_method = start_cls.find_singleton_method(sym.value)
+          return walk_script_method(script_method, node.line, cls, is_singleton: true)
+        end
+        if native = start_cls.find_native_singleton_method(sym.value)
+          return RiskLeaf.new(native.risk, proc.name, node.line)
+        end
+      else
+        if script_method = start_cls.find_method(sym.value)
+          return walk_script_method(script_method, node.line, cls)
+        end
+        if native = start_cls.find_native_method(sym.value)
+          return RiskLeaf.new(native.risk, proc.name, node.line)
+        end
+      end
+      RiskUnresolved.new("super", node.line)
+    end
+
     private def walk_call(node : Call, env : TypeInference::Env) : RiskNode
       # Every argument runs synchronously at THIS call site, regardless
       # of what the callee does with its value afterward — safe and
@@ -981,13 +1060,16 @@ module Adjutant
       # this correctly nest for recursive/mutual class-method calls too.
       previous_self_class = @current_self_class
       previous_is_singleton = @current_self_is_singleton
+      previous_method_proc = @current_method_proc
       @current_self_class = self_class
       @current_self_is_singleton = is_singleton
+      @current_method_proc = proc
       method_env = TypeInference::Env.new
       proc.params.each { |param| method_env[param] = UnknownType.new }
       result = walk_body(ast_body, method_env)
       @current_self_class = previous_self_class
       @current_self_is_singleton = previous_is_singleton
+      @current_method_proc = previous_method_proc
       @in_progress.delete(proc)
       @method_cache[proc] = result
       result

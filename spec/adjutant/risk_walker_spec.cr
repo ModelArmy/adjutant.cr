@@ -1168,5 +1168,119 @@ module Adjutant
         summary.severity.should eq Severity::Error
       end
     end
+
+    describe "super" do
+      # SuperNode had no case of its own in walk_node before this —
+      # it fell into the generic `else` branch, so a risky call
+      # reached via `super` (either as an explicit argument, or as
+      # the superclass method super ITSELF invokes) was completely
+      # invisible to static analysis. Same blind spot walk_call's own
+      # 2026-07-18 args fix closed for ordinary calls. See SCOPE.md's
+      # risk-flow-impact note for the super-dispatch rewrite session.
+      it "a risky call reached via a SCRIPT superclass method through `super` surfaces its tags" do
+        interp, _ = make_interp
+        risk = RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
+        register_risky_module(interp, "delete_fn", risk)
+        walker = RiskWalker.new(interp)
+        body = risk_walker_test_parse(<<-RUBY)
+          class A
+            def run
+              delete_fn()
+            end
+          end
+          class B < A
+            def run
+              super()
+            end
+          end
+          B.new.run
+        RUBY
+        summary = RiskAggregator.summarize(walker.walk_body(body))
+        summary.severity.should eq Severity::Error
+        summary.tags.should eq Set{RiskTag::DeletesFiles}
+      end
+
+      it "a risky call passed as an EXPLICIT `super` argument surfaces its tags, even though the superclass method itself does nothing with it" do
+        interp, _ = make_interp
+        risk = RiskProfile.new(tags: Set{RiskTag::NetworkEgress}, severity: Severity::Warning)
+        register_risky_module(interp, "fetch_url", risk)
+        walker = RiskWalker.new(interp)
+        body = risk_walker_test_parse(<<-RUBY)
+          class A
+            def run(x)
+            end
+          end
+          class B < A
+            def run(x)
+              super(fetch_url())
+            end
+          end
+          B.new.run(1)
+        RUBY
+        summary = RiskAggregator.summarize(walker.walk_body(body))
+        summary.severity.should eq Severity::Warning
+        summary.tags.should eq Set{RiskTag::NetworkEgress}
+      end
+
+      it "a risky NATIVE method reached via `super` surfaces its tags" do
+        interp, _ = make_interp
+        risk = RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
+        cls = RubyClass.new("Greeter")
+        sym_id = interp.symbols.intern("greet").value
+        cls.define_native_method(sym_id, risk) { |args| Value.nil_value }
+        interp.define_global_class(cls)
+        walker = RiskWalker.new(interp)
+        body = risk_walker_test_parse(<<-RUBY)
+          class Talker < Greeter
+            def greet
+              super()
+            end
+          end
+          Talker.new.greet
+        RUBY
+        summary = RiskAggregator.summarize(walker.walk_body(body))
+        summary.severity.should eq Severity::Error
+        summary.tags.should eq Set{RiskTag::DeletesFiles}
+      end
+
+      it "a pure call reached via `super` stays clean" do
+        interp, _ = make_interp
+        register_risky_module(interp, "safe_fn", RiskProfile.none)
+        walker = RiskWalker.new(interp)
+        body = risk_walker_test_parse(<<-RUBY)
+          class A
+            def run
+              safe_fn()
+            end
+          end
+          class B < A
+            def run
+              super()
+            end
+          end
+          B.new.run
+        RUBY
+        summary = RiskAggregator.summarize(walker.walk_body(body))
+        summary.severity.should eq Severity::Info
+      end
+
+      it "`super` with no matching ancestor method is RiskUnresolved, not silently clean" do
+        interp, _ = make_interp
+        walker = RiskWalker.new(interp)
+        body = risk_walker_test_parse(<<-RUBY)
+          class A
+          end
+          class B < A
+            def only_here
+              super()
+            end
+          end
+          B.new.only_here
+        RUBY
+        summary = RiskAggregator.summarize(walker.walk_body(body))
+        summary.severity.should eq Severity::Error
+        summary.path.first.should contain "super"
+      end
+    end
   end
 end
