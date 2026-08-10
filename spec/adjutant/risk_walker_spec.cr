@@ -1282,5 +1282,74 @@ module Adjutant
         summary.path.first.should contain "super"
       end
     end
+
+    describe "multi-level closures (Step 5 — risk-flow coverage check, VM fix Aug 10)" do
+      # RiskWalker was never coupled to the VM/compiler bug the rest
+      # of this session's work fixes — it has its own, simpler model
+      # for closures entirely (see DEVELOPMENT.md's RiskWalker
+      # section). Confirms that model already extends correctly to
+      # multiple nesting levels, not just one, rather than assuming
+      # it from reading the mechanism alone.
+
+      it "an ordinary block's env-threading (env.dup) already handles a risky call nested TWO blocks deep, correctly" do
+        interp, _ = make_interp
+        risk = RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
+        register_risky_module(interp, "delete_fn", risk)
+        walker = RiskWalker.new(interp)
+        body = risk_walker_test_parse(<<-RUBY)
+          [1].each do |i|
+            [1].each do |j|
+              delete_fn()
+            end
+          end
+        RUBY
+        summary = RiskAggregator.summarize(walker.walk_body(body))
+        summary.severity.should eq Severity::Error
+        summary.tags.should eq Set{RiskTag::DeletesFiles}
+      end
+
+      it "a block nested two levels deep correctly resolves a variable from the OUTERMOST scope as a known local, not an unresolved bare call" do
+        # env.dup threading two levels deep — if this were broken,
+        # the bare reference to x would fall through to
+        # walk_bare_name_call and show up as RiskUnresolved instead
+        # of contributing no risk.
+        interp, _ = make_interp
+        walker = RiskWalker.new(interp)
+        body = risk_walker_test_parse(<<-RUBY)
+          x = 1
+          [1].each do |i|
+            [1].each do |j|
+              x
+            end
+          end
+        RUBY
+        summary = RiskAggregator.summarize(walker.walk_body(body))
+        summary.severity.should eq Severity::Info
+      end
+
+      it "a lambda passed as an argument, nested two blocks deep, still resolves via the existing RiskDeferred path" do
+        # Confirms the EXISTING (pre-dating this session) lambda-as-
+        # argument handling isn't disturbed by extra block nesting
+        # around it — walk_call_arg's Lambda special-case doesn't
+        # care how deep the surrounding blocks are, only that the
+        # lambda literal is a direct call argument at ITS OWN call
+        # site.
+        interp, _ = make_interp
+        risk = RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
+        register_risky_module(interp, "delete_fn", risk)
+        register_risky_module(interp, "run_it", RiskProfile.none)
+        walker = RiskWalker.new(interp)
+        body = risk_walker_test_parse(<<-RUBY)
+          [1].each do |i|
+            [1].each do |j|
+              run_it(-> { delete_fn() })
+            end
+          end
+        RUBY
+        summary = RiskAggregator.summarize(walker.walk_body(body))
+        summary.severity.should eq Severity::Error
+        summary.tags.should eq Set{RiskTag::DeletesFiles}
+      end
+    end
   end
 end
