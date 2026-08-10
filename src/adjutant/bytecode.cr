@@ -63,7 +63,19 @@ module Adjutant
 
     Call     # call method constants[c], argc=a, b bit0=safe(&.), bit1=has_receiver
     SafeCall # &. nil-safe call
-    Ret      # return top of stack from current frame
+
+    # call the method with the CURRENT frame's own method name,
+    # starting resolution at the current frame's lexical_scope's
+    # superclass rather than self's own class — argc=a. Unlike Call,
+    # no name is carried in constants[c]: the method name is read
+    # from the running frame (Frame#proc#name) at the point Super
+    # executes, not baked into the instruction, since it's always
+    # "whatever method this bytecode is itself running inside."
+    # self stays the original receiver (Frame#self_val) — only the
+    # lookup's STARTING class moves up one level.
+    Super
+
+    Ret # return top of stack from current frame
 
     # Classes and methods
     GetClass     # push current frame's self

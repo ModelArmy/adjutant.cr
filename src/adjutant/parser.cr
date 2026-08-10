@@ -780,6 +780,16 @@ module Adjutant
         parse_begin
       when TokenKind::KwRaise
         parse_raise(l, c)
+      when TokenKind::KwSuper
+        # `super` was previously only reachable via parse_statement's
+        # own dispatch (see that table, above) — fine for `super()`
+        # as a whole statement/line, but not as a sub-expression like
+        # `"B-" + super()` or `x = super`, which route through
+        # parse_unary → parse_primary instead. Same shape as
+        # `KwRaise` just above, added here for the same reason: any
+        # keyword-headed construct that's a real expression, not just
+        # a statement, needs a case in BOTH dispatch tables.
+        parse_super
       else
         raise ParseError.new(
           Diagnostic.new(

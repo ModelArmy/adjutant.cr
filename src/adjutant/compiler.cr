@@ -1701,12 +1701,20 @@ module Adjutant
     end
 
     private def compile_super(node : SuperNode) : Nil
+      # STEP 1 of the super-dispatch rewrite (see SCOPE.md): only
+      # explicit-argument super (`super(a, b)`, `super a, b`, or the
+      # no-arg `super()`) is compiled correctly here. Bare `super`
+      # with no parens (`node.forwarded?`) is real Ruby's "zsuper" —
+      # it's supposed to forward the enclosing method's CURRENT
+      # parameter values, not an empty argument list. That forwarding
+      # isn't built yet (Step 3), so for now a bare `super` compiles
+      # identically to `super()` — zero args — rather than crashing.
+      # This is a deliberate, temporary simplification: every `super`
+      # form dispatches correctly to *some* superclass method call
+      # once this step lands, but zsuper's actual argument values are
+      # wrong until Step 3 replaces this with real forwarding.
       node.args.each { |arg| compile_node(arg) }
-      sym_idx = intern("super")
-      nil_idx = @chunk.add_const(Value.nil_value)
-      @chunk.emit(Op::Const, node.line, c: nil_idx)
-      @chunk.emit(Op::SetBlock, node.line)
-      @chunk.emit(Op::Call, node.line, a: node.args.size.to_u8, c: sym_idx)
+      @chunk.emit(Op::Super, node.line, a: node.args.size.to_u8)
     end
 
     # --- Exception handling -------------------------------------------------

@@ -913,6 +913,14 @@ module Adjutant
             # If dispatch pushed a new ScriptProc frame, do NOT push the
             # sentinel return value — Op::Ret will push the real result.
             push(result) if @frames.size == depth_before
+          when Op::Super
+            argc = inst.a.to_i
+            args = @stack.last(argc)
+            @stack.pop(argc) if argc > 0
+
+            depth_before = @frames.size
+            result = dispatch_super(f, args, f.filename, inst.line)
+            push(result) if @frames.size == depth_before
           when Op::Ret
             result = pop
             # Drain locals back to stack_base
@@ -1443,6 +1451,51 @@ module Adjutant
     # what's actually in the source, not an internal dispatch detail.
     private def display_name_for_implicit_self(name : String) : String
       name
+    end
+
+    # Resolves and invokes a `super` call (Op::Super). Unlike
+    # dispatch_call, the method NAME is never carried by the
+    # instruction — it's always "whatever method this bytecode is
+    # itself running inside," read off the current frame's own proc.
+    # Resolution starts at that proc's lexical_scope's SUPERCLASS
+    # (not self's own class, which is where an ordinary call would
+    # start) — self stays the original receiver throughout; only the
+    # starting point of the method-table walk moves up one level.
+    #
+    # A proc with no lexical_scope (a top-level function, or a block)
+    # has no "class above" to start from at all — treated the same as
+    # a lookup that starts but finds nothing, below.
+    private def dispatch_super(f : Frame, args : Array(Value), filename : String, line : Int32) : Value
+      proc = f.proc
+      name = proc.name
+      start_cls = proc.lexical_scope.try(&.superclass)
+      sym_id = start_cls ? @symbols.lookup(name).try(&.value) : nil
+
+      if start_cls && sym_id
+        if method = start_cls.find_method(sym_id)
+          return call_script_proc(method, args, filename, self_val: f.self_val)
+        end
+        if native = start_cls.find_native_method(sym_id)
+          # Native methods read their receiver as args.first by
+          # convention (see call_native's other callers in
+          # dispatch_call) — super has no receiver on the stack to
+          # reuse, so f.self_val is prepended explicitly here.
+          return call_native(native, [f.self_val] + args, filename, line, nil, "#{start_cls.name}##{name}")
+        end
+      end
+
+      # TEMPORARY (Step 1 of the super-dispatch rewrite — see
+      # SCOPE.md): no dedicated "no superclass method" diagnostic
+      # exists yet. Step 2 adds one (real Ruby raises NoMethodError,
+      # "super: no superclass method"); reusing R008's shape here
+      # rather than leaving this path completely unhandled meanwhile.
+      raise runtime_diagnostic(
+        Diagnostic.new(
+          code: "R008",
+          primary: Span.new(line: line, filename: filename),
+          data: {"name" => name}
+        )
+      )
     end
 
     # ameba:disable Metrics/CyclomaticComplexity - Clear steps, better together
