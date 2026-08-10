@@ -150,5 +150,101 @@ module Adjutant
         RUBY
       end
     end
+
+    describe "multi-level closures (Step 3 — mixed block/lambda nesting)" do
+      # Op::MakeProc's lambda capture and Op::SetBlock's ordinary-
+      # block capture were BOTH fixed identically in Step 1 (same
+      # OuterChain-building fix, same reason), and Step 2's compiler
+      # fix isn't specific to either construct — so mixed nesting
+      # SHOULD already work with no further code changes. These
+      # confirm that directly rather than assume it, alternating
+      # capture mechanisms at each level (the thing neither Step 2's
+      # nor the earlier reproductions specifically exercised: a chain
+      # built by TWO DIFFERENT capture sites cooperating, not the
+      # same one three times).
+
+      it "block -> lambda -> block, reading a variable three scopes up" do
+        eval(<<-RUBY).should eq Value.int(11_i64)
+        def outer
+          x = 10
+          result = nil
+          [1].each do |i|
+            make_inner = -> {
+              [1].each do |j|
+                result = x + 1
+              end
+            }
+            make_inner.call
+          end
+          result
+        end
+        outer
+        RUBY
+      end
+
+      it "lambda -> block -> lambda, reading a variable three scopes up" do
+        eval(<<-RUBY).should eq Value.int(11_i64)
+        def outer
+          x = 10
+          make_middle = -> {
+            result = nil
+            [1].each do |i|
+              make_inner = -> { result = x + 1 }
+              make_inner.call
+            end
+            result
+          }
+          make_middle.call
+        end
+        outer
+        RUBY
+      end
+
+      it "block -> lambda -> block, WRITING a variable three scopes up" do
+        eval(<<-RUBY).should eq Value.int(99_i64)
+        def outer
+          x = 10
+          [1].each do |i|
+            make_inner = -> {
+              [1].each do |j|
+                x = 99
+              end
+            }
+            make_inner.call
+          end
+          x
+        end
+        outer
+        RUBY
+      end
+
+      it "a lambda stored and called from a completely different, later frame still closes over its ORIGINAL creation scope" do
+        # The lambda's chain is captured once, at Op::MakeProc time —
+        # calling it later, from a frame with its own unrelated
+        # locals (a different method entirely), must not confuse
+        # depth/slot resolution with whatever's current at CALL time.
+        eval(<<-RUBY).should eq Value.int(11_i64)
+        def make_it
+          x = 10
+          fn = nil
+          [1].each do |i|
+            fn = -> { x + 1 }
+          end
+          fn
+        end
+
+        def run_it(fn)
+          y = 999999
+          result = nil
+          [1].each do |i|
+            result = fn.call
+          end
+          result
+        end
+
+        run_it(make_it)
+        RUBY
+      end
+    end
   end
 end
