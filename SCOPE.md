@@ -89,31 +89,6 @@ may unblock ones above it.
   worth a design conversation on how far to go before writing any
   parser code.
 
-- **Multi-level closures — a block or lambda created INSIDE another
-  block likely can't correctly reach a variable from two or more
-  enclosing scopes up.** Long-standing, untriaged since the original
-  2026-07-14 handoff bundle — investigated 2026-08-10 while
-  reviewing it (no concrete failing script confirmed against a real
-  run yet, but the structural evidence is strong). `Op::GetOuter`
-  reads `frame.outer_locals[c]` — a single flat array, one hop, with
-  no chaining mechanism to a further "outer's outer." Nothing found
-  that flattens or copies a grandparent scope's values forward to
-  compensate: `Op::MakeProc`'s lambda-capture case (`vm.cr`) snapshots
-  only `f.locals` — the frame CURRENTLY creating the lambda — never
-  merging in that frame's OWN `outer_locals` too, so if `f` is itself
-  a block closing over something further out, that further-out value
-  is never captured at all. The parser's own local-scope tracking
-  (`push_local_scope(inherit: true)`, `parser.cr`) does correctly
-  flatten NAME VISIBILITY across arbitrary nesting depth at parse
-  time (each nested scope is a dup of its parent's known-names set) —
-  but that only answers "is this name known outside my own scope,"
-  not "how many hops away," and nothing downstream appears to use a
-  depth beyond one. Whether this manifests as a silently wrong
-  captured value or an out-of-bounds/internal crash isn't confirmed —
-  worth a concrete two-level test script before writing the fix, but
-  either failure mode belongs here, not in `Will Fix`'s "missing
-  feature, fails cleanly" bucket.
-
 ## Will Fix
 
 Real gaps, not currently blocking anything, no active design conversation

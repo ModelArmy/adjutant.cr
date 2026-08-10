@@ -140,10 +140,43 @@ module Adjutant
       @vars[name]?
     end
 
-    # Resolve a name in the parent scope (block closure capture, one level).
-    def resolve_outer(name : String) : Int32?
+    # Resolve a name somewhere in the full lexical chain of enclosing
+    # scopes (block/lambda closure capture, at ANY depth — not just
+    # the immediate parent). Returns {depth, slot}: depth counts how
+    # many closure-creation hops out the name lives (0 = the scope
+    # that was ACTIVE when THIS scope's own block/lambda was written
+    # — i.e. the immediate parent's own vars; 1 = one hop further,
+    # ...), matching EXACTLY how Frame#outer_locals (OuterChain,
+    # vm.cr) is built at runtime: each hop out is one more prepended
+    # chain entry. `slot` is the variable's own index within THAT
+    # level's locals array — unrelated to depth, since every level
+    # numbers its own locals independently.
+    #
+    # Found 2026-08-10 (SCOPE.md's "Closures / block scoping" entry):
+    # this used to check only `@parent.vars` directly (one hop) and
+    # give up — a name declared two or more block/lambda-creation
+    # hops out was invisible, even though `parent` ALREADY forms a
+    # proper chain all the way out (every block/lambda's
+    # `compile_proc` call passes `parent_scope: @scope` — see those
+    # call sites) and the runtime `OuterChain` (Step 1) already had
+    # the data available once created; the gap was purely this walk
+    # stopping too early. The chain naturally terminates at a `def`'s
+    # own root scope without any extra check here — `compile_def`
+    # never passes `parent_scope` at all (a `def` doesn't close over
+    # its lexical surroundings in Ruby, regardless of where it's
+    # written), so that scope's own `parent` is already nil.
+    def resolve_outer(name : String) : {Int32, Int32}?
       return nil unless @is_block
-      @parent.try(&.vars[name]?)
+      depth = 0
+      scope = @parent
+      while scope
+        if slot = scope.vars[name]?
+          return {depth, slot}
+        end
+        scope = scope.parent
+        depth += 1
+      end
+      nil
     end
   end
 
@@ -585,8 +618,9 @@ module Adjutant
           @chunk.emit(Op::GetLocal, node.line, c: slot.to_u32)
           return
         end
-        if slot = scope.resolve_outer(name)
-          @chunk.emit(Op::GetOuter, node.line, c: slot.to_u32)
+        if depth_slot = scope.resolve_outer(name)
+          depth, slot = depth_slot
+          @chunk.emit(Op::GetOuter, node.line, a: depth.to_u8, c: slot.to_u32)
           return
         end
       end
@@ -909,8 +943,9 @@ module Adjutant
           @chunk.emit(Op::SetLocal, line, c: slot.to_u32)
           return
         end
-        if !force_define && (slot = scope.resolve_outer(name))
-          @chunk.emit(Op::SetOuter, line, c: slot.to_u32)
+        if !force_define && (depth_slot = scope.resolve_outer(name))
+          depth, slot = depth_slot
+          @chunk.emit(Op::SetOuter, line, a: depth.to_u8, c: slot.to_u32)
           return
         end
         # In a block, an unresolved name falls through to global —

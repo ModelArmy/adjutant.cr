@@ -62,6 +62,20 @@ module Adjutant
   end
 
   # A single call frame on the VM stack.
+  # A closure's view outward: one entry per enclosing lexical level,
+  # nearest-first, each entry a REFERENCE to that level's own real
+  # `Frame#locals` array (not a copy — mutations from arbitrarily deep
+  # inside a closure must still land on the actual ancestor variable,
+  # matching real Ruby's write-back semantics). Depth 0 is always
+  # "whatever frame was running when this closure was created" — the
+  # same array `Op::GetOuter`/`Op::SetOuter` indexed directly before
+  # this existed. Built once, at closure-creation time, by prepending
+  # the creating frame's own `locals` onto whatever chain THAT frame
+  # itself already had (`CompilerScope#resolve_outer`'s own comment
+  # has the compile-time half of this; see also SCOPE.md's "Closures
+  # / block scoping" entry, the bug this fixes).
+  alias OuterChain = Array(Array(Value))
+
   class Frame
     getter proc : ScriptProc
     getter chunk : Chunk
@@ -85,9 +99,11 @@ module Adjutant
     # Local variable slots — sized from ScriptProc#local_count at frame creation.
     getter locals : Array(Value)
 
-    # Captured locals from the enclosing frame (for block closures).
-    # nil for method frames; set to the enclosing frame's locals for blocks.
-    property outer_locals : Array(Value)?
+    # Captured locals from the enclosing lexical chain (for block/lambda
+    # closures) — nil for method frames. One entry per enclosing level;
+    # see OuterChain's own comment above for the full shape and why it's
+    # a chain of ARRAY REFERENCES, not one flattened/copied array.
+    property outer_locals : OuterChain?
 
     # `self` for this frame — the receiver during an instance method call,
     # the class/module during a class body, or Value.nil_value at the
@@ -120,8 +136,10 @@ module Adjutant
     # `outer_locals` is for when THIS frame's own proc IS a block,
     # closing over ITS creator. `block_outer_locals` is for a
     # DIFFERENT proc (the block passed TO this call) that this frame
-    # might later `yield` to.
-    property block_outer_locals : Array(Value)?
+    # might later `yield` to. Same OuterChain shape as `outer_locals`
+    # — it becomes THAT block's own `outer_locals` once yielded to
+    # (see Op::Yield), so the two have to agree on representation.
+    property block_outer_locals : OuterChain?
 
     # Number of positional args the call that created this frame
     # actually supplied — set once in call_script_proc, read only by
@@ -140,9 +158,9 @@ module Adjutant
     # which pass no keyword args at all.
     property kwarg_names : Set(String)?
 
-    def initialize(@proc, @chunk, @stack_base, @filename, @block = nil, outer : Array(Value)? = nil,
+    def initialize(@proc, @chunk, @stack_base, @filename, @block = nil, outer : OuterChain? = nil,
                    @self_val : Value = Value.nil_value, @lexical_scope : RubyClass? = nil,
-                   @block_outer_locals : Array(Value)? = nil, @argc : Int32 = 0)
+                   @block_outer_locals : OuterChain? = nil, @argc : Int32 = 0)
       @ip = 0
       @line = 0
       @handlers = [] of HandlerEntry
@@ -268,7 +286,7 @@ module Adjutant
       # where it was WRITTEN, not over whatever frame happens to be
       # running yield. See Op::SetBlock, Op::Yield, and Frame#
       # block_outer_locals's own comment for the full mechanism.
-      @current_block_locals = nil.as(Array(Value)?)
+      @current_block_locals = nil.as(OuterChain?)
       # Keyword args staged by Op::SetKwargNames for the Call that
       # immediately follows — the by-name counterpart to
       # @current_block above, same transient "stage, consume, clear"
@@ -402,7 +420,7 @@ module Adjutant
     # supply a non-nil override, since only it has a RubyObject to
     # pull one from).
     private def invoke_internal(proc : ScriptProc, args : Array(Value), self_val : Value? = nil,
-                                outer_locals : Array(Value)? = nil, kwargs : Hash(String, Value)? = nil) : Value
+                                outer_locals : OuterChain? = nil, kwargs : Hash(String, Value)? = nil) : Value
       saved_frames = @frames
       saved_stack = @stack
       saved_ins_count = @instruction_count
@@ -414,7 +432,18 @@ module Adjutant
         f = current_frame # before replacing @frames
         inherited_self = self_val || f.self_val
         inherited_lexical = proc.lexical_scope || f.lexical_scope
-        effective_outer = outer_locals || f.locals
+        # No explicit override (the ordinary `invoke` path — a native
+        # function calling a live call-site block, not a stored Proc)
+        # falls back to whatever frame is CURRENTLY running — but that
+        # frame might ITSELF be a closure with its own outer reach
+        # (exactly `two_level_block`'s shape: a native `each` call
+        # invoking its block while an OUTER block's own native `each`
+        # call is still on the stack). f.locals alone would only ever
+        # see that immediate frame's own locals — chaining in
+        # f.outer_locals too (its own captured reach, if any) is the
+        # same fix Op::SetBlock/Op::MakeProc needed, for the same
+        # reason. See OuterChain's own comment.
+        effective_outer = outer_locals || ([f.locals] + (f.outer_locals || [] of Array(Value)))
         @frames = [] of Frame
         # @stack must be isolated too, not just @frames — execute's
         # Op::Ret pushes its result back onto @stack only `unless
@@ -583,8 +612,8 @@ module Adjutant
     end
 
     private def push_frame(proc : ScriptProc, filename : String, block : ScriptProc? = nil, stack_base : Int32 = @stack.size,
-                           outer : Array(Value)? = nil, self_val : Value = Value.nil_value, lexical_scope : RubyClass? = nil,
-                           block_outer_locals : Array(Value)? = nil, argc : Int32 = 0) : Frame
+                           outer : OuterChain? = nil, self_val : Value = Value.nil_value, lexical_scope : RubyClass? = nil,
+                           block_outer_locals : OuterChain? = nil, argc : Int32 = 0) : Frame
       if @limits.call_depth_limit > 0 && @frames.size >= @limits.call_depth_limit
         raise script_diagnostic("L002", {"limit" => @limits.call_depth_limit.to_s}, current_frame)
       end
@@ -852,7 +881,13 @@ module Adjutant
             # happens immediately after, still within the same frame,
             # but by the time a later Op::Yield fires (possibly deep
             # inside the callee), `f` will have moved on entirely.
-            @current_block_locals = @current_block ? f.locals : nil
+            # Chained with f's OWN outer_locals (not just f.locals
+            # alone) so a block attached two-or-more scopes deep still
+            # reaches everything an ordinary variable reference at
+            # this point could see — same fix as Op::MakeProc's
+            # lambda-capture case just above, same reason (found
+            # 2026-08-10, SCOPE.md's "Closures / block scoping" entry).
+            @current_block_locals = @current_block ? [f.locals] + (f.outer_locals || [] of Array(Value)) : nil
           when Op::SetKwargNames
             # Same "take the last N, pop them, read in push order"
             # idiom as Op::MakeHash's pairs — @stack.last(n) returns
@@ -1061,14 +1096,18 @@ module Adjutant
             name = chunk.consts[inst.c].as_sym.name
             push(Value.bool(f.kwarg_names.try(&.includes?(name)) || false))
           when Op::GetOuter
+            depth = inst.a.to_i
             slot = inst.c.to_i
             outer = f.outer_locals
-            push(outer && slot < outer.size ? outer[slot] : Value.nil_value)
+            level = outer && depth < outer.size ? outer[depth] : nil
+            push(level && slot < level.size ? level[slot] : Value.nil_value)
           when Op::SetOuter
             val = pop
+            depth = inst.a.to_i
             slot = inst.c.to_i
             outer = f.outer_locals
-            outer[slot] = val if outer && slot < outer.size
+            level = outer && depth < outer.size ? outer[depth] : nil
+            level[slot] = val if level && slot < level.size
             push(val)
           when Op::MakeProc
             sproc_val = chunk.consts[inst.c]
@@ -1082,8 +1121,14 @@ module Adjutant
               # only right by coincidence when .call happens to run
               # in the same frame the lambda was written in (see the
               # 2026-07-20 closure-capture bug this fixes,
-              # research/IFC_DESIGN.md).
-              push(make_lambda_object(sproc_val.as_proc, sproc_val.label, f.locals))
+              # research/IFC_DESIGN.md). Chained with f's OWN
+              # outer_locals (not just f.locals alone) so a lambda
+              # created two-or-more scopes deep still reaches
+              # everything an ordinary variable reference at this
+              # point could see — see OuterChain's own comment for why
+              # (found 2026-08-10, SCOPE.md's "Closures / block
+              # scoping" entry).
+              push(make_lambda_object(sproc_val.as_proc, sproc_val.label, [f.locals] + (f.outer_locals || [] of Array(Value))))
             else
               push(sproc_val)
             end
@@ -1567,7 +1612,7 @@ module Adjutant
                               filename : String, line : Int32,
                               blk : ScriptProc? = nil,
                               has_receiver : Bool = false,
-                              blk_outer : Array(Value)? = nil,
+                              blk_outer : OuterChain? = nil,
                               self_val : Value? = nil,
                               kwargs : Hash(String, Value)? = nil) : Value
       # 1) Safe navigation: skip call if receiver (first arg) is nil
@@ -2030,11 +2075,11 @@ module Adjutant
                                  args : Array(Value),
                                  filename : String,
                                  blk : ScriptProc? = nil,
-                                 outer : Array(Value)? = nil,
+                                 outer : OuterChain? = nil,
                                  self_val : Value? = nil,
                                  lexical_scope : RubyClass? = nil,
                                  lexical_override : Bool = false,
-                                 block_outer : Array(Value)? = nil,
+                                 block_outer : OuterChain? = nil,
                                  kwargs : Hash(String, Value)? = nil) : Value
       base = @stack.size
       inherited_self = self_val || (@frames.empty? ? Value.nil_value : current_frame.self_val)
@@ -2906,7 +2951,7 @@ module Adjutant
     # goes through this; call-site block literals and def bodies keep
     # using the bare sproc Value directly (Op::MakeProc with a=0),
     # never reach here.
-    private def make_lambda_object(sproc : ScriptProc, label : RiskFlowLabel?, outer_locals : Array(Value)?) : Value
+    private def make_lambda_object(sproc : ScriptProc, label : RiskFlowLabel?, outer_locals : OuterChain?) : Value
       cls = builtin_class_by_name("Proc")
       unless cls
         raise runtime_diagnostic(
