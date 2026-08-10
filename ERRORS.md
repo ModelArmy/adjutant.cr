@@ -107,10 +107,11 @@ Something went wrong while the script was running.
 |R011|Missing a required keyword argument                   |`name`, `method`        |
 |R012|Passed a keyword argument the method doesn't declare  |`name`, `method`        |
 |R013|`<=>` returned a non-integer for `<`/`<=`/`>`/`>=`    |`left`, `right`, `value`|
+|R014|`super` called, but no ancestor defines the method    |`method`                |
 
 Scripts can `rescue` these. R008 raises a `NameError`, matching Ruby;
-R011 and R012 raise `ArgumentError`, also matching Ruby; the rest raise
-`RuntimeError`.
+R011 and R012 raise `ArgumentError`, also matching Ruby; R014 raises a
+`NoMethodError`, also matching Ruby; the rest raise `RuntimeError`.
 
 Adjutant's constants are assign-once, which Ruby only warns about. R001 is
 that rule firing on an ordinary constant; reopening a class or module is

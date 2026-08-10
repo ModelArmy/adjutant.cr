@@ -113,8 +113,8 @@ module Adjutant
         result.as_string.should eq "native"
       end
 
-      it "raises when no ancestor defines the method (temporary R008 shape, pending Step 2)" do
-        expect_raises(RuntimeError, /only_here/) do
+      it "raises R014 (NoMethodError) when no ancestor defines the method" do
+        error = expect_raises(RuntimeError, /only_here/) do
           eval(<<-RUBY)
           class A
           end
@@ -126,6 +126,24 @@ module Adjutant
           B.new.only_here
           RUBY
         end
+        error.diagnostic.not_nil!.code.should eq "R014"
+      end
+
+      it "the R014 error is script-catchable as NoMethodError, matching Ruby" do
+        eval(<<-RUBY).as_string.should eq "caught"
+        class A
+        end
+        class B < A
+          def only_here
+            super()
+          end
+        end
+        begin
+          B.new.only_here
+        rescue NoMethodError => e
+          "caught"
+        end
+        RUBY
       end
 
       it "raises when the class has no explicit superclass beyond Object and Object doesn't define it either" do

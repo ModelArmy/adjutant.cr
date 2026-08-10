@@ -1484,17 +1484,19 @@ module Adjutant
         end
       end
 
-      # TEMPORARY (Step 1 of the super-dispatch rewrite — see
-      # SCOPE.md): no dedicated "no superclass method" diagnostic
-      # exists yet. Step 2 adds one (real Ruby raises NoMethodError,
-      # "super: no superclass method"); reusing R008's shape here
-      # rather than leaving this path completely unhandled meanwhile.
+      # No ancestor defines a method by this name — real Ruby raises
+      # NoMethodError ("super: no superclass method '{method}'") here,
+      # not NameError (R008's class): the name resolved to a REAL
+      # method once, the one `super` is being called FROM, so this
+      # isn't "unresolved," it's "resolved, then deliberately looked
+      # one level up, and found nothing there."
       raise runtime_diagnostic(
         Diagnostic.new(
-          code: "R008",
+          code: "R014",
           primary: Span.new(line: line, filename: filename),
-          data: {"name" => name}
-        )
+          data: {"method" => name}
+        ),
+        error_class: "NoMethodError"
       )
     end
 
