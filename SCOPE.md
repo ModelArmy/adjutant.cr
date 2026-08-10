@@ -53,28 +53,6 @@ may unblock ones above it.
   runtime check per operand kind (literal/expression, `self`, local,
   method, constant, global — the last excluded per U011 either way).
 
-- **Method-body `rescue`/`ensure`/`else` (no explicit `begin`) isn't
-  supported at all.** Found 2026-08-10, writing `super`-inside-
-  `rescue` test coverage (see U010's retirement, `UNSUPPORTED.md`) —
-  `def handle; risky; rescue Foo; ...; end` fails to parse (`P002`,
-  `rescue` can't start an expression) and had to be rewritten with an
-  explicit `begin`/`end` wrapper to get a passing test at all. Real
-  Ruby treats a `def`'s body as an implicit `begin` for exactly this
-  purpose — it's a common, idiomatic shape (a whole method's-worth of
-  risky work, one rescue at the end), not just a style preference, and
-  an LLM writing Ruby-shaped code will reach for it by default.
-  `parse_def` (`parser.cr`) parses its body with a plain
-  `parse_body_until(TokenKind::KwEnd)`, unconditionally — unlike
-  `parse_begin`, which uses `parse_body_until_any(KwRescue, KwElse,
-  KwEnsure, KwEnd)` and then loops over `parse_rescue_clause`/checks
-  `KwEnsure` afterward (see `parse_begin`, same file). The fix is
-  almost certainly reusing that exact same rescue/else/ensure-parsing
-  machinery from `parse_def`'s body, rather than a new construct —
-  the shape of the fix looks small even though it wasn't scoped
-  further than that. `class`/`module` bodies likely want the same
-  treatment for the same reason (also untested); worth confirming
-  whether Ruby actually extends this to those too before assuming so.
-
 ## Will Fix
 
 Real gaps, not currently blocking anything, no active design conversation
@@ -87,6 +65,22 @@ still roughly ordered by how cheap/independent the fix is.
 
 Small, mechanical, independent of each other — good candidates for quick
 wins.
+
+- **Do `class`/`module` bodies want the same implicit `rescue`/`else`/
+  `ensure` treatment `def` bodies just got?** Open question, not a
+  confirmed gap — flagged 2026-08-10 when `def`'s own version shipped
+  (see `DEVELOPMENT.md`'s "Method-body (implicit) rescue" section).
+  Real Ruby's grammar treats `def`, `class`, `module`, and top-level
+  program bodies uniformly as an implicit `begin` ("bodystmt") — so
+  plausibly yes, `class Foo; risky; rescue; end` is valid Ruby too —
+  but this hasn't actually been confirmed against real Ruby the way
+  the `else`-without-`rescue`/duplicate-`else` behaviors were
+  (`irb`-confirmed, see `parse_begin_else`'s own comments). If
+  confirmed, the fix is likely the same shape `parse_def`'s just used
+  — `parse_class`/`parse_module` (`parser.cr`) wrapping their own
+  parsed body in a synthetic `BeginNode` via the same
+  `parse_rescue_else_ensure` helper, reusing the identical
+  compile/runtime path with no new compiler or VM work either.
 
 - **Assignment isn't a real expression — promoted 2026-08-08 out of
   the "Long-standing language gaps" bundle below, where it had sat as
@@ -267,6 +261,22 @@ current status.
   lookup) — worth confirming the right enforcement point per item
   rather than assuming all seven share one mechanism.
 
+- **No distinct `ZeroDivisionError` class — division by zero raises a
+  plain `RuntimeError`.** Found 2026-08-10, writing test coverage for
+  the method-body-rescue fix (`VM#error_raiser`/`VM#runtime_error`,
+  `vm.cr`): `ValueOps`' arithmetic error path hardcodes
+  `builtin_class_by_name("RuntimeError")`, unconditionally, regardless
+  of what actually went wrong. Real Ruby raises `ZeroDivisionError` (a
+  `StandardError` subclass) specifically for this — a script that
+  writes `rescue ZeroDivisionError` expecting to catch it (reasonable,
+  unsurprising Ruby) currently doesn't, silently: the rescue clause
+  just never matches, and the error propagates uncaught instead of a
+  clear "class doesn't exist" signal. Likely other arithmetic/type
+  error paths through the same `on_error` callback have the identical
+  gap (see `error_raiser`'s call sites in `value_ops.cr`) — worth
+  auditing all of them together rather than fixing this one class in
+  isolation.
+
 - **U007's reflection exclusion is a category, not a list, so only
   `ObjectSpace` is enforced.** Added 2026-07-29 while enforcing U005–U007.
   `UNSUPPORTED.md`'s U007 entry describes "arbitrary FFI,
@@ -336,6 +346,22 @@ Quality-of-diagnostic gaps in the `Diagnostic`/`ErrorCatalog` system
   `ClassNode`/`class Foo < Bar` compiles the superclass link
   (`compiler.cr`), triggering a call to the superclass's own
   `inherited` if defined, same shape as other hook-style dispatch.
+
+- **Bare `new` (implicit `self`, no explicit receiver) doesn't
+  dispatch inside a class method.** Found 2026-08-10, writing test
+  coverage for the method-body-rescue fix — `def self.run; c = new;
+  ...; end` raises `R008` ("undefined method or variable `new`"),
+  while the exact same call written as `ClassName.new` works fine.
+  `VM#dispatch_call`'s explicit-receiver branch has its own hardcoded
+  `if recv.rclass? && name == "new"` special case for object
+  construction — the implicit-self branch (self already IS the class,
+  inside a class method) walks `find_singleton_method`/
+  `find_native_singleton_method` normally instead, and `new` isn't
+  actually registered in either of those tables; it only exists as
+  that explicit-receiver special case. Not yet traced further than
+  that — likely needs the same special-casing mirrored into the
+  implicit-self branch, or `new` registered as a real native singleton
+  method both branches would find the same way.
 
 Per-instance singleton methods became a deliberate non-goal 2026-07-27
 (see [UNSUPPORTED.md](./UNSUPPORTED.md), U004). Implicit-`self`
