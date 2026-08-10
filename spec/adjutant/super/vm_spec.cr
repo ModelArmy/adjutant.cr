@@ -270,5 +270,124 @@ module Adjutant
         RUBY
       end
     end
+
+    describe "super (Step 4 — implicit block forwarding)" do
+      it "bare `super` forwards the enclosing method's block" do
+        eval(<<-RUBY).as_int.should eq 20
+        class A
+          def run
+            yield 10
+          end
+        end
+        class B < A
+          def run
+            super
+          end
+        end
+        B.new.run { |x| x * 2 }
+        RUBY
+      end
+
+      it "explicit `super()` also forwards the enclosing method's block" do
+        # Real Ruby forwards the block implicitly for BOTH forms —
+        # only the ARGUMENTS differ between bare `super` and
+        # `super()`, never the block.
+        eval(<<-RUBY).as_int.should eq 6
+        class A
+          def run
+            yield 5
+          end
+        end
+        class B < A
+          def run
+            super()
+          end
+        end
+        B.new.run { |x| x + 1 }
+        RUBY
+      end
+
+      it "the forwarded block still closes over its ORIGINAL defining scope, not the frame it's forwarded through" do
+        # Mirrors methods_and_calls/vm_spec.cr's own "block captures
+        # local from its defining scope via yield" — same property,
+        # now through an extra super hop. `total` lives in the
+        # TOP-LEVEL frame, where the block literal `{ |x| total +=
+        # x }` was actually written; B#run forwards the SAME block
+        # onward to A#run's `yield` without ever re-attaching it to
+        # either method's own frame.
+        eval(<<-RUBY).as_int.should eq 6
+        total = 0
+        class A
+          def run
+            yield 1
+            yield 2
+            yield 3
+          end
+        end
+        class B < A
+          def run
+            super
+          end
+        end
+        B.new.run { |x| total += x }
+        total
+        RUBY
+      end
+    end
+
+    describe "super (parser fixes — bare super followed by a binary operator)" do
+      # Found via a hand-written test script. Two separate parser bugs
+      # stacked here, both now fixed:
+      #
+      #   1. parse_super's own bare-arg branch had no argument-start
+      #      guard, so `super + 4` first parsed as `super(+4)` — an
+      #      explicit unary-plus argument — silently discarding the 4
+      #      (A#greet takes no params) and leaving nothing for `+` to
+      #      apply to. Fixed via arg_follows_no_paren?, the same guard
+      #      parse_raise already used for this exact ambiguity.
+      #   2. Even after (1), `super + 4` AT STATEMENT POSITION (not a
+      #      sub-expression — i.e. the very first token of a method
+      #      body/line) still failed differently: parse_statement had
+      #      its OWN separate `KwSuper => parse_super` shortcut that
+      #      returned immediately, bypassing parse_expr_statement's
+      #      full pipeline (operator-precedence climbing among it) —
+      #      so `super` alone became one statement and `+ 4` a
+      #      completely independent SECOND one, silently discarding
+      #      super's value (`super + 4` evaluated to plain `4`). Fixed
+      #      by removing that shortcut so KwSuper falls through to
+      #      parse_expr_statement uniformly, same as any other
+      #      expression-shaped statement.
+      it "`super + 4` adds to super's result, rather than passing 4 as an argument" do
+        eval(<<-RUBY).as_int.should eq 7
+        class A
+          def greet
+            3
+          end
+        end
+        class B < A
+          def greet
+            super + 4
+          end
+        end
+        B.new.greet
+        RUBY
+      end
+
+      it "`super + \"str\"` concatenates with super's result, same shape with strings" do
+        eval(<<-RUBY).as_string.should eq "hi bob"
+        class X
+          def greet
+            "hi "
+          end
+        end
+        class Y < X
+          def greet
+            super + "bob"
+          end
+        end
+        Y.new.greet
+        RUBY
+      end
+    end
   end
 end

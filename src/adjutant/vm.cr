@@ -1481,14 +1481,25 @@ module Adjutant
 
       if start_cls && sym_id
         if method = start_cls.find_method(sym_id)
-          return call_script_proc(method, call_args, filename, self_val: f.self_val, kwargs: call_kwargs)
+          # f.block/f.block_outer_locals implicitly forward the
+          # CURRENT method's own block onward, real Ruby's default —
+          # super (either form) passes the enclosing method's block
+          # along unless a different one is given explicitly. Reusing
+          # f.block_outer_locals (not f.locals) matters: it's the
+          # closure context the block was ORIGINALLY attached with,
+          # at its own creation site, same reuse Op::Yield's own
+          # call_script_proc call makes when actually invoking a
+          # block — passing f.locals instead would silently rebind
+          # the block to the wrong enclosing scope.
+          return call_script_proc(method, call_args, filename, f.block,
+            self_val: f.self_val, block_outer: f.block_outer_locals, kwargs: call_kwargs)
         end
         if native = start_cls.find_native_method(sym_id)
           # Native methods read their receiver as args.first by
           # convention (see call_native's other callers in
           # dispatch_call) — super has no receiver on the stack to
           # reuse, so f.self_val is prepended explicitly here.
-          return call_native(native, [f.self_val] + call_args, filename, line, nil, "#{start_cls.name}##{name}", kwargs: call_kwargs)
+          return call_native(native, [f.self_val] + call_args, filename, line, f.block, "#{start_cls.name}##{name}", kwargs: call_kwargs)
         end
       end
 
