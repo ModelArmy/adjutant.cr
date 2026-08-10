@@ -176,9 +176,13 @@ module Adjutant
     # without this. Not reachable from script source directly.
     GetArgc
 
-    # Closure capture (block reading/writing enclosing frame's locals)
-    GetOuter # push frame.outer_locals[c]
-    SetOuter # pop → frame.outer_locals[c]; push value
+    # Closure capture (block/lambda reading/writing an enclosing
+    # frame's locals, at any nesting depth — see Frame#outer_locals'
+    # OuterChain comment, vm.cr). a=depth (0 = nearest enclosing
+    # scope, 1 = one further out, ...), c=slot within that level's own
+    # locals array.
+    GetOuter # push frame.outer_locals[a][c]
+    SetOuter # pop → frame.outer_locals[a][c]; push value
 
     # Proc construction
     MakeProc # push consts[c] (a ScriptProc Value); a=1: wrap as real Proc RubyObject (lambda literals only — see builtins/proc.cr); a=0 (default): push the bare ScriptProc Value as-is (def bodies, call-site block literals)

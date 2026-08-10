@@ -285,7 +285,7 @@ module Adjutant
     # ambiguity a subtype would guard against — this field is simply
     # unused (nil) for every other class, the same way `ivars` itself
     # holds different keys depending on which class populated it.
-    property outer_locals : Array(Value)?
+    property outer_locals : OuterChain?
 
     def initialize(@rclass : RubyClass)
       @ivars = {} of Int32 => Value
