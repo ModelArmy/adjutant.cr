@@ -159,5 +159,116 @@ module Adjutant
         end
       end
     end
+
+    describe "super (Step 3 — zsuper: forwarding current parameter values)" do
+      it "bare `super` forwards the originally-passed positional argument values" do
+        eval(<<-RUBY).as_int.should eq 3
+        class A
+          def add(x, y)
+            x + y
+          end
+        end
+        class B < A
+          def add(x, y)
+            super
+          end
+        end
+        B.new.add(1, 2)
+        RUBY
+      end
+
+      it "bare `super` forwards CURRENT (reassigned) values, not the original ones" do
+        # The defining Ruby distinction between zsuper and super(): a
+        # param mutated before the super call is forwarded with its
+        # NEW value.
+        eval(<<-RUBY).as_int.should eq 30
+        class A
+          def double(x)
+            x * 2
+          end
+        end
+        class B < A
+          def double(x)
+            x = 15
+            super
+          end
+        end
+        B.new.double(1)
+        RUBY
+      end
+
+      it "explicit `super()` does NOT forward args, even though bare `super` would" do
+        # Calling with explicitly zero args leaves A#add's required
+        # params unbound (nil) — bind_args is silently permissive
+        # about missing required positional args, same as an
+        # ordinary direct call with too few arguments would be. The
+        # point under test is that x/y are nil here, NOT what they'd
+        # be forwarded as — i.e. that `super()` genuinely passed
+        # nothing, unlike bare `super` in the tests above.
+        eval(<<-RUBY).as_bool.should eq true
+        class A
+          def add(x, y)
+            x.nil? && y.nil?
+          end
+        end
+        class B < A
+          def add(x, y)
+            super()
+          end
+        end
+        B.new.add(1, 2)
+        RUBY
+      end
+
+      it "forwards a default param's resolved value" do
+        eval(<<-RUBY).as_int.should eq 7
+        class A
+          def add(x, y)
+            x + y
+          end
+        end
+        class B < A
+          def add(x, y = 5)
+            super
+          end
+        end
+        B.new.add(2)
+        RUBY
+      end
+
+      it "re-expands a splat param's CURRENT elements as separate positional args" do
+        eval(<<-RUBY).as_int.should eq 6
+        class A
+          def sum(*nums)
+            total = 0
+            nums.each { |n| total = total + n }
+            total
+          end
+        end
+        class B < A
+          def sum(*nums)
+            super
+          end
+        end
+        B.new.sum(1, 2, 3)
+        RUBY
+      end
+
+      it "forwards a kwarg param as a keyword argument, not positionally" do
+        eval(<<-RUBY).as_string.should eq "hi bob"
+        class A
+          def greet(name:)
+            "hi " + name
+          end
+        end
+        class B < A
+          def greet(name:)
+            super
+          end
+        end
+        B.new.greet(name: "bob")
+        RUBY
+      end
+    end
   end
 end

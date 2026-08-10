@@ -29,15 +29,19 @@ module Adjutant
         with_parens.code.map(&.op).should eq without_parens.code.map(&.op)
       end
 
-      # Bare `super` (zsuper) is temporarily compiled as zero-arg,
-      # pending Step 3's real parameter-forwarding. Asserted here so
-      # this deliberate, temporary behavior has a test that will need
-      # to change (not silently keep passing) once Step 3 lands.
-      it "TEMPORARILY compiles bare `super` (no parens) as argc 0, pending Step 3" do
+      it "compiles bare `super` (no parens) with the zsuper flag bit set, argc 0" do
         chunk = def_proc_chunk("class A\ndef foo(x, y)\nend\nend\nclass B < A\ndef foo(x, y)\nsuper\nend\nend")
         inst = chunk.code.find { |i| i.op == Op::Super }
         inst.should_not be_nil
         inst.not_nil!.a.should eq 0_u8
+        (inst.not_nil!.b & 0b1_u16).should eq 1_u16
+      end
+
+      it "does NOT set the zsuper flag bit for explicit `super()`" do
+        chunk = def_proc_chunk("class A\ndef foo\nend\nend\nclass B < A\ndef foo\nsuper()\nend\nend")
+        inst = chunk.code.find { |i| i.op == Op::Super }
+        inst.should_not be_nil
+        (inst.not_nil!.b & 0b1_u16).should eq 0_u16
       end
 
       it "no longer emits Op::Call for `super`" do

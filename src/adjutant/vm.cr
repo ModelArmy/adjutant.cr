@@ -914,12 +914,13 @@ module Adjutant
             # sentinel return value — Op::Ret will push the real result.
             push(result) if @frames.size == depth_before
           when Op::Super
+            zsuper = inst.b & 0b1_u16 != 0
             argc = inst.a.to_i
             args = @stack.last(argc)
             @stack.pop(argc) if argc > 0
 
             depth_before = @frames.size
-            result = dispatch_super(f, args, f.filename, inst.line)
+            result = dispatch_super(f, args, f.filename, inst.line, zsuper: zsuper)
             push(result) if @frames.size == depth_before
           when Op::Ret
             result = pop
@@ -1465,22 +1466,29 @@ module Adjutant
     # A proc with no lexical_scope (a top-level function, or a block)
     # has no "class above" to start from at all — treated the same as
     # a lookup that starts but finds nothing, below.
-    private def dispatch_super(f : Frame, args : Array(Value), filename : String, line : Int32) : Value
+    private def dispatch_super(f : Frame, args : Array(Value), filename : String, line : Int32,
+                               zsuper : Bool = false) : Value
       proc = f.proc
       name = proc.name
+      call_args, call_kwargs =
+        if zsuper
+          zsuper_bindings(f, filename, line)
+        else
+          {args, nil}
+        end
       start_cls = proc.lexical_scope.try(&.superclass)
       sym_id = start_cls ? @symbols.lookup(name).try(&.value) : nil
 
       if start_cls && sym_id
         if method = start_cls.find_method(sym_id)
-          return call_script_proc(method, args, filename, self_val: f.self_val)
+          return call_script_proc(method, call_args, filename, self_val: f.self_val, kwargs: call_kwargs)
         end
         if native = start_cls.find_native_method(sym_id)
           # Native methods read their receiver as args.first by
           # convention (see call_native's other callers in
           # dispatch_call) — super has no receiver on the stack to
           # reuse, so f.self_val is prepended explicitly here.
-          return call_native(native, [f.self_val] + args, filename, line, nil, "#{start_cls.name}##{name}")
+          return call_native(native, [f.self_val] + call_args, filename, line, nil, "#{start_cls.name}##{name}", kwargs: call_kwargs)
         end
       end
 
@@ -1498,6 +1506,47 @@ module Adjutant
         ),
         error_class: "NoMethodError"
       )
+    end
+
+    # Builds the (args, kwargs) a bare `super` (zsuper) forwards —
+    # the enclosing method's OWN parameters, read at their CURRENT
+    # value (Frame#locals, possibly reassigned since the method
+    # started), not the originally-passed values. Walks
+    # Frame#proc#ast_params in declared order, matching the exact
+    # slot layout VM#bind_args filled at call time:
+    #
+    #   - a plain/default param forwards its current local value as
+    #     one positional arg
+    #   - a splat param (`*args`) forwards each of its CURRENT
+    #     array's elements as separate positional args (real Ruby
+    #     re-expands it, it isn't passed on as one array)
+    #   - a kwarg param forwards as a keyword argument, not
+    #     positional — collected into a separate Hash, same shape
+    #     ordinary keyword calls already use
+    #
+    # A proc with no ast_params (built directly from a Chunk, no AST
+    # — see ScriptProc's own doc comment) has nothing to forward;
+    # returns empty, same defensive fallback VM#bind_args itself uses
+    # in that case.
+    private def zsuper_bindings(f : Frame, filename : String, line : Int32) : {Array(Value), Hash(String, Value)?}
+      ast_params = f.proc.ast_params
+      return {[] of Value, nil} unless ast_params
+
+      args = [] of Value
+      kwargs = nil
+      ast_params.each_with_index do |param, slot|
+        next if param.block_param? # can't occur (U001), skipped defensively
+        val = slot < f.locals.size ? f.locals[slot] : Value.nil_value
+        if param.splat?
+          val.as_array?.try(&.each { |item| args << item })
+        elsif param.kwarg?
+          kwargs ||= {} of String => Value
+          kwargs[param.name] = val
+        else
+          args << val
+        end
+      end
+      {args, kwargs}
     end
 
     # ameba:disable Metrics/CyclomaticComplexity - Clear steps, better together
