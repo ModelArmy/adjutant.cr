@@ -53,6 +53,67 @@ may unblock ones above it.
   runtime check per operand kind (literal/expression, `self`, local,
   method, constant, global — the last excluded per U011 either way).
 
+- **`respond_to?`'s blind spot returns a wrong answer, not an
+  error.** Long-standing, untriaged since the original 2026-07-14
+  handoff bundle — split out and reclassified 2026-08-10 while
+  reviewing that bundle. `VM#exec_builtin`'s `"respond_to?"` case
+  deliberately only checks user-defined and native method tables, the
+  same three lookups `is_a?`/`.class` use — not `exec_builtin`'s own
+  VM-level fallback cases (`to_s`, `class`, `is_a?`, ...). So
+  `x.respond_to?(:to_s)` returns `false` even though `x.to_s` itself
+  works — a silent wrong answer a script (or an LLM checking before
+  calling) has no way to detect, not a clean failure. Already
+  precisely diagnosed in the code's own comment at that case, which
+  argues the near-universal fallback methods are rare enough to probe
+  for that this was an acceptable tradeoff at the time — worth
+  revisiting now that this file is being triaged for exactly this
+  category of gap (silent incorrectness vs. missing feature). Fix
+  shape: extend that case to also check a fixed list of the
+  fallback-only names `exec_builtin` handles, rather than a full
+  lookup-table rewrite.
+
+- **`include`/mixins don't exist at all.** Long-standing, untriaged
+  since the original 2026-07-14 handoff bundle — promoted to `Must
+  Fix` 2026-08-10 on review. `include` is a reserved lexer keyword
+  (`TokenKind::KwInclude`, `token.cr`) with zero parser handling
+  anywhere, so it fails loudly (`P002`, unexpected token) rather than
+  silently no-opping — not the silent-incorrectness pattern most of
+  this list's other promotions share, but real code-sharing is common
+  enough in ordinary Ruby (not just the `Comparable`/`<=>` case,
+  already covered separately — see below) that its total absence is
+  a normal-use blocker for anything an agent writes expecting
+  standard Ruby idioms to work. Genuine scoping work needed before
+  starting, not a drop-in fix: general mixin support reopens some of
+  the same static-resolvability tension `send`/`eval` (U005/U006)
+  exist to avoid (a method's origin becoming dynamic/less traceable),
+  worth a design conversation on how far to go before writing any
+  parser code.
+
+- **Multi-level closures — a block or lambda created INSIDE another
+  block likely can't correctly reach a variable from two or more
+  enclosing scopes up.** Long-standing, untriaged since the original
+  2026-07-14 handoff bundle — investigated 2026-08-10 while
+  reviewing it (no concrete failing script confirmed against a real
+  run yet, but the structural evidence is strong). `Op::GetOuter`
+  reads `frame.outer_locals[c]` — a single flat array, one hop, with
+  no chaining mechanism to a further "outer's outer." Nothing found
+  that flattens or copies a grandparent scope's values forward to
+  compensate: `Op::MakeProc`'s lambda-capture case (`vm.cr`) snapshots
+  only `f.locals` — the frame CURRENTLY creating the lambda — never
+  merging in that frame's OWN `outer_locals` too, so if `f` is itself
+  a block closing over something further out, that further-out value
+  is never captured at all. The parser's own local-scope tracking
+  (`push_local_scope(inherit: true)`, `parser.cr`) does correctly
+  flatten NAME VISIBILITY across arbitrary nesting depth at parse
+  time (each nested scope is a dup of its parent's known-names set) —
+  but that only answers "is this name known outside my own scope,"
+  not "how many hops away," and nothing downstream appears to use a
+  depth beyond one. Whether this manifests as a silently wrong
+  captured value or an out-of-bounds/internal crash isn't confirmed —
+  worth a concrete two-level test script before writing the fix, but
+  either failure mode belongs here, not in `Will Fix`'s "missing
+  feature, fails cleanly" bucket.
+
 ## Will Fix
 
 Real gaps, not currently blocking anything, no active design conversation
@@ -65,6 +126,18 @@ still roughly ordered by how cheap/independent the fix is.
 
 Small, mechanical, independent of each other — good candidates for quick
 wins.
+
+- **Heredocs and `%w[]`/`%i[]` literals don't exist.** Long-standing,
+  untriaged since the original 2026-07-14 handoff bundle — split out
+  and confirmed still missing 2026-08-10 on review (no `Heredoc`/`%w`
+  handling found anywhere in `lexer.cr`/`token.cr`). Both fail loudly
+  at parse time (unrecognized syntax), not silently — genuinely
+  independent, mechanical lexer/parser additions rather than
+  something touching the compiler or VM: a heredoc is just a
+  string literal with a different opening/closing spelling, and
+  `%w[a b c]` desugars to an ordinary array-of-strings literal once
+  lexed. Good candidate for whoever wants a self-contained,
+  low-risk pickup.
 
 - **Do `class`/`module` bodies want the same implicit `rescue`/`else`/
   `ensure` treatment `def` bodies just got?** Open question, not a
@@ -83,9 +156,10 @@ wins.
   compile/runtime path with no new compiler or VM work either.
 
 - **Assignment isn't a real expression — promoted 2026-08-08 out of
-  the "Long-standing language gaps" bundle below, where it had sat as
-  a single untriaged line (`assignment-as-real-expression`) since the
-  original 2026-07-14 handoff.** Two concrete manifestations, both
+  the old "Long-standing language gaps" bundle (since fully dispersed
+  into individual entries throughout this file, 2026-08-10), where it
+  had sat as a single untriaged line (`assignment-as-real-expression`)
+  since the original 2026-07-14 handoff.** Two concrete manifestations, both
   the SAME root cause, found on different dates:
   - **Chained assignment** (`c = b = 5` doesn't parse) — the original
     2026-07-14 finding.
@@ -325,6 +399,22 @@ Quality-of-diagnostic gaps in the `Diagnostic`/`ErrorCatalog` system
 
 ### Object model
 
+- **No `Numeric` ancestor class in the `RubyClass` hierarchy, so
+  `5.is_a?(Numeric)` fails rather than returning `true`.** Long-
+  standing, untriaged since the original 2026-07-14 handoff bundle —
+  reworded 2026-08-10 on review: the previous framing implied this
+  silently returns a wrong answer, which isn't what actually happens.
+  No class named `Numeric` is registered anywhere (`grep` confirms),
+  so referencing it at all fails at constant resolution first — a
+  clean, loud `R006` (undefined constant), not a silent `false`. Real
+  gap, genuinely missing feature, but the loud-failure kind rather
+  than the incorrect-in-normal-use kind. Narrowed 2026-08-06,
+  separately from this rewording: `<=>` itself already works for
+  `Integer`/`Float`/`String` (`ValueOps.spaceship`, `exec_builtin`'s
+  `"<=>"` case), which was this item's original practical motivation
+  and is no longer the gap — what's left is specifically the
+  class-hierarchy piece.
+
 - **`Class#inherited` hook not implemented.** Found 2026-08-05 in the
   mruby full-repo sweep (`test/t/class.rb`). Real Ruby calls
   `self.inherited(subclass)` automatically the instant a class is
@@ -373,6 +463,21 @@ section).
 
 
 ### Data & builtin types
+
+- **`Range` beyond `Integer` (and whatever else has a working
+  `#succ`) — String ranges, custom-object ranges — isn't supported.**
+  Long-standing, untriaged since the original 2026-07-14 handoff
+  bundle — split out 2026-08-10 on review. `Range#each`'s advance
+  mechanism (`vm.cr`, the `#succ`-calling case) is already generic
+  over anything with a working `#succ`, not hardcoded to `Integer` —
+  so this narrows to whatever's still missing beyond that (bound-type
+  validation at construction, `#include?`/`#cover?` for non-`Integer`
+  bounds, string ranges specifically since `String#succ` needs its
+  own char-advance logic Ruby has and Adjutant may not). Not yet
+  traced further than that — worth confirming exactly which piece is
+  missing (a quick `("a".."e").each` test) before scoping the fix,
+  rather than assuming the whole feature is absent when `#each`'s own
+  mechanism already generalizes.
 
 - **`Array`/`Hash` as a `Hash` key hashes by reference, not content.**
   `Value` has no custom `hash(hasher)` override, so a `Hash(Value, Value)`
@@ -433,6 +538,23 @@ individually.
 
 ### Standard library surface
 
+- **`lambda { ... }`/`proc { ... }` (the `Kernel`-method spelling)
+  don't exist — only `-> { ... }` (stabby lambda) works.** Found
+  2026-08-10, while preparing a multi-level-closures test script
+  (see the entry above) — reached for `lambda { x + 1 }` first, the
+  more common spelling in ordinary Ruby, and it doesn't parse/resolve
+  at all. `Arrow` (`->`) is a real token with real parser support
+  (`parser.cr`); `lambda`/`proc` are `Kernel` methods in real Ruby,
+  not keywords, so — same reasoning as `catch`/`throw` just below —
+  nothing about the grammar needs to change. Confirmed no trace of
+  either name anywhere in the codebase (`grep -rn '"lambda"'` and
+  `'"proc"'` both empty), so today `lambda { ... }` just fails loudly
+  as an ordinary undefined-method call (`R008`) with a block
+  attached, not silently. Likely a small native-function addition
+  once a `->`-built `ScriptProc`/lambda object already exists to
+  return — wrapping the given block as that same object shape, not a
+  new construct.
+
 - **`catch`/`throw` (Kernel non-local jump, tagged block).** Found
   2026-08-05 in the mruby full-repo sweep — mruby packages this as an
   optional gem (`mruby-catch`) rather than core language, which is the
@@ -483,44 +605,6 @@ individually.
   is meaningful — carried forward from the original 2026-07-14 handoff
   as "no IO," refiled here now that the real blocker (undecided scope,
   not undecided design mechanics) is clearer.
-
-### Long-standing language gaps
-
-One bundled entry, unchanged since the original 2026-07-14 handoff and
-not touched by any session since — genuinely a backlog rather than
-active work. Worth splitting into individual entries if any one becomes
-a priority; currently untriaged relative to each other.
-
-Three items originally listed here have left this bundle: multiple
-`rescue` clauses (promoted to `Must Fix`, 2026-08-05, see above);
-`super` across multiple `rescue` clauses / `$globals` (moved to
-`UNSUPPORTED.md` as U010/U011 — see that file; `Struct.new`, U009 in
-the same batch, was never listed in this bundle and is noted
-separately in the gap-survey chat history); and
-assignment-as-real-expression (promoted to its own entry under
-"Parser / lexer gaps" above, 2026-08-08, once a second manifestation
-made it concrete enough to scope).
-
-- `include`/mixins — real gap, but the specific case that most often
-  motivates it (sharing comparison behavior via `Comparable`) is now
-  covered by the `<=>` hook (implemented 2026-08-06 — see git history,
-  no longer a `Must Fix` entry); what's left is general code-sharing,
-  which reopens some of the same static-resolvability tension the
-  `send`/`eval` exclusions (U005/U006) exist to avoid — worth its own
-  scoping pass before promoting, not a drop-in fix. Noted 2026-08-05.
-- heredocs/`%w[]` literals
-- multi-level closures
-- `Range` for non-`Integer`/non-`succ`-having bound types beyond what's
-  already generic
-- a real `Numeric` ancestor class in the `RubyClass` hierarchy (so
-  `5.is_a?(Numeric)` etc. would work) — narrowed 2026-08-06: `<=>`
-  itself now works for `Integer`/`Float`/`String` (`ValueOps.spaceship`,
-  `exec_builtin`'s `"<=>"` case), which was this bullet's original
-  practical motivation and is no longer the gap; what's left is
-  specifically the class-hierarchy piece, a smaller and more optional
-  want than before.
-- `respond_to?`'s blind spot (`x.respond_to?(:to_s)` is `false` even
-  though `x.to_s` works)
 
 ## Deliberate non-goals
 
