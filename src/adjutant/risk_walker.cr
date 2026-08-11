@@ -758,13 +758,18 @@ module Adjutant
       sym = @interp.symbols.lookup(proc.name)
       return RiskUnresolved.new("super", node.line) unless sym
 
-      # Singleton-method `super` (`def self.foo; super; end`) is a
-      # separate, pre-existing gap unrelated to `include` — see
-      # dispatch_super's own comment for the full reasoning. Left
-      # exactly as it was (still a fixed one-hop jump to
-      # `lex.superclass`) rather than silently deepened into a
-      # different bug by folding it into the ancestors-based fix
-      # below, which only covers the instance-method case.
+      # Singleton-method `super` (`def self.foo; super; end`) — search
+      # the SINGLETON tables (find_singleton_method/
+      # find_native_singleton_method), not find_method/
+      # find_native_method, since self here IS the class object
+      # itself, not an instance of it. This branch was already
+      # correct before `include` existed; VM#dispatch_super had the
+      # analogous bug (searched instance tables here) until STEP 1 of
+      # the extend-support build-out fixed it there too — see
+      # SCOPE.md's git history. Still a fixed one-hop jump to
+      # `lex.superclass`, not ancestors-aware — no module can sit in
+      # the singleton chain yet (that's `extend`, not yet built);
+      # revisit together with dispatch_super's own once it is.
       if @current_self_is_singleton
         start_cls = lex.superclass
         return RiskUnresolved.new("super", node.line) unless start_cls

@@ -1568,13 +1568,12 @@ module Adjutant
       #
       # `f.self_val.as_robject?` only — deliberately NOT extended to
       # cover `self_val.as_rclass?` (a class-method/singleton `super`,
-      # `def self.foo; super; end`). That path is a pre-existing,
-      # SEPARATE gap unrelated to `include`: singleton `super` has
-      # always searched instance method tables rather than the
-      # singleton chain, predating this session. Not fixed here — the
-      # `elsif lex` fallback below preserves that existing (already
-      # imperfect) behavior unchanged rather than silently deepening
-      # scope into a different bug.
+      # `def self.foo; super; end`) in THIS branch. That's a genuinely
+      # separate resolution path — self IS the class object itself,
+      # not an instance of it, so the tables to search are the
+      # SINGLETON ones (find_singleton_method/
+      # find_native_singleton_method), not find_method/
+      # find_native_method. Handled by the `elsif` below.
       if lex && sym_id && (obj = f.self_val.as_robject?)
         chain = obj.rclass.ancestors
         idx = chain.index(lex)
@@ -1589,12 +1588,27 @@ module Adjutant
           end
         end
       elsif lex && sym_id
+        # STEP 1 of the extend-support build-out (see SCOPE.md's git
+        # history): previously searched find_method/find_native_method
+        # here — the INSTANCE tables — a real, pre-existing bug
+        # predating `include`/`extend` entirely (a class-method
+        # `super` calling into whatever the superclass's INSTANCES
+        # would see, not what the superclass's OWN class-level methods
+        # define). Fixed to search the singleton tables instead,
+        # matching what `self` actually is on this path (the class
+        # object itself, not an instance of it). Still a fixed
+        # one-hop jump to `lex.superclass` for now, same shape this
+        # whole method had before `include` existed — correct as far
+        # as it goes today (no modules in the singleton chain yet),
+        # revisited once `extend` exists and a module can sit BETWEEN
+        # a class and its superclass in the SINGLETON chain too, the
+        # same way `include` did for the instance chain.
         start_cls = lex.superclass
         if start_cls
-          if method = start_cls.find_method(sym_id)
+          if method = start_cls.find_singleton_method(sym_id)
             return call_script_method(method, call_args, call_kwargs, f, filename)
           end
-          if native = start_cls.find_native_method(sym_id)
+          if native = start_cls.find_native_singleton_method(sym_id)
             return call_super_native(native, call_args, call_kwargs, f, filename, line, start_cls, name)
           end
         end

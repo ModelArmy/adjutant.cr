@@ -595,5 +595,126 @@ module Adjutant
         summary.tags.should eq Set{RiskTag::DeletesFiles}
       end
     end
+
+    describe "singleton-method super (Step 1 of the extend-support build-out — pre-existing bug, unrelated to include)" do
+      # `def self.foo; super; end` previously searched find_method/
+      # find_native_method (the INSTANCE tables) in
+      # VM#dispatch_super's fallback branch — wrong table entirely,
+      # since self here IS the class object itself, not an instance
+      # of it. Fixed to search find_singleton_method/
+      # find_native_singleton_method instead. Predates `include`/
+      # `extend` entirely; fixed now as a prerequisite for `extend`
+      # (which needs this path working correctly to be worth testing
+      # against at all) rather than because `extend` itself caused it.
+
+      it "a class method's super reaches the superclass's OWN class method, not an instance method of the same name" do
+        eval(<<-RUBY).should eq Value.string("Base-self-A")
+        class Base
+          def self.greet
+            "Base-self"
+          end
+        end
+        class A < Base
+          def self.greet
+            super + "-A"
+          end
+        end
+        A.greet
+        RUBY
+      end
+
+      it "previously raised R014 incorrectly (searched the wrong table and found nothing) — now resolves cleanly" do
+        # Explicit regression marker: before this fix, the test above
+        # didn't just give a WRONG answer, it raised "no ancestor
+        # defines the method" — Base's OWN instance table genuinely
+        # has no `greet` (only Base's SINGLETON table does), so the
+        # old buggy lookup found nothing at all.
+        eval(<<-RUBY).should eq Value.string("ok")
+        class Base
+          def self.only_as_class_method
+            "ok"
+          end
+        end
+        class A < Base
+          def self.only_as_class_method
+            super
+          end
+        end
+        A.only_as_class_method
+        RUBY
+      end
+
+      it "a class method's super reaches a NATIVE singleton method on the superclass" do
+        interp, _ = make_interp
+        risk = RiskProfile.new
+        cls = RubyClass.new("Base")
+        sym_id = interp.symbols.intern("make").value
+        cls.define_native_singleton_method(sym_id, risk) { |args| Value.string("native-make") }
+        interp.define_global_class(cls)
+        result = interp.eval(<<-RUBY)
+        class A < Base
+          def self.make
+            "A-" + super()
+          end
+        end
+        A.make
+        RUBY
+        result.as_string.should eq "A-native-make"
+      end
+
+      it "R014 still correctly raised when no ancestor's class method (singleton table) defines it at all" do
+        expect_raises(RuntimeError, /only_here/) do
+          eval(<<-RUBY)
+          class Base
+          end
+          class A < Base
+            def self.only_here
+              super()
+            end
+          end
+          A.only_here
+          RUBY
+        end
+      end
+
+      it "instance-method super is completely unaffected by this fix — still uses the ancestors-based instance resolution" do
+        eval(<<-RUBY).should eq Value.string("Base-A")
+        class Base
+          def greet
+            "Base"
+          end
+        end
+        class A < Base
+          def greet
+            super + "-A"
+          end
+        end
+        A.new.greet
+        RUBY
+      end
+
+      it "RiskWalker's static resolution of singleton super already worked correctly (walk_super_target needed no code change) — confirmed rather than assumed" do
+        interp, _ = make_interp
+        risk = RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
+        register_risky_module(interp, "delete_fn", risk)
+        walker = RiskWalker.new(interp)
+        body = risk_walker_test_parse(<<-RUBY)
+          class Base
+            def self.greet
+              delete_fn()
+            end
+          end
+          class A < Base
+            def self.greet
+              super
+            end
+          end
+          A.greet
+        RUBY
+        summary = RiskAggregator.summarize(walker.walk_body(body))
+        summary.severity.should eq Severity::Error
+        summary.tags.should eq Set{RiskTag::DeletesFiles}
+      end
+    end
   end
 end
