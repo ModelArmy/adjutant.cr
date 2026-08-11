@@ -89,6 +89,57 @@ may unblock ones above it.
   worth a design conversation on how far to go before writing any
   parser code.
 
+- **`Array` is missing several methods common enough in ordinary Ruby
+  that their absence is a normal-use blocker, not an edge case.**
+  Found 2026-08-10, `Array#first` specifically tripping a test script
+  during the closures work — prompted a full survey of core-class
+  method coverage rather than patching that one case in isolation.
+  Has (`builtins/array.cr`): `each`, `map`, `push`, `pop`, `size`,
+  `empty?`, `include?`, `join`, `to_s`. Missing: `first`, `last`,
+  `select`/`reject`, `reduce`/`inject`, `sort`, `reverse`, `min`/
+  `max`, `any?`/`all?`. `[]`/`[]=` and `<<` are already real opcodes
+  (`Op::GetIndex`/`Op::SetIndex`, `ValueOps.shl`), not native methods
+  — not part of this gap. `each`/`map` already prove the
+  block-invocation pattern (`NativeCallContext#invoke`) works from a
+  native method, so `select`/`reject`/`reduce` aren't a new mechanism,
+  just more callers of it.
+
+- **`Hash` is missing `merge`, `has_key?`/`key?`, `delete`, `to_a`.**
+  Found 2026-08-10, same survey as `Array`'s entry above. Has
+  (`builtins/hash.cr`): `each`, `empty?`, `keys`, `size`, `to_s`,
+  `values`. `[]`/`[]=` are already real opcodes
+  (`exec_get_index`/`exec_set_index`, `vm.cr`), not part of this gap.
+
+- **`String` is missing `reverse`, `chars`, `start_with?`/`end_with?`,
+  `capitalize`.** Found 2026-08-10, same survey. Has
+  (`builtins/string.cr`): `downcase`, `upcase`, `strip`, `split`,
+  `include?`, `empty?`, `length`/`size`, `to_i`/`to_f`/`to_s`/
+  `to_sym`. Separate, NOT a missing-method gap (different mechanism,
+  noted here since found by the same survey): single-character
+  indexing (`s[1]`) already works, but Range-based substring slicing
+  (`s[1..3]`) doesn't — `exec_get_index` (`vm.cr`) only handles a
+  plain `Integer` index for strings, falling through to `nil` for a
+  `Range` one. Worth its own look, since it's an opcode-level fix
+  (`exec_get_index`'s `target.string? && idx.int?` case needs a
+  sibling `idx.range?` case), not a `builtins/string.cr` addition.
+
+- **`Integer` is missing `times`, `abs`, `even?`/`odd?`, `zero?`.**
+  Found 2026-08-10, same survey. Has (`builtins/integer.cr`): `next`/
+  `succ`, `to_f`/`to_i`/`to_s`. `times` specifically is a very common
+  simple-iteration idiom (`3.times { ... }`) an LLM will reach for
+  early and often. Arithmetic (`+`/`-`/`*`/`/`) is already opcode-
+  level (`ValueOps`), not part of this gap.
+
+- **`Float` is missing `round`, `ceil`, `floor`, `abs`, `nan?`.**
+  Found 2026-08-10, same survey. Has (`builtins/float.cr`):
+  `infinite?`, `to_f`/`to_i`/`to_s`.
+
+- **`Range` is missing `to_a`, `step`.** Found 2026-08-10, same
+  survey. Has (`builtins/range.cr`): `each`, `first`, `last`, `min`/
+  `max`, `include?`, `exclusive?`, `to_s`. `to_a` (materializing a
+  range into an array) is common enough that its absence is
+  surprising on its own.
+
 ## Will Fix
 
 Real gaps, not currently blocking anything, no active design conversation
