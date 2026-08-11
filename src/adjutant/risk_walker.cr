@@ -788,26 +788,40 @@ module Adjutant
       sym = @interp.symbols.lookup(proc.name)
       return RiskUnresolved.new("super", node.line) unless sym
 
-      # Singleton-method `super` (`def self.foo; super; end`) — search
-      # the SINGLETON tables (find_singleton_method/
-      # find_native_singleton_method), not find_method/
-      # find_native_method, since self here IS the class object
-      # itself, not an instance of it. This branch was already
-      # correct before `include` existed; VM#dispatch_super had the
-      # analogous bug (searched instance tables here) until STEP 1 of
-      # the extend-support build-out fixed it there too — see
-      # SCOPE.md's git history. Still a fixed one-hop jump to
-      # `lex.superclass`, not ancestors-aware — no module can sit in
-      # the singleton chain yet (that's `extend`, not yet built);
-      # revisit together with dispatch_super's own once it is.
+      # Singleton-method `super` (`def self.foo; super; end`) — STEP 5
+      # of the extend-support build-out (see SCOPE.md's git history):
+      # now mirrors the instance-method branch below exactly, on the
+      # singleton side, via RubyClass#singleton_ancestors — see that
+      # method's own comment (ruby_class.cr) for why each of its
+      # entries carries a Bool (an extended module's own contribution
+      # needs its ORDINARY method table checked, not
+      # singleton_methods; self and its superclasses need the
+      # opposite) and VM#dispatch_super's own comment for the parallel
+      # fix there. No longer a fixed one-hop jump to `lex.superclass`
+      # — a module `extend`ed directly into `lex` now correctly sits
+      # BETWEEN it and its superclass in the search, matching what
+      # `include` already did for the instance side.
       if @current_self_is_singleton
-        start_cls = lex.superclass
-        return RiskUnresolved.new("super", node.line) unless start_cls
-        if script_method = start_cls.find_singleton_method(sym.value)
-          return walk_script_method(script_method, node.line, cls, is_singleton: true)
-        end
-        if native = start_cls.find_native_singleton_method(sym.value)
-          return RiskLeaf.new(native.risk, proc.name, node.line)
+        chain = cls.singleton_ancestors
+        idx = chain.index { |(c, _)| c == lex }
+        return RiskUnresolved.new("super", node.line) unless idx
+
+        chain[(idx + 1)..].each do |(candidate, use_singleton_table)|
+          if use_singleton_table
+            if script_method = candidate.singleton_methods[sym.value]?
+              return walk_script_method(script_method, node.line, cls, is_singleton: true)
+            end
+            if native = candidate.native_singleton_methods[sym.value]?
+              return RiskLeaf.new(native.risk, proc.name, node.line)
+            end
+          else
+            if script_method = candidate.methods[sym.value]?
+              return walk_script_method(script_method, node.line, cls, is_singleton: true)
+            end
+            if native = candidate.native_methods[sym.value]?
+              return RiskLeaf.new(native.risk, proc.name, node.line)
+            end
+          end
         end
         return RiskUnresolved.new("super", node.line)
       end

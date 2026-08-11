@@ -118,9 +118,6 @@ module Adjutant
       @singleton_methods[sym_id] = proc
     end
 
-    # Look up a script-defined singleton method by symbol id, walking
-    # the superclass chain — same shape as find_method, separate
-    # table.
     # Look up a script-defined singleton method by symbol id: this
     # class/module's OWN singleton methods first, then its extended
     # modules (STEP 3 of the extend-support build-out — see
@@ -244,6 +241,41 @@ module Adjutant
       @included_modules.reverse_each { |mod| result.concat(mod.ancestors) }
       if sup = @superclass
         result.concat(sup.ancestors)
+      end
+      result
+    end
+
+    # The singleton-chain equivalent of `ancestors`, above — STEP 5 of
+    # the extend-support build-out (see SCOPE.md's git history), the
+    # piece that makes `super` from a class method correctly walk
+    # PAST an extended module before reaching the superclass, the same
+    # way instance-method `super` already does for `include`d modules.
+    #
+    # Genuinely more complex than `ancestors`, not just a find-and-
+    # replace of `included_modules`/`singleton_methods` for
+    # `extended_modules`/`methods`: `ancestors` can check EVERY entry
+    # uniformly via `.methods` (a class and an included module both
+    # store their instance methods there) — but an EXTENDED module's
+    # own methods live in ITS OWN `.methods` (ordinary instance
+    # methods, the exact ones `include` would also see — see
+    # `find_own_or_extended_method`'s own comment for why that's the
+    # correct table), while `self` and its OWN superclasses need
+    # `.singleton_methods` instead. A flat `Array(RubyClass)` can't
+    # represent "which table this entry means" — so each entry here
+    # is a `{RubyClass, Bool}` tuple: the class/module, and whether to
+    # check its SINGLETON table (`true`, for `self` and its
+    # superclasses) or its ordinary instance table (`false`, for an
+    # extended module's own contribution, pulled in via THAT module's
+    # own `ancestors` — not `singleton_ancestors`, since a module
+    # doesn't have its own singleton methods relevant here, only its
+    # ordinary ones).
+    def singleton_ancestors : Array({RubyClass, Bool})
+      result = [{self, true}] of {RubyClass, Bool}
+      @extended_modules.reverse_each do |mod|
+        mod.ancestors.each { |ancestor| result << {ancestor, false} }
+      end
+      if sup = @superclass
+        result.concat(sup.singleton_ancestors)
       end
       result
     end

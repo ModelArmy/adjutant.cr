@@ -1587,29 +1587,41 @@ module Adjutant
             end
           end
         end
-      elsif lex && sym_id
-        # STEP 1 of the extend-support build-out (see SCOPE.md's git
-        # history): previously searched find_method/find_native_method
-        # here — the INSTANCE tables — a real, pre-existing bug
-        # predating `include`/`extend` entirely (a class-method
-        # `super` calling into whatever the superclass's INSTANCES
-        # would see, not what the superclass's OWN class-level methods
-        # define). Fixed to search the singleton tables instead,
-        # matching what `self` actually is on this path (the class
-        # object itself, not an instance of it). Still a fixed
-        # one-hop jump to `lex.superclass` for now, same shape this
-        # whole method had before `include` existed — correct as far
-        # as it goes today (no modules in the singleton chain yet),
-        # revisited once `extend` exists and a module can sit BETWEEN
-        # a class and its superclass in the SINGLETON chain too, the
-        # same way `include` did for the instance chain.
-        start_cls = lex.superclass
-        if start_cls
-          if method = start_cls.find_singleton_method(sym_id)
-            return call_script_method(method, call_args, call_kwargs, f, filename)
-          end
-          if native = start_cls.find_native_singleton_method(sym_id)
-            return call_super_native(native, call_args, call_kwargs, f, filename, line, start_cls, name)
+      elsif lex && sym_id && (self_cls = f.self_val.as_rclass?)
+        # STEP 5 of the extend-support build-out (see SCOPE.md's git
+        # history): previously a fixed one-hop jump to `lex.superclass`
+        # — correct as far as it went before `extend` existed (Step 1
+        # of this build-out already fixed WHICH tables get searched;
+        # this step fixes WHERE the search starts and how far it
+        # goes). Now mirrors the instance-method branch above exactly,
+        # on the singleton side: computed from self's REAL runtime
+        # class (`self_cls`, not `lex` — same polymorphism reasoning
+        # as the instance branch), searching everything AFTER `lex`'s
+        # own position in `self_cls.singleton_ancestors`. See that
+        # method's own comment (ruby_class.cr) for why each entry
+        # there carries a Bool: an extended module's own contribution
+        # must be checked via its ORDINARY method table, not
+        # `singleton_methods` — self and its superclasses need the
+        # opposite.
+        chain = self_cls.singleton_ancestors
+        idx = chain.index { |(c, _)| c == lex }
+        if idx
+          chain[(idx + 1)..].each do |(candidate, use_singleton_table)|
+            if use_singleton_table
+              if method = candidate.singleton_methods[sym_id]?
+                return call_script_method(method, call_args, call_kwargs, f, filename)
+              end
+              if native = candidate.native_singleton_methods[sym_id]?
+                return call_super_native(native, call_args, call_kwargs, f, filename, line, candidate, name)
+              end
+            else
+              if method = candidate.methods[sym_id]?
+                return call_script_method(method, call_args, call_kwargs, f, filename)
+              end
+              if native = candidate.native_methods[sym_id]?
+                return call_super_native(native, call_args, call_kwargs, f, filename, line, candidate, name)
+              end
+            end
           end
         end
       end

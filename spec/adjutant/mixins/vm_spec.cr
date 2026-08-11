@@ -1044,5 +1044,165 @@ module Adjutant
         summary.tags.should eq Set{RiskTag::DeletesFiles}
       end
     end
+
+    describe "extend + super (Step 5 — super walks the real singleton MRO, modules extended)" do
+      # RubyClass#singleton_ancestors mirrors #ancestors on the
+      # singleton side. dispatch_super's singleton branch now searches
+      # it the same way the instance branch already does — a module
+      # `extend`ed directly into a class sits BETWEEN it and its
+      # superclass when a class method calls `super`, the same way
+      # `include` already worked for instance methods.
+
+      it "a class method's super reaches an extended module's method BEFORE the superclass's own class method" do
+        eval(<<-RUBY).should eq Value.string("A-M-Base")
+        module M
+          def greet
+            "M-" + super
+          end
+        end
+        class Base
+          def self.greet
+            "Base"
+          end
+        end
+        class A < Base
+          extend M
+          def self.greet
+            "A-" + super
+          end
+        end
+        A.greet
+        RUBY
+      end
+
+      it "super called from INSIDE an extended module's own method reaches the superclass's class method" do
+        eval(<<-RUBY).should eq Value.string("M-Base")
+        module M
+          def greet
+            "M-" + super
+          end
+        end
+        class Base
+          def self.greet
+            "Base"
+          end
+        end
+        class A < Base
+          extend M
+        end
+        A.greet
+        RUBY
+      end
+
+      it "with multiple extends, super visits them in real MRO order (last extended first)" do
+        eval(<<-RUBY).should eq Value.string("A-M2-M1-Base")
+        module M1
+          def greet
+            "M1-" + super
+          end
+        end
+        module M2
+          def greet
+            "M2-" + super
+          end
+        end
+        class Base
+          def self.greet
+            "Base"
+          end
+        end
+        class A < Base
+          extend M1
+          extend M2
+          def self.greet
+            "A-" + super
+          end
+        end
+        A.greet
+        RUBY
+      end
+
+      it "a class with NO extended modules at all is completely unaffected — plain singleton super still works exactly as before (Step 1's fix persists)" do
+        eval(<<-RUBY).should eq Value.string("Base-A")
+        class Base
+          def self.greet
+            "Base"
+          end
+        end
+        class A < Base
+          def self.greet
+            super + "-A"
+          end
+        end
+        A.greet
+        RUBY
+      end
+
+      it "instance-method super is unaffected by any of this — still uses the instance-side ancestors resolution" do
+        eval(<<-RUBY).should eq Value.string("Base-A")
+        module M
+          def greet
+            "M"
+          end
+        end
+        class Base
+          def greet
+            "Base"
+          end
+        end
+        class A < Base
+          extend M
+          def greet
+            super + "-A"
+          end
+        end
+        A.new.greet
+        RUBY
+      end
+
+      it "R014 still correctly raised when nothing anywhere in the singleton chain defines the method, extended modules included" do
+        expect_raises(RuntimeError, /only_here/) do
+          eval(<<-RUBY)
+          module M
+          end
+          class A
+            extend M
+            def self.only_here
+              super()
+            end
+          end
+          A.only_here
+          RUBY
+        end
+      end
+
+      it "RiskWalker resolves a class-method super call reached through an extended module" do
+        interp, _ = make_interp
+        risk = RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
+        register_risky_module(interp, "delete_fn", risk)
+        walker = RiskWalker.new(interp)
+        body = risk_walker_test_parse(<<-RUBY)
+          module M
+            def greet
+              delete_fn()
+            end
+          end
+          class Base
+            def self.greet
+            end
+          end
+          class A < Base
+            extend M
+            def self.greet
+              super
+            end
+          end
+          A.greet
+        RUBY
+        summary = RiskAggregator.summarize(walker.walk_body(body))
+        summary.severity.should eq Severity::Error
+        summary.tags.should eq Set{RiskTag::DeletesFiles}
+      end
+    end
   end
 end
