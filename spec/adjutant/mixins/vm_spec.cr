@@ -825,5 +825,125 @@ module Adjutant
         a.extended_modules.should eq [ext]
       end
     end
+
+    describe "extend (Step 3 — actual method resolution)" do
+      # find_singleton_method/find_native_singleton_method (RubyClass)
+      # now walk extended_modules — this is the step that makes
+      # `extend` actually do something. Mirrors include's own Step 3
+      # exactly, on the singleton side.
+
+      it "a class extending a module can call the module's method as a CLASS method" do
+        eval(<<-RUBY).should eq Value.string("hi from M")
+        module M
+          def greet
+            "hi from M"
+          end
+        end
+        class A
+          extend M
+        end
+        A.greet
+        RUBY
+      end
+
+      it "the class's OWN class method wins over an extended module's same-named method" do
+        eval(<<-RUBY).should eq Value.string("A's own")
+        module M
+          def greet
+            "from M"
+          end
+        end
+        class A
+          extend M
+          def self.greet
+            "A's own"
+          end
+        end
+        A.greet
+        RUBY
+      end
+
+      it "with multiple extends, the LAST one wins (real Ruby MRO — closest to the class)" do
+        eval(<<-RUBY).should eq Value.string("from M2")
+        module M1
+          def greet
+            "from M1"
+          end
+        end
+        module M2
+          def greet
+            "from M2"
+          end
+        end
+        class A
+          extend M1
+          extend M2
+        end
+        A.greet
+        RUBY
+      end
+
+      it "an extended module's method is NOT callable on an instance — extend affects the singleton chain only" do
+        expect_raises(RuntimeError, /greet/) do
+          eval(<<-RUBY)
+          module M
+            def greet
+              "from M"
+            end
+          end
+          class A
+            extend M
+          end
+          A.new.greet
+          RUBY
+        end
+      end
+
+      it "an included module's method is NOT callable as a class method — include affects the instance chain only" do
+        expect_raises(RuntimeError, /greet/) do
+          eval(<<-RUBY)
+          module M
+            def greet
+              "from M"
+            end
+          end
+          class A
+            include M
+          end
+          A.greet
+          RUBY
+        end
+      end
+
+      it "extending a module that itself includes another module surfaces the included module's methods too" do
+        eval(<<-RUBY).should eq Value.string("deep")
+        module Inner
+          def deep_method
+            "deep"
+          end
+        end
+        module Outer
+          include Inner
+        end
+        class A
+          extend Outer
+        end
+        A.deep_method
+        RUBY
+      end
+
+      it "respond_to? correctly reports true for a class method only reachable through an extended module" do
+        eval(<<-RUBY).should eq Value.bool(true)
+        module M
+          def greet
+          end
+        end
+        class A
+          extend M
+        end
+        A.respond_to?(:greet)
+        RUBY
+      end
+    end
   end
 end

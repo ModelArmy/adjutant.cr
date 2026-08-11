@@ -121,10 +121,18 @@ module Adjutant
     # Look up a script-defined singleton method by symbol id, walking
     # the superclass chain — same shape as find_method, separate
     # table.
+    # Look up a script-defined singleton method by symbol id: this
+    # class/module's OWN singleton methods first, then its extended
+    # modules (STEP 3 of the extend-support build-out — see
+    # SCOPE.md's git history; the module was already being recorded
+    # since Step 2, but nothing consulted it until this), then repeat
+    # at the superclass, and so on up the chain. Same shape as
+    # find_method's own Step 3 (include), mirrored onto the singleton
+    # side.
     def find_singleton_method(sym_id : Int32) : ScriptProc?
       cls = self
       while cls
-        if m = cls.singleton_methods[sym_id]?
+        if m = cls.find_own_or_extended_method(sym_id)
           return m
         end
         cls = cls.superclass
@@ -185,10 +193,11 @@ module Adjutant
     # superclass chain — same shape as find_native_method, separate
     # table. A subclass with no native `new` of its own inherits its
     # ancestor's (e.g. a File subclass reusing File.new).
+    # Same shape as find_singleton_method, native table.
     def find_native_singleton_method(sym_id : Int32) : NativeCallable?
       cls = self
       while cls
-        if m = cls.native_singleton_methods[sym_id]?
+        if m = cls.find_own_or_extended_native_method(sym_id)
           return m
         end
         cls = cls.superclass
@@ -299,6 +308,47 @@ module Adjutant
         return m
       end
       @included_modules.reverse_each do |mod|
+        if m = mod.find_own_or_included_native_method(sym_id)
+          return m
+        end
+      end
+      nil
+    end
+
+    # Checks THIS class/module's own SINGLETON method table, then its
+    # extended modules — same shape as find_own_or_included_method,
+    # mirrored onto the singleton side (own table first, extended
+    # modules in reverse-insertion MRO order, deliberately NOT the
+    # superclass — the outer find_singleton_method loop handles
+    # that).
+    #
+    # Recurses into each extended module's OWN INSTANCE-side chain
+    # (find_own_or_included_method, not a separate "extended" variant)
+    # — this is the whole point of `extend`: a module's ordinary
+    # `def foo` methods (its own `methods` table, the same one
+    # `include` reads) become the EXTENDING class's singleton
+    # methods. `extend M` where M itself `include`s N correctly
+    # surfaces N's methods too, the same way M's own instance callers
+    # would see them, since this reuses that exact walk rather than
+    # inventing a parallel one.
+    protected def find_own_or_extended_method(sym_id : Int32) : ScriptProc?
+      if m = @singleton_methods[sym_id]?
+        return m
+      end
+      @extended_modules.reverse_each do |mod|
+        if m = mod.find_own_or_included_method(sym_id)
+          return m
+        end
+      end
+      nil
+    end
+
+    # Same shape as find_own_or_extended_method, native table.
+    protected def find_own_or_extended_native_method(sym_id : Int32) : NativeCallable?
+      if m = @native_singleton_methods[sym_id]?
+        return m
+      end
+      @extended_modules.reverse_each do |mod|
         if m = mod.find_own_or_included_native_method(sym_id)
           return m
         end
