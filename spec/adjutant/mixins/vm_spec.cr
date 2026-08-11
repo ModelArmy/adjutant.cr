@@ -945,5 +945,104 @@ module Adjutant
         RUBY
       end
     end
+
+    describe "extend + RiskWalker (Step 4 — static recognition, mirrors include's own Step 3)" do
+      # RiskWalker never executes anything — a purely static walk —
+      # so `extend M` only mutates `A.extended_modules` when the real
+      # native `extend` method actually RUNS, which never happens
+      # during a static walk. Without RiskWalker's own static
+      # recognition (walk_class/walk_module's `extend_call?` branch,
+      # mirroring the runtime effect via `register_static_extend`),
+      # a class method only reachable through an extended module
+      # showed up as RiskUnresolved (severity Error, tags
+      # {ExecutesCode} — RiskAggregator's generic "unresolved"
+      # fallback), same failure shape include's own Step 3 had before
+      # its fix.
+
+      it "RiskWalker resolves a class-method call reached through an extended module" do
+        interp, _ = make_interp
+        risk = RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
+        register_risky_module(interp, "delete_fn", risk)
+        walker = RiskWalker.new(interp)
+        body = risk_walker_test_parse(<<-RUBY)
+          module M
+            def run
+              delete_fn()
+            end
+          end
+          class A
+            extend M
+          end
+          A.run
+        RUBY
+        summary = RiskAggregator.summarize(walker.walk_body(body))
+        summary.severity.should eq Severity::Error
+        summary.tags.should eq Set{RiskTag::DeletesFiles}
+      end
+
+      it "static extend recognition also works for nested module inclusion (extended module including another module)" do
+        interp, _ = make_interp
+        risk = RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
+        register_risky_module(interp, "delete_fn", risk)
+        walker = RiskWalker.new(interp)
+        body = risk_walker_test_parse(<<-RUBY)
+          module Inner
+            def deep
+              delete_fn()
+            end
+          end
+          module Outer
+            include Inner
+          end
+          class A
+            extend Outer
+          end
+          A.deep
+        RUBY
+        summary = RiskAggregator.summarize(walker.walk_body(body))
+        summary.severity.should eq Severity::Error
+        summary.tags.should eq Set{RiskTag::DeletesFiles}
+      end
+
+      it "an extend argument that doesn't resolve to a known class/module doesn't crash the walk" do
+        interp, _ = make_interp
+        walker = RiskWalker.new(interp)
+        body = risk_walker_test_parse(<<-RUBY)
+          class A
+            extend SomeUnknownModule
+          end
+        RUBY
+        summary = RiskAggregator.summarize(walker.walk_body(body))
+        summary.severity.should_not be_nil
+      end
+
+      it "extend and include recognized in the same class walk independently, each into its own list" do
+        interp, _ = make_interp
+        risk = RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
+        register_risky_module(interp, "delete_fn", risk)
+        walker = RiskWalker.new(interp)
+        body = risk_walker_test_parse(<<-RUBY)
+          module Inc
+            def instance_risky
+              delete_fn()
+            end
+          end
+          module Ext
+            def class_risky
+              delete_fn()
+            end
+          end
+          class A
+            include Inc
+            extend Ext
+          end
+          A.new.instance_risky
+          A.class_risky
+        RUBY
+        summary = RiskAggregator.summarize(walker.walk_body(body))
+        summary.severity.should eq Severity::Error
+        summary.tags.should eq Set{RiskTag::DeletesFiles}
+      end
+    end
   end
 end

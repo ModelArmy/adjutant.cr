@@ -339,6 +339,9 @@ module Adjutant
         elsif include_call?(stmt)
           register_static_include(mod, stmt.as(Call))
           RiskSequence.new([] of RiskNode, stmt.line).as(RiskNode)
+        elsif extend_call?(stmt)
+          register_static_extend(mod, stmt.as(Call))
+          RiskSequence.new([] of RiskNode, stmt.line).as(RiskNode)
         else
           walk_node(stmt, TypeInference::Env.new).as(RiskNode)
         end
@@ -409,6 +412,14 @@ module Adjutant
       stmt.is_a?(Call) && stmt.receiver.nil? && stmt.method == "include" && stmt.args.size == 1
     end
 
+    # Same shape as include_call?, for `extend` — see that method's
+    # own comment; STEP 4 of the extend-support build-out (see
+    # SCOPE.md's git history) mirrors include's Step 3 exactly, on
+    # the singleton side.
+    private def extend_call?(stmt : Node) : Bool
+      stmt.is_a?(Call) && stmt.receiver.nil? && stmt.method == "extend" && stmt.args.size == 1
+    end
+
     # Mirrors the RUNTIME effect of `include SomeModule`
     # (RubyClass#include_module, invoked by the real native `include`
     # method when a script actually RUNS) into the class/module
@@ -455,6 +466,22 @@ module Adjutant
       cls.include_module(mod) if mod
     end
 
+    # Mirrors the RUNTIME effect of `extend SomeModule`
+    # (RubyClass#extend_module) into the class/module currently being
+    # statically walked — same reasoning as register_static_include's
+    # own comment, and the same "treat the call itself as purely
+    # structural, no generic re-walk" decision (see walk_class/
+    # walk_module's own `elsif extend_call?` branch, below).
+    private def register_static_extend(cls : RubyClass, node : Call) : Nil
+      arg = node.args.first
+      mod = case arg
+            when Constant  then resolve_class(arg.name)
+            when ConstPath then resolve_const_path(arg)
+            else                nil
+            end
+      cls.extend_module(mod) if mod
+    end
+
     private def walk_class(node : ClassNode) : RiskNode
       superclass = node.superclass.try { |name| resolve_class(name) }
       cls = RubyClass.new(node.name, superclass)
@@ -471,6 +498,9 @@ module Adjutant
           walk_nested(stmt, cls)
         elsif include_call?(stmt)
           register_static_include(cls, stmt.as(Call))
+          RiskSequence.new([] of RiskNode, stmt.line).as(RiskNode)
+        elsif extend_call?(stmt)
+          register_static_extend(cls, stmt.as(Call))
           RiskSequence.new([] of RiskNode, stmt.line).as(RiskNode)
         else
           walk_node(stmt, TypeInference::Env.new).as(RiskNode)
