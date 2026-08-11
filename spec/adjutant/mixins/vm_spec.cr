@@ -107,5 +107,223 @@ module Adjutant
         a.included_modules.should eq [m, m]
       end
     end
+
+    describe "include (Step 3 — actual method resolution)" do
+      # find_method/find_native_method (RubyClass) now walk
+      # included_modules — this is the step that makes `include`
+      # actually DO something. VM#dispatch_call and VM#dispatch_super
+      # both call these same two methods rather than having their own
+      # copies, so module-aware resolution reached both automatically.
+      # RiskWalker turned out to need its OWN separate fix too — see
+      # the "RiskWalker resolves a call reached through an included
+      # module" spec below for why (it never executes anything, so
+      # `include`'s runtime effect needed static recognition of its
+      # own) — corrected here rather than left as an inaccurate
+      # "automatic" claim. See DEVELOPMENT.md.
+
+      it "a class including a module can call the module's instance method" do
+        eval(<<-RUBY).should eq Value.string("hi from M")
+        module M
+          def greet
+            "hi from M"
+          end
+        end
+        class A
+          include M
+        end
+        A.new.greet
+        RUBY
+      end
+
+      it "the class's OWN method wins over an included module's same-named method" do
+        eval(<<-RUBY).should eq Value.string("A's own")
+        module M
+          def greet
+            "from M"
+          end
+        end
+        class A
+          include M
+          def greet
+            "A's own"
+          end
+        end
+        A.new.greet
+        RUBY
+      end
+
+      it "with multiple includes, the LAST one included wins (real Ruby MRO — closest to the class)" do
+        eval(<<-RUBY).should eq Value.string("from M2")
+        module M1
+          def greet
+            "from M1"
+          end
+        end
+        module M2
+          def greet
+            "from M2"
+          end
+        end
+        class A
+          include M1
+          include M2
+        end
+        A.new.greet
+        RUBY
+      end
+
+      it "an included module's method still runs with self bound to the ACTUAL instance, not the module" do
+        eval(<<-RUBY).should eq Value.int(42_i64)
+        module M
+          def show
+            @value
+          end
+        end
+        class A
+          include M
+          def initialize
+            @value = 42
+          end
+        end
+        A.new.show
+        RUBY
+      end
+
+      it "an included module's method can call another of the CLASS's own methods (self stays the real instance throughout)" do
+        eval(<<-RUBY).should eq Value.string("A-helper-M")
+        module M
+          def run
+            "A-" + helper
+          end
+        end
+        class A
+          include M
+          def helper
+            "helper-M"
+          end
+        end
+        A.new.run
+        RUBY
+      end
+
+      it "a module included in a module (nested inclusion) is reachable transitively" do
+        eval(<<-RUBY).should eq Value.string("deep")
+        module Inner
+          def deep_method
+            "deep"
+          end
+        end
+        module Outer
+          include Inner
+        end
+        class A
+          include Outer
+        end
+        A.new.deep_method
+        RUBY
+      end
+
+      it "super still correctly reaches the SUPERCLASS's method, not a same-named method from an included module" do
+        # A confirms include didn't disturb ordinary super resolution
+        # — modules sit in the ancestor chain ABOVE the class's own
+        # methods but the RELATIONSHIP between a class and its
+        # superclass is untouched by any of this.
+        eval(<<-RUBY).should eq Value.string("Base-A")
+        module M
+          def greet
+            "from M"
+          end
+        end
+        class Base
+          def greet
+            "Base"
+          end
+        end
+        class A < Base
+          include M
+          def greet
+            super + "-A"
+          end
+        end
+        A.new.greet
+        RUBY
+      end
+
+      it "RiskWalker resolves a call reached through an included module" do
+        # This turned out to need its own fix, not "automatic" the
+        # way super/dispatch_call's module-awareness was —
+        # find_method/find_native_method being shared was necessary
+        # but not sufficient. RiskWalker never EXECUTES anything (a
+        # purely static walk); `include M` only mutates
+        # `A.included_modules` when the real native `include` method
+        # actually RUNS, which never happens here. Without
+        # RiskWalker's own static recognition of `include`
+        # (walk_class/walk_module's new `include_call?` branch,
+        # mirroring the runtime effect via `register_static_include`)
+        # this test failed with severity Error/tags {ExecutesCode} —
+        # RiskAggregator's generic "unresolved" fallback, not
+        # {DeletesFiles} — because `A.included_modules` stayed empty
+        # for the whole walk and `run` was never found at all.
+        interp, _ = make_interp
+        risk = RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
+        register_risky_module(interp, "delete_fn", risk)
+        walker = RiskWalker.new(interp)
+        body = risk_walker_test_parse(<<-RUBY)
+          module M
+            def run
+              delete_fn()
+            end
+          end
+          class A
+            include M
+          end
+          A.new.run
+        RUBY
+        summary = RiskAggregator.summarize(walker.walk_body(body))
+        summary.severity.should eq Severity::Error
+        summary.tags.should eq Set{RiskTag::DeletesFiles}
+      end
+
+      it "static include recognition also works for nested module inclusion (module including a module)" do
+        interp, _ = make_interp
+        risk = RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
+        register_risky_module(interp, "delete_fn", risk)
+        walker = RiskWalker.new(interp)
+        body = risk_walker_test_parse(<<-RUBY)
+          module Inner
+            def deep
+              delete_fn()
+            end
+          end
+          module Outer
+            include Inner
+          end
+          class A
+            include Outer
+          end
+          A.new.deep
+        RUBY
+        summary = RiskAggregator.summarize(walker.walk_body(body))
+        summary.severity.should eq Severity::Error
+        summary.tags.should eq Set{RiskTag::DeletesFiles}
+      end
+
+      it "an include argument that doesn't resolve to a known class/module doesn't crash the walk" do
+        interp, _ = make_interp
+        walker = RiskWalker.new(interp)
+        body = risk_walker_test_parse(<<-RUBY)
+          class A
+            include SomeUnknownModule
+          end
+        RUBY
+        summary = RiskAggregator.summarize(walker.walk_body(body))
+        # register_static_include no-ops silently when the argument
+        # doesn't resolve — the include statement itself contributes
+        # no risk either way (see register_static_include's own
+        # comment), so this just confirms the walk completes cleanly
+        # rather than raising.
+        summary.severity.should_not be_nil
+      end
+    end
   end
 end

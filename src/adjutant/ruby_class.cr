@@ -176,11 +176,15 @@ module Adjutant
       nil
     end
 
-    # Look up a method by symbol id, walking the superclass chain.
+    # Look up a method by symbol id: this class/module's OWN methods
+    # first, then its included modules (STEP 3 of the include-support
+    # build-out — see SCOPE.md's git history; the module was already
+    # being recorded since Step 2, but nothing consulted it until
+    # this), then repeat at the superclass, and so on up the chain.
     def find_method(sym_id : Int32) : ScriptProc?
       cls = self
       while cls
-        if m = cls.methods[sym_id]?
+        if m = cls.find_own_or_included_method(sym_id)
           return m
         end
         cls = cls.superclass
@@ -188,15 +192,53 @@ module Adjutant
       nil
     end
 
-    # Look up a native method by symbol id, walking the superclass
-    # chain — same shape as find_method, separate table.
+    # Look up a native method by symbol id — same shape as
+    # find_method, separate table.
     def find_native_method(sym_id : Int32) : NativeCallable?
       cls = self
       while cls
-        if m = cls.native_methods[sym_id]?
+        if m = cls.find_own_or_included_native_method(sym_id)
           return m
         end
         cls = cls.superclass
+      end
+      nil
+    end
+
+    # Checks THIS class/module's own method table, then its included
+    # modules — deliberately NOT the superclass (find_method's own
+    # loop, above, handles moving up that chain; folding it in here
+    # too would search each ancestor's own modules once per level
+    # AND once again via the outer loop's next iteration reaching the
+    # same class). `included_modules.reverse_each`: real Ruby's MRO —
+    # the LAST module `include`d sits CLOSEST to the class, so it's
+    # checked FIRST, ahead of earlier includes (RubyClass#
+    # include_module's own comment has the storage-order reasoning).
+    # Recurses into each module's OWN find_own_or_included_method,
+    # not just a flat one-level check — a module can itself `include`
+    # another module, and real Ruby's MRO flattens that nesting into
+    # the search too, not just the class's own direct includes.
+    protected def find_own_or_included_method(sym_id : Int32) : ScriptProc?
+      if m = @methods[sym_id]?
+        return m
+      end
+      @included_modules.reverse_each do |mod|
+        if m = mod.find_own_or_included_method(sym_id)
+          return m
+        end
+      end
+      nil
+    end
+
+    # Same shape as find_own_or_included_method, native table.
+    protected def find_own_or_included_native_method(sym_id : Int32) : NativeCallable?
+      if m = @native_methods[sym_id]?
+        return m
+      end
+      @included_modules.reverse_each do |mod|
+        if m = mod.find_own_or_included_native_method(sym_id)
+          return m
+        end
       end
       nil
     end
