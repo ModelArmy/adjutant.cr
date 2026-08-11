@@ -425,6 +425,24 @@ Quality-of-diagnostic gaps in the `Diagnostic`/`ErrorCatalog` system
 
 ### Object model
 
+- **`extend` (mixing a module's methods in as SINGLETON methods,
+  rather than instance methods) — deliberately scoped OUT of the
+  `include` Must Fix item above, filed separately so it isn't lost.**
+  Found 2026-08-10, during the sizing conversation for `include`.
+  Same underlying shape as `include` — a native method that adds a
+  module's methods to a lookup chain — but attaches to the
+  SINGLETON/class-object chain (`find_singleton_method`/
+  `find_native_singleton_method`, `ruby_class.cr`) instead of the
+  instance chain (`find_method`/`find_native_method`), and applies to
+  a single OBJECT (`obj.extend(M)`) as well as a class/module body
+  (`self.extend(M)`), not just class/module bodies the way `include`
+  is normally written. Whether `include`'s eventual
+  `included_modules`-walking implementation generalizes cleanly to
+  this (same list, checked in the singleton chain too) or needs its
+  own separate `extended_modules`-shaped field is an open question —
+  worth revisiting once `include` itself is actually built, not
+  guessed at now.
+
 - **No `Numeric` ancestor class in the `RubyClass` hierarchy, so
   `5.is_a?(Numeric)` fails rather than returning `true`.** Long-
   standing, untriaged since the original 2026-07-14 handoff bundle —
