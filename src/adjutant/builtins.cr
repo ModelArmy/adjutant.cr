@@ -8,6 +8,7 @@ require "./builtins/hash"
 require "./builtins/range"
 require "./builtins/proc"
 require "./builtins/exceptions"
+require "./builtins/mixins"
 
 module Adjutant::Builtins
 end

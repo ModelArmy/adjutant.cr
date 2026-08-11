@@ -120,6 +120,15 @@ module Adjutant
       Value.nil_value
     end
 
+    # No-op — this direct-NativeCallable test harness never has a
+    # real running frame to read self from (no VM behind it at all —
+    # see the other no-op stubs below for the same reasoning). A spec
+    # that needs real self_val behavior (e.g. testing `include`)
+    # should go through the real VM instead (interp.eval).
+    def self_val : Value
+      Value.nil_value
+    end
+
     # Delegates to ValueOps (value_ops.cr) — the same VM-independent
     # logic Op::Eq/Op::Lt/etc. use, and the only implementation now;
     # this used to be a third hand-duplicated copy of compare_op's

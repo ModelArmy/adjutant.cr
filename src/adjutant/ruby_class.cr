@@ -47,6 +47,18 @@ module Adjutant
     # inheritance, and is what constant lookup walks.
     property lexical_parent : RubyClass?
 
+    # Modules mixed in via `include`, in INSERTION order (index 0 =
+    # first included). `find_method`/`find_native_method` (below)
+    # walk this in REVERSE — real Ruby's MRO: the LAST module
+    # included sits CLOSEST to the class, so it's checked FIRST,
+    # ahead of earlier includes and ahead of the superclass. Empty for
+    # the overwhelming majority of classes/modules (no `include` in
+    # their body at all) — a plain `Array(RubyClass)`, not nilable,
+    # since checking `.empty?` costs nothing and every RubyClass
+    # already allocates several other always-present collections the
+    # same way (`methods`, `ivars`, ...).
+    getter included_modules : Array(RubyClass)
+
     def initialize(@name : String, @superclass : RubyClass? = nil, @is_module : Bool = false, @uninstantiable : Bool = false)
       @methods = {} of Int32 => ScriptProc
       @native_methods = {} of Int32 => NativeCallable
@@ -55,6 +67,22 @@ module Adjutant
       @cvars = {} of Int32 => Value
       @ivars = {} of Int32 => Value
       @constants = {} of Int32 => Value
+      @included_modules = [] of RubyClass
+    end
+
+    # `include SomeModule` — mixes SomeModule's instance methods into
+    # this class/module's own resolution chain (see
+    # `find_method`/`find_native_method`, below). Appending, not
+    # prepending: insertion order is preserved here; it's the READ
+    # side (the two `find_*` methods) that walks the array in reverse
+    # to get real Ruby's "last included wins" MRO — keeping storage
+    # order the same as source order, rather than storing it
+    # pre-reversed, is easier to reason about from a debugger and
+    # matches how `methods`/`native_methods` etc. are populated
+    # (whatever order `define`/`define_method` were actually called
+    # in, no reordering).
+    def include_module(mod : RubyClass) : Nil
+      @included_modules << mod
     end
 
     def define_method(sym_id : Int32, proc : ScriptProc) : Nil
@@ -148,11 +176,58 @@ module Adjutant
       nil
     end
 
-    # Look up a method by symbol id, walking the superclass chain.
+    # The full linearized method-resolution order (real Ruby's
+    # `Module#ancestors`) — this class/module itself, then its own
+    # included modules (reverse order — real MRO: the LAST module
+    # `include`d sits CLOSEST, so it's listed first among them, same
+    # reasoning as `find_own_or_included_method`'s own comment — each
+    # expanded RECURSIVELY via its own `ancestors`, since a module can
+    # itself `include` another module), then — if this is a class,
+    # not a module — the superclass's own full `ancestors`. A
+    # module's own `superclass` is always nil, so this naturally
+    # terminates there with no special-casing needed for the
+    # class-vs-module distinction; the SAME method works for both.
+    #
+    # Needed by `VM#dispatch_super` (STEP 4 of the include-support
+    # build-out — see SCOPE.md's git history): `super`'s resolution
+    # can't just jump from the currently-executing method's own class
+    # to that class's `superclass` anymore once modules exist in the
+    # picture — a module `include`d directly into that class sits
+    # BETWEEN it and its superclass in the real MRO, and if `super`
+    # is called from INSIDE a module's own method, that module has no
+    # `superclass` of its own to fall back on at all (only the ACTUAL
+    # receiver's full ancestry knows what comes next). `dispatch_super`
+    # computes this once per call, finds where the current method's
+    # own `lexical_scope` sits in it, and searches everything AFTER
+    # that position — see that method's own comment for the full
+    # reasoning.
+    #
+    # No de-duplication — matches `RubyClass#include_module`'s own
+    # currently-open question (see that method's comment): a module
+    # included twice, or reachable via two different paths, appears
+    # more than once here. Not a correctness problem for `super`'s
+    # own search (the right answer is still found, just possibly
+    # checked against the same module redundantly) — worth revisiting
+    # together with `include_module`'s own de-dup question if either
+    # is ever addressed.
+    def ancestors : Array(RubyClass)
+      result = [self] of RubyClass
+      @included_modules.reverse_each { |mod| result.concat(mod.ancestors) }
+      if sup = @superclass
+        result.concat(sup.ancestors)
+      end
+      result
+    end
+
+    # Look up a method by symbol id: this class/module's OWN methods
+    # first, then its included modules (STEP 3 of the include-support
+    # build-out — see SCOPE.md's git history; the module was already
+    # being recorded since Step 2, but nothing consulted it until
+    # this), then repeat at the superclass, and so on up the chain.
     def find_method(sym_id : Int32) : ScriptProc?
       cls = self
       while cls
-        if m = cls.methods[sym_id]?
+        if m = cls.find_own_or_included_method(sym_id)
           return m
         end
         cls = cls.superclass
@@ -160,15 +235,53 @@ module Adjutant
       nil
     end
 
-    # Look up a native method by symbol id, walking the superclass
-    # chain — same shape as find_method, separate table.
+    # Look up a native method by symbol id — same shape as
+    # find_method, separate table.
     def find_native_method(sym_id : Int32) : NativeCallable?
       cls = self
       while cls
-        if m = cls.native_methods[sym_id]?
+        if m = cls.find_own_or_included_native_method(sym_id)
           return m
         end
         cls = cls.superclass
+      end
+      nil
+    end
+
+    # Checks THIS class/module's own method table, then its included
+    # modules — deliberately NOT the superclass (find_method's own
+    # loop, above, handles moving up that chain; folding it in here
+    # too would search each ancestor's own modules once per level
+    # AND once again via the outer loop's next iteration reaching the
+    # same class). `included_modules.reverse_each`: real Ruby's MRO —
+    # the LAST module `include`d sits CLOSEST to the class, so it's
+    # checked FIRST, ahead of earlier includes (RubyClass#
+    # include_module's own comment has the storage-order reasoning).
+    # Recurses into each module's OWN find_own_or_included_method,
+    # not just a flat one-level check — a module can itself `include`
+    # another module, and real Ruby's MRO flattens that nesting into
+    # the search too, not just the class's own direct includes.
+    protected def find_own_or_included_method(sym_id : Int32) : ScriptProc?
+      if m = @methods[sym_id]?
+        return m
+      end
+      @included_modules.reverse_each do |mod|
+        if m = mod.find_own_or_included_method(sym_id)
+          return m
+        end
+      end
+      nil
+    end
+
+    # Same shape as find_own_or_included_method, native table.
+    protected def find_own_or_included_native_method(sym_id : Int32) : NativeCallable?
+      if m = @native_methods[sym_id]?
+        return m
+      end
+      @included_modules.reverse_each do |mod|
+        if m = mod.find_own_or_included_native_method(sym_id)
+          return m
+        end
       end
       nil
     end

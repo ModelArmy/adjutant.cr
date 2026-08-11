@@ -630,6 +630,25 @@ module Adjutant
       @frames.last
     end
 
+    # Exposes the CURRENTLY RUNNING frame's own `self` to a native
+    # function — needed by any native method reached via
+    # `dispatch_call`'s implicit-self/self-is-rclass branch (a bare
+    # call made from inside a class/module body, e.g. `include Foo`),
+    # since THAT dispatch path (unlike the explicit-receiver one) never
+    # prepends a receiver into `args` at all — `call_native` has no
+    # `self_val` parameter of its own. Native functions execute
+    # in-line, without pushing their own Frame, so `current_frame`
+    # here is genuinely still the CALLING frame — the one whose
+    # `self_val` is exactly what "self" means at the call site.
+    # `protected`, not `private`, so `NativeFunctionCall`
+    # (interpreter.cr, this module's only `NativeCallContext`
+    # implementor) can call it — same visibility as `invoke`/
+    # `call_method`/`compare`, which already do this for their own
+    # reasons.
+    protected def current_self_val : Value
+      current_frame.self_val
+    end
+
     private def push(v : Value) : Nil
       raise script_diagnostic("L003", {"limit" => MAX_STACK.to_s}, current_frame) if @stack.size >= MAX_STACK
       @stack.push(v)
@@ -1503,14 +1522,22 @@ module Adjutant
     # dispatch_call, the method NAME is never carried by the
     # instruction — it's always "whatever method this bytecode is
     # itself running inside," read off the current frame's own proc.
-    # Resolution starts at that proc's lexical_scope's SUPERCLASS
-    # (not self's own class, which is where an ordinary call would
-    # start) — self stays the original receiver throughout; only the
-    # starting point of the method-table walk moves up one level.
+    # Resolution walks self's REAL runtime ancestor chain
+    # (RubyClass#ancestors — self/superclass/included-modules,
+    # linearized real-Ruby MRO order), starting right AFTER wherever
+    # the current proc's own lexical_scope sits in that chain — not a
+    # fixed one-hop jump to lexical_scope.superclass, which stopped
+    # being correct once `include` existed (a module included
+    # directly into lexical_scope sits BETWEEN it and its superclass
+    # in the real MRO; see RubyClass#ancestors' own comment and
+    # SCOPE.md's git history for the full reasoning). self stays the
+    # original receiver throughout — only the starting point of the
+    # search moves.
     #
     # A proc with no lexical_scope (a top-level function, or a block)
-    # has no "class above" to start from at all — treated the same as
-    # a lookup that starts but finds nothing, below.
+    # has no ancestor chain to search at all — treated the same as a
+    # lookup that starts but finds nothing, below.
+    # ameba:disable Metrics/CyclomaticComplexity - two resolution paths (instance vs. the pre-existing singleton fallback), not tangled logic
     private def dispatch_super(f : Frame, args : Array(Value), filename : String, line : Int32,
                                zsuper : Bool = false) : Value
       proc = f.proc
@@ -1521,30 +1548,55 @@ module Adjutant
         else
           {args, nil}
         end
-      start_cls = proc.lexical_scope.try(&.superclass)
-      sym_id = start_cls ? @symbols.lookup(name).try(&.value) : nil
+      lex = proc.lexical_scope
+      sym_id = lex ? @symbols.lookup(name).try(&.value) : nil
 
-      if start_cls && sym_id
-        if method = start_cls.find_method(sym_id)
-          # f.block/f.block_outer_locals implicitly forward the
-          # CURRENT method's own block onward, real Ruby's default —
-          # super (either form) passes the enclosing method's block
-          # along unless a different one is given explicitly. Reusing
-          # f.block_outer_locals (not f.locals) matters: it's the
-          # closure context the block was ORIGINALLY attached with,
-          # at its own creation site, same reuse Op::Yield's own
-          # call_script_proc call makes when actually invoking a
-          # block — passing f.locals instead would silently rebind
-          # the block to the wrong enclosing scope.
-          return call_script_proc(method, call_args, filename, f.block,
-            self_val: f.self_val, block_outer: f.block_outer_locals, kwargs: call_kwargs)
+      # STEP 4 of the include-support build-out (see SCOPE.md's git
+      # history): `super` can't just jump from `lex` to `lex.superclass`
+      # anymore now that `include` exists — a module included directly
+      # into `lex` sits BETWEEN it and its superclass in the real MRO
+      # (`RubyClass#ancestors`' own comment has the full reasoning), and
+      # if the CURRENTLY-EXECUTING method is itself a module's own method
+      # (`lex` is a module, not a class), that module has no `superclass`
+      # of its own to fall back on at all — only the ACTUAL receiver's
+      # full ancestry knows what comes after it. Computed from `self`'s
+      # REAL runtime class, not `lex` itself, since `self` may be an
+      # instance of a SUBCLASS further down the chain than wherever this
+      # method happens to be textually defined (ordinary polymorphism —
+      # the search space is self's ancestry, `lex` is just the anchor
+      # point within it).
+      #
+      # `f.self_val.as_robject?` only — deliberately NOT extended to
+      # cover `self_val.as_rclass?` (a class-method/singleton `super`,
+      # `def self.foo; super; end`). That path is a pre-existing,
+      # SEPARATE gap unrelated to `include`: singleton `super` has
+      # always searched instance method tables rather than the
+      # singleton chain, predating this session. Not fixed here — the
+      # `elsif lex` fallback below preserves that existing (already
+      # imperfect) behavior unchanged rather than silently deepening
+      # scope into a different bug.
+      if lex && sym_id && (obj = f.self_val.as_robject?)
+        chain = obj.rclass.ancestors
+        idx = chain.index(lex)
+        if idx
+          chain[(idx + 1)..].each do |candidate|
+            if method = candidate.methods[sym_id]?
+              return call_script_method(method, call_args, call_kwargs, f, filename)
+            end
+            if native = candidate.native_methods[sym_id]?
+              return call_super_native(native, call_args, call_kwargs, f, filename, line, candidate, name)
+            end
+          end
         end
-        if native = start_cls.find_native_method(sym_id)
-          # Native methods read their receiver as args.first by
-          # convention (see call_native's other callers in
-          # dispatch_call) — super has no receiver on the stack to
-          # reuse, so f.self_val is prepended explicitly here.
-          return call_native(native, [f.self_val] + call_args, filename, line, f.block, "#{start_cls.name}##{name}", kwargs: call_kwargs)
+      elsif lex && sym_id
+        start_cls = lex.superclass
+        if start_cls
+          if method = start_cls.find_method(sym_id)
+            return call_script_method(method, call_args, call_kwargs, f, filename)
+          end
+          if native = start_cls.find_native_method(sym_id)
+            return call_super_native(native, call_args, call_kwargs, f, filename, line, start_cls, name)
+          end
         end
       end
 
@@ -1562,6 +1614,40 @@ module Adjutant
         ),
         error_class: "NoMethodError"
       )
+    end
+
+    # Shared by both branches of dispatch_super above — calling the
+    # found SCRIPT method with the current frame's self/block/block-
+    # closure-context all forwarded unchanged (only the METHOD LOOKUP
+    # moved; self, and everything about the calling frame's own
+    # closure state, stays exactly what it already was).
+    private def call_script_method(method : ScriptProc, call_args : Array(Value), call_kwargs : Hash(String, Value)?,
+                                   f : Frame, filename : String) : Value
+      # f.block/f.block_outer_locals implicitly forward the CURRENT
+      # method's own block onward, real Ruby's default — super
+      # (either form) passes the enclosing method's block along
+      # unless a different one is given explicitly. Reusing
+      # f.block_outer_locals (not f.locals) matters: it's the closure
+      # context the block was ORIGINALLY attached with, at its own
+      # creation site, same reuse Op::Yield's own call_script_proc
+      # call makes when actually invoking a block — passing f.locals
+      # instead would silently rebind the block to the wrong
+      # enclosing scope.
+      call_script_proc(method, call_args, filename, f.block,
+        self_val: f.self_val, block_outer: f.block_outer_locals, kwargs: call_kwargs)
+    end
+
+    # Shared by both branches of dispatch_super above — calling a
+    # found NATIVE method the same way, `candidate` being whichever
+    # ancestor-chain entry (or, in the fallback branch, superclass)
+    # actually owns it, purely for the display name.
+    private def call_super_native(native : NativeCallable, call_args : Array(Value), call_kwargs : Hash(String, Value)?,
+                                  f : Frame, filename : String, line : Int32, candidate : RubyClass, name : String) : Value
+      # Native methods read their receiver as args.first by
+      # convention (see call_native's other callers in dispatch_call)
+      # — super has no receiver on the stack to reuse, so f.self_val
+      # is prepended explicitly here.
+      call_native(native, [f.self_val] + call_args, filename, line, f.block, "#{candidate.name}##{name}", kwargs: call_kwargs)
     end
 
     # Builds the (args, kwargs) a bare `super` (zsuper) forwards —

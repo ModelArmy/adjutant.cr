@@ -336,6 +336,9 @@ module Adjutant
           RiskSequence.new([] of RiskNode, stmt.line).as(RiskNode)
         elsif stmt.is_a?(ClassNode) || stmt.is_a?(ModuleNode)
           walk_nested(stmt, mod)
+        elsif include_call?(stmt)
+          register_static_include(mod, stmt.as(Call))
+          RiskSequence.new([] of RiskNode, stmt.line).as(RiskNode)
         else
           walk_node(stmt, TypeInference::Env.new).as(RiskNode)
         end
@@ -393,6 +396,65 @@ module Adjutant
     # scope's table (@top_level_procs, @known_classes as they stand at
     # this point in the walk) — a class body isn't its own top-level
     # scope.
+    # True when `stmt` is a bare `include SomeModule` call — the ONE
+    # shape STATICALLY recognized here and mirrored into RubyClass#
+    # include_module during the walk (see register_static_include,
+    # below). Real Ruby allows `include` with an explicit receiver
+    # too (`SomeClass.include(Foo)`) — deliberately NOT recognized
+    # here, same scoping decision the actual native `include` method
+    # itself made (see builtins/mixins.cr); only the bare,
+    # receiverless, single-constant-argument form ordinarily written
+    # inside a class/module body is handled.
+    private def include_call?(stmt : Node) : Bool
+      stmt.is_a?(Call) && stmt.receiver.nil? && stmt.method == "include" && stmt.args.size == 1
+    end
+
+    # Mirrors the RUNTIME effect of `include SomeModule`
+    # (RubyClass#include_module, invoked by the real native `include`
+    # method when a script actually RUNS) into the class/module
+    # currently being statically walked. Found 2026-08-10 (see
+    # SCOPE.md's git history, Step 3 of the include-support
+    # build-out): RiskWalker never executes anything — it's a purely
+    # static walk — so without this, `A.included_modules` would stay
+    # empty for the ENTIRE walk regardless of what a script's
+    # `include` statements say, and find_method/find_native_method's
+    # own module-aware walk (Step 3's other half, ruby_class.cr)
+    # would have nothing to find; a method only reachable through an
+    # included module showed up as RiskUnresolved (severity Error —
+    # the "can't confirm, surface loudly" fallback, RiskAggregator's
+    # own unresolved_profile) rather than actually resolved.
+    #
+    # Silently no-ops if the argument doesn't resolve to a known
+    # class/module (e.g. one defined by a `require`d native
+    # ScriptModule this walker has no static knowledge of) — nothing
+    # else to do in that case, since (see walk_class/walk_module's
+    # own `elsif include_call?` branch) the `include` call itself is
+    # NOT generically re-walked either way. Real Ruby's `Module#
+    # include` has no risk of its own — it's class/mixin wiring, not
+    # code execution — so it's treated the same as `def`: a purely
+    # structural statement contributing an empty RiskSequence, not
+    # walked as an ordinary call. Walking it generically was tried
+    # first and reverted: RiskWalker's bare-call resolution doesn't
+    # model "self is the class currently being defined" outside a
+    # method body (only `super`'s own resolution does, via
+    # @current_self_class, set inside walk_script_method — a
+    # class/module body's own top-level statements run OUTSIDE
+    # that), so `include` itself came back RiskUnresolved every
+    # time — a spurious Error/{ExecutesCode} finding on every single
+    # `include` statement in any script that uses one, alongside
+    # whatever real risk its included module's OWN methods actually
+    # carry (found via the earlier, correctly-resolved DeletesFiles
+    # case in the VM spec for this).
+    private def register_static_include(cls : RubyClass, node : Call) : Nil
+      arg = node.args.first
+      mod = case arg
+            when Constant  then resolve_class(arg.name)
+            when ConstPath then resolve_const_path(arg)
+            else                nil
+            end
+      cls.include_module(mod) if mod
+    end
+
     private def walk_class(node : ClassNode) : RiskNode
       superclass = node.superclass.try { |name| resolve_class(name) }
       cls = RubyClass.new(node.name, superclass)
@@ -407,6 +469,9 @@ module Adjutant
           RiskSequence.new([] of RiskNode, stmt.line).as(RiskNode)
         elsif stmt.is_a?(ClassNode) || stmt.is_a?(ModuleNode)
           walk_nested(stmt, cls)
+        elsif include_call?(stmt)
+          register_static_include(cls, stmt.as(Call))
+          RiskSequence.new([] of RiskNode, stmt.line).as(RiskNode)
         else
           walk_node(stmt, TypeInference::Env.new).as(RiskNode)
         end
@@ -417,6 +482,18 @@ module Adjutant
     private def register_class_method(cls : RubyClass, node : DefNode) : Nil
       proc = ScriptProc.new(Chunk.new, node.name, node.params.map(&.name),
         ast_body: node.body, ast_params: node.params)
+      # Set explicitly — ScriptProc's own initialize doesn't take
+      # lexical_scope (it's a plain `property`, assigned after
+      # construction by the real compiler's compile_def when a method
+      # is genuinely registered — see that field's own comment,
+      # vm.cr). Without this, every RiskWalker-built ScriptProc's
+      # lexical_scope stayed nil regardless of which class/module it
+      # was actually registered on — silently broke walk_super_target's
+      # ancestors-based fix (found immediately, all super resolution
+      # failed, not just the include-specific cases it was meant to
+      # fix) the moment that fix started relying on lexical_scope
+      # being meaningful, which nothing here had ever needed before.
+      proc.lexical_scope = cls
       sym_id = @interp.symbols.intern(node.name).value
       cls.define_method(sym_id, proc)
     end
@@ -424,6 +501,7 @@ module Adjutant
     private def register_class_singleton_method(cls : RubyClass, node : DefNode) : Nil
       proc = ScriptProc.new(Chunk.new, node.name, node.params.map(&.name),
         ast_body: node.body, ast_params: node.params)
+      proc.lexical_scope = cls
       sym_id = @interp.symbols.intern(node.name).value
       cls.define_singleton_method(sym_id, proc)
     end
@@ -653,27 +731,61 @@ module Adjutant
     # meaning statically resolves Unresolved rather than crashing,
     # consistent with every other resolution-failure case in this
     # file.
+    # Resolves what `super` reaches: self's REAL ancestor chain
+    # (RubyClass#ancestors, real Ruby's linearized MRO), searching
+    # everything right AFTER wherever the current proc's own
+    # lexical_scope sits in it — mirrors VM#dispatch_super's own
+    # resolution exactly (see that method's comment for the full
+    # reasoning). Found and fixed 2026-08-10, alongside
+    # dispatch_super's own rewrite (see SCOPE.md's git history, the
+    # include-support build-out): this previously used
+    # `@current_self_class.superclass` — a fixed one-hop jump, same
+    # shape as dispatch_super's old bug, and a SEPARATE, pre-existing
+    # discrepancy from the VM's own semantics even before `include`
+    # existed (self's class isn't necessarily the DEFINING class a
+    # method actually came from — using `lex` as the search anchor,
+    # like the VM does, fixes both at once). A module included
+    # directly into `lex` sits BETWEEN it and its superclass in the
+    # real MRO, and `super` called from inside a MODULE's own method
+    # has no `superclass` of its own to fall back on at all — only
+    # self's full ancestry knows what comes next.
     private def walk_super_target(node : SuperNode) : RiskNode
       cls = @current_self_class
       proc = @current_method_proc
       return RiskUnresolved.new("super", node.line) unless cls && proc
-      start_cls = cls.superclass
-      return RiskUnresolved.new("super", node.line) unless start_cls
+      lex = proc.lexical_scope
+      return RiskUnresolved.new("super", node.line) unless lex
       sym = @interp.symbols.lookup(proc.name)
       return RiskUnresolved.new("super", node.line) unless sym
 
+      # Singleton-method `super` (`def self.foo; super; end`) is a
+      # separate, pre-existing gap unrelated to `include` — see
+      # dispatch_super's own comment for the full reasoning. Left
+      # exactly as it was (still a fixed one-hop jump to
+      # `lex.superclass`) rather than silently deepened into a
+      # different bug by folding it into the ancestors-based fix
+      # below, which only covers the instance-method case.
       if @current_self_is_singleton
+        start_cls = lex.superclass
+        return RiskUnresolved.new("super", node.line) unless start_cls
         if script_method = start_cls.find_singleton_method(sym.value)
           return walk_script_method(script_method, node.line, cls, is_singleton: true)
         end
         if native = start_cls.find_native_singleton_method(sym.value)
           return RiskLeaf.new(native.risk, proc.name, node.line)
         end
-      else
-        if script_method = start_cls.find_method(sym.value)
+        return RiskUnresolved.new("super", node.line)
+      end
+
+      chain = cls.ancestors
+      idx = chain.index(lex)
+      return RiskUnresolved.new("super", node.line) unless idx
+
+      chain[(idx + 1)..].each do |candidate|
+        if script_method = candidate.methods[sym.value]?
           return walk_script_method(script_method, node.line, cls)
         end
-        if native = start_cls.find_native_method(sym.value)
+        if native = candidate.native_methods[sym.value]?
           return RiskLeaf.new(native.risk, proc.name, node.line)
         end
       end

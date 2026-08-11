@@ -72,23 +72,6 @@ may unblock ones above it.
   fallback-only names `exec_builtin` handles, rather than a full
   lookup-table rewrite.
 
-- **`include`/mixins don't exist at all.** Long-standing, untriaged
-  since the original 2026-07-14 handoff bundle — promoted to `Must
-  Fix` 2026-08-10 on review. `include` is a reserved lexer keyword
-  (`TokenKind::KwInclude`, `token.cr`) with zero parser handling
-  anywhere, so it fails loudly (`P002`, unexpected token) rather than
-  silently no-opping — not the silent-incorrectness pattern most of
-  this list's other promotions share, but real code-sharing is common
-  enough in ordinary Ruby (not just the `Comparable`/`<=>` case,
-  already covered separately — see below) that its total absence is
-  a normal-use blocker for anything an agent writes expecting
-  standard Ruby idioms to work. Genuine scoping work needed before
-  starting, not a drop-in fix: general mixin support reopens some of
-  the same static-resolvability tension `send`/`eval` (U005/U006)
-  exist to avoid (a method's origin becoming dynamic/less traceable),
-  worth a design conversation on how far to go before writing any
-  parser code.
-
 - **`Array` is missing several methods common enough in ordinary Ruby
   that their absence is a normal-use blocker, not an edge case.**
   Found 2026-08-10, `Array#first` specifically tripping a test script
@@ -426,22 +409,33 @@ Quality-of-diagnostic gaps in the `Diagnostic`/`ErrorCatalog` system
 ### Object model
 
 - **`extend` (mixing a module's methods in as SINGLETON methods,
-  rather than instance methods) — deliberately scoped OUT of the
-  `include` Must Fix item above, filed separately so it isn't lost.**
-  Found 2026-08-10, during the sizing conversation for `include`.
-  Same underlying shape as `include` — a native method that adds a
-  module's methods to a lookup chain — but attaches to the
-  SINGLETON/class-object chain (`find_singleton_method`/
-  `find_native_singleton_method`, `ruby_class.cr`) instead of the
-  instance chain (`find_method`/`find_native_method`), and applies to
-  a single OBJECT (`obj.extend(M)`) as well as a class/module body
-  (`self.extend(M)`), not just class/module bodies the way `include`
-  is normally written. Whether `include`'s eventual
-  `included_modules`-walking implementation generalizes cleanly to
-  this (same list, checked in the singleton chain too) or needs its
-  own separate `extended_modules`-shaped field is an open question —
-  worth revisiting once `include` itself is actually built, not
-  guessed at now.
+  rather than instance methods) — deliberately scoped OUT of
+  `include`'s implementation, filed separately so it isn't lost.**
+  Found 2026-08-10, during the sizing conversation for `include`;
+  updated 2026-08-10 once `include` itself actually shipped (see
+  DEVELOPMENT.md's "Mixins" section) with a real answer to the
+  question this entry originally left open. Same underlying shape as
+  `include` — a native method that adds a module's methods to a
+  lookup chain — but attaches to the SINGLETON/class-object chain
+  (`find_singleton_method`/`find_native_singleton_method`,
+  `ruby_class.cr`) instead of the instance chain (`find_method`/
+  `find_native_method`). Needs its OWN separate field (something like
+  `extended_modules : Array(RubyClass)`, not reusing
+  `included_modules`) — same general shape/pattern as `include`'s own
+  implementation (a list, checked in reverse-insertion MRO order,
+  `find_singleton_method`/`find_native_singleton_method` extended the
+  same way `find_method`/`find_native_method` were), but genuinely
+  separate storage: the two lists mean different things (instance
+  resolution vs. singleton resolution), and reusing one for both
+  would make an `include` incorrectly show up in singleton resolution
+  or vice versa. `self.extend(M)` inside a class/module body (making
+  the CLASS itself gain M's methods as its own class methods) maps
+  cleanly onto this shape. `obj.extend(M)` (extending a single
+  OBJECT, not a class) does NOT — Adjutant has no per-object singleton
+  classes at all today (only per-CLASS singleton method tables), so
+  that form is a bigger, separate feature, not a natural extension of
+  this one. Worth scoping `self.extend` and `obj.extend` as two
+  distinct pieces of work if this is picked up, not one.
 
 - **No `Numeric` ancestor class in the `RubyClass` hierarchy, so
   `5.is_a?(Numeric)` fails rather than returning `true`.** Long-

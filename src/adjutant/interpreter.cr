@@ -35,6 +35,18 @@ module Adjutant
     # default-declaration mechanism exists.
     getter kwargs : Hash(String, Value)?
 
+    # `self` at the call site — needed by a native method that cares
+    # WHICH object/class it was called on when it can't rely on
+    # `args.first` for that (the explicit-receiver dispatch
+    # convention every OTHER native method in `builtins/*.cr` uses).
+    # A bare call made from inside a class/module body (`include Foo`,
+    # called with implicit self) is the first user: that dispatch
+    # path never prepends a receiver into `args` at all — see
+    # `VM#current_self_val`'s own comment for the full reasoning.
+    # Explicit-receiver calls keep using `args.first` as before; this
+    # exists for the OTHER shape, not as a replacement for it.
+    abstract def self_val : Value
+
     # Use this method to yield / call a LIVE call-site block (`{ }`/
     # `do...end`) from a native function — Array#each/Range#each/
     # Hash#each's `blk` param, etc. Never use this for a stored `Proc`
@@ -130,6 +142,10 @@ module Adjutant
     # ---- CallContext
     def invoke(proc : ScriptProc, args : Array(Value)) : Value
       @vm.invoke(proc, args)
+    end
+
+    def self_val : Value
+      @vm.current_self_val
     end
 
     def invoke_proc(proc_obj : RubyObject, args : Array(Value)) : Value
@@ -440,6 +456,10 @@ module Adjutant
       @globals[@symbols.intern("Class").value].as_rclass
     end
 
+    def module_class : RubyClass
+      @globals[@symbols.intern("Module").value].as_rclass
+    end
+
     private def make_vm : VM
       VM.new(@symbols, @limits, @effect, self, @globals, @risk_flow_log, @risk_flow_policy, @on_risk_flow_decision)
     end
@@ -539,6 +559,7 @@ module Adjutant
       register_builtin_class(Builtins.bootstrap_hash(self))
       register_builtin_class(Builtins.bootstrap_range(self))
       register_builtin_class(Builtins.bootstrap_proc(self))
+      Builtins.register_module_methods(module_class, self)
     end
 
     # Applies the same superclass/rclass defaulting define_builtin_class
