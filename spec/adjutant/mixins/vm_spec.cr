@@ -716,5 +716,114 @@ module Adjutant
         summary.tags.should eq Set{RiskTag::DeletesFiles}
       end
     end
+
+    describe "extend (Step 2 — registration only, no method resolution yet)" do
+      # Mirrors include's own Step 2 exactly, into extended_modules
+      # instead of included_modules. `extend` now registers the
+      # module into the extending class's own `extended_modules` —
+      # actual method lookup honoring it (RubyClass#
+      # find_singleton_method/find_native_singleton_method walking
+      # extended_modules) is Step 3, not built yet.
+
+      it "extend adds the module to the extending class's extended_modules" do
+        interp, _ = make_interp
+        interp.eval(<<-RUBY)
+        module M
+        end
+        class A
+          extend M
+        end
+        RUBY
+        a = interp.get_global("A").as_rclass
+        m = interp.get_global("M").as_rclass
+        a.extended_modules.should eq [m]
+      end
+
+      it "extend does NOT also add to included_modules — genuinely separate lists" do
+        interp, _ = make_interp
+        interp.eval(<<-RUBY)
+        module M
+        end
+        class A
+          extend M
+        end
+        RUBY
+        a = interp.get_global("A").as_rclass
+        a.included_modules.should be_empty
+      end
+
+      it "extend works inside a module body too, not just a class body" do
+        interp, _ = make_interp
+        interp.eval(<<-RUBY)
+        module M
+        end
+        module N
+          extend M
+        end
+        RUBY
+        n = interp.get_global("N").as_rclass
+        m = interp.get_global("M").as_rclass
+        n.extended_modules.should eq [m]
+      end
+
+      it "multiple extends are stored in SOURCE order (insertion order — MRO reversal is Step 3's concern, not storage's)" do
+        interp, _ = make_interp
+        interp.eval(<<-RUBY)
+        module M1
+        end
+        module M2
+        end
+        class A
+          extend M1
+          extend M2
+        end
+        RUBY
+        a = interp.get_global("A").as_rclass
+        m1 = interp.get_global("M1").as_rclass
+        m2 = interp.get_global("M2").as_rclass
+        a.extended_modules.should eq [m1, m2]
+      end
+
+      it "`extend` returns self (the extending class), matching real Ruby's Module#extend" do
+        interp, _ = make_interp
+        result = interp.eval(<<-RUBY)
+        module M
+        end
+        class A
+          def self.try_extend
+            extend M
+          end
+        end
+        A.try_extend
+        RUBY
+        result.as_rclass.name.should eq "A"
+      end
+
+      it "a class with no extend at all has an empty extended_modules, unaffected" do
+        interp, _ = make_interp
+        interp.eval("class A\nend")
+        a = interp.get_global("A").as_rclass
+        a.extended_modules.should be_empty
+      end
+
+      it "include and extend can both be used on the same class, into their own separate lists" do
+        interp, _ = make_interp
+        interp.eval(<<-RUBY)
+        module Inc
+        end
+        module Ext
+        end
+        class A
+          include Inc
+          extend Ext
+        end
+        RUBY
+        a = interp.get_global("A").as_rclass
+        inc = interp.get_global("Inc").as_rclass
+        ext = interp.get_global("Ext").as_rclass
+        a.included_modules.should eq [inc]
+        a.extended_modules.should eq [ext]
+      end
+    end
   end
 end

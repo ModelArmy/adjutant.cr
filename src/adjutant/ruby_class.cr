@@ -59,6 +59,18 @@ module Adjutant
     # same way (`methods`, `ivars`, ...).
     getter included_modules : Array(RubyClass)
 
+    # Modules mixed in via `extend`, same shape as `included_modules`
+    # above but for the SINGLETON chain — `extend M` makes M's methods
+    # available as CLASS methods (callable on the class/module object
+    # itself), not instance methods. Genuinely separate storage from
+    # `included_modules`, not a reused field: the two lists mean
+    # different things (instance resolution vs. singleton resolution)
+    # — an `include`d module showing up in singleton resolution, or
+    # vice versa, would be a real correctness bug, not a harmless
+    # simplification. See `find_singleton_method`/
+    # `find_native_singleton_method`, below, for the read side.
+    getter extended_modules : Array(RubyClass)
+
     def initialize(@name : String, @superclass : RubyClass? = nil, @is_module : Bool = false, @uninstantiable : Bool = false)
       @methods = {} of Int32 => ScriptProc
       @native_methods = {} of Int32 => NativeCallable
@@ -68,6 +80,7 @@ module Adjutant
       @ivars = {} of Int32 => Value
       @constants = {} of Int32 => Value
       @included_modules = [] of RubyClass
+      @extended_modules = [] of RubyClass
     end
 
     # `include SomeModule` — mixes SomeModule's instance methods into
@@ -83,6 +96,13 @@ module Adjutant
     # in, no reordering).
     def include_module(mod : RubyClass) : Nil
       @included_modules << mod
+    end
+
+    # `extend SomeModule` — same shape as `include_module` above, but
+    # into `extended_modules`. See that field's own comment for why
+    # this is genuinely separate storage, not a reused list.
+    def extend_module(mod : RubyClass) : Nil
+      @extended_modules << mod
     end
 
     def define_method(sym_id : Int32, proc : ScriptProc) : Nil

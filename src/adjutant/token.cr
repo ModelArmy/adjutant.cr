@@ -59,17 +59,19 @@ module Adjutant
     KwRequire
     KwLoad
     # KwInclude deliberately removed 2026-08-10 (see SCOPE.md's git
-    # history) — unlike prepend/extend below, `include` needs no new
+    # history) — unlike prepend below, `include` needs no new
     # grammar at all: `include Foo` is just an ordinary bare method
     # call (`Module#include`, real Ruby), and Adjutant's class/module
     # body dispatch already resolves bare calls against Module's own
     # method chain correctly (VM#dispatch_call's self_rclass branch).
     # Keeping it reserved would have forced every `include Foo` to hit
     # a parse error before ever reaching that already-working
-    # mechanism. prepend/extend stay reserved for now — neither is
-    # implemented yet, and reserving them costs nothing until they are.
+    # mechanism. KwExtend removed 2026-08-10 too, once `extend` itself
+    # was actually built — identical reasoning, `extend` is equally an
+    # ordinary Module method, not a keyword. prepend stays reserved
+    # for now — not implemented yet, and reserving it costs nothing
+    # until it is.
     KwPrepend
-    KwExtend
     KwAttrReader
     KwAttrWriter
     KwAttrAccessor
@@ -173,7 +175,6 @@ module Adjutant
     "require"         => TokenKind::KwRequire,
     "load"            => TokenKind::KwLoad,
     "prepend"         => TokenKind::KwPrepend,
-    "extend"          => TokenKind::KwExtend,
     "attr_reader"     => TokenKind::KwAttrReader,
     "attr_writer"     => TokenKind::KwAttrWriter,
     "attr_accessor"   => TokenKind::KwAttrAccessor,
