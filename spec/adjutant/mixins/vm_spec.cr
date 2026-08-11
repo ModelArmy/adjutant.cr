@@ -511,5 +511,89 @@ module Adjutant
         result.as_string.should eq "M-native"
       end
     end
+
+    describe "include + respond_to? (no separate change needed — shared find_method/find_native_method)" do
+      it "respond_to? correctly reports true for a method only reachable through an included module" do
+        eval(<<-RUBY).should eq Value.bool(true)
+        module M
+          def greet
+          end
+        end
+        class A
+          include M
+        end
+        A.new.respond_to?(:greet)
+        RUBY
+      end
+
+      it "respond_to? correctly reports false for a method not defined anywhere in the chain, module included" do
+        eval(<<-RUBY).should eq Value.bool(false)
+        module M
+          def greet
+          end
+        end
+        class A
+          include M
+        end
+        A.new.respond_to?(:totally_unrelated)
+        RUBY
+      end
+    end
+
+    describe "include + super + RiskWalker (walk_super_target's own fix, found alongside dispatch_super's)" do
+      it "a risky call reached via super through an included module surfaces its tags statically" do
+        interp, _ = make_interp
+        risk = RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
+        register_risky_module(interp, "delete_fn", risk)
+        walker = RiskWalker.new(interp)
+        body = risk_walker_test_parse(<<-RUBY)
+          module M
+            def greet
+              delete_fn()
+            end
+          end
+          class Base
+            def greet
+            end
+          end
+          class A < Base
+            include M
+            def greet
+              super
+            end
+          end
+          A.new.greet
+        RUBY
+        summary = RiskAggregator.summarize(walker.walk_body(body))
+        summary.severity.should eq Severity::Error
+        summary.tags.should eq Set{RiskTag::DeletesFiles}
+      end
+
+      it "super called from inside a module's own method resolves statically too, reaching the superclass" do
+        interp, _ = make_interp
+        risk = RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
+        register_risky_module(interp, "delete_fn", risk)
+        walker = RiskWalker.new(interp)
+        body = risk_walker_test_parse(<<-RUBY)
+          module M
+            def greet
+              super
+            end
+          end
+          class Base
+            def greet
+              delete_fn()
+            end
+          end
+          class A < Base
+            include M
+          end
+          A.new.greet
+        RUBY
+        summary = RiskAggregator.summarize(walker.walk_body(body))
+        summary.severity.should eq Severity::Error
+        summary.tags.should eq Set{RiskTag::DeletesFiles}
+      end
+    end
   end
 end

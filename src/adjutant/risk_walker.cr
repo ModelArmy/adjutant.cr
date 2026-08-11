@@ -482,6 +482,18 @@ module Adjutant
     private def register_class_method(cls : RubyClass, node : DefNode) : Nil
       proc = ScriptProc.new(Chunk.new, node.name, node.params.map(&.name),
         ast_body: node.body, ast_params: node.params)
+      # Set explicitly — ScriptProc's own initialize doesn't take
+      # lexical_scope (it's a plain `property`, assigned after
+      # construction by the real compiler's compile_def when a method
+      # is genuinely registered — see that field's own comment,
+      # vm.cr). Without this, every RiskWalker-built ScriptProc's
+      # lexical_scope stayed nil regardless of which class/module it
+      # was actually registered on — silently broke walk_super_target's
+      # ancestors-based fix (found immediately, all super resolution
+      # failed, not just the include-specific cases it was meant to
+      # fix) the moment that fix started relying on lexical_scope
+      # being meaningful, which nothing here had ever needed before.
+      proc.lexical_scope = cls
       sym_id = @interp.symbols.intern(node.name).value
       cls.define_method(sym_id, proc)
     end
@@ -489,6 +501,7 @@ module Adjutant
     private def register_class_singleton_method(cls : RubyClass, node : DefNode) : Nil
       proc = ScriptProc.new(Chunk.new, node.name, node.params.map(&.name),
         ast_body: node.body, ast_params: node.params)
+      proc.lexical_scope = cls
       sym_id = @interp.symbols.intern(node.name).value
       cls.define_singleton_method(sym_id, proc)
     end
@@ -718,27 +731,61 @@ module Adjutant
     # meaning statically resolves Unresolved rather than crashing,
     # consistent with every other resolution-failure case in this
     # file.
+    # Resolves what `super` reaches: self's REAL ancestor chain
+    # (RubyClass#ancestors, real Ruby's linearized MRO), searching
+    # everything right AFTER wherever the current proc's own
+    # lexical_scope sits in it — mirrors VM#dispatch_super's own
+    # resolution exactly (see that method's comment for the full
+    # reasoning). Found and fixed 2026-08-10, alongside
+    # dispatch_super's own rewrite (see SCOPE.md's git history, the
+    # include-support build-out): this previously used
+    # `@current_self_class.superclass` — a fixed one-hop jump, same
+    # shape as dispatch_super's old bug, and a SEPARATE, pre-existing
+    # discrepancy from the VM's own semantics even before `include`
+    # existed (self's class isn't necessarily the DEFINING class a
+    # method actually came from — using `lex` as the search anchor,
+    # like the VM does, fixes both at once). A module included
+    # directly into `lex` sits BETWEEN it and its superclass in the
+    # real MRO, and `super` called from inside a MODULE's own method
+    # has no `superclass` of its own to fall back on at all — only
+    # self's full ancestry knows what comes next.
     private def walk_super_target(node : SuperNode) : RiskNode
       cls = @current_self_class
       proc = @current_method_proc
       return RiskUnresolved.new("super", node.line) unless cls && proc
-      start_cls = cls.superclass
-      return RiskUnresolved.new("super", node.line) unless start_cls
+      lex = proc.lexical_scope
+      return RiskUnresolved.new("super", node.line) unless lex
       sym = @interp.symbols.lookup(proc.name)
       return RiskUnresolved.new("super", node.line) unless sym
 
+      # Singleton-method `super` (`def self.foo; super; end`) is a
+      # separate, pre-existing gap unrelated to `include` — see
+      # dispatch_super's own comment for the full reasoning. Left
+      # exactly as it was (still a fixed one-hop jump to
+      # `lex.superclass`) rather than silently deepened into a
+      # different bug by folding it into the ancestors-based fix
+      # below, which only covers the instance-method case.
       if @current_self_is_singleton
+        start_cls = lex.superclass
+        return RiskUnresolved.new("super", node.line) unless start_cls
         if script_method = start_cls.find_singleton_method(sym.value)
           return walk_script_method(script_method, node.line, cls, is_singleton: true)
         end
         if native = start_cls.find_native_singleton_method(sym.value)
           return RiskLeaf.new(native.risk, proc.name, node.line)
         end
-      else
-        if script_method = start_cls.find_method(sym.value)
+        return RiskUnresolved.new("super", node.line)
+      end
+
+      chain = cls.ancestors
+      idx = chain.index(lex)
+      return RiskUnresolved.new("super", node.line) unless idx
+
+      chain[(idx + 1)..].each do |candidate|
+        if script_method = candidate.methods[sym.value]?
           return walk_script_method(script_method, node.line, cls)
         end
-        if native = start_cls.find_native_method(sym.value)
+        if native = candidate.native_methods[sym.value]?
           return RiskLeaf.new(native.risk, proc.name, node.line)
         end
       end

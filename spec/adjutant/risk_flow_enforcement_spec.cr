@@ -622,5 +622,82 @@ module Adjutant
         seen.should eq(30)
       end
     end
+
+    describe "include (a tainted value reached through an included module's method)" do
+      # `find_method`/`find_native_method` being module-aware handles
+      # RESOLUTION — this confirms the separate, actually-important
+      # question: does the DYNAMIC blocking layer still fire when the
+      # native call in question is reached via a mixed-in method, not
+      # written directly on the class? It should, automatically —
+      # `dispatch_call`'s native-call branch routes through the exact
+      # same `call_native`/`check_risk_flow` regardless of which
+      # RubyClass (self, an ancestor, or an included module) the
+      # resolved method actually came from — proven here rather than
+      # only reasoned about, same standard the earlier `super`-reached
+      # case (above) was held to.
+      it "raises when a tainted argument matches a Reject rule, reached through an included module's method" do
+        interp, _ = make_enforcement_interp(enforcement_policy_for(RiskFlowAction::Reject))
+        error = expect_raises(RuntimeError, /risk flow policy rejected/) do
+          interp.eval(<<-RUBY)
+            module Deleter
+              def remove(path)
+                delete_file(path)
+              end
+            end
+            class Wrapper
+              include Deleter
+            end
+            Wrapper.new.remove(tainted_path("/etc/passwd"))
+          RUBY
+        end
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("F001")
+        diag.data["call"].should eq("delete_file")
+      end
+
+      it "raises when the tainted value reaches the native call via BOTH include and super together" do
+        # Wrapper's own `delete_file` override calls super — dispatch
+        # goes: Wrapper#delete_file (script) -> super -> Deleter's
+        # own included copy of the ORIGINAL delete_file is not in
+        # play here (nothing shadows it) -> the real native
+        # delete_file on Object. Confirms the combination doesn't
+        # open a gap either half's own test didn't already cover
+        # alone.
+        interp, _ = make_enforcement_interp(enforcement_policy_for(RiskFlowAction::Reject))
+        error = expect_raises(RuntimeError, /risk flow policy rejected/) do
+          interp.eval(<<-RUBY)
+            module Noop
+            end
+            class Wrapper
+              include Noop
+              def delete_file(path)
+                super(path)
+              end
+            end
+            Wrapper.new.delete_file(tainted_path("/etc/passwd"))
+          RUBY
+        end
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("F001")
+      end
+
+      it "an UNTAINTED value reaching the same native call through an included module does NOT raise" do
+        # Negative case — confirms the include path doesn't
+        # over-trigger enforcement for ordinary, non-risky-content
+        # calls, not just that it correctly blocks risky ones.
+        interp, _ = make_enforcement_interp(enforcement_policy_for(RiskFlowAction::Reject))
+        interp.eval(<<-RUBY)
+          module Deleter
+            def remove(path)
+              delete_file(path)
+            end
+          end
+          class Wrapper
+            include Deleter
+          end
+          Wrapper.new.remove("/tmp/plain_ordinary_path")
+        RUBY
+      end
+    end
   end
 end
