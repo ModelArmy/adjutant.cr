@@ -223,15 +223,21 @@ module Adjutant
         RUBY
       end
 
-      it "super still correctly reaches the SUPERCLASS's method, not a same-named method from an included module" do
-        # A confirms include didn't disturb ordinary super resolution
-        # — modules sit in the ancestor chain ABOVE the class's own
-        # methods but the RELATIONSHIP between a class and its
-        # superclass is untouched by any of this.
+      it "super still correctly reaches the superclass when the included module doesn't define the method at all" do
+        # This test's ORIGINAL version (pre Step 4) asserted "Base-A"
+        # here with M ALSO defining greet — that was actually
+        # asserting the BUG Step 4 fixed: M genuinely sits in A's
+        # ancestor chain, so super SHOULD reach M's greet before
+        # Base's (see the "include + super" describe block below for
+        # that exact scenario, now correctly covered). Rewritten so
+        # this test asserts what its title actually says: with NO
+        # naming conflict, super correctly passes straight through M
+        # (nothing found there) and reaches Base, unaffected by M's
+        # mere presence in the chain.
         eval(<<-RUBY).should eq Value.string("Base-A")
         module M
-          def greet
-            "from M"
+          def unrelated_method
+            "unrelated"
           end
         end
         class Base
@@ -323,6 +329,186 @@ module Adjutant
         # comment), so this just confirms the walk completes cleanly
         # rather than raising.
         summary.severity.should_not be_nil
+      end
+    end
+
+    describe "include + super (Step 4 — super walks the real MRO, modules included)" do
+      # Found while planning this step, not assumed: dispatch_super
+      # previously jumped straight from the current method's own
+      # class to `class.superclass`, with no notion of a module
+      # sitting BETWEEN them. Fixed via RubyClass#ancestors (the real
+      # linearized MRO) — dispatch_super now finds where the current
+      # method's own class/module sits in self's ACTUAL ancestry and
+      # searches everything after that position, rather than a fixed
+      # one-hop jump.
+
+      it "super from the class's own method reaches an included module's method BEFORE the superclass" do
+        eval(<<-RUBY).should eq Value.string("A-M-Base")
+        module M
+          def greet
+            "M-" + super
+          end
+        end
+        class Base
+          def greet
+            "Base"
+          end
+        end
+        class A < Base
+          include M
+          def greet
+            "A-" + super
+          end
+        end
+        A.new.greet
+        RUBY
+      end
+
+      it "super called from INSIDE a module's own method reaches the superclass — the module itself has no superclass of its own to consult" do
+        eval(<<-RUBY).should eq Value.string("M-Base")
+        module M
+          def greet
+            "M-" + super
+          end
+        end
+        class Base
+          def greet
+            "Base"
+          end
+        end
+        class A < Base
+          include M
+        end
+        A.new.greet
+        RUBY
+      end
+
+      it "with multiple includes, super visits them in real MRO order (last included first)" do
+        eval(<<-RUBY).should eq Value.string("A-M2-M1-Base")
+        module M1
+          def greet
+            "M1-" + super
+          end
+        end
+        module M2
+          def greet
+            "M2-" + super
+          end
+        end
+        class Base
+          def greet
+            "Base"
+          end
+        end
+        class A < Base
+          include M1
+          include M2
+          def greet
+            "A-" + super
+          end
+        end
+        A.new.greet
+        RUBY
+      end
+
+      it "nested module inclusion (module including a module) is fully reachable via super too" do
+        eval(<<-RUBY).should eq Value.string("A-Outer-Inner-Base")
+        module Inner
+          def greet
+            "Inner-" + super
+          end
+        end
+        module Outer
+          include Inner
+          def greet
+            "Outer-" + super
+          end
+        end
+        class Base
+          def greet
+            "Base"
+          end
+        end
+        class A < Base
+          include Outer
+          def greet
+            "A-" + super
+          end
+        end
+        A.new.greet
+        RUBY
+      end
+
+      it "a class with NO included modules at all is completely unaffected — plain super still works exactly as before" do
+        eval(<<-RUBY).should eq Value.string("Base-A")
+        class Base
+          def greet
+            "Base"
+          end
+        end
+        class A < Base
+          def greet
+            super + "-A"
+          end
+        end
+        A.new.greet
+        RUBY
+      end
+
+      it "R014 (no ancestor defines the method) still raised correctly when nothing anywhere in the chain has it, modules included" do
+        expect_raises(RuntimeError, /only_here/) do
+          eval(<<-RUBY)
+          module M
+          end
+          class A
+            include M
+            def only_here
+              super()
+            end
+          end
+          A.new.only_here
+          RUBY
+        end
+      end
+
+      it "zsuper (bare super) still forwards current parameter values correctly when a module sits in between" do
+        eval(<<-RUBY).should eq Value.int(3_i64)
+        module M
+          def add(x, y)
+            super
+          end
+        end
+        class Base
+          def add(x, y)
+            x + y
+          end
+        end
+        class A < Base
+          include M
+        end
+        A.new.add(1, 2)
+        RUBY
+      end
+
+      it "an included module's method reaching a NATIVE superclass method via super still works" do
+        interp, _ = make_interp
+        risk = RiskProfile.new
+        cls = RubyClass.new("Greeter")
+        sym_id = interp.symbols.intern("greet").value
+        cls.define_native_method(sym_id, risk) { |args| Value.string("native") }
+        interp.define_global_class(cls)
+        result = interp.eval(<<-RUBY)
+        module M
+          def greet
+            "M-" + super()
+          end
+        end
+        class Talker < Greeter
+          include M
+        end
+        Talker.new.greet
+        RUBY
+        result.as_string.should eq "M-native"
       end
     end
   end

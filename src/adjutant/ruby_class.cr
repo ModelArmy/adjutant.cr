@@ -176,6 +176,49 @@ module Adjutant
       nil
     end
 
+    # The full linearized method-resolution order (real Ruby's
+    # `Module#ancestors`) — this class/module itself, then its own
+    # included modules (reverse order — real MRO: the LAST module
+    # `include`d sits CLOSEST, so it's listed first among them, same
+    # reasoning as `find_own_or_included_method`'s own comment — each
+    # expanded RECURSIVELY via its own `ancestors`, since a module can
+    # itself `include` another module), then — if this is a class,
+    # not a module — the superclass's own full `ancestors`. A
+    # module's own `superclass` is always nil, so this naturally
+    # terminates there with no special-casing needed for the
+    # class-vs-module distinction; the SAME method works for both.
+    #
+    # Needed by `VM#dispatch_super` (STEP 4 of the include-support
+    # build-out — see SCOPE.md's git history): `super`'s resolution
+    # can't just jump from the currently-executing method's own class
+    # to that class's `superclass` anymore once modules exist in the
+    # picture — a module `include`d directly into that class sits
+    # BETWEEN it and its superclass in the real MRO, and if `super`
+    # is called from INSIDE a module's own method, that module has no
+    # `superclass` of its own to fall back on at all (only the ACTUAL
+    # receiver's full ancestry knows what comes next). `dispatch_super`
+    # computes this once per call, finds where the current method's
+    # own `lexical_scope` sits in it, and searches everything AFTER
+    # that position — see that method's own comment for the full
+    # reasoning.
+    #
+    # No de-duplication — matches `RubyClass#include_module`'s own
+    # currently-open question (see that method's comment): a module
+    # included twice, or reachable via two different paths, appears
+    # more than once here. Not a correctness problem for `super`'s
+    # own search (the right answer is still found, just possibly
+    # checked against the same module redundantly) — worth revisiting
+    # together with `include_module`'s own de-dup question if either
+    # is ever addressed.
+    def ancestors : Array(RubyClass)
+      result = [self] of RubyClass
+      @included_modules.reverse_each { |mod| result.concat(mod.ancestors) }
+      if sup = @superclass
+        result.concat(sup.ancestors)
+      end
+      result
+    end
+
     # Look up a method by symbol id: this class/module's OWN methods
     # first, then its included modules (STEP 3 of the include-support
     # build-out — see SCOPE.md's git history; the module was already
