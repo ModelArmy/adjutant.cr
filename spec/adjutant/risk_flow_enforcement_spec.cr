@@ -699,5 +699,87 @@ module Adjutant
         RUBY
       end
     end
+
+    describe "extend (a tainted value reached through an extended module's method, as a CLASS method)" do
+      # Same question as include's own describe block above, on the
+      # singleton side: does the dynamic blocking layer still fire
+      # when the native call is reached via a class method mixed in
+      # by `extend`, not written directly on the class? Same
+      # reasoning applies — `dispatch_call`'s native-call branch
+      # doesn't care which RubyClass (self, an ancestor, or an
+      # extended module) the resolved method actually came from,
+      # proven here rather than only reasoned about.
+      it "raises when a tainted argument matches a Reject rule, reached through an extended module's method called as a class method" do
+        interp, _ = make_enforcement_interp(enforcement_policy_for(RiskFlowAction::Reject))
+        error = expect_raises(RuntimeError, /risk flow policy rejected/) do
+          interp.eval(<<-RUBY)
+            module Deleter
+              def remove(path)
+                delete_file(path)
+              end
+            end
+            class Wrapper
+              extend Deleter
+            end
+            Wrapper.remove(tainted_path("/etc/passwd"))
+          RUBY
+        end
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("F001")
+        diag.data["call"].should eq("delete_file")
+      end
+
+      it "raises when the tainted value reaches the native call via BOTH extend and singleton super together" do
+        # Wrapper's own class-method delete_file override calls
+        # super — dispatch goes: Wrapper.delete_file (script,
+        # singleton) -> super -> Base's own class method (script,
+        # singleton), found via singleton_ancestors past the extended
+        # Noop module (which has no matching method) -> Base's own
+        # class method makes an ORDINARY (non-super) bare call to the
+        # native delete_file, reached via self_rclass.rclass's own
+        # chain the normal way. Deliberately NOT routing delete_file
+        # itself through super — real Ruby's singleton super never
+        # reaches Object's ORDINARY (non-singleton) native instance
+        # methods at all, so that shape isn't a valid reproduction;
+        # this still exercises the extend+super COMBINATION, just
+        # with the actual risky call one level further in.
+        interp, _ = make_enforcement_interp(enforcement_policy_for(RiskFlowAction::Reject))
+        error = expect_raises(RuntimeError, /risk flow policy rejected/) do
+          interp.eval(<<-RUBY)
+            module Noop
+            end
+            class Base
+              def self.risky_op(path)
+                delete_file(path)
+              end
+            end
+            class Wrapper < Base
+              extend Noop
+              def self.risky_op(path)
+                super(path)
+              end
+            end
+            Wrapper.risky_op(tainted_path("/etc/passwd"))
+          RUBY
+        end
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("F001")
+      end
+
+      it "an UNTAINTED value reaching the same native call through an extended module does NOT raise" do
+        interp, _ = make_enforcement_interp(enforcement_policy_for(RiskFlowAction::Reject))
+        interp.eval(<<-RUBY)
+          module Deleter
+            def remove(path)
+              delete_file(path)
+            end
+          end
+          class Wrapper
+            extend Deleter
+          end
+          Wrapper.remove("/tmp/plain_ordinary_path")
+        RUBY
+      end
+    end
   end
 end
