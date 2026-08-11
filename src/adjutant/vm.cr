@@ -630,6 +630,25 @@ module Adjutant
       @frames.last
     end
 
+    # Exposes the CURRENTLY RUNNING frame's own `self` to a native
+    # function — needed by any native method reached via
+    # `dispatch_call`'s implicit-self/self-is-rclass branch (a bare
+    # call made from inside a class/module body, e.g. `include Foo`),
+    # since THAT dispatch path (unlike the explicit-receiver one) never
+    # prepends a receiver into `args` at all — `call_native` has no
+    # `self_val` parameter of its own. Native functions execute
+    # in-line, without pushing their own Frame, so `current_frame`
+    # here is genuinely still the CALLING frame — the one whose
+    # `self_val` is exactly what "self" means at the call site.
+    # `protected`, not `private`, so `NativeFunctionCall`
+    # (interpreter.cr, this module's only `NativeCallContext`
+    # implementor) can call it — same visibility as `invoke`/
+    # `call_method`/`compare`, which already do this for their own
+    # reasons.
+    protected def current_self_val : Value
+      current_frame.self_val
+    end
+
     private def push(v : Value) : Nil
       raise script_diagnostic("L003", {"limit" => MAX_STACK.to_s}, current_frame) if @stack.size >= MAX_STACK
       @stack.push(v)

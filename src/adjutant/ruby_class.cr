@@ -47,6 +47,18 @@ module Adjutant
     # inheritance, and is what constant lookup walks.
     property lexical_parent : RubyClass?
 
+    # Modules mixed in via `include`, in INSERTION order (index 0 =
+    # first included). `find_method`/`find_native_method` (below)
+    # walk this in REVERSE — real Ruby's MRO: the LAST module
+    # included sits CLOSEST to the class, so it's checked FIRST,
+    # ahead of earlier includes and ahead of the superclass. Empty for
+    # the overwhelming majority of classes/modules (no `include` in
+    # their body at all) — a plain `Array(RubyClass)`, not nilable,
+    # since checking `.empty?` costs nothing and every RubyClass
+    # already allocates several other always-present collections the
+    # same way (`methods`, `ivars`, ...).
+    getter included_modules : Array(RubyClass)
+
     def initialize(@name : String, @superclass : RubyClass? = nil, @is_module : Bool = false, @uninstantiable : Bool = false)
       @methods = {} of Int32 => ScriptProc
       @native_methods = {} of Int32 => NativeCallable
@@ -55,6 +67,22 @@ module Adjutant
       @cvars = {} of Int32 => Value
       @ivars = {} of Int32 => Value
       @constants = {} of Int32 => Value
+      @included_modules = [] of RubyClass
+    end
+
+    # `include SomeModule` — mixes SomeModule's instance methods into
+    # this class/module's own resolution chain (see
+    # `find_method`/`find_native_method`, below). Appending, not
+    # prepending: insertion order is preserved here; it's the READ
+    # side (the two `find_*` methods) that walks the array in reverse
+    # to get real Ruby's "last included wins" MRO — keeping storage
+    # order the same as source order, rather than storing it
+    # pre-reversed, is easier to reason about from a debugger and
+    # matches how `methods`/`native_methods` etc. are populated
+    # (whatever order `define`/`define_method` were actually called
+    # in, no reordering).
+    def include_module(mod : RubyClass) : Nil
+      @included_modules << mod
     end
 
     def define_method(sym_id : Int32, proc : ScriptProc) : Nil
