@@ -408,35 +408,6 @@ Quality-of-diagnostic gaps in the `Diagnostic`/`ErrorCatalog` system
 
 ### Object model
 
-- **`extend` (mixing a module's methods in as SINGLETON methods,
-  rather than instance methods) — deliberately scoped OUT of
-  `include`'s implementation, filed separately so it isn't lost.**
-  Found 2026-08-10, during the sizing conversation for `include`;
-  updated 2026-08-10 once `include` itself actually shipped (see
-  DEVELOPMENT.md's "Mixins" section) with a real answer to the
-  question this entry originally left open. Same underlying shape as
-  `include` — a native method that adds a module's methods to a
-  lookup chain — but attaches to the SINGLETON/class-object chain
-  (`find_singleton_method`/`find_native_singleton_method`,
-  `ruby_class.cr`) instead of the instance chain (`find_method`/
-  `find_native_method`). Needs its OWN separate field (something like
-  `extended_modules : Array(RubyClass)`, not reusing
-  `included_modules`) — same general shape/pattern as `include`'s own
-  implementation (a list, checked in reverse-insertion MRO order,
-  `find_singleton_method`/`find_native_singleton_method` extended the
-  same way `find_method`/`find_native_method` were), but genuinely
-  separate storage: the two lists mean different things (instance
-  resolution vs. singleton resolution), and reusing one for both
-  would make an `include` incorrectly show up in singleton resolution
-  or vice versa. `self.extend(M)` inside a class/module body (making
-  the CLASS itself gain M's methods as its own class methods) maps
-  cleanly onto this shape. `obj.extend(M)` (extending a single
-  OBJECT, not a class) does NOT — Adjutant has no per-object singleton
-  classes at all today (only per-CLASS singleton method tables), so
-  that form is a bigger, separate feature, not a natural extension of
-  this one. Worth scoping `self.extend` and `obj.extend` as two
-  distinct pieces of work if this is picked up, not one.
-
 - **No `Numeric` ancestor class in the `RubyClass` hierarchy, so
   `5.is_a?(Numeric)` fails rather than returning `true`.** Long-
   standing, untriaged since the original 2026-07-14 handoff bundle —

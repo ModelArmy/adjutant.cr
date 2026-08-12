@@ -21,6 +21,32 @@ Two standing principles shape every entry:
   error much later when the script tries to use whatever the construct
   should have produced. Established 2026-07-27, after an audit found
   three declared-unsupported constructs doing exactly those things.
+- **A declared class, module, or method's behavior should be something a
+  reader (often an LLM) can reason about from its own text — not
+  something that can change later, conditionally, at runtime.**
+  Established 2026-08-10, deciding `extend`/`include` via an explicit
+  receiver (U018): the concern here is NARROWER than the risk-flow
+  boundary above and separate from it — even a construct with a
+  perfectly good static risk profile can still fail this test.
+  `class X; extend M; end` is a one-time, textually-fixed claim about
+  `X`, made at the moment `X` is defined; `X.extend(M)` — written
+  ANYWHERE else, via an explicit receiver — is an ordinary statement
+  that could run conditionally, in a loop, or a second time later,
+  changing what `X` can do partway through a script's execution, without
+  anything about its own syntax announcing that. The distinction isn't
+  "did this particular script happen to make it conditional" — it's that
+  the language shouldn't offer a form whose reasonability depends on
+  usage discipline rather than grammar. This is the same underlying
+  concern `send`/`method_missing`/`define_method` (U005) and
+  `eval`/`instance_eval`/`class_eval`/`module_eval`/`instance_exec`/
+  `class_exec` (U006) already embody — a declared class's behavior
+  shouldn't be able to change from something other than its own
+  declaration — `extend`/`include` via an explicit receiver (U018) is
+  the same principle applied to mixins specifically. Worth checking any
+  FUTURE construct against this same question before building it:
+  "could this let a class/module/object's behavior change conditionally,
+  at runtime, invisibly to someone reading the declaration alone?" — not
+  just "can RiskWalker still resolve it."
 
 ## How this file is organised
 
@@ -282,16 +308,26 @@ The enforced set is deliberately narrow — `send`, `public_send`,
 hazard but are not declared exclusions here, and listing them would assert
 "never coming" without that decision having been made.
 
-### U006 — `eval` / `instance_eval` on runtime strings
+### U006 — `eval` / `instance_eval` / `class_eval` / `module_eval` / `instance_exec` / `class_exec` on runtime strings or blocks
 
 **Why:** same reasoning as U005 — a script that can construct and run
-arbitrary code at runtime has no static risk profile at all.
+arbitrary code at runtime, or run an ordinary block against an altered
+`self`/binding, has no static risk profile at all. `class_eval`/
+`module_eval`/`instance_exec`/`class_exec` added 2026-08-10 (see this
+file's own third standing principle, above, and U018's entry below,
+decided the same session): structurally the same mechanism as `eval`/
+`instance_eval` — a block whose contents were never fixed at the point
+the class/module/object was declared, run in a shifted context.
+Previously listed in `error_catalog.cr`'s own comment as a "plausible
+addition, not declared" — made an explicit, permanent exclusion once the
+underlying principle was named clearly enough to declare it with
+confidence rather than leave it an open question.
 
 **Instead:** nothing; this is permanently excluded by the risk model.
 
-**Enforcement — active since 2026-07-29, runtime.** See U005 for the
-mechanism and why the check happens after resolution rather than at
-compile time.
+**Enforcement — active since 2026-07-29 for `eval`/`instance_eval`,
+2026-08-10 for the rest, runtime.** See U005 for the mechanism and why
+the check happens after resolution rather than at compile time.
 
 ### U007 — Reflection exposing native/Crystal internals
 
@@ -662,6 +698,52 @@ alone and trips on the stray `]` with an unrelated, confusing parse
 error before ever reaching this check. Verified via
 `methods_and_calls/compiler_spec.cr`'s U017 specs, covering the
 `<=>`-is-exempt regression case directly.
+
+### U018 — `extend`/`include` via an explicit receiver
+
+`X.extend(M)`, `obj.extend(M)`, `X.include(M)`, `obj.include(M)` — mixing
+a module in via a receiver, rather than the bare, declarative statement
+form (`extend M` / `include M`) written directly inside the `class`/
+`module` body being mixed into. Both `extend` and `include` themselves
+are fully supported (see `DEVELOPMENT.md`'s "Mixins" section) — this
+entry is specifically about the explicit-receiver spelling, not the
+feature as a whole.
+
+**Why:** decided 2026-08-10, this file's own third standing principle
+(see above), while confirming the shape of `obj.extend`'s exclusion.
+`class X; extend M; end` is a one-time, textually-fixed claim about `X`,
+made at the moment `X` is defined. Writing the same thing with an
+explicit receiver, anywhere else in a script, turns it into an ordinary
+statement — one that could run conditionally, in a loop, or a second
+time later, changing what a class or object can do partway through a
+script's execution, without anything about its own syntax announcing
+that. The concern isn't whether a specific script happens to write it
+unconditionally; it's that the language shouldn't offer a form whose
+reasonability depends on how it happens to be used, the same underlying
+concern `send`/`method_missing`/`define_method` (U005) and the `eval`
+family (U006) already embody, applied here to mixins specifically.
+
+**The concrete gap this closes:** before this was declared, both forms
+simply failed to resolve — no dispatch path checks a receiver's own
+class's class for `extend`/`include` the way the bare/implicit-self path
+does (`VM#dispatch_call`'s self-is-rclass branch) — surfacing as a
+generic, misleading "undefined method `extend`"/`"include"` (`R008`)
+that reads like a typo, not a declared boundary. `SomeClass.extend(M)`
+(explicit receiver on the CLASS itself, not an instance) has the
+identical gap and gets the identical treatment — the distinction that
+matters is bare/declarative vs. explicit-receiver, not what kind of
+value the receiver happens to be.
+
+**Instead:** write `extend M` / `include M` as a bare statement directly
+inside the `class`/`module` body being mixed into.
+
+**Enforcement — active since 2026-08-10, runtime.** Same mechanism as
+U005/U006 (`EXCLUDED_METHODS`, checked after ordinary resolution fails —
+see U005's own entry for why after, not at compile time). The bare/
+declarative form never reaches this check at all, since it resolves
+successfully via a different path first; this table entry is only ever
+consulted once that path has already failed, which happens precisely
+for the explicit-receiver forms this entry covers.
 
 ---
 

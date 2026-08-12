@@ -268,6 +268,19 @@ module Adjutant
               "running generated source; that capability is excluded by " \
               "design."
       ),
+      "U018" => Entry.new(
+        code: "U018",
+        summary: "`{construct}` via an explicit receiver is not supported",
+        why: "`extend`/`include` are supported only as a bare " \
+             "statement inside the class/module body being modified. " \
+             "With an explicit receiver, `{construct}` could run " \
+             "conditionally or more than once, changing a class's " \
+             "behavior after it's declared. Excluded by design, not a " \
+             "missing feature.",
+        help: "Write `extend`/`include` as a bare statement directly " \
+              "inside the class or module body, not via an explicit " \
+              "receiver."
+      ),
       "U007" => Entry.new(
         code: "U007",
         summary: "`{construct}` is not available",
@@ -620,10 +633,10 @@ module Adjutant
     #
     # Deliberately conservative. Every entry here is a promise that the
     # construct is excluded permanently, so only what UNSUPPORTED.md
-    # actually declares belongs. `class_eval`, `instance_exec`,
-    # `methods`, `instance_variable_get` and similar are plausible
-    # additions but are NOT declared exclusions today — listing them
-    # would tell a reader "never coming" on our own authority.
+    # actually declares belongs. `methods`, `instance_variable_get` and
+    # similar are plausible additions but are NOT declared exclusions
+    # today — listing them would tell a reader "never coming" on our own
+    # authority.
     EXCLUDED_METHODS = {
       "send"           => "U005",
       "public_send"    => "U005",
@@ -632,6 +645,22 @@ module Adjutant
       "define_method"  => "U005",
       "eval"           => "U006",
       "instance_eval"  => "U006",
+      "class_eval"     => "U006",
+      "module_eval"    => "U006",
+      "instance_exec"  => "U006",
+      "class_exec"     => "U006",
+      # extend/include still resolve fine as a bare, declarative
+      # statement inside the class/module body being mixed into (the
+      # implicit-self dispatch path in dispatch_call finds them via
+      # Module's own native methods before ever reaching this table) —
+      # this entry only ever fires for an EXPLICIT-RECEIVER call
+      # (`X.extend(M)`, `obj.extend(M)`, ...), which currently fails to
+      # resolve for an entirely different, mundane reason (no dispatch
+      # path checks the receiver's OWN class's class's native methods
+      # for either form) and would otherwise surface as a generic,
+      # misleading "undefined method" — see U018.
+      "extend"  => "U018",
+      "include" => "U018",
     }
 
     # Same, for constants — a different resolution path reports these.

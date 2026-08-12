@@ -1204,5 +1204,87 @@ module Adjutant
         summary.tags.should eq Set{RiskTag::DeletesFiles}
       end
     end
+
+    describe "extend/include via an explicit receiver (U018 — permanently excluded, not a missing feature)" do
+      # Decided once extend itself was real, working code — see
+      # UNSUPPORTED.md's own U018 entry and its third standing
+      # principle for the full reasoning. Both forms previously just
+      # failed to resolve at all (a generic, misleading R008) — now a
+      # clean, named U018.
+
+      it "`SomeClass.extend(M)` (explicit receiver on the class itself) is excluded" do
+        error = expect_raises(RuntimeError) do
+          eval(<<-RUBY)
+          module M
+          end
+          class A
+          end
+          A.extend(M)
+          RUBY
+        end
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("U018")
+        diag.data["construct"].should eq("extend")
+      end
+
+      it "`obj.extend(M)` (explicit receiver on an object instance) is excluded" do
+        error = expect_raises(RuntimeError) do
+          eval(<<-RUBY)
+          module M
+          end
+          class A
+          end
+          A.new.extend(M)
+          RUBY
+        end
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("U018")
+        diag.data["construct"].should eq("extend")
+      end
+
+      it "`SomeClass.include(M)` (explicit receiver) is excluded" do
+        error = expect_raises(RuntimeError) do
+          eval(<<-RUBY)
+          module M
+          end
+          class A
+          end
+          A.include(M)
+          RUBY
+        end
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("U018")
+        diag.data["construct"].should eq("include")
+      end
+
+      it "`obj.include(M)` (explicit receiver) is excluded" do
+        error = expect_raises(RuntimeError) do
+          eval(<<-RUBY)
+          module M
+          end
+          class A
+          end
+          A.new.include(M)
+          RUBY
+        end
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("U018")
+        diag.data["construct"].should eq("include")
+      end
+
+      it "the bare, declarative form is completely unaffected — extend/include still work exactly as built" do
+        eval(<<-RUBY).should eq Value.string("hi")
+        module M
+          def greet
+            "hi"
+          end
+        end
+        class A
+          extend M
+        end
+        A.greet
+        RUBY
+      end
+    end
   end
 end

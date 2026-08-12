@@ -163,6 +163,7 @@ alternative in [UNSUPPORTED.md](./UNSUPPORTED.md).
 |U015|`undef` / method-added hooks                    |`construct`      |
 |U016|`begin...end while`/`until` (do-while)          |—                |
 |U017|Operator-method overloading (`def ==`, ...)     |`operator`       |
+|U018|`extend`/`include` via an explicit receiver     |`construct`      |
 
 U005 and U006 are reported when a name that would resolve to one of them
 resolves to nothing else. A script is still free to define its own method
