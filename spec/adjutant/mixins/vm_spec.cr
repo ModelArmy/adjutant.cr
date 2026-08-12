@@ -595,5 +595,696 @@ module Adjutant
         summary.tags.should eq Set{RiskTag::DeletesFiles}
       end
     end
+
+    describe "singleton-method super (Step 1 of the extend-support build-out — pre-existing bug, unrelated to include)" do
+      # `def self.foo; super; end` previously searched find_method/
+      # find_native_method (the INSTANCE tables) in
+      # VM#dispatch_super's fallback branch — wrong table entirely,
+      # since self here IS the class object itself, not an instance
+      # of it. Fixed to search find_singleton_method/
+      # find_native_singleton_method instead. Predates `include`/
+      # `extend` entirely; fixed now as a prerequisite for `extend`
+      # (which needs this path working correctly to be worth testing
+      # against at all) rather than because `extend` itself caused it.
+
+      it "a class method's super reaches the superclass's OWN class method, not an instance method of the same name" do
+        eval(<<-RUBY).should eq Value.string("Base-self-A")
+        class Base
+          def self.greet
+            "Base-self"
+          end
+        end
+        class A < Base
+          def self.greet
+            super + "-A"
+          end
+        end
+        A.greet
+        RUBY
+      end
+
+      it "previously raised R014 incorrectly (searched the wrong table and found nothing) — now resolves cleanly" do
+        # Explicit regression marker: before this fix, the test above
+        # didn't just give a WRONG answer, it raised "no ancestor
+        # defines the method" — Base's OWN instance table genuinely
+        # has no `greet` (only Base's SINGLETON table does), so the
+        # old buggy lookup found nothing at all.
+        eval(<<-RUBY).should eq Value.string("ok")
+        class Base
+          def self.only_as_class_method
+            "ok"
+          end
+        end
+        class A < Base
+          def self.only_as_class_method
+            super
+          end
+        end
+        A.only_as_class_method
+        RUBY
+      end
+
+      it "a class method's super reaches a NATIVE singleton method on the superclass" do
+        interp, _ = make_interp
+        risk = RiskProfile.new
+        cls = RubyClass.new("Base")
+        sym_id = interp.symbols.intern("make").value
+        cls.define_native_singleton_method(sym_id, risk) { |args| Value.string("native-make") }
+        interp.define_global_class(cls)
+        result = interp.eval(<<-RUBY)
+        class A < Base
+          def self.make
+            "A-" + super()
+          end
+        end
+        A.make
+        RUBY
+        result.as_string.should eq "A-native-make"
+      end
+
+      it "R014 still correctly raised when no ancestor's class method (singleton table) defines it at all" do
+        expect_raises(RuntimeError, /only_here/) do
+          eval(<<-RUBY)
+          class Base
+          end
+          class A < Base
+            def self.only_here
+              super()
+            end
+          end
+          A.only_here
+          RUBY
+        end
+      end
+
+      it "instance-method super is completely unaffected by this fix — still uses the ancestors-based instance resolution" do
+        eval(<<-RUBY).should eq Value.string("Base-A")
+        class Base
+          def greet
+            "Base"
+          end
+        end
+        class A < Base
+          def greet
+            super + "-A"
+          end
+        end
+        A.new.greet
+        RUBY
+      end
+
+      it "RiskWalker's static resolution of singleton super already worked correctly (walk_super_target needed no code change) — confirmed rather than assumed" do
+        interp, _ = make_interp
+        risk = RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
+        register_risky_module(interp, "delete_fn", risk)
+        walker = RiskWalker.new(interp)
+        body = risk_walker_test_parse(<<-RUBY)
+          class Base
+            def self.greet
+              delete_fn()
+            end
+          end
+          class A < Base
+            def self.greet
+              super
+            end
+          end
+          A.greet
+        RUBY
+        summary = RiskAggregator.summarize(walker.walk_body(body))
+        summary.severity.should eq Severity::Error
+        summary.tags.should eq Set{RiskTag::DeletesFiles}
+      end
+    end
+
+    describe "extend (Step 2 — registration only, no method resolution yet)" do
+      # Mirrors include's own Step 2 exactly, into extended_modules
+      # instead of included_modules. `extend` now registers the
+      # module into the extending class's own `extended_modules` —
+      # actual method lookup honoring it (RubyClass#
+      # find_singleton_method/find_native_singleton_method walking
+      # extended_modules) is Step 3, not built yet.
+
+      it "extend adds the module to the extending class's extended_modules" do
+        interp, _ = make_interp
+        interp.eval(<<-RUBY)
+        module M
+        end
+        class A
+          extend M
+        end
+        RUBY
+        a = interp.get_global("A").as_rclass
+        m = interp.get_global("M").as_rclass
+        a.extended_modules.should eq [m]
+      end
+
+      it "extend does NOT also add to included_modules — genuinely separate lists" do
+        interp, _ = make_interp
+        interp.eval(<<-RUBY)
+        module M
+        end
+        class A
+          extend M
+        end
+        RUBY
+        a = interp.get_global("A").as_rclass
+        a.included_modules.should be_empty
+      end
+
+      it "extend works inside a module body too, not just a class body" do
+        interp, _ = make_interp
+        interp.eval(<<-RUBY)
+        module M
+        end
+        module N
+          extend M
+        end
+        RUBY
+        n = interp.get_global("N").as_rclass
+        m = interp.get_global("M").as_rclass
+        n.extended_modules.should eq [m]
+      end
+
+      it "multiple extends are stored in SOURCE order (insertion order — MRO reversal is Step 3's concern, not storage's)" do
+        interp, _ = make_interp
+        interp.eval(<<-RUBY)
+        module M1
+        end
+        module M2
+        end
+        class A
+          extend M1
+          extend M2
+        end
+        RUBY
+        a = interp.get_global("A").as_rclass
+        m1 = interp.get_global("M1").as_rclass
+        m2 = interp.get_global("M2").as_rclass
+        a.extended_modules.should eq [m1, m2]
+      end
+
+      it "`extend` returns self (the extending class), matching real Ruby's Module#extend" do
+        interp, _ = make_interp
+        result = interp.eval(<<-RUBY)
+        module M
+        end
+        class A
+          def self.try_extend
+            extend M
+          end
+        end
+        A.try_extend
+        RUBY
+        result.as_rclass.name.should eq "A"
+      end
+
+      it "a class with no extend at all has an empty extended_modules, unaffected" do
+        interp, _ = make_interp
+        interp.eval("class A\nend")
+        a = interp.get_global("A").as_rclass
+        a.extended_modules.should be_empty
+      end
+
+      it "include and extend can both be used on the same class, into their own separate lists" do
+        interp, _ = make_interp
+        interp.eval(<<-RUBY)
+        module Inc
+        end
+        module Ext
+        end
+        class A
+          include Inc
+          extend Ext
+        end
+        RUBY
+        a = interp.get_global("A").as_rclass
+        inc = interp.get_global("Inc").as_rclass
+        ext = interp.get_global("Ext").as_rclass
+        a.included_modules.should eq [inc]
+        a.extended_modules.should eq [ext]
+      end
+    end
+
+    describe "extend (Step 3 — actual method resolution)" do
+      # find_singleton_method/find_native_singleton_method (RubyClass)
+      # now walk extended_modules — this is the step that makes
+      # `extend` actually do something. Mirrors include's own Step 3
+      # exactly, on the singleton side.
+
+      it "a class extending a module can call the module's method as a CLASS method" do
+        eval(<<-RUBY).should eq Value.string("hi from M")
+        module M
+          def greet
+            "hi from M"
+          end
+        end
+        class A
+          extend M
+        end
+        A.greet
+        RUBY
+      end
+
+      it "the class's OWN class method wins over an extended module's same-named method" do
+        eval(<<-RUBY).should eq Value.string("A's own")
+        module M
+          def greet
+            "from M"
+          end
+        end
+        class A
+          extend M
+          def self.greet
+            "A's own"
+          end
+        end
+        A.greet
+        RUBY
+      end
+
+      it "with multiple extends, the LAST one wins (real Ruby MRO — closest to the class)" do
+        eval(<<-RUBY).should eq Value.string("from M2")
+        module M1
+          def greet
+            "from M1"
+          end
+        end
+        module M2
+          def greet
+            "from M2"
+          end
+        end
+        class A
+          extend M1
+          extend M2
+        end
+        A.greet
+        RUBY
+      end
+
+      it "an extended module's method is NOT callable on an instance — extend affects the singleton chain only" do
+        expect_raises(RuntimeError, /greet/) do
+          eval(<<-RUBY)
+          module M
+            def greet
+              "from M"
+            end
+          end
+          class A
+            extend M
+          end
+          A.new.greet
+          RUBY
+        end
+      end
+
+      it "an included module's method is NOT callable as a class method — include affects the instance chain only" do
+        expect_raises(RuntimeError, /greet/) do
+          eval(<<-RUBY)
+          module M
+            def greet
+              "from M"
+            end
+          end
+          class A
+            include M
+          end
+          A.greet
+          RUBY
+        end
+      end
+
+      it "extending a module that itself includes another module surfaces the included module's methods too" do
+        eval(<<-RUBY).should eq Value.string("deep")
+        module Inner
+          def deep_method
+            "deep"
+          end
+        end
+        module Outer
+          include Inner
+        end
+        class A
+          extend Outer
+        end
+        A.deep_method
+        RUBY
+      end
+
+      it "respond_to? correctly reports true for a class method only reachable through an extended module" do
+        eval(<<-RUBY).should eq Value.bool(true)
+        module M
+          def greet
+          end
+        end
+        class A
+          extend M
+        end
+        A.respond_to?(:greet)
+        RUBY
+      end
+    end
+
+    describe "extend + RiskWalker (Step 4 — static recognition, mirrors include's own Step 3)" do
+      # RiskWalker never executes anything — a purely static walk —
+      # so `extend M` only mutates `A.extended_modules` when the real
+      # native `extend` method actually RUNS, which never happens
+      # during a static walk. Without RiskWalker's own static
+      # recognition (walk_class/walk_module's `extend_call?` branch,
+      # mirroring the runtime effect via `register_static_extend`),
+      # a class method only reachable through an extended module
+      # showed up as RiskUnresolved (severity Error, tags
+      # {ExecutesCode} — RiskAggregator's generic "unresolved"
+      # fallback), same failure shape include's own Step 3 had before
+      # its fix.
+
+      it "RiskWalker resolves a class-method call reached through an extended module" do
+        interp, _ = make_interp
+        risk = RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
+        register_risky_module(interp, "delete_fn", risk)
+        walker = RiskWalker.new(interp)
+        body = risk_walker_test_parse(<<-RUBY)
+          module M
+            def run
+              delete_fn()
+            end
+          end
+          class A
+            extend M
+          end
+          A.run
+        RUBY
+        summary = RiskAggregator.summarize(walker.walk_body(body))
+        summary.severity.should eq Severity::Error
+        summary.tags.should eq Set{RiskTag::DeletesFiles}
+      end
+
+      it "static extend recognition also works for nested module inclusion (extended module including another module)" do
+        interp, _ = make_interp
+        risk = RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
+        register_risky_module(interp, "delete_fn", risk)
+        walker = RiskWalker.new(interp)
+        body = risk_walker_test_parse(<<-RUBY)
+          module Inner
+            def deep
+              delete_fn()
+            end
+          end
+          module Outer
+            include Inner
+          end
+          class A
+            extend Outer
+          end
+          A.deep
+        RUBY
+        summary = RiskAggregator.summarize(walker.walk_body(body))
+        summary.severity.should eq Severity::Error
+        summary.tags.should eq Set{RiskTag::DeletesFiles}
+      end
+
+      it "an extend argument that doesn't resolve to a known class/module doesn't crash the walk" do
+        interp, _ = make_interp
+        walker = RiskWalker.new(interp)
+        body = risk_walker_test_parse(<<-RUBY)
+          class A
+            extend SomeUnknownModule
+          end
+        RUBY
+        summary = RiskAggregator.summarize(walker.walk_body(body))
+        summary.severity.should_not be_nil
+      end
+
+      it "extend and include recognized in the same class walk independently, each into its own list" do
+        interp, _ = make_interp
+        risk = RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
+        register_risky_module(interp, "delete_fn", risk)
+        walker = RiskWalker.new(interp)
+        body = risk_walker_test_parse(<<-RUBY)
+          module Inc
+            def instance_risky
+              delete_fn()
+            end
+          end
+          module Ext
+            def class_risky
+              delete_fn()
+            end
+          end
+          class A
+            include Inc
+            extend Ext
+          end
+          A.new.instance_risky
+          A.class_risky
+        RUBY
+        summary = RiskAggregator.summarize(walker.walk_body(body))
+        summary.severity.should eq Severity::Error
+        summary.tags.should eq Set{RiskTag::DeletesFiles}
+      end
+    end
+
+    describe "extend + super (Step 5 — super walks the real singleton MRO, modules extended)" do
+      # RubyClass#singleton_ancestors mirrors #ancestors on the
+      # singleton side. dispatch_super's singleton branch now searches
+      # it the same way the instance branch already does — a module
+      # `extend`ed directly into a class sits BETWEEN it and its
+      # superclass when a class method calls `super`, the same way
+      # `include` already worked for instance methods.
+
+      it "a class method's super reaches an extended module's method BEFORE the superclass's own class method" do
+        eval(<<-RUBY).should eq Value.string("A-M-Base")
+        module M
+          def greet
+            "M-" + super
+          end
+        end
+        class Base
+          def self.greet
+            "Base"
+          end
+        end
+        class A < Base
+          extend M
+          def self.greet
+            "A-" + super
+          end
+        end
+        A.greet
+        RUBY
+      end
+
+      it "super called from INSIDE an extended module's own method reaches the superclass's class method" do
+        eval(<<-RUBY).should eq Value.string("M-Base")
+        module M
+          def greet
+            "M-" + super
+          end
+        end
+        class Base
+          def self.greet
+            "Base"
+          end
+        end
+        class A < Base
+          extend M
+        end
+        A.greet
+        RUBY
+      end
+
+      it "with multiple extends, super visits them in real MRO order (last extended first)" do
+        eval(<<-RUBY).should eq Value.string("A-M2-M1-Base")
+        module M1
+          def greet
+            "M1-" + super
+          end
+        end
+        module M2
+          def greet
+            "M2-" + super
+          end
+        end
+        class Base
+          def self.greet
+            "Base"
+          end
+        end
+        class A < Base
+          extend M1
+          extend M2
+          def self.greet
+            "A-" + super
+          end
+        end
+        A.greet
+        RUBY
+      end
+
+      it "a class with NO extended modules at all is completely unaffected — plain singleton super still works exactly as before (Step 1's fix persists)" do
+        eval(<<-RUBY).should eq Value.string("Base-A")
+        class Base
+          def self.greet
+            "Base"
+          end
+        end
+        class A < Base
+          def self.greet
+            super + "-A"
+          end
+        end
+        A.greet
+        RUBY
+      end
+
+      it "instance-method super is unaffected by any of this — still uses the instance-side ancestors resolution" do
+        eval(<<-RUBY).should eq Value.string("Base-A")
+        module M
+          def greet
+            "M"
+          end
+        end
+        class Base
+          def greet
+            "Base"
+          end
+        end
+        class A < Base
+          extend M
+          def greet
+            super + "-A"
+          end
+        end
+        A.new.greet
+        RUBY
+      end
+
+      it "R014 still correctly raised when nothing anywhere in the singleton chain defines the method, extended modules included" do
+        expect_raises(RuntimeError, /only_here/) do
+          eval(<<-RUBY)
+          module M
+          end
+          class A
+            extend M
+            def self.only_here
+              super()
+            end
+          end
+          A.only_here
+          RUBY
+        end
+      end
+
+      it "RiskWalker resolves a class-method super call reached through an extended module" do
+        interp, _ = make_interp
+        risk = RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
+        register_risky_module(interp, "delete_fn", risk)
+        walker = RiskWalker.new(interp)
+        body = risk_walker_test_parse(<<-RUBY)
+          module M
+            def greet
+              delete_fn()
+            end
+          end
+          class Base
+            def self.greet
+            end
+          end
+          class A < Base
+            extend M
+            def self.greet
+              super
+            end
+          end
+          A.greet
+        RUBY
+        summary = RiskAggregator.summarize(walker.walk_body(body))
+        summary.severity.should eq Severity::Error
+        summary.tags.should eq Set{RiskTag::DeletesFiles}
+      end
+    end
+
+    describe "extend/include via an explicit receiver (U018 — permanently excluded, not a missing feature)" do
+      # Decided once extend itself was real, working code — see
+      # UNSUPPORTED.md's own U018 entry and its third standing
+      # principle for the full reasoning. Both forms previously just
+      # failed to resolve at all (a generic, misleading R008) — now a
+      # clean, named U018.
+
+      it "`SomeClass.extend(M)` (explicit receiver on the class itself) is excluded" do
+        error = expect_raises(RuntimeError) do
+          eval(<<-RUBY)
+          module M
+          end
+          class A
+          end
+          A.extend(M)
+          RUBY
+        end
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("U018")
+        diag.data["construct"].should eq("extend")
+      end
+
+      it "`obj.extend(M)` (explicit receiver on an object instance) is excluded" do
+        error = expect_raises(RuntimeError) do
+          eval(<<-RUBY)
+          module M
+          end
+          class A
+          end
+          A.new.extend(M)
+          RUBY
+        end
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("U018")
+        diag.data["construct"].should eq("extend")
+      end
+
+      it "`SomeClass.include(M)` (explicit receiver) is excluded" do
+        error = expect_raises(RuntimeError) do
+          eval(<<-RUBY)
+          module M
+          end
+          class A
+          end
+          A.include(M)
+          RUBY
+        end
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("U018")
+        diag.data["construct"].should eq("include")
+      end
+
+      it "`obj.include(M)` (explicit receiver) is excluded" do
+        error = expect_raises(RuntimeError) do
+          eval(<<-RUBY)
+          module M
+          end
+          class A
+          end
+          A.new.include(M)
+          RUBY
+        end
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("U018")
+        diag.data["construct"].should eq("include")
+      end
+
+      it "the bare, declarative form is completely unaffected — extend/include still work exactly as built" do
+        eval(<<-RUBY).should eq Value.string("hi")
+        module M
+          def greet
+            "hi"
+          end
+        end
+        class A
+          extend M
+        end
+        A.greet
+        RUBY
+      end
+    end
   end
 end

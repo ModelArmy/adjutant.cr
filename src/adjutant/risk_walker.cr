@@ -339,6 +339,9 @@ module Adjutant
         elsif include_call?(stmt)
           register_static_include(mod, stmt.as(Call))
           RiskSequence.new([] of RiskNode, stmt.line).as(RiskNode)
+        elsif extend_call?(stmt)
+          register_static_extend(mod, stmt.as(Call))
+          RiskSequence.new([] of RiskNode, stmt.line).as(RiskNode)
         else
           walk_node(stmt, TypeInference::Env.new).as(RiskNode)
         end
@@ -409,6 +412,14 @@ module Adjutant
       stmt.is_a?(Call) && stmt.receiver.nil? && stmt.method == "include" && stmt.args.size == 1
     end
 
+    # Same shape as include_call?, for `extend` — see that method's
+    # own comment; STEP 4 of the extend-support build-out (see
+    # SCOPE.md's git history) mirrors include's Step 3 exactly, on
+    # the singleton side.
+    private def extend_call?(stmt : Node) : Bool
+      stmt.is_a?(Call) && stmt.receiver.nil? && stmt.method == "extend" && stmt.args.size == 1
+    end
+
     # Mirrors the RUNTIME effect of `include SomeModule`
     # (RubyClass#include_module, invoked by the real native `include`
     # method when a script actually RUNS) into the class/module
@@ -455,6 +466,22 @@ module Adjutant
       cls.include_module(mod) if mod
     end
 
+    # Mirrors the RUNTIME effect of `extend SomeModule`
+    # (RubyClass#extend_module) into the class/module currently being
+    # statically walked — same reasoning as register_static_include's
+    # own comment, and the same "treat the call itself as purely
+    # structural, no generic re-walk" decision (see walk_class/
+    # walk_module's own `elsif extend_call?` branch, below).
+    private def register_static_extend(cls : RubyClass, node : Call) : Nil
+      arg = node.args.first
+      mod = case arg
+            when Constant  then resolve_class(arg.name)
+            when ConstPath then resolve_const_path(arg)
+            else                nil
+            end
+      cls.extend_module(mod) if mod
+    end
+
     private def walk_class(node : ClassNode) : RiskNode
       superclass = node.superclass.try { |name| resolve_class(name) }
       cls = RubyClass.new(node.name, superclass)
@@ -471,6 +498,9 @@ module Adjutant
           walk_nested(stmt, cls)
         elsif include_call?(stmt)
           register_static_include(cls, stmt.as(Call))
+          RiskSequence.new([] of RiskNode, stmt.line).as(RiskNode)
+        elsif extend_call?(stmt)
+          register_static_extend(cls, stmt.as(Call))
           RiskSequence.new([] of RiskNode, stmt.line).as(RiskNode)
         else
           walk_node(stmt, TypeInference::Env.new).as(RiskNode)
@@ -758,21 +788,40 @@ module Adjutant
       sym = @interp.symbols.lookup(proc.name)
       return RiskUnresolved.new("super", node.line) unless sym
 
-      # Singleton-method `super` (`def self.foo; super; end`) is a
-      # separate, pre-existing gap unrelated to `include` — see
-      # dispatch_super's own comment for the full reasoning. Left
-      # exactly as it was (still a fixed one-hop jump to
-      # `lex.superclass`) rather than silently deepened into a
-      # different bug by folding it into the ancestors-based fix
-      # below, which only covers the instance-method case.
+      # Singleton-method `super` (`def self.foo; super; end`) — STEP 5
+      # of the extend-support build-out (see SCOPE.md's git history):
+      # now mirrors the instance-method branch below exactly, on the
+      # singleton side, via RubyClass#singleton_ancestors — see that
+      # method's own comment (ruby_class.cr) for why each of its
+      # entries carries a Bool (an extended module's own contribution
+      # needs its ORDINARY method table checked, not
+      # singleton_methods; self and its superclasses need the
+      # opposite) and VM#dispatch_super's own comment for the parallel
+      # fix there. No longer a fixed one-hop jump to `lex.superclass`
+      # — a module `extend`ed directly into `lex` now correctly sits
+      # BETWEEN it and its superclass in the search, matching what
+      # `include` already did for the instance side.
       if @current_self_is_singleton
-        start_cls = lex.superclass
-        return RiskUnresolved.new("super", node.line) unless start_cls
-        if script_method = start_cls.find_singleton_method(sym.value)
-          return walk_script_method(script_method, node.line, cls, is_singleton: true)
-        end
-        if native = start_cls.find_native_singleton_method(sym.value)
-          return RiskLeaf.new(native.risk, proc.name, node.line)
+        chain = cls.singleton_ancestors
+        idx = chain.index { |(c, _)| c == lex }
+        return RiskUnresolved.new("super", node.line) unless idx
+
+        chain[(idx + 1)..].each do |(candidate, use_singleton_table)|
+          if use_singleton_table
+            if script_method = candidate.singleton_methods[sym.value]?
+              return walk_script_method(script_method, node.line, cls, is_singleton: true)
+            end
+            if native = candidate.native_singleton_methods[sym.value]?
+              return RiskLeaf.new(native.risk, proc.name, node.line)
+            end
+          else
+            if script_method = candidate.methods[sym.value]?
+              return walk_script_method(script_method, node.line, cls, is_singleton: true)
+            end
+            if native = candidate.native_methods[sym.value]?
+              return RiskLeaf.new(native.risk, proc.name, node.line)
+            end
+          end
         end
         return RiskUnresolved.new("super", node.line)
       end

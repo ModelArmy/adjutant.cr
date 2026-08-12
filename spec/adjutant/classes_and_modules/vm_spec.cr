@@ -139,7 +139,8 @@ module Adjutant
         # with a variation, and every variation fails identically.
         {"send" => "U005", "public_send" => "U005", "__send__" => "U005",
          "method_missing" => "U005", "define_method" => "U005",
-         "eval" => "U006", "instance_eval" => "U006"}.each do |name, code|
+         "eval" => "U006", "instance_eval" => "U006", "class_eval" => "U006",
+         "module_eval" => "U006", "instance_exec" => "U006", "class_exec" => "U006"}.each do |name, code|
           error = expect_raises(RuntimeError) { eval(name) }
           diag = error.diagnostic.not_nil!
           diag.code.should eq(code)
