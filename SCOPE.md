@@ -72,21 +72,6 @@ may unblock ones above it.
   fallback-only names `exec_builtin` handles, rather than a full
   lookup-table rewrite.
 
-- **`Array` is missing several methods common enough in ordinary Ruby
-  that their absence is a normal-use blocker, not an edge case.**
-  Found 2026-08-10, `Array#first` specifically tripping a test script
-  during the closures work — prompted a full survey of core-class
-  method coverage rather than patching that one case in isolation.
-  Has (`builtins/array.cr`): `each`, `map`, `push`, `pop`, `size`,
-  `empty?`, `include?`, `join`, `to_s`. Missing: `first`, `last`,
-  `select`/`reject`, `reduce`/`inject`, `sort`, `reverse`, `min`/
-  `max`, `any?`/`all?`. `[]`/`[]=` and `<<` are already real opcodes
-  (`Op::GetIndex`/`Op::SetIndex`, `ValueOps.shl`), not native methods
-  — not part of this gap. `each`/`map` already prove the
-  block-invocation pattern (`NativeCallContext#invoke`) works from a
-  native method, so `select`/`reject`/`reduce` aren't a new mechanism,
-  just more callers of it.
-
 - **`Hash` is missing `merge`, `has_key?`/`key?`, `delete`, `to_a`.**
   Found 2026-08-10, same survey as `Array`'s entry above. Has
   (`builtins/hash.cr`): `each`, `empty?`, `keys`, `size`, `to_s`,
