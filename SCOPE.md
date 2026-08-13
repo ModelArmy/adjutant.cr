@@ -531,7 +531,18 @@ section).
   underlying content-vs-reference identity question, not a fix of its
   own.
 
-### IFC / risk-flow
+- **`Integer#to_s` doesn't accept a base argument** (`10.to_s(2)`,
+  `10.to_s(36)`, etc.). Found 2026-08-12 doing the `Integer` Must Fix
+  survey work — `to_s` here always renders base-10 (`args.first.as_int.to_s`,
+  `builtins/integer.cr`), matching real Ruby's default but not the
+  optional-arg form. Real Ruby also raises `ArgumentError` for a base
+  outside 2..36. Not a blocker (base-10 `to_s` already covers ordinary
+  use) — an argument-handling expansion of an existing method, not a
+  missing method, so it's Will Fix rather than Must Fix. Crystal's own
+  `Int#to_s(base)` already does the actual radix conversion, so this
+  is mostly about argument parsing/validation, not new logic.
+
+
 
 Carried forward from the original 2026-07-14 handoff — the oldest items,
 undesigned rather than merely unimplemented, more product-shaped than
