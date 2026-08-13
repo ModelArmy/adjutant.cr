@@ -1,6 +1,21 @@
 require "../../spec_helper"
 
 module Adjutant
+  # Helper: a LabeledHash whose CONTAINER label is set directly (no
+  # individual key/value carries it) — Hash-side counterpart to
+  # array_spec.cr's own `make_tainted_array_interp`.
+  private def self.make_tainted_hash_interp(pairs : Hash(String, Int64)) : Interpreter
+    interp, _ = make_interp
+    interp.define_native("tainted_hash") do |args|
+      entries = {} of Value => Value
+      pairs.each { |k, v| entries[Value.string(k)] = Value.int(v) }
+      h = LabeledHash.new(entries)
+      h.label = RiskFlowLabel.of(ProvenanceKind::File, "/etc/passwd", Sensitivity::High)
+      Value.new(h, nil)
+    end
+    interp
+  end
+
   # Covers Phase 4c of the base-types work: Hash, the last piece of
   # Phase 4. `[]`/`[]=` were already real opcodes; `==` (same key set,
   # each value compared via values_equal?) was extended alongside
@@ -172,6 +187,137 @@ module Adjutant
 
     it "indexes into a hash" do
       eval(%({ "k" => 42 }["k"])).as_int.should eq 42_i64
+    end
+
+    describe "#delete" do
+      it "removes the key and returns its value" do
+        interp, _ = make_interp
+        result = interp.eval(<<-RUBY)
+          h = {"a" => 1, "b" => 2}
+          [h.delete("a"), h.key?("a"), h.size]
+        RUBY
+        arr = result.as_array
+        arr[0].as_int.should eq 1
+        arr[1].falsy?.should be_true
+        arr[2].as_int.should eq 1
+      end
+
+      it "returns nil for an absent key, with no block" do
+        interp, _ = make_interp
+        result = interp.eval(%({"a" => 1}.delete("z")))
+        result.null?.should be_true
+      end
+
+      it "with a block, calls it with the missing key when absent" do
+        interp, _ = make_interp
+        result = interp.eval(%({"a" => 1}.delete("z") { |k| k + "!" }))
+        result.as_string.should eq "z!"
+      end
+
+      it "does not call the block when the key IS present" do
+        interp, _ = make_interp
+        result = interp.eval(%({"a" => 1}.delete("a") { |k| "should not run" }))
+        result.as_int.should eq 1
+      end
+    end
+
+    describe "#to_a" do
+      it "converts each entry into a [key, value] pair" do
+        interp, _ = make_interp
+        result = interp.eval(%({"a" => 1, "b" => 2}.to_a))
+        arr = result.as_array
+        arr.size.should eq 2
+        arr[0].as_array.map(&.to_s).should eq ["a", "1"]
+        arr[1].as_array.map(&.to_s).should eq ["b", "2"]
+      end
+
+      it "on an empty hash returns an empty array" do
+        interp, _ = make_interp
+        result = interp.eval("{}.to_a")
+        result.as_array.empty?.should be_true
+      end
+    end
+
+    describe "#merge" do
+      it "returns a new hash, without mutating the receiver" do
+        interp, _ = make_interp
+        result = interp.eval(<<-RUBY)
+          h1 = {"a" => 1}
+          h2 = {"b" => 2}
+          h3 = h1.merge(h2)
+          [h1.key?("b"), h3["a"], h3["b"]]
+        RUBY
+        arr = result.as_array
+        arr[0].falsy?.should be_true
+        arr[1].as_int.should eq 1
+        arr[2].as_int.should eq 2
+      end
+
+      it "a later argument's duplicate key overrides an earlier one, including the receiver's own" do
+        interp, _ = make_interp
+        result = interp.eval(%({"a" => 1}.merge({"a" => 2})["a"]))
+        result.as_int.should eq 2
+      end
+
+      it "accepts multiple Hash arguments" do
+        interp, _ = make_interp
+        result = interp.eval(<<-RUBY)
+          h = {"a" => 1}.merge({"b" => 2}, {"c" => 3})
+          [h["a"], h["b"], h["c"]]
+        RUBY
+        arr = result.as_array
+        arr.map(&.as_int).should eq [1, 2, 3]
+      end
+
+      it "with a block, resolves conflicts via the block instead of a plain override" do
+        interp, _ = make_interp
+        result = interp.eval(<<-RUBY)
+          h1 = {"a" => 1}
+          h2 = {"a" => 2}
+          h1.merge(h2) { |key, old_val, new_val| old_val + new_val }["a"]
+        RUBY
+        result.as_int.should eq 3
+      end
+
+      it "raises TypeError for a non-Hash argument" do
+        interp, _ = make_interp
+        error = expect_raises(RuntimeError) { interp.eval(%({"a" => 1}.merge(5))) }
+        error.diagnostic.not_nil!.code.should eq("R017")
+      end
+
+      it "TypeError is rescuable from script" do
+        eval(<<-RUBY).as_bool.should be_true
+          begin
+            {"a" => 1}.merge(5)
+            false
+          rescue TypeError
+            true
+          end
+        RUBY
+      end
+    end
+
+    describe "container-level risk label carries forward through delete/to_a/merge" do
+      # research/IFC_DESIGN.md's Container labeling (Stage 3.5) —
+      # same principle already applied to Array's own select/reject/
+      # sort/reverse/map (array_spec.cr). `tainted_hash` returns a
+      # LabeledHash whose CONTAINER label is set directly (no
+      # individual key/value carries it) — see the module-level
+      # `make_tainted_hash_interp` helper at the top of this file.
+      it "to_a carries forward the receiver's container-level label" do
+        interp = make_tainted_hash_interp({"a" => 1_i64})
+        result = interp.eval("tainted_hash.to_a")
+        result.label.should_not be_nil
+      end
+
+      it "merge carries forward BOTH the receiver's and the argument's container-level label" do
+        interp = make_tainted_hash_interp({"a" => 1_i64})
+        interp.define_native("plain_hash") do |args|
+          Value.new(LabeledHash.new({Value.string("b") => Value.int(2_i64)}), nil)
+        end
+        result = interp.eval("plain_hash.merge(tainted_hash)")
+        result.label.should_not be_nil
+      end
     end
   end
 end

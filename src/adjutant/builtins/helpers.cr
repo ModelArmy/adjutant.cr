@@ -114,4 +114,61 @@ module Adjutant::Builtins
     result = rounded / scale
     ndigits > 0 ? Adjutant::Value.float(result, label) : Adjutant::Value.int(result, label)
   end
+
+  # Joins the RiskFlowLabel of every Value in `values` into one,
+  # seeded from `seed` — shared by every builtin container method that
+  # builds a NEW container out of a SUBSET, REORDERING, or COMBINATION
+  # of an existing one's contents (array.cr's select/reject/sort/
+  # reverse/map, hash.cr's to_a/merge).
+  #
+  # `seed` matters: per research/IFC_DESIGN.md's Container labeling
+  # (Stage 3.5) design, a LabeledArray/LabeledHash carries its OWN
+  # accumulated label distinct from any individual element's — e.g. a
+  # container explicitly marked via declare_sensitivity at the
+  # container level, or one that already lost precision from an
+  # earlier partial removal (that design's own "container labels are
+  # monotonic, never shrink" rule). A join over only the values
+  # actually present would silently drop that container-level taint
+  # the moment a script called select/sort/merge/etc. — callers pass
+  # the ORIGINAL container's (or containers', for merge) own `.label`
+  # as `seed` specifically to carry it forward, matching the design
+  # doc's "fails safe rather than silently under-tainting" principle
+  # rather than recomputing from contents alone.
+  #
+  # Generic over WHICH container type is involved (Array or Hash) —
+  # nothing here is Array- or Hash-specific, it's a fold over whatever
+  # Values the caller collected, which is why this lives here rather
+  # than duplicated once per builtin file.
+  def self.joined_label(values : Array(Adjutant::Value), seed : Adjutant::RiskFlowLabel? = nil) : Adjutant::RiskFlowLabel?
+    values.reduce(seed) { |acc, v| Adjutant::RiskFlowLabel.join(acc, v.label) }
+  end
+
+  # A plain, local-to-this-module type name for error messages — NOT a
+  # substitute for the real `class`/`is_a?` resolution machinery
+  # (Interpreter#builtin_class_for), which needs a full Interpreter
+  # and isn't reachable from NativeCallContext. Lives here rather than
+  # on Value itself since it's specifically "the name a native
+  # method's own error message would use," a native-method-dispatch
+  # concern, not a property of Value as a type. Good enough for a
+  # TypeError-style message (real Ruby's own wording here is
+  # similarly plain, e.g. "no implicit conversion of Integer into
+  # Hash"), not intended for anything needing the REAL class object
+  # (respond_to?, is_a?, user-defined subclasses, etc).
+  # ameba:disable Metrics/CyclomaticComplexity - one `when` per Value variant, each a flat one-line case; not tangled branching
+  def self.builtin_type_name(v : Adjutant::Value) : String
+    case
+    when v.null?    then "NilClass"
+    when v.bool?    then v.as_bool ? "TrueClass" : "FalseClass"
+    when v.int?     then "Integer"
+    when v.float?   then "Float"
+    when v.string?  then "String"
+    when v.symbol?  then "Symbol"
+    when v.array?   then "Array"
+    when v.hash?    then "Hash"
+    when v.proc?    then "Proc"
+    when v.rclass?  then "Class"
+    when v.robject? then v.as_robject.rclass.name
+    else                 "Object"
+    end
+  end
 end

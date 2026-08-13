@@ -233,26 +233,4 @@ module Adjutant::Builtins
 
     cls
   end
-
-  # Joins the RiskFlowLabel of every element in `values` into one,
-  # seeded from `seed` — shared by every Array native method here that
-  # builds a NEW container out of a SUBSET or REORDERING of existing
-  # elements (select/reject/sort/reverse).
-  #
-  # `seed` matters: per research/IFC_DESIGN.md's Container labeling
-  # (Stage 3.5) design, a LabeledArray carries its OWN accumulated
-  # label distinct from any individual element's — e.g. a container
-  # explicitly marked via declare_sensitivity at the container level,
-  # or one that already lost precision from an earlier partial
-  # removal (that design's own "container labels are monotonic, never
-  # shrink" rule, applied there to pop/delete_at). A join over only
-  # the elements actually kept would silently drop that container-
-  # level taint the moment a script called select/sort/etc. — callers
-  # pass the ORIGINAL receiver's own `.label` as `seed` specifically
-  # to carry it forward, matching the design doc's "fails safe rather
-  # than silently under-tainting" principle rather than recomputing
-  # from elements alone.
-  private def self.joined_label(values : Array(Adjutant::Value), seed : Adjutant::RiskFlowLabel? = nil) : Adjutant::RiskFlowLabel?
-    values.reduce(seed) { |acc, v| Adjutant::RiskFlowLabel.join(acc, v.label) }
-  end
 end

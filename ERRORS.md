@@ -110,11 +110,13 @@ Something went wrong while the script was running.
 |R014|`super` called, but no ancestor defines the method    |`method`                |
 |R015|`Integer#to_s` given an out-of-range base             |`base`                  |
 |R016|`Float#to_i` called on Infinity or NaN                |`value`                 |
+|R017|`Hash#merge` given a non-Hash argument                |`class_name`            |
 
 Scripts can `rescue` these. R008 raises a `NameError`, matching Ruby;
 R011, R012, and R015 raise `ArgumentError`, also matching Ruby; R014
 raises a `NoMethodError`, also matching Ruby; R016 raises a
-`FloatDomainError`, also matching Ruby; the rest raise `RuntimeError`.
+`FloatDomainError`, also matching Ruby; R017 raises a `TypeError`,
+also matching Ruby; the rest raise `RuntimeError`.
 
 Adjutant's constants are assign-once, which Ruby only warns about. R001 is
 that rule firing on an ordinary constant; reopening a class or module is

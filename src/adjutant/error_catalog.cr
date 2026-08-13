@@ -212,6 +212,15 @@ module Adjutant
         help: "Check `finite?` before calling `to_i`, or handle the " \
               "Infinity/NaN case separately."
       ),
+      "R017" => Entry.new(
+        code: "R017",
+        summary: "`Hash#merge` given a non-Hash argument ({class_name})",
+        why: "`merge` combines the ENTRIES of two or more hashes — " \
+             "there's no meaningful way to merge in something that " \
+             "isn't itself a Hash.",
+        help: "Pass another Hash to merge in, or build one from " \
+              "whatever you're trying to combine first."
+      ),
 
       # --- L: limits reached ----------------------------------------
       #

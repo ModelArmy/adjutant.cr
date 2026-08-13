@@ -24,6 +24,28 @@ Blocking, or actively causing incorrect behavior in normal use. Ordered
 roughly by dependency, not necessarily by importance — an item lower down
 may unblock ones above it.
 
+- **`Array#to_s`/`Hash#to_s` (and `#inspect`, which defers to `to_s`)
+  silently produce garbage, not a real Ruby-style rendering.** Found
+  2026-08-13 writing fresh ISO-style coverage for `Hash`.
+  `Value#to_s`'s case statement (`value.cr`) has no branch for
+  `LabeledArray` or `LabeledHash` at all — both fall through to the
+  generic `"#<" << @raw.class << ">"` fallback, so `{"a" =>
+  1}.to_s` actually produces `"#<Adjutant::LabeledHash>"`, and
+  `[1,2,3].to_s` produces `"#<Adjutant::LabeledArray>"` — neither the
+  real `{"a" => 1}` / `[1, 2, 3]` a script or its author would expect.
+  Silent-wrong-answer, not a missing method or a raised error, so it's
+  the kind of gap that's easy to never notice: no test anywhere in the
+  suite (including array_spec.cr, predating this finding) ever checked
+  `#to_s`'s actual STRING CONTENT for either container type, only that
+  it returns *a* string. Real work needed: proper recursive
+  Array/Hash-aware rendering (`[1, 2, "a"]`, `{"a" => 1, "b" => [1,
+  2]}`), string quoting rules matching real Ruby's `to_s` vs
+  `inspect` distinction, and — per the separate cycle-detection gap
+  already flagged in `array.rb`'s own triage — a guard against
+  self-referential containers recursing until the native stack
+  overflows, since a real implementation would need to touch the same
+  code either way.
+
 - **Runtime diagnostics have no carets** (`Frame` records a line but no
   column). Promoted from Error reporting 2026-08-05 on a
   turn-churn argument specific to this use case: the cost of an
@@ -81,12 +103,6 @@ may unblock ones above it.
   shape: extend that case to also check a fixed list of the
   fallback-only names `exec_builtin` handles, rather than a full
   lookup-table rewrite.
-
-- **`Hash` is missing `merge`, `has_key?`/`key?`, `delete`, `to_a`.**
-  Found 2026-08-10, same survey as `Array`'s entry above. Has
-  (`builtins/hash.cr`): `each`, `empty?`, `keys`, `size`, `to_s`,
-  `values`. `[]`/`[]=` are already real opcodes
-  (`exec_get_index`/`exec_set_index`, `vm.cr`), not part of this gap.
 
 - **`String` is missing `reverse`, `chars`, `start_with?`/`end_with?`,
   `capitalize`.** Found 2026-08-10, same survey. Has
