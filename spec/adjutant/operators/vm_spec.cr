@@ -348,5 +348,78 @@ module Adjutant
         eval("!nil").as_bool.should be_true
       end
     end
+
+    describe "arithmetic errors raise the correct Ruby error class, not a generic RuntimeError" do
+      # ValueOps' add/op/div/mod/int_op now classify their own
+      # failures (TypeError for bad operand types, ZeroDivisionError
+      # for division/modulo by zero) instead of everything collapsing
+      # into a plain RuntimeError regardless of what actually went
+      # wrong — a real, previously-unnoticed gap: `0 + nil` raised
+      # RuntimeError, and ZeroDivisionError existed in the exception
+      # hierarchy but was never actually reachable from arithmetic.
+      it "adding incompatible types raises TypeError" do
+        interp, _ = make_interp
+        error = expect_raises(RuntimeError) { interp.eval("1 + nil") }
+        error.error_value.not_nil!.as_robject.rclass.name.should eq("TypeError")
+      end
+
+      it "subtracting/multiplying incompatible types raises TypeError" do
+        interp, _ = make_interp
+        error = expect_raises(RuntimeError) { interp.eval("1 - nil") }
+        error.error_value.not_nil!.as_robject.rclass.name.should eq("TypeError")
+      end
+
+      it "dividing incompatible types raises TypeError" do
+        interp, _ = make_interp
+        error = expect_raises(RuntimeError) { interp.eval("1 / nil") }
+        error.error_value.not_nil!.as_robject.rclass.name.should eq("TypeError")
+      end
+
+      it "modulo with incompatible types raises TypeError" do
+        interp, _ = make_interp
+        error = expect_raises(RuntimeError) { interp.eval("1 % nil") }
+        error.error_value.not_nil!.as_robject.rclass.name.should eq("TypeError")
+      end
+
+      it "bitwise ops on a non-Integer raise TypeError" do
+        interp, _ = make_interp
+        error = expect_raises(RuntimeError) { interp.eval("1 & nil") }
+        error.error_value.not_nil!.as_robject.rclass.name.should eq("TypeError")
+      end
+
+      it "integer division by zero raises ZeroDivisionError" do
+        interp, _ = make_interp
+        error = expect_raises(RuntimeError) { interp.eval("1 / 0") }
+        error.error_value.not_nil!.as_robject.rclass.name.should eq("ZeroDivisionError")
+      end
+
+      it "integer modulo by zero raises ZeroDivisionError" do
+        interp, _ = make_interp
+        error = expect_raises(RuntimeError) { interp.eval("1 % 0") }
+        error.error_value.not_nil!.as_robject.rclass.name.should eq("ZeroDivisionError")
+      end
+
+      it "TypeError is rescuable from script" do
+        eval(<<-RUBY).as_bool.should be_true
+          begin
+            1 + nil
+            false
+          rescue TypeError
+            true
+          end
+        RUBY
+      end
+
+      it "ZeroDivisionError is rescuable from script" do
+        eval(<<-RUBY).as_bool.should be_true
+          begin
+            1 / 0
+            false
+          rescue ZeroDivisionError
+            true
+          end
+        RUBY
+      end
+    end
   end
 end

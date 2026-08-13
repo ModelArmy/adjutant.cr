@@ -204,6 +204,14 @@ module Adjutant
         help: "Pass a base between 2 and 36, or call `to_s` with no " \
               "argument for the default base-10 rendering."
       ),
+      "R016" => Entry.new(
+        code: "R016",
+        summary: "`Float#to_i` called on {value}, which has no integer equivalent",
+        why: "Infinity and NaN aren't finite numbers, so there's no " \
+             "integer they round or truncate to.",
+        help: "Check `finite?` before calling `to_i`, or handle the " \
+              "Infinity/NaN case separately."
+      ),
 
       # --- L: limits reached ----------------------------------------
       #

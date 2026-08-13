@@ -178,6 +178,7 @@ end
 
 assert('Integer#ceil', '15.2.8.3.14') do
   assert_equal 10, 10.ceil
+  assert_equal 12400, 12341.ceil(-2)
 end
 
 # assert('Integer#downto', '15.2.8.3.15') do
@@ -202,6 +203,7 @@ assert('Integer#floor', '15.2.8.3.17') do
   a = 1.floor
 
   assert_equal 1, a
+  assert_equal 12300, 12399.floor(-2)
 end
 
 assert('Integer#next', '15.2.8.3.19') do
@@ -210,6 +212,7 @@ end
 
 assert('Integer#round', '15.2.8.3.20') do
   assert_equal 1, 1.round
+  assert_equal 12300, 12345.round(-2)
 end
 
 assert('Integer#succ', '15.2.8.3.21') do
@@ -248,6 +251,7 @@ end
 
 assert('Integer#truncate', '15.2.8.3.26') do
   assert_equal 1, 1.truncate
+  assert_equal 12300, 12399.truncate(-2)
 end
 
 # assert('Integer#upto', '15.2.8.3.27') do

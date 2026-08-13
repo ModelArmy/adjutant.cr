@@ -88,29 +88,34 @@ module Adjutant::Builtins
       recv
     end
 
-    # Real Ruby's Integer#ceil / #floor / #round / #truncate (no-arg
-    # form) are no-ops that return self — an Integer is already
-    # integral. Included alongside times/abs/etc. since Crystal's
-    # Int64 already implements the same no-arg behavior (`#trunc` is
-    # Crystal's name for Ruby's `#truncate`), so these are free
-    # one-liners, not new work. The ndigits-argument form (e.g.
-    # `1234.round(-2)`) is NOT covered here — left for a future pass,
-    # likely alongside Float's own round/ceil/floor work where the
-    # argument handling actually matters.
+    # Real Ruby's Integer#ceil / #floor / #round / #truncate: with no
+    # argument (or a non-negative ndigits) these are no-ops that
+    # return self — an Integer is already integral. With a NEGATIVE
+    # ndigits, they round to the nearest power of 10 instead (e.g.
+    # `12345.round(-2) == 12300`) — see
+    # Builtins.integer_round_to_power_of_ten for the shared logic.
     define(cls, interp, "ceil") do |args|
-      args.first
+      n = args.first.as_int
+      ndigits = args[1]?.try(&.as_int) || 0_i64
+      Adjutant::Value.int(Adjutant::Builtins.integer_round_to_power_of_ten(n, ndigits, :ceil), args.first.label)
     end
 
     define(cls, interp, "floor") do |args|
-      args.first
+      n = args.first.as_int
+      ndigits = args[1]?.try(&.as_int) || 0_i64
+      Adjutant::Value.int(Adjutant::Builtins.integer_round_to_power_of_ten(n, ndigits, :floor), args.first.label)
     end
 
     define(cls, interp, "round") do |args|
-      args.first
+      n = args.first.as_int
+      ndigits = args[1]?.try(&.as_int) || 0_i64
+      Adjutant::Value.int(Adjutant::Builtins.integer_round_to_power_of_ten(n, ndigits, :round), args.first.label)
     end
 
     define(cls, interp, "truncate") do |args|
-      args.first
+      n = args.first.as_int
+      ndigits = args[1]?.try(&.as_int) || 0_i64
+      Adjutant::Value.int(Adjutant::Builtins.integer_round_to_power_of_ten(n, ndigits, :truncate), args.first.label)
     end
 
     cls

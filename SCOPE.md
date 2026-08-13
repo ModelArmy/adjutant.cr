@@ -52,6 +52,16 @@ may unblock ones above it.
   method — needs a new keyword/token, parser support, and a real
   runtime check per operand kind (literal/expression, `self`, local,
   method, constant, global — the last excluded per U011 either way).
+  Related but distinct, found 2026-08-13 while triaging
+  `spec/scripts/mruby/float.rb`: `Module#const_defined?` (the ordinary
+  METHOD, e.g. `Object.const_defined?(:Float)`) also doesn't exist —
+  it's a real gap in its own right, not just a symptom of `defined?`
+  missing, since fixing the `defined?` keyword wouldn't give scripts
+  `const_defined?` and vice versa (one's parser/keyword work, the
+  other's an ordinary native method reachable via find_native_method).
+  Worth scoping together since they serve the same defensive-
+  programming purpose and a reader would reasonably expect both to
+  land at once, but they're two separate pieces of work.
 
 - **`respond_to?`'s blind spot returns a wrong answer, not an
   error.** Long-standing, untriaged since the original 2026-07-14
@@ -453,6 +463,16 @@ section).
 
 
 ### Data & builtin types
+
+- **`Integer`/`Float` are both missing `#divmod`.** Found 2026-08-13
+  triaging `spec/scripts/mruby/float.rb`'s commented-out `Float#divmod`
+  block. Real Ruby's `#divmod` returns `[quotient, remainder]` as a
+  single call — `/` and `%` already work individually (opcode-level,
+  `ValueOps.div`/`.mod`) so this is purely a convenience wrapper
+  around two things that already work correctly on their own, not a
+  new arithmetic primitive. Lower priority than the other Data &
+  builtin types entries here — no known common idiom depends on it
+  the way `Integer#times` or `Array#first` did.
 
 - **`Range` beyond `Integer` (and whatever else has a working
   `#succ`) — String ranges, custom-object ranges — isn't supported.**

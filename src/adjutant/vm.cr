@@ -2867,14 +2867,18 @@ module Adjutant
     # Builds the `on_error` proc ValueOps' arithmetic methods (add/op/
     # div/mod/int_op/shl) take — the only bridge those VM-independent
     # methods need back into VM#runtime_error, so the rich,
-    # script-catchable error object (a real RuntimeError RubyObject,
-    # not just a message string) is still built in exactly one place.
+    # script-catchable error object (a real RuntimeError-or-other
+    # RubyObject, not just a message string) is still built in exactly
+    # one place. Takes the `error_class` straight through from the
+    # caller (ValueOps now classifies its own failures — "TypeError",
+    # "ZeroDivisionError" — rather than everything collapsing into a
+    # generic RuntimeError regardless of what actually went wrong).
     private def error_raiser(frame : Frame) : ValueOps::OnError
-      ->(msg : String) { raise runtime_error(msg, frame) }
+      ->(msg : String, error_class : String) { raise runtime_error(msg, frame, error_class: error_class) }
     end
 
-    private def runtime_error(msg : String, frame : Frame = current_frame, cause = nil) : RuntimeError
-      cls = builtin_class_by_name("RuntimeError")
+    private def runtime_error(msg : String, frame : Frame = current_frame, cause = nil, error_class : String = "RuntimeError") : RuntimeError
+      cls = builtin_class_by_name(error_class)
       err_val = cls ? make_error_object(cls, msg) : nil
       RuntimeError.new(msg, frame, cause, error_value: err_val)
     end

@@ -56,4 +56,62 @@ module Adjutant::Builtins
     sym_id = interp.symbols.intern(name).value
     cls.define_native_singleton_method(sym_id, risk) { |args, blk, ncc| block.call(args, blk, ncc) }
   end
+
+  # Shared by Integer#round/#ceil/#floor/#truncate's negative-ndigits
+  # form (e.g. `12345.round(-2) == 12300`) — real Ruby rounds an
+  # Integer to the nearest power of 10 when ndigits < 0, and returns
+  # self unchanged for ndigits >= 0 (an Integer already has no
+  # fractional digits, so there's nothing to round at positive
+  # precision). Uses Crystal's floor/truncated division directly
+  # rather than floating-point scaling, since an Integer input can
+  # exceed Float64's exact-integer range — this stays exact.
+  #
+  # `:round` uses ties-away-from-zero (real Ruby's own default
+  # without an explicit `half:` keyword, which isn't supported here).
+  def self.integer_round_to_power_of_ten(n : Int64, ndigits : Int64, mode : Symbol) : Int64
+    return n if ndigits >= 0
+    factor = 10_i64 ** (-ndigits)
+    case mode
+    when :floor
+      (n // factor) * factor
+    when :ceil
+      (-((-n) // factor)) * factor
+    when :truncate
+      n.tdiv(factor) * factor
+    when :round
+      if n >= 0
+        ((n + factor // 2) // factor) * factor
+      else
+        (-(((-n) + factor // 2) // factor)) * factor
+      end
+    else
+      n
+    end
+  end
+
+  # Shared by Float#round/#ceil/#floor/#truncate's ndigits form. Real
+  # Ruby's rule: ndigits > 0 rounds to that many decimal places and
+  # returns a Float; ndigits <= 0 rounds to the nearest power of 10
+  # and returns an Integer (same as the no-arg case, which is
+  # ndigits == 0). Returns a Value directly (not a bare number) since
+  # the return TYPE itself depends on the sign of ndigits, and only
+  # the caller has the Value's label to attach.
+  #
+  # Floating-point scaling (`f * scale`) is real Ruby's own approach
+  # too, not an Adjutant shortcut — exact decimal rounding of a
+  # binary float is inherently approximate at extreme ndigits either
+  # way; not chasing that edge case here.
+  def self.float_round_to_power_of_ten(f : Float64, ndigits : Int64, mode : Symbol, label : Adjutant::RiskFlowLabel?) : Adjutant::Value
+    scale = 10.0 ** ndigits
+    scaled = f * scale
+    rounded = case mode
+              when :floor    then scaled.floor
+              when :ceil     then scaled.ceil
+              when :truncate then scaled.trunc
+              when :round    then scaled >= 0 ? (scaled + 0.5).floor : (scaled - 0.5).ceil
+              else                scaled
+              end
+    result = rounded / scale
+    ndigits > 0 ? Adjutant::Value.float(result, label) : Adjutant::Value.int(result, label)
+  end
 end

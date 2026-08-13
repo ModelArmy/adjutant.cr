@@ -165,6 +165,37 @@ module Adjutant
       eval("(-5).truncate").as_int.should eq(-5_i64)
     end
 
+    it "ceil/floor/round/truncate with a non-negative ndigits are still no-ops" do
+      eval("12345.ceil(2)").as_int.should eq 12345_i64
+      eval("12345.floor(0)").as_int.should eq 12345_i64
+    end
+
+    describe "ceil/floor/round/truncate with a negative ndigits" do
+      it "round rounds to the nearest power of 10" do
+        eval("12345.round(-2)").as_int.should eq 12300_i64
+        eval("12350.round(-2)").as_int.should eq 12400_i64
+      end
+
+      it "round on a negative receiver rounds ties away from zero" do
+        eval("(-12350).round(-2)").as_int.should eq(-12400_i64)
+      end
+
+      it "ceil rounds toward positive infinity" do
+        eval("12341.ceil(-2)").as_int.should eq 12400_i64
+        eval("(-12341).ceil(-2)").as_int.should eq(-12300_i64)
+      end
+
+      it "floor rounds toward negative infinity" do
+        eval("12399.floor(-2)").as_int.should eq 12300_i64
+        eval("(-12399).floor(-2)").as_int.should eq(-12400_i64)
+      end
+
+      it "truncate rounds toward zero" do
+        eval("12399.truncate(-2)").as_int.should eq 12300_i64
+        eval("(-12399).truncate(-2)").as_int.should eq(-12300_i64)
+      end
+    end
+
     it "every builtin Integer method defaults to RiskProfile.none" do
       interp, _ = make_interp
       cls = interp.get_global("Integer").as_rclass
