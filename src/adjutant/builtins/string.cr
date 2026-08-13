@@ -33,15 +33,18 @@ module Adjutant::Builtins
     end
 
     define(cls, interp, "to_i") do |args|
-      Adjutant::Value.int(args.first.as_string.to_i64? || 0_i64)
+      recv = args.first
+      Adjutant::Value.int(recv.as_string.to_i64? || 0_i64, recv.label)
     end
 
     define(cls, interp, "to_f") do |args|
-      Adjutant::Value.float(args.first.as_string.to_f64? || 0.0)
+      recv = args.first
+      Adjutant::Value.float(recv.as_string.to_f64? || 0.0, recv.label)
     end
 
     define(cls, interp, "to_sym") do |args|
-      Adjutant::Value.symbol(interp.symbols.intern(args.first.as_string))
+      recv = args.first
+      Adjutant::Value.symbol(interp.symbols.intern(recv.as_string), recv.label)
     end
 
     define(cls, interp, "length") do |args|
@@ -52,16 +55,28 @@ module Adjutant::Builtins
       Adjutant::Value.int(args.first.as_string.size.to_i64)
     end
 
+    # upcase/downcase/strip/reverse/chars/capitalize all pass the
+    # receiver's own label through to their result — a scalar-to-
+    # scalar (or, for chars, scalar-to-container) transform of a
+    # SINGLE labeled String, no combination of multiple sources
+    # involved, so this is a direct carry-forward, not a join. Fixed
+    # here alongside the new methods below (found while adding them —
+    # upcase/downcase/strip previously dropped the receiver's label
+    # entirely, the same category of gap already fixed for
+    # Array#push/#map earlier this session).
     define(cls, interp, "upcase") do |args|
-      Adjutant::Value.string(args.first.as_string.upcase)
+      recv = args.first
+      Adjutant::Value.string(recv.as_string.upcase, recv.label)
     end
 
     define(cls, interp, "downcase") do |args|
-      Adjutant::Value.string(args.first.as_string.downcase)
+      recv = args.first
+      Adjutant::Value.string(recv.as_string.downcase, recv.label)
     end
 
     define(cls, interp, "strip") do |args|
-      Adjutant::Value.string(args.first.as_string.strip)
+      recv = args.first
+      Adjutant::Value.string(recv.as_string.strip, recv.label)
     end
 
     define(cls, interp, "empty?") do |args|
@@ -82,6 +97,40 @@ module Adjutant::Builtins
       # whole inherits the receiver's label, same principle as any other
       # construction from a labeled source (see MakeArray/MakeHash).
       Adjutant::Value.new(Adjutant::LabeledArray.new(parts.map { |part| Adjutant::Value.string(part) }, recv.label), nil)
+    end
+
+    define(cls, interp, "reverse") do |args|
+      recv = args.first
+      Adjutant::Value.string(recv.as_string.reverse, recv.label)
+    end
+
+    define(cls, interp, "chars") do |args|
+      recv = args.first
+      # Same label-inheritance principle as #split above — an Array
+      # of single-character substrings of a labeled receiver.
+      Adjutant::Value.new(Adjutant::LabeledArray.new(recv.as_string.chars.map { |char| Adjutant::Value.string(char.to_s) }, recv.label), nil)
+    end
+
+    define(cls, interp, "start_with?") do |args|
+      prefix = args[1]?.try(&.as_string?)
+      Adjutant::Value.bool(prefix ? args.first.as_string.starts_with?(prefix) : false)
+    end
+
+    define(cls, interp, "end_with?") do |args|
+      suffix = args[1]?.try(&.as_string?)
+      Adjutant::Value.bool(suffix ? args.first.as_string.ends_with?(suffix) : false)
+    end
+
+    # Real Ruby's String#capitalize upcases the first character and
+    # downcases every other one (`"heLLO wOrld".capitalize ==
+    # "Hello world"`) — NOT just an upcase of the first letter with
+    # the rest left alone, which is a common mistake this
+    # implementation deliberately avoids. Crystal's own
+    # String#capitalize does exactly this already, no manual
+    # first-char-splitting needed.
+    define(cls, interp, "capitalize") do |args|
+      recv = args.first
+      Adjutant::Value.string(recv.as_string.capitalize, recv.label)
     end
 
     cls

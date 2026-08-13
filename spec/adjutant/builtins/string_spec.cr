@@ -177,6 +177,117 @@ module Adjutant
         result = interp.eval(%("hello"[1]))
         result.as_string.should eq "e"
       end
+
+      describe "[] with a Range" do
+        it "returns a substring for an inclusive range" do
+          eval(%("hello"[1..3])).as_string.should eq "ell"
+        end
+
+        it "returns a substring for an exclusive range" do
+          eval(%("hello"[1...3])).as_string.should eq "el"
+        end
+
+        it "supports negative bounds, counting from the end" do
+          eval(%("hello"[1..-2])).as_string.should eq "ell"
+        end
+
+        it "clamps an end beyond the string's length" do
+          eval(%("hello"[1..100])).as_string.should eq "ello"
+        end
+
+        it "returns an empty string when the start is exactly at the length" do
+          eval(%("abc"[3..5])).as_string.should eq ""
+        end
+
+        it "returns nil when the start is beyond the length" do
+          eval(%("abc"[10..20])).null?.should be_true
+        end
+
+        it "returns nil when a negative start is still out of range after adjustment" do
+          eval(%("abc"[-10..2])).null?.should be_true
+        end
+      end
+    end
+
+    describe "#reverse" do
+      it "reverses the characters" do
+        eval(%("hello".reverse)).as_string.should eq "olleh"
+      end
+    end
+
+    describe "#chars" do
+      it "returns an Array of single-character strings" do
+        interp, _ = make_interp
+        result = interp.eval(%("abc".chars))
+        result.as_array.map(&.as_string).should eq ["a", "b", "c"]
+      end
+
+      it "on an empty string returns an empty array" do
+        interp, _ = make_interp
+        result = interp.eval(%("".chars))
+        result.as_array.empty?.should be_true
+      end
+    end
+
+    describe "#start_with? / #end_with?" do
+      it "start_with? is true for a matching prefix" do
+        eval(%("hello".start_with?("he"))).as_bool.should be_true
+      end
+
+      it "start_with? is false for a non-matching prefix" do
+        eval(%("hello".start_with?("lo"))).as_bool.should be_false
+      end
+
+      it "end_with? is true for a matching suffix" do
+        eval(%("hello".end_with?("lo"))).as_bool.should be_true
+      end
+
+      it "end_with? is false for a non-matching suffix" do
+        eval(%("hello".end_with?("he"))).as_bool.should be_false
+      end
+    end
+
+    describe "#capitalize" do
+      it "upcases the first character and downcases the rest" do
+        eval(%("heLLO wORLD".capitalize)).as_string.should eq "Hello world"
+      end
+
+      it "on an already-capitalized string is a no-op" do
+        eval(%("Hello".capitalize)).as_string.should eq "Hello"
+      end
+    end
+
+    describe "label propagation on scalar-to-scalar/container transforms" do
+      # upcase/downcase/strip/reverse/capitalize/chars/to_i/to_f/to_sym
+      # previously dropped the receiver's own label entirely — fixed
+      # alongside this session's other work (same category of gap
+      # already fixed for Array#push/#map).
+      it "reverse carries the receiver's label forward" do
+        interp, _ = make_interp
+        interp.define_native("tainted_string") do |args|
+          Value.string("hello", RiskFlowLabel.of(ProvenanceKind::File, "/etc/passwd", Sensitivity::High))
+        end
+        result = interp.eval("tainted_string.reverse")
+        result.label.should_not be_nil
+      end
+
+      it "upcase carries the receiver's label forward" do
+        interp, _ = make_interp
+        interp.define_native("tainted_string") do |args|
+          Value.string("hello", RiskFlowLabel.of(ProvenanceKind::File, "/etc/passwd", Sensitivity::High))
+        end
+        result = interp.eval("tainted_string.upcase")
+        result.label.should_not be_nil
+      end
+
+      it "chars carries the receiver's label forward onto the resulting array" do
+        interp, _ = make_interp
+        interp.define_native("tainted_string") do |args|
+          Value.string("ab", RiskFlowLabel.of(ProvenanceKind::File, "/etc/passwd", Sensitivity::High))
+        end
+        result = interp.eval("tainted_string.chars")
+        result.label.should_not be_nil
+      end
     end
   end
 end

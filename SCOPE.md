@@ -24,25 +24,38 @@ Blocking, or actively causing incorrect behavior in normal use. Ordered
 roughly by dependency, not necessarily by importance — an item lower down
 may unblock ones above it.
 
-- **`Array#to_s`/`Hash#to_s` (and `#inspect`, which defers to `to_s`)
-  silently produce garbage, not a real Ruby-style rendering.** Found
-  2026-08-13 writing fresh ISO-style coverage for `Hash`.
+- **`Array#to_s`/`Hash#to_s`/`Range#to_s` (called implicitly — e.g.
+  string interpolation, `puts`, `p` — and `#inspect`, which defers to
+  `to_s`) silently produce garbage, not a real Ruby-style rendering.**
+  Found 2026-08-13 writing fresh ISO-style coverage for `Hash`, then
+  confirmed the identical gap already applies to `Range` too —
+  `builtins/range.cr`'s own `to_s` method comment flags it, tracing
+  back to the 2026-07-14 handoff, predating this entry.
   `Value#to_s`'s case statement (`value.cr`) has no branch for
-  `LabeledArray` or `LabeledHash` at all — both fall through to the
-  generic `"#<" << @raw.class << ">"` fallback, so `{"a" =>
-  1}.to_s` actually produces `"#<Adjutant::LabeledHash>"`, and
-  `[1,2,3].to_s` produces `"#<Adjutant::LabeledArray>"` — neither the
-  real `{"a" => 1}` / `[1, 2, 3]` a script or its author would expect.
-  Silent-wrong-answer, not a missing method or a raised error, so it's
-  the kind of gap that's easy to never notice: no test anywhere in the
+  `LabeledArray`, `LabeledHash`, OR a `Range` RubyObject at all — all
+  three fall through to the generic `"#<" << @raw.class << ">"` (or,
+  for a RubyObject like Range, `RubyObject#to_s`'s own generic
+  `"#<Range>"`) fallback, so `{"a" => 1}.to_s` actually produces
+  `"#<Adjutant::LabeledHash>"`, `[1,2,3].to_s` produces
+  `"#<Adjutant::LabeledArray>"`, and interpolating a Range (`"#{1..3}"`)
+  produces `"#<Range>"` rather than `"1..3"` — none of these the real
+  rendering a script or its author would expect. IMPORTANT scope note
+  from `range.cr`'s own comment: Range DOES have a working `#to_s`
+  reachable via an EXPLICIT script-level `.to_s` call (real dispatch
+  through `find_native_method`) — the gap is specifically the
+  IMPLICIT path (string interpolation, `puts`, `p`, anything using
+  `Value#to_s` directly rather than going through method dispatch),
+  which never consults a class's own native `to_s` at all. Silent-
+  wrong-answer, not a missing method or a raised error, so it's the
+  kind of gap that's easy to never notice: no test anywhere in the
   suite (including array_spec.cr, predating this finding) ever checked
-  `#to_s`'s actual STRING CONTENT for either container type, only that
-  it returns *a* string. Real work needed: proper recursive
+  `#to_s`'s actual STRING CONTENT for any of the three types, only
+  that it returns *a* string. Real work needed: proper recursive
   Array/Hash-aware rendering (`[1, 2, "a"]`, `{"a" => 1, "b" => [1,
-  2]}`), string quoting rules matching real Ruby's `to_s` vs
-  `inspect` distinction, and — per the separate cycle-detection gap
-  already flagged in `array.rb`'s own triage — a guard against
-  self-referential containers recursing until the native stack
+  2]}`), a real Range case, string quoting rules matching real Ruby's
+  `to_s` vs `inspect` distinction, and — per the separate cycle-
+  detection gap already flagged in `array.rb`'s own triage — a guard
+  against self-referential containers recursing until the native stack
   overflows, since a real implementation would need to touch the same
   code either way.
 
@@ -103,26 +116,6 @@ may unblock ones above it.
   shape: extend that case to also check a fixed list of the
   fallback-only names `exec_builtin` handles, rather than a full
   lookup-table rewrite.
-
-- **`String` is missing `reverse`, `chars`, `start_with?`/`end_with?`,
-  `capitalize`.** Found 2026-08-10, same survey. Has
-  (`builtins/string.cr`): `downcase`, `upcase`, `strip`, `split`,
-  `include?`, `empty?`, `length`/`size`, `to_i`/`to_f`/`to_s`/
-  `to_sym`. Separate, NOT a missing-method gap (different mechanism,
-  noted here since found by the same survey): single-character
-  indexing (`s[1]`) already works, but Range-based substring slicing
-  (`s[1..3]`) doesn't — `exec_get_index` (`vm.cr`) only handles a
-  plain `Integer` index for strings, falling through to `nil` for a
-  `Range` one. Worth its own look, since it's an opcode-level fix
-  (`exec_get_index`'s `target.string? && idx.int?` case needs a
-  sibling `idx.range?` case), not a `builtins/string.cr` addition.
-
-- **`Integer` is missing `times`, `abs`, `even?`/`odd?`, `zero?`.**
-  Found 2026-08-10, same survey. Has (`builtins/integer.cr`): `next`/
-  `succ`, `to_f`/`to_i`/`to_s`. `times` specifically is a very common
-  simple-iteration idiom (`3.times { ... }`) an LLM will reach for
-  early and often. Arithmetic (`+`/`-`/`*`/`/`) is already opcode-
-  level (`ValueOps`), not part of this gap.
 
 - **`Range` is missing `to_a`, `step`.** Found 2026-08-10, same
   survey. Has (`builtins/range.cr`): `each`, `first`, `last`, `min`/

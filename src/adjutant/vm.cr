@@ -547,6 +547,43 @@ module Adjutant
       exclusive ? compare(x, max, :<) : compare(x, max, :<=)
     end
 
+    # String#[range] — real Ruby's own substring-slicing rules:
+    # negative bounds count from the end (same as the plain-Integer
+    # index case just above); a start beyond the string's length
+    # returns nil (out of bounds), but a start EXACTLY AT the length
+    # is a valid edge case returning "" (e.g. `"abc"[3..5] == ""`);
+    # an end beyond the length clamps to the last valid index rather
+    # than erroring. Only Integer bounds are handled — Range
+    # construction itself allows any orderable bound type (see
+    # bootstrap_range's own comment), but a non-Integer bound has no
+    # meaningful string-slicing interpretation, so this falls back to
+    # nil rather than raising (matching exec_get_index's own general
+    # "can't resolve this shape" -> nil convention elsewhere).
+    #
+    # Ivar names/lookup mirror range_include?'s own (just above) and
+    # builtins/range.cr's accessors — all three must stay in sync on
+    # the `__min`/`__max`/`__exclusive` naming.
+    private def exec_get_index_string_range(target : Value, range : Value) : Value
+      obj = range.as_robject
+      lo_val = obj.ivars[@symbols.intern("__min").value]
+      hi_val = obj.ivars[@symbols.intern("__max").value]
+      exclusive = obj.ivars[@symbols.intern("__exclusive").value].as_bool
+      return Value.nil_value unless lo_val.int? && hi_val.int?
+
+      s = target.as_string
+      lo = lo_val.as_int.to_i
+      hi = hi_val.as_int.to_i
+      lo += s.size if lo < 0
+      return Value.nil_value if lo < 0 || lo > s.size
+
+      hi += s.size if hi < 0
+      hi -= 1 if exclusive
+      hi = s.size - 1 if hi >= s.size
+      return Value.string("", target.label) if hi < lo
+
+      Value.string(s[lo..hi], target.label)
+    end
+
     # Shared by the "respond_to?" exec_builtin case — mirrors
     # dispatch_call's own receiver-based resolution order (RubyObject:
     # find_method then find_native_method; RubyClass: find_singleton_
@@ -2833,7 +2870,9 @@ module Adjutant
         i = idx.as_int.to_i
         s = target.as_string
         i = s.size + i if i < 0
-        (i >= 0 && i < s.size) ? Value.string(s[i].to_s) : Value.nil_value
+        (i >= 0 && i < s.size) ? Value.string(s[i].to_s, target.label) : Value.nil_value
+      when target.string? && range_receiver?(idx)
+        exec_get_index_string_range(target, idx)
       else
         Value.nil_value
       end
