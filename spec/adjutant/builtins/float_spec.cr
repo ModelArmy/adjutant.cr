@@ -101,6 +101,96 @@ module Adjutant
       end
     end
 
+    describe "#floor / #ceil / #round" do
+      it "floor rounds toward negative infinity" do
+        interp, _ = make_interp
+        interp.eval("3.7.floor").as_int.should eq 3
+        interp.eval("(-3.2).floor").as_int.should eq(-4)
+      end
+
+      it "ceil rounds toward positive infinity" do
+        interp, _ = make_interp
+        interp.eval("3.2.ceil").as_int.should eq 4
+        interp.eval("(-3.7).ceil").as_int.should eq(-3)
+      end
+
+      it "round rounds to the nearest integer" do
+        interp, _ = make_interp
+        interp.eval("3.5.round").as_int.should eq 4
+        interp.eval("3.4.round").as_int.should eq 3
+      end
+
+      it "all three return an Integer, not a Float" do
+        interp, _ = make_interp
+        interp.eval("3.7.floor").int?.should be_true
+        interp.eval("3.7.ceil").int?.should be_true
+        interp.eval("3.7.round").int?.should be_true
+      end
+    end
+
+    describe "#truncate" do
+      it "truncates toward zero, matching Float#to_i's own semantics" do
+        interp, _ = make_interp
+        interp.eval("3.7.truncate").as_int.should eq 3
+        interp.eval("(-3.7).truncate").as_int.should eq(-3)
+      end
+    end
+
+    describe "#abs" do
+      it "returns the absolute value as a Float" do
+        interp, _ = make_interp
+        result = interp.eval("(-2.5).abs")
+        result.as_float.should eq 2.5
+        result.float?.should be_true
+      end
+    end
+
+    describe "#inspect" do
+      it "renders the same as #to_s for a Float" do
+        interp, _ = make_interp
+        interp.eval("2.5.inspect").as_string.should eq "2.5"
+      end
+    end
+
+    describe "#finite? / #nan?" do
+      it "finite? is true for an ordinary float" do
+        interp, _ = make_interp
+        interp.eval("2.5.finite?").as_bool.should be_true
+      end
+
+      it "finite? is false for infinity" do
+        interp, _ = make_interp
+        interp.eval("(5.0 / 0).finite?").as_bool.should be_false
+      end
+
+      it "nan? is false for an ordinary float" do
+        interp, _ = make_interp
+        interp.eval("2.5.nan?").as_bool.should be_false
+      end
+
+      it "nan? is true for 0.0 / 0.0" do
+        interp, _ = make_interp
+        interp.eval("(0.0 / 0).nan?").as_bool.should be_true
+      end
+    end
+
+    describe "#infinite?" do
+      it "returns nil for a finite float" do
+        interp, _ = make_interp
+        interp.eval("2.5.infinite?").null?.should be_true
+      end
+
+      it "returns 1 for positive infinity" do
+        interp, _ = make_interp
+        interp.eval("(5.0 / 0).infinite?").as_int.should eq 1
+      end
+
+      it "returns -1 for negative infinity" do
+        interp, _ = make_interp
+        interp.eval("(-5.0 / 0).infinite?").as_int.should eq(-1)
+      end
+    end
+
     it "respond_to? sees Float's own native methods" do
       interp, _ = make_interp
       result = interp.eval("2.5.respond_to?(:to_i)")

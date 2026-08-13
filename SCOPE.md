@@ -98,10 +98,6 @@ may unblock ones above it.
   early and often. Arithmetic (`+`/`-`/`*`/`/`) is already opcode-
   level (`ValueOps`), not part of this gap.
 
-- **`Float` is missing `round`, `ceil`, `floor`, `abs`, `nan?`.**
-  Found 2026-08-10, same survey. Has (`builtins/float.cr`):
-  `infinite?`, `to_f`/`to_i`/`to_s`.
-
 - **`Range` is missing `to_a`, `step`.** Found 2026-08-10, same
   survey. Has (`builtins/range.cr`): `each`, `first`, `last`, `min`/
   `max`, `include?`, `exclusive?`, `to_s`. `to_a` (materializing a
