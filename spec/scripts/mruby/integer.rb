@@ -233,20 +233,18 @@ assert('Integer#to_i', '15.2.8.3.24') do
   assert_equal 1, 1.to_i
 end
 
-# --- TODO: base parameter support in `to_s`
-# assert('Integer#to_s', '15.2.8.3.25') do
-#   assert_equal "1", 1.to_s
-#   assert_equal "-1", -1.to_s
-#   assert_equal "1010", 10.to_s(2)
-#   assert_equal "a", 10.to_s(36)
-#   assert_equal "-a", -10.to_s(36)
-#   assert_equal "30071", 12345.to_s(8)
-#   assert_raise(ArgumentError) { 10.to_s(-1) }
-#   assert_raise(ArgumentError) { 10.to_s(0) }
-#   assert_raise(ArgumentError) { 10.to_s(1) }
-#   assert_raise(ArgumentError) { 10.to_s(37) }
-# end
-# ---
+assert('Integer#to_s', '15.2.8.3.25') do
+  assert_equal "1", 1.to_s
+  assert_equal "-1", -1.to_s
+  assert_equal "1010", 10.to_s(2)
+  assert_equal "a", 10.to_s(36)
+  assert_equal "-a", -10.to_s(36)
+  assert_equal "30071", 12345.to_s(8)
+  assert_raise(ArgumentError) { 10.to_s(-1) }
+  assert_raise(ArgumentError) { 10.to_s(0) }
+  assert_raise(ArgumentError) { 10.to_s(1) }
+  assert_raise(ArgumentError) { 10.to_s(37) }
+end
 
 assert('Integer#truncate', '15.2.8.3.26') do
   assert_equal 1, 1.truncate

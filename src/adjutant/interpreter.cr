@@ -124,6 +124,26 @@ module Adjutant
     # performs the lookup itself.
     abstract def declare_sensitivity(tag : RiskTag, kind : ProvenanceKind, origin : String,
                                      sensitivity : Sensitivity? = nil) : Nil
+
+    # Lets a native method raise a real, script-catchable diagnostic —
+    # the SAME kind of error a script-level construct raises (an
+    # ErrorCatalog `code`, substitution `data`, and the resulting Ruby
+    # `error_class` to raise as, e.g. "ArgumentError") — rather than
+    # letting a raw Crystal exception escape and get flattened into an
+    # opaque internal N001 by `VM#call_native`'s catch-all rescue.
+    #
+    # Did not exist before `Integer#to_s(base)` needed it: every
+    # native method up to that point either couldn't fail on bad input
+    # (RiskProfile.none, pure data transforms) or accepted its
+    # arguments' shape unconditionally. `to_s(base)` is the first
+    # native method whose argument has a real invalid range a script
+    # can pass and is expected to `rescue ArgumentError` for — real
+    # Ruby does exactly that. General on purpose: any future native
+    # method needing to reject bad input (a `TypeError`, another
+    # `ArgumentError`, ...) uses this same path with its own catalog
+    # code, rather than each one inventing its own ad hoc raise.
+    abstract def raise_error(code : String, data : Hash(String, String) = {} of String => String,
+                             error_class : String = "RuntimeError") : NoReturn
   end
 
   struct NativeFunctionCall
@@ -167,6 +187,11 @@ module Adjutant
     def declare_sensitivity(tag : RiskTag, kind : ProvenanceKind, origin : String,
                             sensitivity : Sensitivity? = nil) : Nil
       @vm.declare_sensitivity(tag, kind, origin, @name, filename, line, sensitivity)
+    end
+
+    def raise_error(code : String, data : Hash(String, String) = {} of String => String,
+                    error_class : String = "RuntimeError") : NoReturn
+      @vm.raise_native_error(code, data, error_class, filename, line)
     end
   end
 

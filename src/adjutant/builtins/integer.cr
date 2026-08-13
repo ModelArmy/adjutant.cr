@@ -16,8 +16,27 @@ module Adjutant::Builtins
   def self.bootstrap_integer(interp : Adjutant::Interpreter) : Adjutant::RubyClass
     cls = Adjutant::RubyClass.new("Integer")
 
-    define(cls, interp, "to_s") do |args|
-      Adjutant::Value.string(args.first.as_int.to_s)
+    # Real Ruby's Integer#to_s(base) accepts an optional base (2..36);
+    # with no argument it's the plain base-10 rendering already
+    # covered below. Crystal's own Int64#to_s(base) already does the
+    # actual radix conversion — this is mostly argument validation:
+    # real Ruby raises ArgumentError for a base outside 2..36, so an
+    # out-of-range base is rejected the same way here (R015), rather
+    # than either silently clamping it or letting Crystal's own
+    # ArgumentError escape as an opaque internal N001 (see
+    # NativeCallContext#raise_error's own comment for why that path
+    # exists).
+    define(cls, interp, "to_s") do |args, _blk, ncc|
+      n = args.first.as_int
+      if base_arg = args[1]?
+        base = base_arg.as_int
+        unless (2..36).covers?(base)
+          ncc.raise_error("R015", {"base" => base.to_s}, "ArgumentError")
+        end
+        Adjutant::Value.string(n.to_s(base.to_i32))
+      else
+        Adjutant::Value.string(n.to_s)
+      end
     end
 
     define(cls, interp, "to_i") do |args|

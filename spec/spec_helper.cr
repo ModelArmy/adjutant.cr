@@ -160,5 +160,19 @@ module Adjutant
     def declare_sensitivity(tag : RiskTag, kind : ProvenanceKind, origin : String,
                             sensitivity : Sensitivity? = nil) : Nil
     end
+
+    # No-op raise — a real diagnostic needs a VM (builtin_class_by_name,
+    # current_frame, the ErrorCatalog-backed error object), none of
+    # which exists in this direct-NativeCallable harness. Raises a
+    # plain Crystal exception instead, just enough for a spec that
+    # only checks "did this reject the input" via expect_raises
+    # without a real VM behind it. A spec that needs the real
+    # diagnostic (code, data, rescuable ArgumentError) should go
+    # through the real VM instead (interp.eval), the way
+    # integer_spec.cr's to_s(base) coverage does.
+    def raise_error(code : String, data : Hash(String, String) = {} of String => String,
+                    error_class : String = "RuntimeError") : NoReturn
+      raise "#{error_class} (#{code}): #{data}"
+    end
   end
 end

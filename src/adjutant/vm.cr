@@ -2903,6 +2903,25 @@ module Adjutant
       RuntimeError.new(diag, frame, cause, error_value: err_val)
     end
 
+    # Native-method counterpart to the script-raised diagnostics
+    # elsewhere in this file (undefined_constant, excluded_construct,
+    # ...) — same runtime_diagnostic machinery, just reachable from
+    # outside the VM via NativeCallContext#raise_error (see that
+    # method's own comment for why this exists at all). `filename`/
+    # `line` are the CALL SITE's, passed through from
+    # NativeFunctionCall's own getters, not this frame's — matching
+    # every other native-method diagnostic (e.g. call_native's own
+    # N001 rescue) which points at where the script called the native
+    # method, not at native code the script never sees.
+    protected def raise_native_error(code : String, data : Hash(String, String),
+                                     error_class : String, filename : String, line : Int32) : NoReturn
+      raise runtime_diagnostic(
+        Diagnostic.new(code: code, primary: Span.new(line: line, filename: filename), data: data),
+        current_frame,
+        error_class: error_class
+      )
+    end
+
     # An unresolved constant. Reports a deliberately excluded name as
     # such, and anything else as an ordinary uninitialized constant.
     #

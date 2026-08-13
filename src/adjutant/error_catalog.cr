@@ -194,6 +194,16 @@ module Adjutant
               "remove the `super` call if this method has nothing to " \
               "extend."
       ),
+      "R015" => Entry.new(
+        code: "R015",
+        summary: "invalid radix {base} for `Integer#to_s`",
+        why: "`Integer#to_s(base)` only accepts a base from 2 to 36 — " \
+             "outside that range there either aren't enough digit " \
+             "symbols to represent it, or the notion of a base stops " \
+             "making sense.",
+        help: "Pass a base between 2 and 36, or call `to_s` with no " \
+              "argument for the default base-10 rendering."
+      ),
 
       # --- L: limits reached ----------------------------------------
       #

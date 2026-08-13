@@ -24,6 +24,48 @@ module Adjutant
       eval("5.to_i").as_int.should eq 5_i64
     end
 
+    it "to_s with a base argument renders in that radix" do
+      eval("10.to_s(2)").as_string.should eq "1010"
+      eval("10.to_s(36)").as_string.should eq "a"
+      eval("(-10).to_s(36)").as_string.should eq "-a"
+      eval("12345.to_s(8)").as_string.should eq "30071"
+    end
+
+    it "to_s with base 10 explicitly matches the default rendering" do
+      eval("12345.to_s(10)").as_string.should eq "12345"
+    end
+
+    it "to_s rejects a base outside 2..36 with a script-catchable ArgumentError" do
+      interp, _ = make_interp
+      error = expect_raises(RuntimeError) do
+        interp.eval("10.to_s(-1)")
+      end
+      diag = error.diagnostic.not_nil!
+      diag.code.should eq("R015")
+      diag.data["base"].should eq("-1")
+    end
+
+    it "to_s rejects base 0, base 1, and base 37 the same way" do
+      interp, _ = make_interp
+      [0, 1, 37].each do |base|
+        error = expect_raises(RuntimeError) do
+          interp.eval("10.to_s(#{base})")
+        end
+        error.diagnostic.not_nil!.code.should eq("R015")
+      end
+    end
+
+    it "to_s's ArgumentError is rescuable from script" do
+      eval(<<-RUBY).as_bool.should be_true
+        begin
+          10.to_s(-1)
+          false
+        rescue ArgumentError
+          true
+        end
+      RUBY
+    end
+
     it "to_f converts to a float" do
       eval("5.to_f").as_float.should eq 5.0
     end
