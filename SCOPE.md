@@ -139,12 +139,6 @@ may unblock ones above it.
   fallback-only names `exec_builtin` handles, rather than a full
   lookup-table rewrite.
 
-- **`Range` is missing `to_a`, `step`.** Found 2026-08-10, same
-  survey. Has (`builtins/range.cr`): `each`, `first`, `last`, `min`/
-  `max`, `include?`, `exclusive?`, `to_s`. `to_a` (materializing a
-  range into an array) is common enough that its absence is
-  surprising on its own.
-
 ## Will Fix
 
 Real gaps, not currently blocking anything, no active design conversation
