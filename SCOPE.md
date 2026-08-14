@@ -24,6 +24,28 @@ Blocking, or actively causing incorrect behavior in normal use. Ordered
 roughly by dependency, not necessarily by importance — an item lower down
 may unblock ones above it.
 
+- **No Regex support at all — no `Regexp` class, no `=~`, no
+  `String#match`, and `String#gsub`/`#sub`/`#index`/`#rindex`/`#scan`
+  have no way to accept a pattern argument (only a plain String, once
+  those land — see the separate entry below).** Found 2026-08-13
+  triaging `spec/scripts/mruby/string.rb`: nearly every upstream
+  pattern-matching test needs this and is currently blocked outright,
+  with no workaround — this is core, ordinary-use Ruby, not an edge
+  case. Genuinely necessary for Adjutant to be useful for real
+  scripting work, not just a nice-to-have alongside the other
+  per-class method surveys. Real work needed: a `Regexp` class/
+  literal syntax (`/pattern/flags`), a matching engine (even a
+  minimal one — real Ruby regex features like lookaround/backrefs are
+  a much bigger lift than the common case), `=~`/`String#match`/
+  `MatchData`, and then wiring a Regexp-accepting case into every
+  String method that takes a pattern. Sized as its own, separate
+  effort — not scoped further here yet. `String#gsub`/`#sub`/
+  `#index`/`#rindex` all have a String-only form landing WITHOUT
+  waiting for this (see below) — deliberately not blocked on Regex,
+  since the String-argument case is common and useful on its own, and
+  adding a Regexp case later is additive (a new dispatch branch, not
+  a rewrite), not a reason to delay the String case.
+
 - **`Array#to_s`/`Hash#to_s`/`Range#to_s` (called implicitly — e.g.
   string interpolation, `puts`, `p` — and `#inspect`, which defers to
   `to_s`) silently produce garbage, not a real Ruby-style rendering.**
@@ -472,6 +494,18 @@ section).
 
 
 ### Data & builtin types
+
+- **Quoted Symbol literals (`:"..."`) don't decode backslash escape
+  sequences.** Found 2026-08-13 fixing the identical gap for String
+  literals (`decode_string_escapes`, parser.cr) — plain and
+  interpolated strings now decode `\n`/`\t`/etc. correctly, but the
+  quoted-Symbol construction site (`SymbolLiteral.new(tok.lexeme
+  .lstrip(':').strip('"').strip('\'')...)`) was deliberately left
+  untouched in that same pass, since its quote-stripping approach is
+  structurally different (chained `lstrip`/`strip` rather than the
+  index-based `strip_quotes`) and riskier to edit without dedicated
+  attention. Lower priority than the String fix was — quoted symbols
+  with embedded escapes are rare — but the same category of gap.
 
 - **`Integer`/`Float` are both missing `#divmod`.** Found 2026-08-13
   triaging `spec/scripts/mruby/float.rb`'s commented-out `Float#divmod`

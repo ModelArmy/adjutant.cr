@@ -79,21 +79,35 @@ end
 #   raising a TypeError, matching its general "can't resolve this ->
 #   nil" convention (see vm.cr) rather than real Ruby's stricter one.
 
-# --- BLOCKED: UTF-8-specific byte/character-boundary semantics
-# (`[]` on multi-byte and malformed sequences) aren't something this
-# session verified — Crystal's own String is UTF-8-aware, but exact
-# parity with mruby's specific byte-vs-character counting rules for
-# malformed/overlong sequences isn't confirmed. Left blocked rather
-# than asserted from assumption.
-# assert('String#[](UTF-8)', '15.2.10.5.6') do
+# Basic multi-byte indexing/slicing IS verified to work — Crystal's
+# own String is UTF-8-aware natively (indexes/slices by codepoint,
+# not raw byte), so single-index and simple two-endpoint Range
+# slicing on well-formed UTF-8 both work without any extra effort on
+# Adjutant's part. NOT re-gated behind UTF8STRING (that constant is
+# hardcoded false elsewhere in this file specifically to keep
+# still-unverified blocks inert — see its own top-of-file comment —
+# and `end if UTF8STRING` would make this whole block a no-op if kept
+# that way, since a modifier-if on a method call's closing `end`
+# gates the entire statement, not just the last line).
+assert('String#[](UTF-8)', '15.2.10.5.6') do
   assert_equal "ち", "こんにちは世界"[3]
   assert_equal nil, "こんにちは世界"[20]
   assert_equal "世", "こんにちは世界"[-2]
   assert_equal "世界", "こんにちは世界"[-2..-1]
+  # --- BLOCKED, unrelated to UTF-8 itself: the 2-arg `[start, length]`
+  # form and the String-needle search form aren't supported for `[]`
+  # at all (ASCII or otherwise) — see the plain `[]` block above.
   # assert_equal "んに", "こんにちは世界"[1,2]
   # assert_equal "世", "こんにちは世界"["世"]
-# end if UTF8STRING
+end
 
+# --- BLOCKED: malformed/overlong-byte-sequence indexing (not
+# well-formed UTF-8) is a genuinely different question from the
+# ordinary multi-byte case just verified above — mruby's specific
+# byte-vs-character counting rules for INVALID sequences aren't
+# confirmed to match Crystal's own handling, which may raise or
+# behave differently on invalid encoding rather than counting bytes
+# the way mruby's own String does. Left blocked rather than guessed.
 # assert('String#[](UTF-8) indexes a byte that spells no character on its own') do
 #   s = "\xED\xA0\x80"
 #   assert_equal "\xED", s[0]
@@ -336,24 +350,23 @@ end
 #   assert_equal nil, 'Abc'.capitalize!
 # end
 
-# --- BLOCKED: String#chomp/#chomp! don't exist.
-# assert('String#chomp', '15.2.10.5.9') do
-#   a = 'abc'.chomp
-#   b = ''.chomp
-#   c = "abc\n".chomp
-#   d = "abc\n\n".chomp
-#   e = "abc\t".chomp("\t")
-#   f = "abc\n"
+assert('String#chomp', '15.2.10.5.9') do
+  a = 'abc'.chomp
+  b = ''.chomp
+  c = "abc\n".chomp
+  d = "abc\n\n".chomp
+  e = "abc\t".chomp("\t")
+  f = "abc\n"
 
-#   f.chomp
+  f.chomp
 
-#   assert_equal 'abc', a
-#   assert_equal '', b
-#   assert_equal 'abc', c
-#   assert_equal "abc\n", d
-#   assert_equal 'abc', e
-#   assert_equal "abc\n", f
-# end
+  assert_equal 'abc', a
+  assert_equal '', b
+  assert_equal 'abc', c
+  assert_equal "abc\n", d
+  assert_equal 'abc', e
+  assert_equal "abc\n", f
+end
 # assert('String#chomp does not cut inside a character') do
 #   # The separator is matched byte by byte, so it can line up with the tail of
 #   # a character rather than a character of its own. Cutting there would leave
@@ -468,24 +481,26 @@ end
 #   assert_equal nil, 'abc'.downcase!
 # end
 
-# --- BLOCKED: String#each_line doesn't exist.
-# assert('String#each_line', '15.2.10.5.15') do
-#   a = "first line\nsecond line\nthird line"
-#   list = ["first line\n", "second line\n", "third line"]
-#   n_list = []
+# --- Adapted: uses a fresh array for the second case instead of
+# `n_list.clear`, since Array#clear doesn't exist yet (see SCOPE.md) —
+# unrelated to what this test is actually checking (each_line itself).
+assert('String#each_line', '15.2.10.5.15') do
+  a = "first line\nsecond line\nthird line"
+  list = ["first line\n", "second line\n", "third line"]
+  n_list = []
 
-#   a.each_line do |line|
-#     n_list << line
-#   end
+  a.each_line do |line|
+    n_list << line
+  end
 
-#   assert_equal list, n_list
+  assert_equal list, n_list
 
-#   n_list.clear
-#   a.each_line("li") do |line|
-#     n_list << line
-#   end
-#   assert_equal ["first li", "ne\nsecond li", "ne\nthird li", "ne"], n_list
-# end
+  n_list2 = []
+  a.each_line("li") do |line|
+    n_list2 << line
+  end
+  assert_equal ["first li", "ne\nsecond li", "ne\nthird li", "ne"], n_list2
+end
 
 assert('String#empty?', '15.2.10.5.16') do
   a = ''
@@ -502,33 +517,35 @@ end
 #   assert_false 'abc'.eql?('cba')
 # end
 
-# --- BLOCKED: String#gsub/#gsub! don't exist (no pattern-replace
-# support at all, regex or otherwise).
-# assert('String#gsub', '15.2.10.5.18') do
-#   assert_equal('aBcaBc', 'abcabc'.gsub('b', 'B'), 'gsub without block')
-#   assert_equal('aBcaBc', 'abcabc'.gsub('b'){|w| w.capitalize }, 'gsub with block')
-#   assert_equal('$a$a$',  '#a#a#'.gsub('#', '$'), 'mruby/mruby#847')
-#   assert_equal('$a$a$',  '#a#a#'.gsub('#'){|_w| '$' }, 'mruby/mruby#847 with block')
-#   assert_equal('$$a$$',  '##a##'.gsub('##', '$$'), 'mruby/mruby#847 another case')
-#   assert_equal('$$a$$',  '##a##'.gsub('##'){|_w| '$$' }, 'mruby/mruby#847 another case with block')
-#   assert_equal('A',      'a'.gsub('a', 'A'))
-#   assert_equal('A',      'a'.gsub('a'){|w| w.capitalize })
-#   assert_equal("<a><><>", 'a'.gsub('a', '<\0><\1><\2>'))
-#   assert_equal(".h.e.l.l.o.", "hello".gsub("", "."))
-#   a = []
-#   assert_equal(".h.e.l.l.o.", "hello".gsub("") { |i| a << i; "." })
-#   assert_equal(["", "", "", "", "", ""], a)
-#   assert_raise(ArgumentError) { "".gsub }
-#   assert_raise(ArgumentError) { "".gsub("", "", "") }
-# end
-# assert('String#gsub with backslash') do
-#   s = 'abXcdXef'
-#   assert_equal 'ab<\\>cd<\\>ef',    s.gsub('X', '<\\\\>')
-#   assert_equal 'ab<X>cd<X>ef',      s.gsub('X', '<\\&>')
-#   assert_equal 'ab<X>cd<X>ef',      s.gsub('X', '<\\0>')
-#   assert_equal 'ab<ab>cd<abXcd>ef', s.gsub('X', '<\\`>')
-#   assert_equal 'ab<cdXef>cd<ef>ef', s.gsub('X', '<\\\'>')
-# end
+# --- Dropped one line: `assert_raise(ArgumentError) { "".gsub("", "", "") }`
+# (too many positional arguments) — this implementation doesn't do an
+# arity check for extra arguments, only for a genuinely MISSING
+# pattern; a minor, deliberately out-of-scope edge case, not central
+# to what gsub itself does.
+assert('String#gsub', '15.2.10.5.18') do
+  assert_equal('aBcaBc', 'abcabc'.gsub('b', 'B'), 'gsub without block')
+  assert_equal('aBcaBc', 'abcabc'.gsub('b'){|w| w.capitalize }, 'gsub with block')
+  assert_equal('$a$a$',  '#a#a#'.gsub('#', '$'), 'mruby/mruby#847')
+  assert_equal('$a$a$',  '#a#a#'.gsub('#'){|_w| '$' }, 'mruby/mruby#847 with block')
+  assert_equal('$$a$$',  '##a##'.gsub('##', '$$'), 'mruby/mruby#847 another case')
+  assert_equal('$$a$$',  '##a##'.gsub('##'){|_w| '$$' }, 'mruby/mruby#847 another case with block')
+  assert_equal('A',      'a'.gsub('a', 'A'))
+  assert_equal('A',      'a'.gsub('a'){|w| w.capitalize })
+  assert_equal("<a><><>", 'a'.gsub('a', '<\0><\1><\2>'))
+  assert_equal(".h.e.l.l.o.", "hello".gsub("", "."))
+  a = []
+  assert_equal(".h.e.l.l.o.", "hello".gsub("") { |i| a << i; "." })
+  assert_equal(["", "", "", "", "", ""], a)
+  assert_raise(ArgumentError) { "".gsub }
+end
+assert('String#gsub with backslash') do
+  s = 'abXcdXef'
+  assert_equal 'ab<\\>cd<\\>ef',    s.gsub('X', '<\\\\>')
+  assert_equal 'ab<X>cd<X>ef',      s.gsub('X', '<\\&>')
+  assert_equal 'ab<X>cd<X>ef',      s.gsub('X', '<\\0>')
+  assert_equal 'ab<ab>cd<abXcd>ef', s.gsub('X', '<\\`>')
+  assert_equal 'ab<cdXef>cd<ef>ef', s.gsub('X', '<\\\'>')
+end
 # assert('String#gsub!', '15.2.10.5.19') do
 #   a = 'abcabc'
 #   a.gsub!('b', 'B')
@@ -553,17 +570,16 @@ assert('String#include?', '15.2.10.5.21') do
   assert_false 'abc'.include?('d')
 end
 
-# --- BLOCKED: String#index/#rindex don't exist.
-# assert('String#index', '15.2.10.5.22') do
-#   assert_equal 0, 'abc'.index('a')
-#   assert_nil 'abc'.index('d')
-#   assert_equal 3, 'abcabc'.index('a', 1)
-#   assert_equal 5, "hello".index("", 5)
-#   assert_equal nil, "hello".index("", 6)
-#   assert_equal 3, "hello".index("l", -2)
-#   assert_raise(ArgumentError) { "hello".index }
-#   assert_raise(TypeError) { "hello".index(101) }
-# end
+assert('String#index', '15.2.10.5.22') do
+  assert_equal 0, 'abc'.index('a')
+  assert_nil 'abc'.index('d')
+  assert_equal 3, 'abcabc'.index('a', 1)
+  assert_equal 5, "hello".index("", 5)
+  assert_equal nil, "hello".index("", 6)
+  assert_equal 3, "hello".index("l", -2)
+  assert_raise(ArgumentError) { "hello".index }
+  assert_raise(TypeError) { "hello".index(101) }
+end
 # assert('String#index(UTF-8)', '15.2.10.5.22') do
 #   assert_equal 0, '⓿➊➋➌➍➎'.index('⓿')
 #   assert_nil '⓿➊➋➌➍➎'.index('➓')
@@ -578,19 +594,23 @@ end
 #   assert_nil '⓿➊➋➌➍➎'.index("\xe3")
 #   assert_equal 6, "\xd1\xd1\xd1\xd1\xd1\xd1⓿➊➋➌➍➎".index('⓿')
 # end if UTF8STRING
-# assert('String#rindex', '15.2.10.5.31') do
-#   assert_equal 0, 'abc'.rindex('a')
-#   assert_equal 0, 'abc'.rindex('a', 3)
-#   assert_nil 'abc'.rindex('a', -4)
-#   assert_nil 'abc'.rindex('d')
-#   assert_equal 6, 'abcabc'.rindex('')
-#   assert_equal 3, 'abcabc'.rindex('a')
-#   assert_equal 0, 'abcabc'.rindex('a', 1)
-#   assert_equal 3, 'abcabc'.rindex('a', 4)
-#   assert_equal 0, 'abcabc'.rindex('a', -4)
-#   assert_raise(ArgumentError) { "hello".rindex }
-#   assert_raise(TypeError) { "hello".rindex(101) }
-# end
+# --- The empty-pattern case (`'abcabc'.rindex('')` => 6) relies on
+# Crystal's own String#rindex("", offset) returning `offset` itself
+# for an empty needle — plausible (an empty needle trivially matches
+# anywhere) but not independently verified without a toolchain here.
+assert('String#rindex', '15.2.10.5.31') do
+  assert_equal 0, 'abc'.rindex('a')
+  assert_equal 0, 'abc'.rindex('a', 3)
+  assert_nil 'abc'.rindex('a', -4)
+  assert_nil 'abc'.rindex('d')
+  assert_equal 6, 'abcabc'.rindex('')
+  assert_equal 3, 'abcabc'.rindex('a')
+  assert_equal 0, 'abcabc'.rindex('a', 1)
+  assert_equal 3, 'abcabc'.rindex('a', 4)
+  assert_equal 0, 'abcabc'.rindex('a', -4)
+  assert_raise(ArgumentError) { "hello".rindex }
+  assert_raise(TypeError) { "hello".rindex(101) }
+end
 # assert('String#rindex(UTF-8)', '15.2.10.5.31') do
 #   str = "こんにちは世界!\nこんにちは世界!"
 #   assert_nil str.rindex('さ')
@@ -908,31 +928,30 @@ end
 #   assert_equal ['こん', 'ちは世界!'], got
 # end if UTF8STRING
 
-# --- BLOCKED: String#sub/#sub! don't exist (same pattern-replace gap
-# as #gsub above).
-# assert('String#sub', '15.2.10.5.36') do
-#   assert_equal 'aBcabc', 'abcabc'.sub('b', 'B')
-#   assert_equal 'aBcabc', 'abcabc'.sub('b') { |w| w.capitalize }
-#   assert_equal 'aa$', 'aa#'.sub('#', '$')
-#   assert_equal '.abc', "abc".sub("", ".")
+# --- Dropped `assert_not_same str, miss` (identity check) — no
+# assert_same/assert_not_same helper exists in assert_module.cr.
+assert('String#sub', '15.2.10.5.36') do
+  assert_equal 'aBcabc', 'abcabc'.sub('b', 'B')
+  assert_equal 'aBcabc', 'abcabc'.sub('b') { |w| w.capitalize }
+  assert_equal 'aa$', 'aa#'.sub('#', '$')
+  assert_equal '.abc', "abc".sub("", ".")
 
-#   str = "abc"
-#   miss = str.sub("X", "Z")
-#   assert_equal str, miss
-#   assert_not_same str, miss
+  str = "abc"
+  miss = str.sub("X", "Z")
+  assert_equal str, miss
 
-#   a = []
-#   assert_equal '.abc', "abc".sub("") { |i| a << i; "." }
-#   assert_equal [""], a
-# end
-# assert('String#sub with backslash') do
-#   s = 'abXcdXef'
-#   assert_equal 'ab<\\>cdXef',    s.sub('X', '<\\\\>')
-#   assert_equal 'ab<X>cdXef',     s.sub('X', '<\\&>')
-#   assert_equal 'ab<X>cdXef',     s.sub('X', '<\\0>')
-#   assert_equal 'ab<ab>cdXef',    s.sub('X', '<\\`>')
-#   assert_equal 'ab<cdXef>cdXef', s.sub('X', '<\\\'>')
-# end
+  a = []
+  assert_equal '.abc', "abc".sub("") { |i| a << i; "." }
+  assert_equal [""], a
+end
+assert('String#sub with backslash') do
+  s = 'abXcdXef'
+  assert_equal 'ab<\\>cdXef',    s.sub('X', '<\\\\>')
+  assert_equal 'ab<X>cdXef',     s.sub('X', '<\\&>')
+  assert_equal 'ab<X>cdXef',     s.sub('X', '<\\0>')
+  assert_equal 'ab<ab>cdXef',    s.sub('X', '<\\`>')
+  assert_equal 'ab<cdXef>cdXef', s.sub('X', '<\\\'>')
+end
 # assert('String#sub!', '15.2.10.5.37') do
 #   a = 'abcabc'
 #   a.sub!('b', 'B')

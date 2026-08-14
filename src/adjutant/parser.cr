@@ -757,7 +757,8 @@ module Adjutant
         FloatLiteral.new(tok.lexeme, l, c)
       when TokenKind::String
         tok = advance
-        StringLiteral.new(strip_quotes(tok.lexeme), l, c)
+        is_double = tok.lexeme.starts_with?('"')
+        StringLiteral.new(decode_string_escapes(strip_quotes(tok.lexeme), is_double), l, c)
       when TokenKind::StringPart
         parse_interp_string(l, c)
       when TokenKind::Symbol
@@ -1148,7 +1149,7 @@ module Adjutant
       parts = [] of Node
       while at_kind?(TokenKind::StringPart)
         tok = advance
-        parts << StringFragment.new(tok.lexeme, tok.line, tok.column)
+        parts << StringFragment.new(decode_string_escapes(tok.lexeme, true), tok.line, tok.column)
         # parse the interpolated expression until InterpEnd
         skip_newlines
         until at_kind?(TokenKind::InterpEnd) || at_kind?(TokenKind::EOF)
@@ -1159,7 +1160,7 @@ module Adjutant
       end
       if at_kind?(TokenKind::StringEnd)
         tok = advance
-        parts << StringFragment.new(tok.lexeme, tok.line, tok.column) unless tok.lexeme.empty?
+        parts << StringFragment.new(decode_string_escapes(tok.lexeme, true), tok.line, tok.column) unless tok.lexeme.empty?
       end
       InterpString.new(parts, l, c)
     end
@@ -1949,6 +1950,126 @@ module Adjutant
     private def strip_quotes(s : String) : String
       return s[1..-2] if s.size >= 2 && (s.starts_with?('"') || s.starts_with?('\''))
       s
+    end
+
+    # Decodes real Ruby's backslash escape sequences in a string
+    # literal's raw source text. Found 2026-08-13 while adding
+    # String#chomp/#gsub/etc: NOTHING in the parser/compiler pipeline
+    # ever did this before — `strip_quotes` only removed the
+    # surrounding quote characters, and `compile_string` fed that raw
+    # text straight into a Value.string constant. Every double-quoted
+    # string containing `\n`, `\t`, etc. silently held the literal
+    # two-character sequence (backslash + letter) instead of the
+    # intended control character — a severe, previously-unnoticed
+    # silent-wrong-answer bug, not a missing feature: no test anywhere
+    # in the suite exercised an escape sequence inside an
+    # Adjutant-PARSED string (as opposed to a real newline typed
+    # directly into a Crystal heredoc, which needed no decoding to
+    # begin with).
+    #
+    # Single-quoted strings only decode `\\` and `\'` — real Ruby's
+    # own rule; every other backslash sequence stays completely
+    # literal (`'\n'` is the two characters `\` and `n`, not a
+    # newline). `is_double` selects which ruleset applies.
+    #
+    # Interpolated-string fragments (StringFragment, built from
+    # TokenKind::StringPart/StringEnd) are always double-quoted in
+    # Ruby — the lexer never produces those tokens for a
+    # single-quoted string, which can't interpolate at all — so
+    # callers building those always pass `is_double: true`.
+    # ameba:disable Metrics/CyclomaticComplexity - one `when` per escape letter, each a flat one-line case; not tangled branching
+    private def decode_string_escapes(raw : String, is_double : Bool) : String
+      return decode_single_quoted_escapes(raw) unless is_double
+
+      String.build do |io|
+        i = 0
+        n = raw.size
+        while i < n
+          ch = raw[i]
+          if ch == '\\' && i + 1 < n
+            nxt = raw[i + 1]
+            case nxt
+            when 'n'                  then io << '\n'; i += 2
+            when 't'                  then io << '\t'; i += 2
+            when 'r'                  then io << '\r'; i += 2
+            when '0'                  then io << '\0'; i += 2
+            when 'a'                  then io << '\a'; i += 2
+            when 'b'                  then io << '\b'; i += 2
+            when 'e'                  then io << '\e'; i += 2
+            when 'f'                  then io << '\f'; i += 2
+            when 'v'                  then io << '\v'; i += 2
+            when 's'                  then io << ' '; i += 2
+            when '\\', '"', '\'', '#' then io << nxt; i += 2
+            when 'x'
+              j = i + 2
+              j += 1 if j < n && hex_digit?(raw[j])
+              j += 1 if j < n && hex_digit?(raw[j]) && j == i + 3
+              if j == i + 2
+                io << nxt
+                i += 2
+              else
+                io << raw[(i + 2)...j].to_i(16).chr
+                i = j
+              end
+            when 'u'
+              if i + 2 < n && raw[i + 2] == '{'
+                close = raw.index('}', i + 3)
+                if close
+                  hex = raw[(i + 3)...close]
+                  io << hex.to_i(16).chr unless hex.empty?
+                  i = close + 1
+                else
+                  io << nxt
+                  i += 2
+                end
+              elsif i + 6 <= n && (i + 2...i + 6).all? { |k| hex_digit?(raw[k]) }
+                io << raw[(i + 2)...(i + 6)].to_i(16).chr
+                i += 6
+              else
+                io << nxt
+                i += 2
+              end
+            else
+              # Real Ruby's own rule for an unrecognized escape: drop
+              # the backslash, keep the character as-is (`"\d" ==
+              # "d"`), not an error.
+              io << nxt
+              i += 2
+            end
+          else
+            io << ch
+            i += 1
+          end
+        end
+      end
+    end
+
+    private def hex_digit?(c : Char) : Bool
+      c.ascii_number? || ('a'..'f').includes?(c.downcase)
+    end
+
+    # Real Ruby's single-quoted-string rule: only `\\` (literal
+    # backslash) and `\'` (literal single quote) are recognized
+    # escapes — every other backslash stays completely literal,
+    # backslash and all (`'\n'` is 2 chars, `\` and `n`, not a
+    # newline). An explicit left-to-right scan rather than chained
+    # global substitutions, to avoid any ambiguity from one
+    # substitution pass altering what the next pass would match.
+    private def decode_single_quoted_escapes(raw : String) : String
+      String.build do |io|
+        i = 0
+        n = raw.size
+        while i < n
+          ch = raw[i]
+          if ch == '\\' && i + 1 < n && (raw[i + 1] == '\\' || raw[i + 1] == '\'')
+            io << raw[i + 1]
+            i += 2
+          else
+            io << ch
+            i += 1
+          end
+        end
+      end
     end
   end
 end

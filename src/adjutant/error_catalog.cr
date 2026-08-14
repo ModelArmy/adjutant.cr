@@ -221,6 +221,20 @@ module Adjutant
         help: "Pass another Hash to merge in, or build one from " \
               "whatever you're trying to combine first."
       ),
+      "R018" => Entry.new(
+        code: "R018",
+        summary: "`{method}` called with no pattern argument",
+        why: "`{method}` needs something to search for — a pattern " \
+             "argument is required, not optional.",
+        help: "Pass a String (or, once supported, a Regexp) to search for."
+      ),
+      "R019" => Entry.new(
+        code: "R019",
+        summary: "`{method}` given a non-String pattern ({class_name})",
+        why: "Adjutant's `{method}` only accepts a String pattern " \
+             "today — Regexp support doesn't exist yet (see SCOPE.md).",
+        help: "Pass a String to search for."
+      ),
 
       # --- L: limits reached ----------------------------------------
       #
