@@ -180,6 +180,53 @@ still roughly ordered by how cheap/independent the fix is.
 Small, mechanical, independent of each other — good candidates for quick
 wins.
 
+- **`=~` (regex/string match operator) doesn't exist at all — no
+  lexer token, no infix precedence entry, and no working dot-call
+  spelling either.** Found 2026-08-14 while wiring `Regexp#=~` as
+  part of the Regexp/MatchData work — ended up NOT defining that
+  native method at all (see its own comment in `builtins/regexp.cr`),
+  since there's currently no script syntax that could ever reach it:
+  `x =~ y` doesn't parse (no `PRECEDENCE` entry, and the lexer has no
+  combined `=~` token — it splits into separate `Eq`/`Tilde` tokens),
+  and `x.=~(y)` doesn't work either, since `parse_postfix`'s dot-call
+  handling grabs only the very next token's lexeme as the method name
+  (see `===`'s own dot-call case, which works precisely because
+  `TripleEq` IS a single token) — for `=~` that's just the bare `=`,
+  leaving a stray `~` to break the rest of the parse. This is a
+  genuinely common, idiomatic Ruby pattern (`if line =~ /pattern/`,
+  `text =~ /foo/`) — worth real support, not just leaving the
+  dot-call form broken. Fix is two independent pieces: (1) a real
+  `EqTilde`/`Match` lexer token (`lexer.cr`'s `scan_eq`, alongside how
+  `TripleEq` already handles `===`'s maximal-munch) so `.=~(x)`
+  parses at all, and (2) a `PRECEDENCE` table entry (matching
+  `<=>`'s existing infix support — see `operators/compiler_spec.cr`
+  — not `===`'s deliberate infix exclusion) so `x =~ y` parses as an
+  ordinary receiver call `x.=~(y)`. Once both land, `Regexp#=~` (and
+  `String#=~`, which doesn't exist yet either) can be added for real,
+  including real Ruby's `$~`/`$1`.. side effects if that global-var
+  plumbing exists by then (see the Standard library surface section's
+  Regexp/MatchData entry, filed the same session, for the other two
+  pieces of that same still-outstanding work).
+
+- **`a === b` as general infix script syntax doesn't parse — a
+  narrower, DELIBERATE gap, not an oversight; do not conflate with
+  the `=~` item above.** `TripleEq` is a real lexer token wherever
+  `===` appears in source, but it's intentionally absent from the
+  `PRECEDENCE` table (see `UNSUPPORTED.md`'s U017 and
+  `Lexer#scan_eq`'s own comment) — `case/when` is real Ruby's actual
+  caller for `===`, and that's compiler-generated dispatch
+  (`Compiler#compile_case`, an ordinary `Op::Call`), not something
+  parsed from `a === b` script syntax. The dot-call spelling
+  (`a.===(b)`) DOES already work today, for any class defining
+  `===` (confirmed 2026-08-14 for `Regexp#===`, see
+  `builtins/regexp_spec.cr`) — since `TripleEq`, unlike `=~`, is a
+  single token, `parse_postfix`'s dot-call handling picks up its
+  lexeme correctly with no changes needed. Whether bare infix `===`
+  is worth adding on top of that is a real open question (unlike
+  `=~` above, `case/when` and `.===(x)` between them already cover
+  the pattern's real-world uses reasonably well) — flagging here
+  rather than deciding it.
+
 - **Heredocs and `%w[]`/`%i[]` literals don't exist.** Long-standing,
   untriaged since the original 2026-07-14 handoff bundle — split out
   and confirmed still missing 2026-08-10 on review (no `Heredoc`/`%w`
@@ -452,6 +499,38 @@ Quality-of-diagnostic gaps in the `Diagnostic`/`ErrorCatalog` system
 
 ### Object model
 
+- **Bracket indexing (`obj[i]`) on a custom/native-backed `RubyObject`
+  now calls a NATIVE `[]` method for real — fixed 2026-08-14 — but a
+  SCRIPT-DEFINED `[]` still can't be reached via `obj[i]` bracket
+  syntax at all.** Found while wiring up `MatchData#[]`
+  (`builtins/regexp.cr`): `exec_get_index`/`Op::GetIndex` was a fixed
+  case statement covering only Array/Hash/String, with everything
+  else falling straight to a silent `Value.nil_value` — a real
+  silent-wrong-answer bug (the exact category worth staying alert
+  for), not a raised error: `MatchData#[]` was registered correctly
+  and simply never reached, no matter what it returned. Fixed via
+  `exec_get_index_fallback` (`vm.cr`), which now calls a receiver's
+  own native `[]` method via `call_native`, the same synchronous path
+  `dispatch_call`'s ordinary receiver branch already uses for `.foo`
+  calls.
+  **Deliberately still open:** a SCRIPT-defined `[]` (`find_method`,
+  not `find_native_method`) still isn't handled — `call_script_proc`
+  pushes a new VM frame and relies on the normal `Op::Call`/`Op::Ret`
+  dispatch loop to resume and deliver the result later, which
+  `exec_get_index_fallback` (called synchronously from inside a
+  single opcode's handler) has no mechanism to wait for. Low practical
+  urgency today: `def [](i)` can't even be WRITTEN in script yet
+  either way (see `UNSUPPORTED.md`'s U017 note — no combined `[]`
+  lexer token, so `parse_def` trips on the stray `]` first) — so only
+  native `[]` methods exist to reach at all right now, and this fix
+  already covers every one of those. Worth a real fix (likely
+  restructuring `Op::GetIndex` to push a frame and let the normal
+  dispatch loop resume it, same shape as any other deferred script
+  call) once/if `[]` becomes script-definable.
+  `Op::SetIndex`/`exec_set_index` (the `obj[i] = v` write side) has
+  the exact same shape of gap and was NOT touched by this fix — flagged
+  here rather than silently assumed fixed alongside the read side.
+
 - **No `Numeric` ancestor class in the `RubyClass` hierarchy, so
   `5.is_a?(Numeric)` fails rather than returning `true`.** Long-
   standing, untriaged since the original 2026-07-14 handoff bundle —
@@ -613,6 +692,31 @@ individually.
   `RiskFlowPolicy` — still not decided.
 
 ### Standard library surface
+
+- **Regexp/MatchData: String integration and `$~`/`$1`.. globals
+  still outstanding.** Filed 2026-08-14 once the core Regexp/MatchData
+  work landed (`/pattern/flags` literals, `Regexp.new`, `#match`/
+  `#match?`/`#===`, `MatchData#[]`/`#pre_match`/`#post_match`/
+  `#string`/`#begin`) — three concrete pieces left, independent of
+  each other:
+  - **String's pattern-taking methods (`#gsub`/`#sub`/`#index`/
+    `#rindex`/`#split`) still only accept a String pattern** —
+    `string_pattern_arg` (`builtins/string.cr`) is the single
+    chokepoint; adding a Regexp branch there is additive, not a
+    rewrite (R019's own message already says "Regexp support doesn't
+    exist yet").
+  - **`$~`/`$1`.. globals don't exist** — real new machinery (no
+    `$`-global plumbing exists in Adjutant at all yet, separate from
+    U011's `$globals` exclusion, which is about ordinary
+    script-defined globals specifically; `$~` is VM-internal
+    per-match state, not a script-writable channel, so it isn't
+    covered by that exclusion). Blocks a real `Regexp#=~`/
+    `String#=~` from matching real Ruby's full behavior even once the
+    `=~` token/precedence gap above is fixed — those methods can
+    return a match position without this, but not set `$~`.
+  - **ISO fixture** (`spec/scripts/mruby/regexp.rb`) not yet ported
+    from the upstream mruby test file, following the established
+    triage conventions (see recent handoffs).
 
 - **`lambda { ... }`/`proc { ... }` (the `Kernel`-method spelling)
   don't exist — only `-> { ... }` (stabby lambda) works.** Found

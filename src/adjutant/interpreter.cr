@@ -505,6 +505,21 @@ module Adjutant
       @globals[@symbols.intern("Module").value].as_rclass
     end
 
+    # General-purpose counterpart to builtin_class_for above, for the
+    # (rarer) case where a native method needs another already-
+    # registered builtin class BY NAME rather than by a Value's kind —
+    # e.g. Regexp#match constructing a MatchData RubyObject needs the
+    # MatchData RubyClass itself, and there's no Value kind to derive
+    # it from the way builtin_class_for does for Integer/String/etc.
+    # Returns nil for an unregistered name rather than raising, same
+    # as builtin_class_for, since "not registered yet" is a normal
+    # bootstrap-ordering state, not necessarily a bug.
+    def find_builtin_class(name : String) : RubyClass?
+      sym = @symbols.lookup(name)
+      return nil unless sym
+      @globals[sym.value]?.try(&.as_rclass?)
+    end
+
     private def make_vm : VM
       VM.new(@symbols, @limits, @effect, self, @globals, @risk_flow_log, @risk_flow_policy, @on_risk_flow_decision)
     end
@@ -604,6 +619,7 @@ module Adjutant
       register_builtin_class(Builtins.bootstrap_hash(self))
       register_builtin_class(Builtins.bootstrap_range(self))
       register_builtin_class(Builtins.bootstrap_regexp(self))
+      register_builtin_class(Builtins.bootstrap_match_data(self))
       register_builtin_class(Builtins.bootstrap_proc(self))
       Builtins.register_module_methods(module_class, self)
     end

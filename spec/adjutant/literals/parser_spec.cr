@@ -110,6 +110,41 @@ module Adjutant
         end
       end
 
+      describe "regex literals" do
+        it "parses a simple regex literal" do
+          node = parse_expr("/abc/")
+          node.should be_a(RegexLiteral)
+          regex = node.as(RegexLiteral)
+          regex.parts.size.should eq 1
+          regex.parts.first.should be_a(RegexFragment)
+          regex.parts.first.as(RegexFragment).value.should eq "abc"
+          regex.flags.should eq ""
+        end
+
+        it "carries the flag letters" do
+          node = parse_expr("/abc/im")
+          node.as(RegexLiteral).flags.should eq "im"
+        end
+
+        it "does NOT decode escapes in the pattern, unlike a string literal" do
+          node = parse_expr("/a\\nb/")
+          node.as(RegexLiteral).parts.first.as(RegexFragment).value.should eq "a\\nb"
+        end
+
+        it "parses an interpolated regex into alternating fragment/expression parts" do
+          node = parse_expr(%(/hello \#{name}!/i))
+          node.should be_a(RegexLiteral)
+          regex = node.as(RegexLiteral)
+          regex.parts[0].should be_a(RegexFragment)
+          regex.parts[0].as(RegexFragment).value.should eq "hello "
+          regex.parts[1].should be_a(Identifier)
+          regex.parts[1].as(Identifier).name.should eq "name"
+          regex.parts[2].should be_a(RegexFragment)
+          regex.parts[2].as(RegexFragment).value.should eq "!"
+          regex.flags.should eq "i"
+        end
+      end
+
       it "parses a symbol" do
         node = parse_expr(":ok")
         node.should be_a(SymbolLiteral)

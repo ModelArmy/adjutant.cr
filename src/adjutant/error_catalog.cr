@@ -253,6 +253,13 @@ module Adjutant
               "interpolation, check the interpolated piece isn't " \
               "introducing something like an unclosed group or class."
       ),
+      "R022" => Entry.new(
+        code: "R022",
+        summary: "`{method}` called with no string argument",
+        why: "`{method}` needs a string to match the pattern against — " \
+             "that argument is required, not optional.",
+        help: "Pass a String to match against."
+      ),
 
       # --- L: limits reached ----------------------------------------
       #
