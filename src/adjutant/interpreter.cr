@@ -85,6 +85,22 @@ module Adjutant
     # raising).
     abstract def compare(a : Value, b : Value, op : Symbol) : Bool
 
+    # Real Ruby `+` semantics for two Values — delegates to
+    # ValueOps.add (value_ops.cr), the same logic Op::Add already uses
+    # for script-level `+`. Needed by any native method that has to
+    # add Values generically without duplicating that logic —
+    # Range#step's own advance-by-n (see builtins/range.cr) is the
+    # first user, and specifically CAN'T use `call_method(a, "+",
+    # [b])` for this the way #each uses `call_method(a, "succ", [])`:
+    # unlike `succ`, `+` is opcode-only (never registered via
+    # find_native_method — see integer.cr's own comment on this), so
+    # dispatch_call has no native-method table entry to find for a
+    # builtin-typed receiver like Integer/Float/String. This exists
+    # for exactly that gap, the same way `compare`/`values_equal?`
+    # already expose their own ValueOps operations generically rather
+    # than leaving native code with no way to reach them at all.
+    abstract def add(a : Value, b : Value) : Value
+
     # Calls a method by name on an arbitrary Value receiver, the same
     # way script code calling `recv.name(*args)` would — resolves
     # through the normal script-method-then-native dispatch order
@@ -178,6 +194,10 @@ module Adjutant
 
     def compare(a : Value, b : Value, op : Symbol) : Bool
       @vm.compare(a, b, op, filename, line)
+    end
+
+    def add(a : Value, b : Value) : Value
+      @vm.add(a, b)
     end
 
     def call_method(recv : Value, name : String, args : Array(Value)) : Value

@@ -235,6 +235,13 @@ module Adjutant
              "today — Regexp support doesn't exist yet (see SCOPE.md).",
         help: "Pass a String to search for."
       ),
+      "R020" => Entry.new(
+        code: "R020",
+        summary: "`Range#step` called with a step of 0",
+        why: "A step of 0 would never move past the range's start — " \
+             "walking it would never finish.",
+        help: "Pass a non-zero step."
+      ),
 
       # --- L: limits reached ----------------------------------------
       #

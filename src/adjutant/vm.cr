@@ -2802,6 +2802,19 @@ module Adjutant
       end
     end
 
+    # NativeCallContext#add's own implementation — the same
+    # `error_raiser` wiring Op::Add itself uses (see this file's own
+    # `when Op::Add` case), just reachable from native code. Doesn't
+    # attempt a RubyObject `+` dispatch the way `compare`/`compare_via_spaceship`
+    # does for `<=>` — no current native caller needs a user-defined
+    # `+` (Range#step's own bounds are always base types in practice),
+    # so that generality wasn't built until something actually needs
+    # it, matching this codebase's own "don't build ahead of a real
+    # user" convention.
+    protected def add(a : Value, b : Value) : Value
+      ValueOps.add(a, b, error_raiser(current_frame))
+    end
+
     # `a` is always the receiver — `a < b` reads as `a.<=>(b)`, the
     # same left-to-right receiver convention every other infix
     # operator in Adjutant already uses. No "is `<=>` defined?"

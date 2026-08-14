@@ -26,6 +26,7 @@ module Adjutant::Builtins
   # type with no #succ raises NoMethodError on #each, same as real
   # Ruby — not specially handled, since that's accurate behavior, not
   # a gap.
+  # ameba:disable Metrics/CyclomaticComplexity - one `define` call per native method, each a flat independent case; count comes from many methods, not tangled branching
   def self.bootstrap_range(interp : Adjutant::Interpreter) : Adjutant::RubyClass
     cls = Adjutant::RubyClass.new("Range")
 
@@ -100,6 +101,67 @@ module Adjutant::Builtins
           break unless in_bounds
           ncc.invoke(blk, [current])
           current = ncc.call_method(current, "succ", [] of Adjutant::Value)
+        end
+      end
+      recv
+    end
+
+    # Real Ruby's Range#to_a materializes every value #each would
+    # yield into a real Array — same walk-via-#succ mechanism, same
+    # genericity over bound type (not Integer-specific). New
+    # container built from the Range's own values, so its label
+    # seeds from the RECEIVER Range's own `.label` (an ordinary Value
+    # field here, unlike Array/Hash's container-level `.label` — a
+    # Range RubyObject has no separate container-label concept of its
+    # own) joined with each yielded element's own label, same
+    # principle as array.cr's select/reject/sort/reverse/map and
+    # hash.cr's to_a/merge.
+    define(cls, interp, "to_a") do |args, _blk, ncc|
+      recv = args.first
+      obj = recv.as_robject
+      exclusive = obj.ivars[excl_sym].as_bool
+      hi = obj.ivars[max_sym]
+      elements = [] of Adjutant::Value
+      current = obj.ivars[min_sym]
+      loop do
+        in_bounds = exclusive ? ncc.compare(current, hi, :<) : ncc.compare(current, hi, :<=)
+        break unless in_bounds
+        elements << current
+        current = ncc.call_method(current, "succ", [] of Adjutant::Value)
+      end
+      Adjutant::Value.new(Adjutant::LabeledArray.new(elements, joined_label(elements, recv.label)), nil)
+    end
+
+    # Real Ruby's Range#step(n = 1, &block): walks from `min` to `max`
+    # (respecting exclusivity, same as #each) in increments of `n`
+    # instead of #succ's implicit "+1" — via NativeCallContext#add
+    # (ValueOps.add under the hood, same as Op::Add), NOT
+    # `call_method(current, "+", [n])`: unlike `succ`, `+` is
+    # opcode-only, never registered as a real native method (see
+    # NativeCallContext#add's own comment in interpreter.cr for the
+    # full reasoning) — `call_method` would have no native-method
+    # table entry to find for a builtin-typed receiver like
+    # Integer/Float. `n` of exactly 0 would never advance past `min`,
+    # so raises ArgumentError (R020) rather than hanging forever.
+    # Blockless call returns the receiver (Enumerator-less, same
+    # convention as every other Enumerable-less method in this
+    # codebase).
+    define(cls, interp, "step") do |args, blk, ncc|
+      recv = args.first
+      obj = recv.as_robject
+      exclusive = obj.ivars[excl_sym].as_bool
+      hi = obj.ivars[max_sym]
+      n = args[1]? || Adjutant::Value.int(1_i64)
+      if n.int? && n.as_int == 0
+        ncc.raise_error("R020", {} of String => String, "ArgumentError")
+      end
+      if blk
+        current = obj.ivars[min_sym]
+        loop do
+          in_bounds = exclusive ? ncc.compare(current, hi, :<) : ncc.compare(current, hi, :<=)
+          break unless in_bounds
+          ncc.invoke(blk, [current])
+          current = ncc.add(current, n)
         end
       end
       recv

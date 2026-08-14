@@ -144,6 +144,10 @@ module Adjutant
       ValueOps.compare(a, b, op)
     end
 
+    def add(a : Value, b : Value) : Value
+      ValueOps.add(a, b, ->(msg : String, error_class : String) { raise msg })
+    end
+
     # No-op — these direct-NativeCallable tests call a NativeCallable
     # directly, so there's no real VM here to dispatch a by-name call
     # through. A spec that needs real call_method behavior should go

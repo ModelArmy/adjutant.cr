@@ -52,11 +52,13 @@ module Adjutant::Builtins
     # matching Ruby's own Range implementation rather than requiring
     # a special-cased "is this an Integer range" branch there.
     define(cls, interp, "succ") do |args|
-      Adjutant::Value.int(args.first.as_int + 1)
+      recv = args.first
+      Adjutant::Value.int(recv.as_int + 1, recv.label)
     end
 
     define(cls, interp, "next") do |args|
-      Adjutant::Value.int(args.first.as_int + 1)
+      recv = args.first
+      Adjutant::Value.int(recv.as_int + 1, recv.label)
     end
 
     define(cls, interp, "abs") do |args|

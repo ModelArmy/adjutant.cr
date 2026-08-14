@@ -205,5 +205,96 @@ module Adjutant
       result = eval(src).as_array.map(&.as_bool)
       result.should eq [true, false, false, true]
     end
+
+    describe "#to_a" do
+      it "materializes an inclusive range" do
+        eval("(1..5).to_a").as_array.map(&.as_int).should eq [1, 2, 3, 4, 5]
+      end
+
+      it "materializes an exclusive range" do
+        eval("(1...5).to_a").as_array.map(&.as_int).should eq [1, 2, 3, 4]
+      end
+
+      it "an empty (backward) range materializes to an empty array" do
+        eval("(5..1).to_a").as_array.empty?.should be_true
+      end
+
+      it "carries the receiver's own label forward" do
+        interp, _ = make_interp
+        plain_range = interp.eval("1..3")
+        labeled_range = plain_range.with_label(RiskFlowLabel.of(ProvenanceKind::File, "/etc/passwd", Sensitivity::High))
+        interp.define_native("tainted_range") do |args|
+          labeled_range
+        end
+        result = interp.eval("tainted_range.to_a")
+        result.label.should_not be_nil
+      end
+    end
+
+    describe "#step" do
+      it "yields values stepped by n, matching real Ruby" do
+        interp, _ = make_interp
+        result = interp.eval(<<-RUBY)
+          seen = []
+          (1..10).step(3) { |n| seen << n }
+          seen
+        RUBY
+        result.as_array.map(&.as_int).should eq [1, 4, 7, 10]
+      end
+
+      it "respects exclusivity" do
+        interp, _ = make_interp
+        result = interp.eval(<<-RUBY)
+          seen = []
+          (1...10).step(3) { |n| seen << n }
+          seen
+        RUBY
+        result.as_array.map(&.as_int).should eq [1, 4, 7]
+      end
+
+      it "defaults to a step of 1 when omitted" do
+        interp, _ = make_interp
+        result = interp.eval(<<-RUBY)
+          seen = []
+          (1..3).step { |n| seen << n }
+          seen
+        RUBY
+        result.as_array.map(&.as_int).should eq [1, 2, 3]
+      end
+
+      it "returns the receiver" do
+        interp, _ = make_interp
+        result = interp.eval(<<-RUBY)
+          r = 1..3
+          (r.step(1) { |n| n }).equal?(r)
+        RUBY
+        result.as_bool.should be_true
+      end
+
+      it "with no block, does not raise, and returns the receiver" do
+        interp, _ = make_interp
+        result = interp.eval("(1..3).step(1)")
+        result.truthy?.should be_true
+      end
+
+      it "raises ArgumentError (R020) for a step of 0" do
+        interp, _ = make_interp
+        error = expect_raises(RuntimeError) { interp.eval("(1..3).step(0) { |n| n }") }
+        error.diagnostic.not_nil!.code.should eq("R020")
+      end
+
+      it "the ArgumentError is rescuable from script" do
+        interp, _ = make_interp
+        result = interp.eval(<<-RUBY)
+          begin
+            (1..3).step(0) { |n| n }
+            false
+          rescue ArgumentError
+            true
+          end
+        RUBY
+        result.as_bool.should be_true
+      end
+    end
   end
 end

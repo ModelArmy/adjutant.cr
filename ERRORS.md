@@ -113,12 +113,14 @@ Something went wrong while the script was running.
 |R017|`Hash#merge` given a non-Hash argument                |`class_name`            |
 |R018|A pattern-taking String method called with no pattern |`method`                |
 |R019|A pattern-taking String method given a non-String     |`method`, `class_name`  |
+|R020|`Range#step` called with a step of 0                  |—                       |
 
 Scripts can `rescue` these. R008 raises a `NameError`, matching Ruby;
 R011, R012, R015, and R018 raise `ArgumentError`, also matching Ruby;
 R014 raises a `NoMethodError`, also matching Ruby; R016 raises a
 `FloatDomainError`, also matching Ruby; R017 and R019 raise a
-`TypeError`, also matching Ruby; the rest raise `RuntimeError`.
+`TypeError`, also matching Ruby; R020 raises an `ArgumentError`, also
+matching Ruby; the rest raise `RuntimeError`.
 
 Adjutant's constants are assign-once, which Ruby only warns about. R001 is
 that rule firing on an ordinary constant; reopening a class or module is
