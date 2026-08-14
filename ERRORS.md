@@ -92,30 +92,30 @@ The script parsed, but was rejected before running.
 
 Something went wrong while the script was running.
 
-|Code|Meaning                                               |Placeholders            |
-|----|------------------------------------------------------|------------------------|
-|R001|Constant assigned a second time                       |`name`                  |
-|R002|Class variable used outside a class or module body    |—                       |
-|R003|Uninitialized constant                                |`name`                  |
-|R004|`::` used on something that isn't a class or module   |`value`                 |
-|R005|Unary operator not applicable to this type            |`operator`, `type`      |
-|R006|Method definition with no class or module to attach to|`definition`            |
-|R007|`yield` reached, but no block was passed              |`method`                |
-|R008|Undefined method or variable                          |`name`                  |
-|R009|Modules cannot be instantiated                        |`module`                |
-|R010|`require` cannot find the named module                |`path`                  |
-|R011|Missing a required keyword argument                   |`name`, `method`        |
-|R012|Passed a keyword argument the method doesn't declare  |`name`, `method`        |
-|R013|`<=>` returned a non-integer for `<`/`<=`/`>`/`>=`    |`left`, `right`, `value`|
-|R014|`super` called, but no ancestor defines the method    |`method`                |
-|R015|`Integer#to_s` given an out-of-range base             |`base`                  |
-|R016|`Float#to_i` called on Infinity or NaN                |`value`                 |
-|R017|`Hash#merge` given a non-Hash argument                |`class_name`            |
-|R018|A pattern-taking String method called with no pattern |`method`                |
-|R019|A pattern-taking String method given a non-String     |`method`, `class_name`  |
-|R020|`Range#step` called with a step of 0                  |—                       |
-|R021|Invalid regex pattern                                 |`reason`                |
-|R022|A Regexp match method called with no string argument  |`method`                |
+|Code|Meaning                                                           |Placeholders            |
+|----|------------------------------------------------------------------|------------------------|
+|R001|Constant assigned a second time                                   |`name`                  |
+|R002|Class variable used outside a class or module body                |—                       |
+|R003|Uninitialized constant                                            |`name`                  |
+|R004|`::` used on something that isn't a class or module               |`value`                 |
+|R005|Unary operator not applicable to this type                        |`operator`, `type`      |
+|R006|Method definition with no class or module to attach to            |`definition`            |
+|R007|`yield` reached, but no block was passed                          |`method`                |
+|R008|Undefined method or variable                                      |`name`                  |
+|R009|Modules cannot be instantiated                                    |`module`                |
+|R010|`require` cannot find the named module                            |`path`                  |
+|R011|Missing a required keyword argument                               |`name`, `method`        |
+|R012|Passed a keyword argument the method doesn't declare              |`name`, `method`        |
+|R013|`<=>` returned a non-integer for `<`/`<=`/`>`/`>=`                |`left`, `right`, `value`|
+|R014|`super` called, but no ancestor defines the method                |`method`                |
+|R015|`Integer#to_s` given an out-of-range base                         |`base`                  |
+|R016|`Float#to_i` called on Infinity or NaN                            |`value`                 |
+|R017|`Hash#merge` given a non-Hash argument                            |`class_name`            |
+|R018|A pattern-taking String method called with no pattern             |`method`                |
+|R019|A pattern-taking String method given neither a String nor a Regexp|`method`, `class_name`  |
+|R020|`Range#step` called with a step of 0                              |—                       |
+|R021|Invalid regex pattern                                             |`reason`                |
+|R022|A Regexp match method called with no string argument              |`method`                |
 
 Scripts can `rescue` these. R008 raises a `NameError`, matching Ruby;
 R011, R012, R015, and R018 raise `ArgumentError`, also matching Ruby;

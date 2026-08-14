@@ -226,14 +226,14 @@ module Adjutant
         summary: "`{method}` called with no pattern argument",
         why: "`{method}` needs something to search for — a pattern " \
              "argument is required, not optional.",
-        help: "Pass a String (or, once supported, a Regexp) to search for."
+        help: "Pass a String or a Regexp to search for."
       ),
       "R019" => Entry.new(
         code: "R019",
-        summary: "`{method}` given a non-String pattern ({class_name})",
-        why: "Adjutant's `{method}` only accepts a String pattern " \
-             "today — Regexp support doesn't exist yet (see SCOPE.md).",
-        help: "Pass a String to search for."
+        summary: "`{method}` given a non-String, non-Regexp pattern ({class_name})",
+        why: "`{method}` only accepts a String or a Regexp as a " \
+             "pattern to search for.",
+        help: "Pass a String or a Regexp to search for."
       ),
       "R020" => Entry.new(
         code: "R020",
