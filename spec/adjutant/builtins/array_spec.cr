@@ -1,6 +1,22 @@
 require "../../spec_helper"
 
 module Adjutant
+  # Helper: a LabeledArray whose CONTAINER label is set directly (no
+  # individual element carries it) — a minimal stand-in for a native
+  # module labeling a whole container at once, mirroring
+  # risk_flow_propagation_spec.cr's own `tainted`/`tainted_str`
+  # helpers for scalars. Used by the container-level-label carry-
+  # forward coverage below (select/reject/sort/reverse).
+  private def self.make_tainted_array_interp(elements : Array(Int64)) : Interpreter
+    interp, _ = make_interp
+    interp.define_native("tainted_array") do |args|
+      arr = LabeledArray.new(elements.map { |i| Value.int(i) })
+      arr.label = RiskFlowLabel.of(ProvenanceKind::File, "/etc/passwd", Sensitivity::High)
+      Value.new(arr, nil)
+    end
+    interp
+  end
+
   # Covers Phase 4b of the base-types work: Array. `[]`/`[]=` were
   # already real opcodes; `+`, `<<`, and `==` needed real fixes
   # alongside this class (ValueOps.add/shl/equal? had no Array case
@@ -72,6 +88,19 @@ module Adjutant
         interp, _ = make_interp
         result = interp.eval("[1].push(2, 3).length")
         result.as_int.should eq 3
+      end
+
+      it "joins a pushed value's label into the container's own label, matching << (opcode)" do
+        interp, _ = make_interp
+        interp.define_native("tainted_scalar") do |args|
+          Value.int(9_i64, RiskFlowLabel.of(ProvenanceKind::File, "/etc/passwd", Sensitivity::High))
+        end
+        result = interp.eval(<<-RUBY)
+          a = [1]
+          a.push(tainted_scalar)
+          a
+        RUBY
+        result.label.should_not be_nil
       end
     end
 
@@ -293,6 +322,208 @@ module Adjutant
 
     it "assigns to an array index" do
       eval("a = [1, 2, 3]\na[0] = 99\na[0]").as_int.should eq 99_i64
+    end
+
+    describe "#first" do
+      it "returns the first element" do
+        eval("[1, 2, 3].first").as_int.should eq 1_i64
+      end
+
+      it "returns nil on an empty array" do
+        eval("[].first").null?.should be_true
+      end
+    end
+
+    describe "#last" do
+      it "returns the last element" do
+        eval("[1, 2, 3].last").as_int.should eq 3_i64
+      end
+
+      it "returns nil on an empty array" do
+        eval("[].last").null?.should be_true
+      end
+    end
+
+    describe "#select" do
+      it "keeps elements for which the block is truthy" do
+        eval(<<-RUBY).as_array.map(&.as_int).should eq [2, 4]
+          [1, 2, 3, 4].select { |x| x.even? }
+        RUBY
+      end
+
+      it "does not mutate the receiver" do
+        eval(<<-RUBY).as_array.map(&.as_int).should eq [1, 2, 3]
+          a = [1, 2, 3]
+          a.select { |x| x.even? }
+          a
+        RUBY
+      end
+
+      it "with no block, returns an empty array" do
+        eval("[1, 2, 3].select").as_array.empty?.should be_true
+      end
+    end
+
+    describe "#reject" do
+      it "drops elements for which the block is truthy" do
+        eval(<<-RUBY).as_array.map(&.as_int).should eq [1, 3]
+          [1, 2, 3, 4].reject { |x| x.even? }
+        RUBY
+      end
+
+      it "does not mutate the receiver" do
+        eval(<<-RUBY).as_array.map(&.as_int).should eq [1, 2, 3]
+          a = [1, 2, 3]
+          a.reject { |x| x.even? }
+          a
+        RUBY
+      end
+    end
+
+    describe "#reduce / #inject" do
+      it "reduces with an explicit initial value" do
+        eval("[1, 2, 3].reduce(10) { |acc, x| acc + x }").as_int.should eq 16_i64
+      end
+
+      it "reduces with no initial value, using the first element as the seed" do
+        eval("[1, 2, 3].reduce { |acc, x| acc + x }").as_int.should eq 6_i64
+      end
+
+      it "inject is an alias of reduce" do
+        eval("[1, 2, 3].inject(0) { |acc, x| acc + x }").as_int.should eq 6_i64
+      end
+
+      it "with no initial value and an empty receiver, returns nil" do
+        eval("[].reduce { |acc, x| acc + x }").null?.should be_true
+      end
+
+      it "with an explicit initial value and an empty receiver, returns the initial value" do
+        eval("[].reduce(5) { |acc, x| acc + x }").as_int.should eq 5_i64
+      end
+    end
+
+    describe "#sort" do
+      it "sorts ascending by default" do
+        eval("[3, 1, 2].sort").as_array.map(&.as_int).should eq [1, 2, 3]
+      end
+
+      it "does not mutate the receiver" do
+        eval(<<-RUBY).as_array.map(&.as_int).should eq [3, 1, 2]
+          a = [3, 1, 2]
+          a.sort
+          a
+        RUBY
+      end
+
+      it "works on strings too, via the same comparison mechanism" do
+        eval(%(["banana", "apple", "cherry"].sort)).as_array.map(&.as_string).should eq ["apple", "banana", "cherry"]
+      end
+    end
+
+    describe "#reverse" do
+      it "reverses element order" do
+        eval("[1, 2, 3].reverse").as_array.map(&.as_int).should eq [3, 2, 1]
+      end
+
+      it "does not mutate the receiver" do
+        eval(<<-RUBY).as_array.map(&.as_int).should eq [1, 2, 3]
+          a = [1, 2, 3]
+          a.reverse
+          a
+        RUBY
+      end
+    end
+
+    describe "#min / #max" do
+      it "min returns the smallest element" do
+        eval("[3, 1, 2].min").as_int.should eq 1_i64
+      end
+
+      it "max returns the largest element" do
+        eval("[3, 1, 2].max").as_int.should eq 3_i64
+      end
+
+      it "min on an empty array returns nil" do
+        eval("[].min").null?.should be_true
+      end
+
+      it "max on an empty array returns nil" do
+        eval("[].max").null?.should be_true
+      end
+    end
+
+    describe "#any? / #all?" do
+      it "any? with no block is true if any element is truthy" do
+        eval("[nil, false, 1].any?").as_bool.should be_true
+      end
+
+      it "any? with no block is false if every element is falsy" do
+        eval("[nil, false].any?").as_bool.should be_false
+      end
+
+      it "any? with a block tests the block's return value" do
+        eval("[1, 2, 3].any? { |x| x > 2 }").as_bool.should be_true
+      end
+
+      it "all? with no block is true if every element is truthy" do
+        eval("[1, 2, 3].all?").as_bool.should be_true
+      end
+
+      it "all? with no block is false if any element is falsy" do
+        eval("[1, nil, 3].all?").as_bool.should be_false
+      end
+
+      it "all? with a block tests the block's return value" do
+        eval("[2, 4, 6].all? { |x| x.even? }").as_bool.should be_true
+      end
+
+      it "all? on an empty array is true (vacuous truth)" do
+        eval("[].all?").as_bool.should be_true
+      end
+    end
+
+    describe "container-level risk label carries forward through select/reject/sort/reverse/map" do
+      # research/IFC_DESIGN.md's Container labeling (Stage 3.5): a
+      # LabeledArray has its OWN accumulated label, distinct from any
+      # individual element's — e.g. set directly via
+      # declare_sensitivity on the container itself, with no single
+      # element carrying it. A method that builds a new container
+      # from a subset/reordering of the original must carry that
+      # container-level label forward, not just re-derive one from
+      # the kept elements' own labels, or it would silently drop
+      # taint the design doc's "monotonic, fails safe" principle says
+      # should persist. See `make_tainted_array_interp` at the top of
+      # this file for how the container-level-only label is set up.
+      it "select carries forward the receiver's container-level label even when no kept element has its own" do
+        interp = make_tainted_array_interp([1_i64, 2_i64, 3_i64])
+        result = interp.eval("tainted_array.select { |x| x > 1 }")
+        result.label.should_not be_nil
+        result.label.not_nil!.sensitivity.should eq Sensitivity::High
+      end
+
+      it "reject carries forward the receiver's container-level label" do
+        interp = make_tainted_array_interp([1_i64, 2_i64])
+        result = interp.eval("tainted_array.reject { |x| x > 1 }")
+        result.label.should_not be_nil
+      end
+
+      it "sort carries forward the receiver's container-level label" do
+        interp = make_tainted_array_interp([3_i64, 1_i64, 2_i64])
+        result = interp.eval("tainted_array.sort")
+        result.label.should_not be_nil
+      end
+
+      it "reverse carries forward the receiver's container-level label" do
+        interp = make_tainted_array_interp([1_i64, 2_i64])
+        result = interp.eval("tainted_array.reverse")
+        result.label.should_not be_nil
+      end
+
+      it "map carries forward the receiver's container-level label even though every element is a brand new computed value" do
+        interp = make_tainted_array_interp([1_i64, 2_i64])
+        result = interp.eval("tainted_array.map { |x| x * 10 }")
+        result.label.should_not be_nil
+      end
     end
   end
 end

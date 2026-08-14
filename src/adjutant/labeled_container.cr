@@ -146,6 +146,15 @@ module Adjutant
       @entries.has_key?(key)
     end
 
+    # Real removal — real Ruby's Hash#delete returns the removed
+    # value, or nil if the key wasn't present, which is exactly
+    # Crystal's own Hash#delete(key) return shape, so this is a direct
+    # delegate, not new logic. A MUTATION (like []=/push elsewhere in
+    # this file), not a container rebuild.
+    def delete(key : Value) : Value?
+      @entries.delete(key)
+    end
+
     def keys : Array(Value)
       @entries.keys
     end

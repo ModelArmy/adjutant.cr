@@ -32,7 +32,16 @@ module Adjutant
   # `==` returning false rather than raising), so they take no
   # `on_error` — nothing to thread through for them.
   module ValueOps
-    alias OnError = String -> NoReturn
+    # Second arg is the Ruby class the error should raise as (e.g.
+    # "TypeError", "ZeroDivisionError") — added so callers here can
+    # classify their own failures correctly rather than everything
+    # collapsing into a generic RuntimeError regardless of what
+    # actually went wrong (a real, previously-unnoticed gap: `0.0 +
+    # nil` raised plain RuntimeError instead of TypeError, and integer
+    # division/modulo by zero raised RuntimeError instead of the
+    # ZeroDivisionError class that already existed in the exception
+    # hierarchy but was never actually reachable from here).
+    alias OnError = String, String -> NoReturn
 
     # ameba:disable Metrics/CyclomaticComplexity
     def self.add(a : Value, b : Value, on_error : OnError) : Value
@@ -52,7 +61,7 @@ module Adjutant
         # module doesn't touch labels itself.
         Value.new(LabeledArray.new(a.as_array.dup_items + b.as_array.dup_items), nil)
       else
-        on_error.call("cannot add #{a} and #{b}")
+        on_error.call("cannot add #{a} and #{b}", "TypeError")
       end
     end
 
@@ -76,27 +85,27 @@ module Adjutant
             end
         Value.float(n)
       else
-        on_error.call("type error in arithmetic")
+        on_error.call("type error in arithmetic", "TypeError")
       end
     end
 
     def self.div(a : Value, b : Value, on_error : OnError) : Value
       case
       when a.int? && b.int?
-        on_error.call("divided by 0") if b.as_int == 0
+        on_error.call("divided by 0", "ZeroDivisionError") if b.as_int == 0
         Value.int(a.as_int // b.as_int)
       when a.float? || b.float?
         fa = a.int? ? a.as_int.to_f64 : a.as_float
         fb = b.int? ? b.as_int.to_f64 : b.as_float
         Value.float(fa / fb)
       else
-        on_error.call("type error in division")
+        on_error.call("type error in division", "TypeError")
       end
     end
 
     # ameba:disable Metrics/CyclomaticComplexity
     def self.mod(a : Value, b : Value, on_error : OnError) : Value
-      on_error.call("divided by 0") if (b.int? && b.as_int == 0) || (b.float? && b.as_float == 0.0)
+      on_error.call("divided by 0", "ZeroDivisionError") if (b.int? && b.as_int == 0) || (b.float? && b.as_float == 0.0)
       case
       when a.int? && b.int? then Value.int(a.as_int % b.as_int)
       when a.float? || b.float?
@@ -104,12 +113,12 @@ module Adjutant
         fb = b.int? ? b.as_int.to_f64 : b.as_float
         Value.float(fa % fb)
       else
-        on_error.call("type error in modulo")
+        on_error.call("type error in modulo", "TypeError")
       end
     end
 
     def self.int_op(a : Value, b : Value, op : Symbol, on_error : OnError) : Value
-      on_error.call("bitwise op requires Integer") unless a.int? && b.int?
+      on_error.call("bitwise op requires Integer", "TypeError") unless a.int? && b.int?
       n = case op
           when :&  then a.as_int & b.as_int
           when :|  then a.as_int | b.as_int

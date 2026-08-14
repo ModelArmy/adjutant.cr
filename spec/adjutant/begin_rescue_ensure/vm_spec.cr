@@ -187,7 +187,7 @@ module Adjutant
       RUBY
     end
 
-    it "types internal VM errors (division by zero) as RuntimeError objects too" do
+    it "types internal VM errors (division by zero) as ZeroDivisionError objects" do
       interp, _ = make_interp
       result = interp.eval(<<-RUBY)
         begin
@@ -197,7 +197,7 @@ module Adjutant
         end
       RUBY
       result.robject?.should be_true
-      result.as_robject.rclass.name.should eq "RuntimeError"
+      result.as_robject.rclass.name.should eq "ZeroDivisionError"
     end
 
     it "supports .message on an internal error the same as an explicit raise" do
@@ -279,11 +279,11 @@ module Adjutant
       RUBY
     end
 
-    it "matches an internal VM error (division by zero) against RuntimeError" do
+    it "matches an internal VM error (division by zero) against ZeroDivisionError" do
       eval(<<-RUBY).should eq Value.string("caught")
         begin
           1 / 0
-        rescue RuntimeError => e
+        rescue ZeroDivisionError => e
           "caught"
         end
       RUBY
@@ -1229,13 +1229,10 @@ module Adjutant
     # compile/runtime path an explicit `begin`/`end` already used,
     # just reached without writing one.
     it "catches an error raised in the method body" do
-      # Adjutant doesn't have a distinct ZeroDivisionError class —
-      # division by zero raises a plain RuntimeError (see VM#runtime_error).
-      # Worth its own SCOPE.md item separately; not this fix's concern.
       eval(<<-RUBY).should eq Value.int(1_i64)
         def risky
           1 / 0
-        rescue RuntimeError
+        rescue ZeroDivisionError
           1
         end
         risky
@@ -1319,7 +1316,7 @@ module Adjutant
         class A
           def self.risky
             1 / 0
-          rescue RuntimeError
+          rescue ZeroDivisionError
             "caught"
           end
         end

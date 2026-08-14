@@ -16,6 +16,8 @@ module Adjutant::Builtins
     yield RubyClass.new("NoMethodError", name_error)
     yield index_error = RubyClass.new("IndexError", standard_error)
     yield RubyClass.new("KeyError", index_error)
+    yield range_error = RubyClass.new("RangeError", standard_error)
+    yield RubyClass.new("FloatDomainError", range_error)
 
     # IFC related exceptions
     yield risk_flow_policy_error = RubyClass.new("RiskFlowPolicyError", standard_error)

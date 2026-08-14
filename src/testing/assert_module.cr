@@ -104,7 +104,7 @@ module Testing
       interp.define_native("assert_equal") do |args, _blk, ncc|
         expected = args[0]? || Adjutant::Value.nil_value
         actual = args[1]? || Adjutant::Value.nil_value
-        ok = Adjutant::ValueOps.equal?(expected, actual)
+        ok = ncc.values_equal?(expected, actual)
         msg = ok ? nil : "expected #{expected.inspect}, got #{actual.inspect}"
         record("assert_equal", ok, msg, ncc)
         Adjutant::Value.bool(true)
@@ -115,7 +115,7 @@ module Testing
       interp.define_native("assert_not_equal") do |args, _blk, ncc|
         expected = args[0]? || Adjutant::Value.nil_value
         actual = args[1]? || Adjutant::Value.nil_value
-        ok = !Adjutant::ValueOps.equal?(expected, actual)
+        ok = !ncc.values_equal?(expected, actual)
         record("assert_not_equal", ok, ok ? nil : "both are #{actual.inspect}", ncc)
         Adjutant::Value.bool(true)
       end

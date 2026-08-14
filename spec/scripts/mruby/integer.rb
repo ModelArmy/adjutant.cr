@@ -176,9 +176,10 @@ assert('Integer#>>', '15.2.8.3.13') do
   assert_equal 0, 23 >> 128
 end
 
-# assert('Integer#ceil', '15.2.8.3.14') do
-#   assert_equal 10, 10.ceil
-# end
+assert('Integer#ceil', '15.2.8.3.14') do
+  assert_equal 10, 10.ceil
+  assert_equal 12400, 12341.ceil(-2)
+end
 
 # assert('Integer#downto', '15.2.8.3.15') do
 #   a = 0
@@ -198,31 +199,33 @@ end
 #   assert_false c
 # end
 
-# assert('Integer#floor', '15.2.8.3.17') do
-#   a = 1.floor
+assert('Integer#floor', '15.2.8.3.17') do
+  a = 1.floor
 
-#   assert_equal 1, a
-# end
+  assert_equal 1, a
+  assert_equal 12300, 12399.floor(-2)
+end
 
-# assert('Integer#next', '15.2.8.3.19') do
-#   assert_equal 2, 1.next
-# end
+assert('Integer#next', '15.2.8.3.19') do
+  assert_equal 2, 1.next
+end
 
-# assert('Integer#round', '15.2.8.3.20') do
-#   assert_equal 1, 1.round
-# end
+assert('Integer#round', '15.2.8.3.20') do
+  assert_equal 1, 1.round
+  assert_equal 12300, 12345.round(-2)
+end
 
-# assert('Integer#succ', '15.2.8.3.21') do
-#   assert_equal 2, 1.succ
-# end
+assert('Integer#succ', '15.2.8.3.21') do
+  assert_equal 2, 1.succ
+end
 
-# assert('Integer#times', '15.2.8.3.22') do
-#   a = 0
-#   3.times do
-#     a += 1
-#   end
-#   assert_equal 3, a
-# end
+assert('Integer#times', '15.2.8.3.22') do
+  a = 0
+  3.times do
+    a += 1
+  end
+  assert_equal 3, a
+end
 
 assert('Integer#to_f', '15.2.8.3.23') do
   # skip unless Object.const_defined?(:Float)
@@ -233,24 +236,23 @@ assert('Integer#to_i', '15.2.8.3.24') do
   assert_equal 1, 1.to_i
 end
 
-# --- TODO: base parameter support in `to_s`
-# assert('Integer#to_s', '15.2.8.3.25') do
-#   assert_equal "1", 1.to_s
-#   assert_equal "-1", -1.to_s
-#   assert_equal "1010", 10.to_s(2)
-#   assert_equal "a", 10.to_s(36)
-#   assert_equal "-a", -10.to_s(36)
-#   assert_equal "30071", 12345.to_s(8)
-#   assert_raise(ArgumentError) { 10.to_s(-1) }
-#   assert_raise(ArgumentError) { 10.to_s(0) }
-#   assert_raise(ArgumentError) { 10.to_s(1) }
-#   assert_raise(ArgumentError) { 10.to_s(37) }
-# end
-# ---
+assert('Integer#to_s', '15.2.8.3.25') do
+  assert_equal "1", 1.to_s
+  assert_equal "-1", -1.to_s
+  assert_equal "1010", 10.to_s(2)
+  assert_equal "a", 10.to_s(36)
+  assert_equal "-a", -10.to_s(36)
+  assert_equal "30071", 12345.to_s(8)
+  assert_raise(ArgumentError) { 10.to_s(-1) }
+  assert_raise(ArgumentError) { 10.to_s(0) }
+  assert_raise(ArgumentError) { 10.to_s(1) }
+  assert_raise(ArgumentError) { 10.to_s(37) }
+end
 
-# assert('Integer#truncate', '15.2.8.3.26') do
-#   assert_equal 1, 1.truncate
-# end
+assert('Integer#truncate', '15.2.8.3.26') do
+  assert_equal 1, 1.truncate
+  assert_equal 12300, 12399.truncate(-2)
+end
 
 # assert('Integer#upto', '15.2.8.3.27') do
 #   a = 0

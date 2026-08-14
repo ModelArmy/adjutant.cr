@@ -547,6 +547,43 @@ module Adjutant
       exclusive ? compare(x, max, :<) : compare(x, max, :<=)
     end
 
+    # String#[range] — real Ruby's own substring-slicing rules:
+    # negative bounds count from the end (same as the plain-Integer
+    # index case just above); a start beyond the string's length
+    # returns nil (out of bounds), but a start EXACTLY AT the length
+    # is a valid edge case returning "" (e.g. `"abc"[3..5] == ""`);
+    # an end beyond the length clamps to the last valid index rather
+    # than erroring. Only Integer bounds are handled — Range
+    # construction itself allows any orderable bound type (see
+    # bootstrap_range's own comment), but a non-Integer bound has no
+    # meaningful string-slicing interpretation, so this falls back to
+    # nil rather than raising (matching exec_get_index's own general
+    # "can't resolve this shape" -> nil convention elsewhere).
+    #
+    # Ivar names/lookup mirror range_include?'s own (just above) and
+    # builtins/range.cr's accessors — all three must stay in sync on
+    # the `__min`/`__max`/`__exclusive` naming.
+    private def exec_get_index_string_range(target : Value, range : Value) : Value
+      obj = range.as_robject
+      lo_val = obj.ivars[@symbols.intern("__min").value]
+      hi_val = obj.ivars[@symbols.intern("__max").value]
+      exclusive = obj.ivars[@symbols.intern("__exclusive").value].as_bool
+      return Value.nil_value unless lo_val.int? && hi_val.int?
+
+      s = target.as_string
+      lo = lo_val.as_int.to_i
+      hi = hi_val.as_int.to_i
+      lo += s.size if lo < 0
+      return Value.nil_value if lo < 0 || lo > s.size
+
+      hi += s.size if hi < 0
+      hi -= 1 if exclusive
+      hi = s.size - 1 if hi >= s.size
+      return Value.string("", target.label) if hi < lo
+
+      Value.string(s[lo..hi], target.label)
+    end
+
     # Shared by the "respond_to?" exec_builtin case — mirrors
     # dispatch_call's own receiver-based resolution order (RubyObject:
     # find_method then find_native_method; RubyClass: find_singleton_
@@ -998,7 +1035,7 @@ module Adjutant
 
           when Op::Eq
             b, a = pop, pop
-            result = Value.bool(ValueOps.equal?(a, b), RiskFlowLabel.join(a.label, b.label))
+            result = Value.bool(values_equal?(a, b), RiskFlowLabel.join(a.label, b.label))
             @risk_flow_log.record("Eq", [a.label, b.label], result.label, f.line)
             push(result)
           when Op::Lt  then exec_binary(inst) { |lhs, rhs| Value.bool(compare(lhs, rhs, :<)) }
@@ -2765,6 +2802,19 @@ module Adjutant
       end
     end
 
+    # NativeCallContext#add's own implementation — the same
+    # `error_raiser` wiring Op::Add itself uses (see this file's own
+    # `when Op::Add` case), just reachable from native code. Doesn't
+    # attempt a RubyObject `+` dispatch the way `compare`/`compare_via_spaceship`
+    # does for `<=>` — no current native caller needs a user-defined
+    # `+` (Range#step's own bounds are always base types in practice),
+    # so that generality wasn't built until something actually needs
+    # it, matching this codebase's own "don't build ahead of a real
+    # user" convention.
+    protected def add(a : Value, b : Value) : Value
+      ValueOps.add(a, b, error_raiser(current_frame))
+    end
+
     # `a` is always the receiver — `a < b` reads as `a.<=>(b)`, the
     # same left-to-right receiver convention every other infix
     # operator in Adjutant already uses. No "is `<=>` defined?"
@@ -2813,7 +2863,34 @@ module Adjutant
     end
 
     protected def values_equal?(a : Value, b : Value) : Bool
-      ValueOps.equal?(a, b)
+      if range_receiver?(a) && range_receiver?(b)
+        range_values_equal?(a, b)
+      else
+        ValueOps.equal?(a, b)
+      end
+    end
+
+    # Real Ruby's Range#== (and #eql?, defined identically for Range)
+    # compares by CONTENT — same min/max/exclusive — not identity.
+    # `ValueOps.equal?`'s own `a.robject? && b.robject?` case is
+    # correctly documented as reference identity (Adjutant has no
+    # user-defined `==` dispatch yet) — but that's the right default
+    # for a USER class with no override, not for a BUILTIN class like
+    # Range that has real equality semantics baked in, the same
+    # exception Array/Hash already get in that same case statement.
+    # Lives here rather than in ValueOps itself because identifying
+    # "is this specifically a Range" needs `range_receiver?`
+    # (`builtin_class_by_name`, VM-only), and reading the ivars needs
+    # `@symbols` — neither reachable from ValueOps, which only ever
+    # operates on bare Values with no VM access at all.
+    private def range_values_equal?(a : Value, b : Value) : Bool
+      ao, bo = a.as_robject, b.as_robject
+      min_sym = @symbols.intern("__min").value
+      max_sym = @symbols.intern("__max").value
+      excl_sym = @symbols.intern("__exclusive").value
+      ValueOps.equal?(ao.ivars[min_sym], bo.ivars[min_sym]) &&
+        ValueOps.equal?(ao.ivars[max_sym], bo.ivars[max_sym]) &&
+        ao.ivars[excl_sym].as_bool == bo.ivars[excl_sym].as_bool
     end
 
     # --- Index helpers ------------------------------------------------------
@@ -2833,7 +2910,9 @@ module Adjutant
         i = idx.as_int.to_i
         s = target.as_string
         i = s.size + i if i < 0
-        (i >= 0 && i < s.size) ? Value.string(s[i].to_s) : Value.nil_value
+        (i >= 0 && i < s.size) ? Value.string(s[i].to_s, target.label) : Value.nil_value
+      when target.string? && range_receiver?(idx)
+        exec_get_index_string_range(target, idx)
       else
         Value.nil_value
       end
@@ -2867,14 +2946,18 @@ module Adjutant
     # Builds the `on_error` proc ValueOps' arithmetic methods (add/op/
     # div/mod/int_op/shl) take — the only bridge those VM-independent
     # methods need back into VM#runtime_error, so the rich,
-    # script-catchable error object (a real RuntimeError RubyObject,
-    # not just a message string) is still built in exactly one place.
+    # script-catchable error object (a real RuntimeError-or-other
+    # RubyObject, not just a message string) is still built in exactly
+    # one place. Takes the `error_class` straight through from the
+    # caller (ValueOps now classifies its own failures — "TypeError",
+    # "ZeroDivisionError" — rather than everything collapsing into a
+    # generic RuntimeError regardless of what actually went wrong).
     private def error_raiser(frame : Frame) : ValueOps::OnError
-      ->(msg : String) { raise runtime_error(msg, frame) }
+      ->(msg : String, error_class : String) { raise runtime_error(msg, frame, error_class: error_class) }
     end
 
-    private def runtime_error(msg : String, frame : Frame = current_frame, cause = nil) : RuntimeError
-      cls = builtin_class_by_name("RuntimeError")
+    private def runtime_error(msg : String, frame : Frame = current_frame, cause = nil, error_class : String = "RuntimeError") : RuntimeError
+      cls = builtin_class_by_name(error_class)
       err_val = cls ? make_error_object(cls, msg) : nil
       RuntimeError.new(msg, frame, cause, error_value: err_val)
     end
@@ -2901,6 +2984,25 @@ module Adjutant
       cls = builtin_class_by_name(error_class)
       err_val = cls ? make_error_object(cls, diag.summary) : nil
       RuntimeError.new(diag, frame, cause, error_value: err_val)
+    end
+
+    # Native-method counterpart to the script-raised diagnostics
+    # elsewhere in this file (undefined_constant, excluded_construct,
+    # ...) — same runtime_diagnostic machinery, just reachable from
+    # outside the VM via NativeCallContext#raise_error (see that
+    # method's own comment for why this exists at all). `filename`/
+    # `line` are the CALL SITE's, passed through from
+    # NativeFunctionCall's own getters, not this frame's — matching
+    # every other native-method diagnostic (e.g. call_native's own
+    # N001 rescue) which points at where the script called the native
+    # method, not at native code the script never sees.
+    protected def raise_native_error(code : String, data : Hash(String, String),
+                                     error_class : String, filename : String, line : Int32) : NoReturn
+      raise runtime_diagnostic(
+        Diagnostic.new(code: code, primary: Span.new(line: line, filename: filename), data: data),
+        current_frame,
+        error_class: error_class
+      )
     end
 
     # An unresolved constant. Reports a deliberately excluded name as

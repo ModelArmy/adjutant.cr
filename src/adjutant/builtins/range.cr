@@ -26,6 +26,7 @@ module Adjutant::Builtins
   # type with no #succ raises NoMethodError on #each, same as real
   # Ruby — not specially handled, since that's accurate behavior, not
   # a gap.
+  # ameba:disable Metrics/CyclomaticComplexity - one `define` call per native method, each a flat independent case; count comes from many methods, not tangled branching
   def self.bootstrap_range(interp : Adjutant::Interpreter) : Adjutant::RubyClass
     cls = Adjutant::RubyClass.new("Range")
 
@@ -33,12 +34,65 @@ module Adjutant::Builtins
     max_sym = interp.symbols.intern("__max").value
     excl_sym = interp.symbols.intern("__exclusive").value
 
+    # Real Ruby's `Range.new(begin, end, exclude_end = false)` — the
+    # constructor form, alongside `..`/`...` literal syntax. Without
+    # this, `Range.new(...)` fell all the way through to
+    # VM#construct_object's generic path: no native singleton `new`,
+    # no script `initialize` (Range has never had one), so it just
+    # allocated a BARE RubyObject with NONE of the three ivars set at
+    # all — not an error, a SILENTLY MALFORMED Range that would raise
+    # a confusing internal Crystal key-not-found error (or worse, an
+    # inconsistent one) the moment anything touched it. A real,
+    # separate gap from the endless/beginless-range parsing gap (see
+    # SCOPE.md) — found investigating it, but not the same bug.
+    #
+    # A nil `begin`/`end` (real Ruby's endless/beginless-range
+    # constructor form) is ACCEPTED here rather than rejected — but
+    # every iteration method below (#each/#to_a/#step) compares
+    # against the ivar directly, and `NativeCallContext#compare`
+    # returns false for any pairing it can't order (including
+    # anything-vs-nil), so a range built this way silently iterates
+    # ZERO times rather than behaving like a real endless range (or
+    # raising RangeError for #to_a, as real Ruby does) — the same
+    # underlying limitation as the parsing gap, just reachable through
+    # a different door. Not specially guarded against here, to avoid
+    # inventing partial, still-wrong behavior for a case that's
+    # already a known, tracked limitation.
+    define_singleton(cls, interp, "new") do |args, _blk, _ncc|
+      rstart = args[1]? || Adjutant::Value.nil_value
+      rend = args[2]? || Adjutant::Value.nil_value
+      exclusive = args[3]?.try(&.truthy?) || false
+      obj = Adjutant::RubyObject.new(cls)
+      obj.ivars[min_sym] = rstart
+      obj.ivars[max_sym] = rend
+      obj.ivars[excl_sym] = Adjutant::Value.bool(exclusive)
+      Adjutant::Value.robject(obj)
+    end
+
     define(cls, interp, "min") do |args|
       args.first.as_robject.ivars[min_sym]
     end
 
     define(cls, interp, "first") do |args|
       args.first.as_robject.ivars[min_sym]
+    end
+
+    # Real Ruby's #begin/#end — the raw ivar accessors, distinct from
+    # #first/#last (which have extra semantics for an endless/
+    # beginless range that don't apply to #begin/#end at all: #first
+    # additionally accepts a count argument for "first N elements",
+    # and #last with NO argument raises on an endless range while
+    # #end just returns nil). Adjutant has no endless/beginless ranges
+    # yet (see SCOPE.md), so #begin/#first and #end/#last are
+    # currently indistinguishable in practice — added as real,
+    # separate methods anyway, matching real Ruby's own names exactly
+    # rather than relying on #first/#last as informal aliases.
+    define(cls, interp, "begin") do |args|
+      args.first.as_robject.ivars[min_sym]
+    end
+
+    define(cls, interp, "end") do |args|
+      args.first.as_robject.ivars[max_sym]
     end
 
     define(cls, interp, "max") do |args|
@@ -49,8 +103,16 @@ module Adjutant::Builtins
       args.first.as_robject.ivars[max_sym]
     end
 
-    define(cls, interp, "exclusive?") do |args|
-      args.first.as_robject.ivars[excl_sym]
+    # `exclusive?` was this class's own (non-standard) name for real
+    # Ruby's `exclude_end?` — kept as an alias (not renamed away)
+    # since removing it would be a breaking change for no reason;
+    # `exclude_end?` registered separately as its own entry so a
+    # script using the REAL Ruby name works too, same multi-alias
+    # pattern Hash's key?/include?/has_key? already uses.
+    {"exclusive?", "exclude_end?"}.each do |name|
+      define(cls, interp, name) do |args|
+        args.first.as_robject.ivars[excl_sym]
+      end
     end
 
     # Note: this only fires for an explicit script-level `.to_s` call
@@ -69,18 +131,13 @@ module Adjutant::Builtins
     end
 
     define(cls, interp, "include?") do |args, _blk, ncc|
-      obj = args.first.as_robject
-      needle = args[1]?
-      if needle
-        lo = obj.ivars[min_sym]
-        hi = obj.ivars[max_sym]
-        exclusive = obj.ivars[excl_sym].as_bool
-        above_min = ncc.compare(needle, lo, :>=)
-        below_max = exclusive ? ncc.compare(needle, hi, :<) : ncc.compare(needle, hi, :<=)
-        Adjutant::Value.bool(above_min && below_max)
-      else
-        Adjutant::Value.bool(false)
-      end
+      range_includes?(args, ncc, min_sym, max_sym, excl_sym)
+    end
+
+    # Real Ruby's `member?` is a plain alias for `include?` — same
+    # multi-name-registration pattern as exclude_end?/exclusive? above.
+    define(cls, interp, "member?") do |args, _blk, ncc|
+      range_includes?(args, ncc, min_sym, max_sym, excl_sym)
     end
 
     # `for x in a..b`'s desugar (compile_for) and any direct `.each`
@@ -105,6 +162,83 @@ module Adjutant::Builtins
       recv
     end
 
+    # Real Ruby's Range#to_a materializes every value #each would
+    # yield into a real Array — same walk-via-#succ mechanism, same
+    # genericity over bound type (not Integer-specific). New
+    # container built from the Range's own values, so its label
+    # seeds from the RECEIVER Range's own `.label` (an ordinary Value
+    # field here, unlike Array/Hash's container-level `.label` — a
+    # Range RubyObject has no separate container-label concept of its
+    # own) joined with each yielded element's own label, same
+    # principle as array.cr's select/reject/sort/reverse/map and
+    # hash.cr's to_a/merge.
+    define(cls, interp, "to_a") do |args, _blk, ncc|
+      recv = args.first
+      obj = recv.as_robject
+      exclusive = obj.ivars[excl_sym].as_bool
+      hi = obj.ivars[max_sym]
+      elements = [] of Adjutant::Value
+      current = obj.ivars[min_sym]
+      loop do
+        in_bounds = exclusive ? ncc.compare(current, hi, :<) : ncc.compare(current, hi, :<=)
+        break unless in_bounds
+        elements << current
+        current = ncc.call_method(current, "succ", [] of Adjutant::Value)
+      end
+      Adjutant::Value.new(Adjutant::LabeledArray.new(elements, joined_label(elements, recv.label)), nil)
+    end
+
+    # Real Ruby's Range#step(n = 1, &block): walks from `min` to `max`
+    # (respecting exclusivity, same as #each) in increments of `n`
+    # instead of #succ's implicit "+1" — via NativeCallContext#add
+    # (ValueOps.add under the hood, same as Op::Add), NOT
+    # `call_method(current, "+", [n])`: unlike `succ`, `+` is
+    # opcode-only, never registered as a real native method (see
+    # NativeCallContext#add's own comment in interpreter.cr for the
+    # full reasoning) — `call_method` would have no native-method
+    # table entry to find for a builtin-typed receiver like
+    # Integer/Float. `n` of exactly 0 would never advance past `min`,
+    # so raises ArgumentError (R020) rather than hanging forever.
+    # Blockless call returns the receiver (Enumerator-less, same
+    # convention as every other Enumerable-less method in this
+    # codebase).
+    define(cls, interp, "step") do |args, blk, ncc|
+      recv = args.first
+      obj = recv.as_robject
+      exclusive = obj.ivars[excl_sym].as_bool
+      hi = obj.ivars[max_sym]
+      n = args[1]? || Adjutant::Value.int(1_i64)
+      if n.int? && n.as_int == 0
+        ncc.raise_error("R020", {} of String => String, "ArgumentError")
+      end
+      if blk
+        current = obj.ivars[min_sym]
+        loop do
+          in_bounds = exclusive ? ncc.compare(current, hi, :<) : ncc.compare(current, hi, :<=)
+          break unless in_bounds
+          ncc.invoke(blk, [current])
+          current = ncc.add(current, n)
+        end
+      end
+      recv
+    end
+
     cls
+  end
+
+  # Shared by #include?/#member? (real Ruby aliases of the same
+  # check) — separate module-level method rather than duplicating the
+  # body in both `define` blocks.
+  private def self.range_includes?(args : Array(Adjutant::Value), ncc : Adjutant::NativeCallContext,
+                                   min_sym : Int32, max_sym : Int32, excl_sym : Int32) : Adjutant::Value
+    obj = args.first.as_robject
+    needle = args[1]?
+    return Adjutant::Value.bool(false) unless needle
+    lo = obj.ivars[min_sym]
+    hi = obj.ivars[max_sym]
+    exclusive = obj.ivars[excl_sym].as_bool
+    above_min = ncc.compare(needle, lo, :>=)
+    below_max = exclusive ? ncc.compare(needle, hi, :<) : ncc.compare(needle, hi, :<=)
+    Adjutant::Value.bool(above_min && below_max)
   end
 end

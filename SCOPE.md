@@ -24,6 +24,91 @@ Blocking, or actively causing incorrect behavior in normal use. Ordered
 roughly by dependency, not necessarily by importance — an item lower down
 may unblock ones above it.
 
+- **Endless/beginless ranges (`1..`, `..10`, `1...`, `...10`) don't
+  parse at all.** Found 2026-08-13 triaging `spec/scripts/mruby/
+  range.rb` — nearly every assertion in that file needs at least one
+  partial range, even ones otherwise testing something unrelated and
+  already-working. `parse_range` (parser.cr) always calls
+  `parse_expression` unconditionally for BOTH sides of `..`/`...`, so
+  there's no way to omit either bound — not a Range-representation
+  gap so much as a parser one: `RangeLiteral`'s AST node itself would
+  need to accept a missing `start_node`/`end_node` (today both are
+  non-nilable `Node`, not `Node?`), the parser would need to check for
+  "nothing here, an operator/closing-delimiter follows instead" on
+  each side independently (endless: no valid expression follows;
+  beginless: `..`/`...` appears in a position with no left operand at
+  all, meaning `parse_primary` — not just the infix loop — needs to
+  recognize `..`/`...` as a valid EXPRESSION START, not just an infix
+  operator), and `Op::MakeRange`/`make_range_object` would need to
+  accept and store a real nil bound. Genuinely common in idiomatic
+  Ruby (`arr[2..]`, `case age when 18.. then ...`), not just a
+  theoretical ISO-suite curiosity — ordinary-use blocking, not an edge
+  case. Once bounds CAN be nil, every iteration method
+  (`each`/`to_a`/`step`) also needs real handling for a nil bound
+  (walk forever for `each`/`step`, raise `RangeError` for `to_a` — see
+  `builtins/range.cr`'s own comment on `Range.new` accepting a nil
+  bound today via the CONSTRUCTOR path already, silently producing a
+  range that iterates zero times rather than doing either of those,
+  since `NativeCallContext#compare` returns false for any pairing it
+  can't order including anything-vs-nil).
+
+- **No Regex support at all — no `Regexp` class, no `=~`, no
+  `String#match`, and `String#gsub`/`#sub`/`#index`/`#rindex`/`#scan`
+  have no way to accept a pattern argument (only a plain String, once
+  those land — see the separate entry below).** Found 2026-08-13
+  triaging `spec/scripts/mruby/string.rb`: nearly every upstream
+  pattern-matching test needs this and is currently blocked outright,
+  with no workaround — this is core, ordinary-use Ruby, not an edge
+  case. Genuinely necessary for Adjutant to be useful for real
+  scripting work, not just a nice-to-have alongside the other
+  per-class method surveys. Real work needed: a `Regexp` class/
+  literal syntax (`/pattern/flags`), a matching engine (even a
+  minimal one — real Ruby regex features like lookaround/backrefs are
+  a much bigger lift than the common case), `=~`/`String#match`/
+  `MatchData`, and then wiring a Regexp-accepting case into every
+  String method that takes a pattern. Sized as its own, separate
+  effort — not scoped further here yet. `String#gsub`/`#sub`/
+  `#index`/`#rindex` all have a String-only form landing WITHOUT
+  waiting for this (see below) — deliberately not blocked on Regex,
+  since the String-argument case is common and useful on its own, and
+  adding a Regexp case later is additive (a new dispatch branch, not
+  a rewrite), not a reason to delay the String case.
+
+- **`Array#to_s`/`Hash#to_s`/`Range#to_s` (called implicitly — e.g.
+  string interpolation, `puts`, `p` — and `#inspect`, which defers to
+  `to_s`) silently produce garbage, not a real Ruby-style rendering.**
+  Found 2026-08-13 writing fresh ISO-style coverage for `Hash`, then
+  confirmed the identical gap already applies to `Range` too —
+  `builtins/range.cr`'s own `to_s` method comment flags it, tracing
+  back to the 2026-07-14 handoff, predating this entry.
+  `Value#to_s`'s case statement (`value.cr`) has no branch for
+  `LabeledArray`, `LabeledHash`, OR a `Range` RubyObject at all — all
+  three fall through to the generic `"#<" << @raw.class << ">"` (or,
+  for a RubyObject like Range, `RubyObject#to_s`'s own generic
+  `"#<Range>"`) fallback, so `{"a" => 1}.to_s` actually produces
+  `"#<Adjutant::LabeledHash>"`, `[1,2,3].to_s` produces
+  `"#<Adjutant::LabeledArray>"`, and interpolating a Range (`"#{1..3}"`)
+  produces `"#<Range>"` rather than `"1..3"` — none of these the real
+  rendering a script or its author would expect. IMPORTANT scope note
+  from `range.cr`'s own comment: Range DOES have a working `#to_s`
+  reachable via an EXPLICIT script-level `.to_s` call (real dispatch
+  through `find_native_method`) — the gap is specifically the
+  IMPLICIT path (string interpolation, `puts`, `p`, anything using
+  `Value#to_s` directly rather than going through method dispatch),
+  which never consults a class's own native `to_s` at all. Silent-
+  wrong-answer, not a missing method or a raised error, so it's the
+  kind of gap that's easy to never notice: no test anywhere in the
+  suite (including array_spec.cr, predating this finding) ever checked
+  `#to_s`'s actual STRING CONTENT for any of the three types, only
+  that it returns *a* string. Real work needed: proper recursive
+  Array/Hash-aware rendering (`[1, 2, "a"]`, `{"a" => 1, "b" => [1,
+  2]}`), a real Range case, string quoting rules matching real Ruby's
+  `to_s` vs `inspect` distinction, and — per the separate cycle-
+  detection gap already flagged in `array.rb`'s own triage — a guard
+  against self-referential containers recursing until the native stack
+  overflows, since a real implementation would need to touch the same
+  code either way.
+
 - **Runtime diagnostics have no carets** (`Frame` records a line but no
   column). Promoted from Error reporting 2026-08-05 on a
   turn-churn argument specific to this use case: the cost of an
@@ -52,6 +137,16 @@ may unblock ones above it.
   method — needs a new keyword/token, parser support, and a real
   runtime check per operand kind (literal/expression, `self`, local,
   method, constant, global — the last excluded per U011 either way).
+  Related but distinct, found 2026-08-13 while triaging
+  `spec/scripts/mruby/float.rb`: `Module#const_defined?` (the ordinary
+  METHOD, e.g. `Object.const_defined?(:Float)`) also doesn't exist —
+  it's a real gap in its own right, not just a symptom of `defined?`
+  missing, since fixing the `defined?` keyword wouldn't give scripts
+  `const_defined?` and vice versa (one's parser/keyword work, the
+  other's an ordinary native method reachable via find_native_method).
+  Worth scoping together since they serve the same defensive-
+  programming purpose and a reader would reasonably expect both to
+  land at once, but they're two separate pieces of work.
 
 - **`respond_to?`'s blind spot returns a wrong answer, not an
   error.** Long-standing, untriaged since the original 2026-07-14
@@ -71,57 +166,6 @@ may unblock ones above it.
   shape: extend that case to also check a fixed list of the
   fallback-only names `exec_builtin` handles, rather than a full
   lookup-table rewrite.
-
-- **`Array` is missing several methods common enough in ordinary Ruby
-  that their absence is a normal-use blocker, not an edge case.**
-  Found 2026-08-10, `Array#first` specifically tripping a test script
-  during the closures work — prompted a full survey of core-class
-  method coverage rather than patching that one case in isolation.
-  Has (`builtins/array.cr`): `each`, `map`, `push`, `pop`, `size`,
-  `empty?`, `include?`, `join`, `to_s`. Missing: `first`, `last`,
-  `select`/`reject`, `reduce`/`inject`, `sort`, `reverse`, `min`/
-  `max`, `any?`/`all?`. `[]`/`[]=` and `<<` are already real opcodes
-  (`Op::GetIndex`/`Op::SetIndex`, `ValueOps.shl`), not native methods
-  — not part of this gap. `each`/`map` already prove the
-  block-invocation pattern (`NativeCallContext#invoke`) works from a
-  native method, so `select`/`reject`/`reduce` aren't a new mechanism,
-  just more callers of it.
-
-- **`Hash` is missing `merge`, `has_key?`/`key?`, `delete`, `to_a`.**
-  Found 2026-08-10, same survey as `Array`'s entry above. Has
-  (`builtins/hash.cr`): `each`, `empty?`, `keys`, `size`, `to_s`,
-  `values`. `[]`/`[]=` are already real opcodes
-  (`exec_get_index`/`exec_set_index`, `vm.cr`), not part of this gap.
-
-- **`String` is missing `reverse`, `chars`, `start_with?`/`end_with?`,
-  `capitalize`.** Found 2026-08-10, same survey. Has
-  (`builtins/string.cr`): `downcase`, `upcase`, `strip`, `split`,
-  `include?`, `empty?`, `length`/`size`, `to_i`/`to_f`/`to_s`/
-  `to_sym`. Separate, NOT a missing-method gap (different mechanism,
-  noted here since found by the same survey): single-character
-  indexing (`s[1]`) already works, but Range-based substring slicing
-  (`s[1..3]`) doesn't — `exec_get_index` (`vm.cr`) only handles a
-  plain `Integer` index for strings, falling through to `nil` for a
-  `Range` one. Worth its own look, since it's an opcode-level fix
-  (`exec_get_index`'s `target.string? && idx.int?` case needs a
-  sibling `idx.range?` case), not a `builtins/string.cr` addition.
-
-- **`Integer` is missing `times`, `abs`, `even?`/`odd?`, `zero?`.**
-  Found 2026-08-10, same survey. Has (`builtins/integer.cr`): `next`/
-  `succ`, `to_f`/`to_i`/`to_s`. `times` specifically is a very common
-  simple-iteration idiom (`3.times { ... }`) an LLM will reach for
-  early and often. Arithmetic (`+`/`-`/`*`/`/`) is already opcode-
-  level (`ValueOps`), not part of this gap.
-
-- **`Float` is missing `round`, `ceil`, `floor`, `abs`, `nan?`.**
-  Found 2026-08-10, same survey. Has (`builtins/float.cr`):
-  `infinite?`, `to_f`/`to_i`/`to_s`.
-
-- **`Range` is missing `to_a`, `step`.** Found 2026-08-10, same
-  survey. Has (`builtins/range.cr`): `each`, `first`, `last`, `min`/
-  `max`, `include?`, `exclusive?`, `to_s`. `to_a` (materializing a
-  range into an array) is common enough that its absence is
-  surprising on its own.
 
 ## Will Fix
 
@@ -473,6 +517,28 @@ section).
 
 ### Data & builtin types
 
+- **Quoted Symbol literals (`:"..."`) don't decode backslash escape
+  sequences.** Found 2026-08-13 fixing the identical gap for String
+  literals (`decode_string_escapes`, parser.cr) — plain and
+  interpolated strings now decode `\n`/`\t`/etc. correctly, but the
+  quoted-Symbol construction site (`SymbolLiteral.new(tok.lexeme
+  .lstrip(':').strip('"').strip('\'')...)`) was deliberately left
+  untouched in that same pass, since its quote-stripping approach is
+  structurally different (chained `lstrip`/`strip` rather than the
+  index-based `strip_quotes`) and riskier to edit without dedicated
+  attention. Lower priority than the String fix was — quoted symbols
+  with embedded escapes are rare — but the same category of gap.
+
+- **`Integer`/`Float` are both missing `#divmod`.** Found 2026-08-13
+  triaging `spec/scripts/mruby/float.rb`'s commented-out `Float#divmod`
+  block. Real Ruby's `#divmod` returns `[quotient, remainder]` as a
+  single call — `/` and `%` already work individually (opcode-level,
+  `ValueOps.div`/`.mod`) so this is purely a convenience wrapper
+  around two things that already work correctly on their own, not a
+  new arithmetic primitive. Lower priority than the other Data &
+  builtin types entries here — no known common idiom depends on it
+  the way `Integer#times` or `Array#first` did.
+
 - **`Range` beyond `Integer` (and whatever else has a working
   `#succ`) — String ranges, custom-object ranges — isn't supported.**
   Long-standing, untriaged since the original 2026-07-14 handoff
@@ -531,7 +597,8 @@ section).
   underlying content-vs-reference identity question, not a fix of its
   own.
 
-### IFC / risk-flow
+
+
 
 Carried forward from the original 2026-07-14 handoff — the oldest items,
 undesigned rather than merely unimplemented, more product-shaped than

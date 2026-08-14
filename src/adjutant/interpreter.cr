@@ -85,6 +85,22 @@ module Adjutant
     # raising).
     abstract def compare(a : Value, b : Value, op : Symbol) : Bool
 
+    # Real Ruby `+` semantics for two Values — delegates to
+    # ValueOps.add (value_ops.cr), the same logic Op::Add already uses
+    # for script-level `+`. Needed by any native method that has to
+    # add Values generically without duplicating that logic —
+    # Range#step's own advance-by-n (see builtins/range.cr) is the
+    # first user, and specifically CAN'T use `call_method(a, "+",
+    # [b])` for this the way #each uses `call_method(a, "succ", [])`:
+    # unlike `succ`, `+` is opcode-only (never registered via
+    # find_native_method — see integer.cr's own comment on this), so
+    # dispatch_call has no native-method table entry to find for a
+    # builtin-typed receiver like Integer/Float/String. This exists
+    # for exactly that gap, the same way `compare`/`values_equal?`
+    # already expose their own ValueOps operations generically rather
+    # than leaving native code with no way to reach them at all.
+    abstract def add(a : Value, b : Value) : Value
+
     # Calls a method by name on an arbitrary Value receiver, the same
     # way script code calling `recv.name(*args)` would — resolves
     # through the normal script-method-then-native dispatch order
@@ -124,6 +140,26 @@ module Adjutant
     # performs the lookup itself.
     abstract def declare_sensitivity(tag : RiskTag, kind : ProvenanceKind, origin : String,
                                      sensitivity : Sensitivity? = nil) : Nil
+
+    # Lets a native method raise a real, script-catchable diagnostic —
+    # the SAME kind of error a script-level construct raises (an
+    # ErrorCatalog `code`, substitution `data`, and the resulting Ruby
+    # `error_class` to raise as, e.g. "ArgumentError") — rather than
+    # letting a raw Crystal exception escape and get flattened into an
+    # opaque internal N001 by `VM#call_native`'s catch-all rescue.
+    #
+    # Did not exist before `Integer#to_s(base)` needed it: every
+    # native method up to that point either couldn't fail on bad input
+    # (RiskProfile.none, pure data transforms) or accepted its
+    # arguments' shape unconditionally. `to_s(base)` is the first
+    # native method whose argument has a real invalid range a script
+    # can pass and is expected to `rescue ArgumentError` for — real
+    # Ruby does exactly that. General on purpose: any future native
+    # method needing to reject bad input (a `TypeError`, another
+    # `ArgumentError`, ...) uses this same path with its own catalog
+    # code, rather than each one inventing its own ad hoc raise.
+    abstract def raise_error(code : String, data : Hash(String, String) = {} of String => String,
+                             error_class : String = "RuntimeError") : NoReturn
   end
 
   struct NativeFunctionCall
@@ -160,6 +196,10 @@ module Adjutant
       @vm.compare(a, b, op, filename, line)
     end
 
+    def add(a : Value, b : Value) : Value
+      @vm.add(a, b)
+    end
+
     def call_method(recv : Value, name : String, args : Array(Value)) : Value
       @vm.call_method(recv, name, args, filename, line)
     end
@@ -167,6 +207,11 @@ module Adjutant
     def declare_sensitivity(tag : RiskTag, kind : ProvenanceKind, origin : String,
                             sensitivity : Sensitivity? = nil) : Nil
       @vm.declare_sensitivity(tag, kind, origin, @name, filename, line, sensitivity)
+    end
+
+    def raise_error(code : String, data : Hash(String, String) = {} of String => String,
+                    error_class : String = "RuntimeError") : NoReturn
+      @vm.raise_native_error(code, data, error_class, filename, line)
     end
   end
 

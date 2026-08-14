@@ -36,6 +36,80 @@ module Adjutant
         node.as(StringLiteral).value.should eq "hello"
       end
 
+      describe "string escape sequences" do
+        # Found 2026-08-13 while adding String#chomp/#gsub/etc: NOTHING
+        # in the parser/compiler pipeline decoded these before —
+        # `strip_quotes` only removed the surrounding quotes, and
+        # every double-quoted string containing `\n`/`\t`/etc. silently
+        # held the literal 2-character sequence instead of the
+        # intended control character. See decode_string_escapes'
+        # own comment (parser.cr) for the full story.
+        it "decodes \\n as a newline" do
+          node = parse_expr(%("a\\nb"))
+          node.as(StringLiteral).value.should eq "a\nb"
+        end
+
+        it "decodes \\t as a tab" do
+          node = parse_expr(%("a\\tb"))
+          node.as(StringLiteral).value.should eq "a\tb"
+        end
+
+        it "decodes \\\\ as a literal backslash" do
+          node = parse_expr(%("a\\\\b"))
+          node.as(StringLiteral).value.should eq "a\\b"
+        end
+
+        it "decodes \\\" inside a double-quoted string" do
+          node = parse_expr(%("a\\"b"))
+          node.as(StringLiteral).value.should eq "a\"b"
+        end
+
+        it "decodes \\xHH hex escapes" do
+          node = parse_expr(%("\\x41"))
+          node.as(StringLiteral).value.should eq "A"
+        end
+
+        it "decodes \\uHHHH unicode escapes" do
+          node = parse_expr(%("\\u0041"))
+          node.as(StringLiteral).value.should eq "A"
+        end
+
+        it "decodes \\u{H...} unicode escapes" do
+          node = parse_expr(%("\\u{41}"))
+          node.as(StringLiteral).value.should eq "A"
+        end
+
+        it "drops the backslash for an unrecognized escape, keeping the character" do
+          node = parse_expr(%("\\d"))
+          node.as(StringLiteral).value.should eq "d"
+        end
+
+        it "single-quoted strings do NOT decode \\n — it stays two literal characters" do
+          node = parse_expr(%('a\\nb'))
+          node.as(StringLiteral).value.should eq "a\\nb"
+        end
+
+        it "single-quoted strings decode \\\\ as a literal backslash" do
+          node = parse_expr(%('a\\\\b'))
+          node.as(StringLiteral).value.should eq "a\\b"
+        end
+
+        it "single-quoted strings decode \\' as a literal quote" do
+          node = parse_expr("'a\\'b'")
+          node.as(StringLiteral).value.should eq "a'b"
+        end
+
+        it "decodes escapes inside interpolated-string fragments too" do
+          node = parse_expr(%("a\\n\#{1}b\\t"))
+          node.should be_a(InterpString)
+          parts = node.as(InterpString).parts
+          parts.first.should be_a(StringFragment)
+          parts.first.as(StringFragment).value.should eq "a\n"
+          parts.last.should be_a(StringFragment)
+          parts.last.as(StringFragment).value.should eq "b\t"
+        end
+      end
+
       it "parses a symbol" do
         node = parse_expr(":ok")
         node.should be_a(SymbolLiteral)

@@ -194,6 +194,54 @@ module Adjutant
               "remove the `super` call if this method has nothing to " \
               "extend."
       ),
+      "R015" => Entry.new(
+        code: "R015",
+        summary: "invalid radix {base} for `Integer#to_s`",
+        why: "`Integer#to_s(base)` only accepts a base from 2 to 36 — " \
+             "outside that range there either aren't enough digit " \
+             "symbols to represent it, or the notion of a base stops " \
+             "making sense.",
+        help: "Pass a base between 2 and 36, or call `to_s` with no " \
+              "argument for the default base-10 rendering."
+      ),
+      "R016" => Entry.new(
+        code: "R016",
+        summary: "`Float#to_i` called on {value}, which has no integer equivalent",
+        why: "Infinity and NaN aren't finite numbers, so there's no " \
+             "integer they round or truncate to.",
+        help: "Check `finite?` before calling `to_i`, or handle the " \
+              "Infinity/NaN case separately."
+      ),
+      "R017" => Entry.new(
+        code: "R017",
+        summary: "`Hash#merge` given a non-Hash argument ({class_name})",
+        why: "`merge` combines the ENTRIES of two or more hashes — " \
+             "there's no meaningful way to merge in something that " \
+             "isn't itself a Hash.",
+        help: "Pass another Hash to merge in, or build one from " \
+              "whatever you're trying to combine first."
+      ),
+      "R018" => Entry.new(
+        code: "R018",
+        summary: "`{method}` called with no pattern argument",
+        why: "`{method}` needs something to search for — a pattern " \
+             "argument is required, not optional.",
+        help: "Pass a String (or, once supported, a Regexp) to search for."
+      ),
+      "R019" => Entry.new(
+        code: "R019",
+        summary: "`{method}` given a non-String pattern ({class_name})",
+        why: "Adjutant's `{method}` only accepts a String pattern " \
+             "today — Regexp support doesn't exist yet (see SCOPE.md).",
+        help: "Pass a String to search for."
+      ),
+      "R020" => Entry.new(
+        code: "R020",
+        summary: "`Range#step` called with a step of 0",
+        why: "A step of 0 would never move past the range's start — " \
+             "walking it would never finish.",
+        help: "Pass a non-zero step."
+      ),
 
       # --- L: limits reached ----------------------------------------
       #

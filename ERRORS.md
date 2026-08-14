@@ -108,10 +108,19 @@ Something went wrong while the script was running.
 |R012|Passed a keyword argument the method doesn't declare  |`name`, `method`        |
 |R013|`<=>` returned a non-integer for `<`/`<=`/`>`/`>=`    |`left`, `right`, `value`|
 |R014|`super` called, but no ancestor defines the method    |`method`                |
+|R015|`Integer#to_s` given an out-of-range base             |`base`                  |
+|R016|`Float#to_i` called on Infinity or NaN                |`value`                 |
+|R017|`Hash#merge` given a non-Hash argument                |`class_name`            |
+|R018|A pattern-taking String method called with no pattern |`method`                |
+|R019|A pattern-taking String method given a non-String     |`method`, `class_name`  |
+|R020|`Range#step` called with a step of 0                  |—                       |
 
 Scripts can `rescue` these. R008 raises a `NameError`, matching Ruby;
-R011 and R012 raise `ArgumentError`, also matching Ruby; R014 raises a
-`NoMethodError`, also matching Ruby; the rest raise `RuntimeError`.
+R011, R012, R015, and R018 raise `ArgumentError`, also matching Ruby;
+R014 raises a `NoMethodError`, also matching Ruby; R016 raises a
+`FloatDomainError`, also matching Ruby; R017 and R019 raise a
+`TypeError`, also matching Ruby; R020 raises an `ArgumentError`, also
+matching Ruby; the rest raise `RuntimeError`.
 
 Adjutant's constants are assign-once, which Ruby only warns about. R001 is
 that rule firing on an ordinary constant; reopening a class or module is
