@@ -761,6 +761,11 @@ module Adjutant
         StringLiteral.new(decode_string_escapes(strip_quotes(tok.lexeme), is_double), l, c)
       when TokenKind::StringPart
         parse_interp_string(l, c)
+      when TokenKind::Regex
+        tok = advance
+        RegexLiteral.new([RegexFragment.new(tok.lexeme, l, c)] of Node, tok.regex_flags, l, c)
+      when TokenKind::RegexPart
+        parse_regex_literal(l, c)
       when TokenKind::Symbol
         tok = advance
         SymbolLiteral.new(tok.lexeme.lstrip(':').strip('"').strip('\''), l, c)
@@ -1020,6 +1025,7 @@ module Adjutant
       case current_kind
       when TokenKind::Integer, TokenKind::Float,
            TokenKind::String, TokenKind::StringPart,
+           TokenKind::Regex, TokenKind::RegexPart,
            TokenKind::Symbol, TokenKind::KwSelf,
            TokenKind::KwNil, TokenKind::KwTrue, TokenKind::KwFalse,
            TokenKind::Bang, TokenKind::Tilde,
@@ -1163,6 +1169,33 @@ module Adjutant
         parts << StringFragment.new(decode_string_escapes(tok.lexeme, true), tok.line, tok.column) unless tok.lexeme.empty?
       end
       InterpString.new(parts, l, c)
+    end
+
+    # Mirrors parse_interp_string above, for a /pattern/flags literal
+    # whose body contains #{...}. Fragment text is kept raw (no
+    # decode_string_escapes call) — see RegexFragment's own comment
+    # for why. Flags only ever appear on the final RegexEnd token,
+    # matching real Ruby (`/#{x}abc/i` — the `i` sits after the whole
+    # literal closes, not attached to any one part).
+    private def parse_regex_literal(l : Int32, c : Int32) : Node
+      parts = [] of Node
+      flags = ""
+      while at_kind?(TokenKind::RegexPart)
+        tok = advance
+        parts << RegexFragment.new(tok.lexeme, tok.line, tok.column)
+        skip_newlines
+        until at_kind?(TokenKind::InterpEnd) || at_kind?(TokenKind::EOF)
+          parts << parse_expression(0)
+          skip_terminators
+        end
+        expect(TokenKind::InterpEnd)
+      end
+      if at_kind?(TokenKind::RegexEnd)
+        tok = advance
+        parts << RegexFragment.new(tok.lexeme, tok.line, tok.column) unless tok.lexeme.empty?
+        flags = tok.regex_flags
+      end
+      RegexLiteral.new(parts, flags, l, c)
     end
 
     private def parse_array_literal(l : Int32, c : Int32) : Node

@@ -74,6 +74,39 @@ module Adjutant
     end
   end
 
+  # A /pattern/flags regex literal: alternating RegexFragment/expression
+  # nodes, mirroring InterpString's own shape — a regex literal
+  # interpolates exactly like a double-quoted string does (see the
+  # mruby fixture's "Regexp#to_s - interpolation" case). `flags` is
+  # the trailing letters off the closing `/` (some subset of "imx"),
+  # kept as a separate field rather than folded into a part, matching
+  # Token#regex_flags upstream in the lexer.
+  class RegexLiteral < Node
+    getter parts : Array(Node) # RegexFragment | any expression node
+    getter flags : String
+
+    def initialize(@parts, @flags, line, column)
+      super(line, column)
+    end
+  end
+
+  # A literal pattern-text fragment within a regex literal. Kept
+  # distinct from StringFragment (rather than reused) even though both
+  # are just "raw text between interpolations" — a regex fragment's
+  # text is never escape-decoded the way a string fragment's is (see
+  # decode_string_escapes and the lexer's own scan_regex comment):
+  # backslash sequences inside a pattern belong to the regex engine's
+  # syntax, not Adjutant's string-escape table, so keeping the two
+  # node types separate stops a future edit to one from accidentally
+  # also changing the other's (very different) semantics.
+  class RegexFragment < Node
+    getter value : String
+
+    def initialize(@value, line, column)
+      super(line, column)
+    end
+  end
+
   class RangeLiteral < Node
     getter start_node : Node
     getter end_node : Node
