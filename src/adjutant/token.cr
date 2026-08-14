@@ -19,6 +19,9 @@ module Adjutant
     InterpStart # #{
     InterpEnd   # } closing an interpolation
     Symbol
+    Regex     # /pattern/flags with no interpolation
+    RegexPart # segment before/between #{} interpolations, inside /.../
+    RegexEnd  # final segment after last interpolation, /.../flags
 
     # Keywords
     KwClass
@@ -210,7 +213,18 @@ module Adjutant
     # need to pass it explicitly.
     getter? space_before : Bool
 
-    def initialize(@kind, @lexeme, @line, @column, @space_before = false)
+    # Trailing flag letters (some subset of "imx") captured off the
+    # closing `/` of a regex literal — e.g. the "i" in `/abc/i`. Only
+    # ever set on TokenKind::Regex and TokenKind::RegexEnd; every
+    # other token kind leaves this at its default "". Not folded into
+    # `lexeme` (which stays exactly the pattern text) because the
+    # parser needs the two pieces separately: pattern text becomes
+    # Regexp.new's first argument, flags become its second — same
+    # split real Ruby's own Regexp::IGNORECASE/MULTILINE/EXTENDED
+    # options represent.
+    getter regex_flags : String
+
+    def initialize(@kind, @lexeme, @line, @column, @space_before = false, @regex_flags = "")
     end
 
     def to_s(io : IO) : Nil
