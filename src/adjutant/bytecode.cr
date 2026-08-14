@@ -121,6 +121,7 @@ module Adjutant
     MakeArray # pop a elements → push Array
     MakeHash  # pop a*2 elements (alternating k,v) → push Hash
     MakeRange # pop end, pop start → push Range; a=1 for exclusive
+    MakeRegex # pop pattern String (already Concat'd if interpolated) → push Regexp; a=flag bitmask (Builtins::IGNORECASE|EXTENDED|MULTILINE)
 
     # Arithmetic
     Add

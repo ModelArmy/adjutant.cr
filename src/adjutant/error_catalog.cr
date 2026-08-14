@@ -242,6 +242,17 @@ module Adjutant
              "walking it would never finish.",
         help: "Pass a non-zero step."
       ),
+      "R021" => Entry.new(
+        code: "R021",
+        summary: "invalid regex pattern: {reason}",
+        why: "The text between the `/`s doesn't form a valid regular " \
+             "expression — something about its syntax (an unclosed " \
+             "group, a bad character class, an unknown escape, ...) " \
+             "isn't parseable as a pattern.",
+        help: "Fix the pattern. If the pattern was built with string " \
+              "interpolation, check the interpolated piece isn't " \
+              "introducing something like an unclosed group or class."
+      ),
 
       # --- L: limits reached ----------------------------------------
       #

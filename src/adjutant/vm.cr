@@ -5,6 +5,7 @@ require "./value_ops"
 require "./ast"
 require "./risk_flow_policy"
 require "./risk_flow_decision"
+require "./builtins/regexp"
 
 module Adjutant
   # A compiled proc (method body or block).
@@ -1114,6 +1115,9 @@ module Adjutant
             joined_label = RiskFlowLabel.join(rstart.label, rend.label)
             @risk_flow_log.record("MakeRange", [rstart.label, rend.label], joined_label, f.line)
             push(make_range_object(rstart, rend, exclusive, joined_label))
+          when Op::MakeRegex
+            pattern_val = pop
+            push(make_regexp_object(pattern_val.as_string, inst.a.to_i32, pattern_val.label))
           when Op::Concat
             n = inst.a.to_i
             parts = @stack.last(n)
@@ -3156,6 +3160,46 @@ module Adjutant
       obj.ivars[@symbols.intern("__min").value] = rstart
       obj.ivars[@symbols.intern("__max").value] = rend
       obj.ivars[@symbols.intern("__exclusive").value] = Value.bool(exclusive)
+      Value.robject(obj, label)
+    end
+
+    # Companion to make_range_object above, for Op::MakeRegex — see
+    # that op's own comment and Builtins.compile_regex for the actual
+    # compile step. `ctx: nil` there is deliberate: a regex LITERAL
+    # (unlike a `Regexp.new(...)` call) has no NativeCallContext in
+    # scope, so an invalid pattern is turned into the same R021/
+    # RegexpError here that `NativeCallContext#raise_error` would
+    # produce for the constructor form — one error shape regardless of
+    # which syntax produced the bad pattern.
+    private def make_regexp_object(pattern : String, flags : Int32, label : RiskFlowLabel?) : Value
+      cls = builtin_class_by_name("Regexp")
+      unless cls
+        raise runtime_diagnostic(
+          Diagnostic.new(
+            code: "I004",
+            primary: frame_span(current_frame),
+            data: {
+              "class" => "Regexp",
+            }
+          )
+        )
+      end
+      regex =
+        begin
+          Builtins.compile_regex(pattern, flags, nil)
+        rescue ex : ::Exception
+          raise runtime_diagnostic(
+            Diagnostic.new(
+              code: "R021",
+              primary: frame_span(current_frame),
+              data: {"reason" => ex.message || "invalid pattern"}
+            ),
+            error_class: "RegexpError"
+          )
+        end
+      obj = RegexpObject.new(cls, regex)
+      obj.ivars[@symbols.intern("__source").value] = Value.string(pattern)
+      obj.ivars[@symbols.intern("__options").value] = Value.int(flags)
       Value.robject(obj, label)
     end
 

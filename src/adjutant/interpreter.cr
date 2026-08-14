@@ -603,6 +603,7 @@ module Adjutant
       register_builtin_class(Builtins.bootstrap_array(self))
       register_builtin_class(Builtins.bootstrap_hash(self))
       register_builtin_class(Builtins.bootstrap_range(self))
+      register_builtin_class(Builtins.bootstrap_regexp(self))
       register_builtin_class(Builtins.bootstrap_proc(self))
       Builtins.register_module_methods(module_class, self)
     end
