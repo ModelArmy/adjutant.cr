@@ -1035,7 +1035,7 @@ module Adjutant
 
           when Op::Eq
             b, a = pop, pop
-            result = Value.bool(ValueOps.equal?(a, b), RiskFlowLabel.join(a.label, b.label))
+            result = Value.bool(values_equal?(a, b), RiskFlowLabel.join(a.label, b.label))
             @risk_flow_log.record("Eq", [a.label, b.label], result.label, f.line)
             push(result)
           when Op::Lt  then exec_binary(inst) { |lhs, rhs| Value.bool(compare(lhs, rhs, :<)) }
@@ -2863,7 +2863,34 @@ module Adjutant
     end
 
     protected def values_equal?(a : Value, b : Value) : Bool
-      ValueOps.equal?(a, b)
+      if range_receiver?(a) && range_receiver?(b)
+        range_values_equal?(a, b)
+      else
+        ValueOps.equal?(a, b)
+      end
+    end
+
+    # Real Ruby's Range#== (and #eql?, defined identically for Range)
+    # compares by CONTENT — same min/max/exclusive — not identity.
+    # `ValueOps.equal?`'s own `a.robject? && b.robject?` case is
+    # correctly documented as reference identity (Adjutant has no
+    # user-defined `==` dispatch yet) — but that's the right default
+    # for a USER class with no override, not for a BUILTIN class like
+    # Range that has real equality semantics baked in, the same
+    # exception Array/Hash already get in that same case statement.
+    # Lives here rather than in ValueOps itself because identifying
+    # "is this specifically a Range" needs `range_receiver?`
+    # (`builtin_class_by_name`, VM-only), and reading the ivars needs
+    # `@symbols` — neither reachable from ValueOps, which only ever
+    # operates on bare Values with no VM access at all.
+    private def range_values_equal?(a : Value, b : Value) : Bool
+      ao, bo = a.as_robject, b.as_robject
+      min_sym = @symbols.intern("__min").value
+      max_sym = @symbols.intern("__max").value
+      excl_sym = @symbols.intern("__exclusive").value
+      ValueOps.equal?(ao.ivars[min_sym], bo.ivars[min_sym]) &&
+        ValueOps.equal?(ao.ivars[max_sym], bo.ivars[max_sym]) &&
+        ao.ivars[excl_sym].as_bool == bo.ivars[excl_sym].as_bool
     end
 
     # --- Index helpers ------------------------------------------------------

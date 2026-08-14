@@ -24,6 +24,34 @@ Blocking, or actively causing incorrect behavior in normal use. Ordered
 roughly by dependency, not necessarily by importance — an item lower down
 may unblock ones above it.
 
+- **Endless/beginless ranges (`1..`, `..10`, `1...`, `...10`) don't
+  parse at all.** Found 2026-08-13 triaging `spec/scripts/mruby/
+  range.rb` — nearly every assertion in that file needs at least one
+  partial range, even ones otherwise testing something unrelated and
+  already-working. `parse_range` (parser.cr) always calls
+  `parse_expression` unconditionally for BOTH sides of `..`/`...`, so
+  there's no way to omit either bound — not a Range-representation
+  gap so much as a parser one: `RangeLiteral`'s AST node itself would
+  need to accept a missing `start_node`/`end_node` (today both are
+  non-nilable `Node`, not `Node?`), the parser would need to check for
+  "nothing here, an operator/closing-delimiter follows instead" on
+  each side independently (endless: no valid expression follows;
+  beginless: `..`/`...` appears in a position with no left operand at
+  all, meaning `parse_primary` — not just the infix loop — needs to
+  recognize `..`/`...` as a valid EXPRESSION START, not just an infix
+  operator), and `Op::MakeRange`/`make_range_object` would need to
+  accept and store a real nil bound. Genuinely common in idiomatic
+  Ruby (`arr[2..]`, `case age when 18.. then ...`), not just a
+  theoretical ISO-suite curiosity — ordinary-use blocking, not an edge
+  case. Once bounds CAN be nil, every iteration method
+  (`each`/`to_a`/`step`) also needs real handling for a nil bound
+  (walk forever for `each`/`step`, raise `RangeError` for `to_a` — see
+  `builtins/range.cr`'s own comment on `Range.new` accepting a nil
+  bound today via the CONSTRUCTOR path already, silently producing a
+  range that iterates zero times rather than doing either of those,
+  since `NativeCallContext#compare` returns false for any pairing it
+  can't order including anything-vs-nil).
+
 - **No Regex support at all — no `Regexp` class, no `=~`, no
   `String#match`, and `String#gsub`/`#sub`/`#index`/`#rindex`/`#scan`
   have no way to accept a pattern argument (only a plain String, once

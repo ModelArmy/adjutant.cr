@@ -296,5 +296,73 @@ module Adjutant
         result.as_bool.should be_true
       end
     end
+
+    describe "#==" do
+      it "two ranges with the same bounds and exclusivity are equal" do
+        interp, _ = make_interp
+        result = interp.eval("(1..10) == (1..10)")
+        result.truthy?.should be_true
+      end
+
+      it "different max values are not equal" do
+        interp, _ = make_interp
+        result = interp.eval("(1..10) == (1..100)")
+        result.truthy?.should be_false
+      end
+
+      it "same bounds but different exclusivity are not equal" do
+        interp, _ = make_interp
+        result = interp.eval("(1..10) == (1...10)")
+        result.truthy?.should be_false
+      end
+    end
+
+    describe "Range.new" do
+      it "constructs an inclusive range equivalent to literal syntax" do
+        interp, _ = make_interp
+        result = interp.eval("Range.new(1, 10) == (1..10)")
+        result.truthy?.should be_true
+      end
+
+      it "constructs an exclusive range when the third argument is truthy" do
+        interp, _ = make_interp
+        result = interp.eval("Range.new(1, 10, true) == (1...10)")
+        result.truthy?.should be_true
+      end
+
+      it "works with each/to_a like literal syntax" do
+        interp, _ = make_interp
+        result = interp.eval("Range.new(1, 5).to_a")
+        result.as_array.map(&.as_int).should eq [1, 2, 3, 4, 5]
+      end
+    end
+
+    describe "#begin / #end" do
+      it "begin returns the same value as #first" do
+        interp, _ = make_interp
+        result = interp.eval("(1..10).begin")
+        result.as_int.should eq 1
+      end
+
+      it "end returns the same value as #last" do
+        interp, _ = make_interp
+        result = interp.eval("(1..10).end")
+        result.as_int.should eq 10
+      end
+    end
+
+    describe "#exclude_end? / #member?" do
+      it "exclude_end? matches exclusivity, same as #exclusive?" do
+        interp, _ = make_interp
+        interp.eval("(1...10).exclude_end?").truthy?.should be_true
+        interp.eval("(1..10).exclude_end?").truthy?.should be_false
+      end
+
+      it "member? is an alias for include?" do
+        interp, _ = make_interp
+        interp.eval("(1..10).member?(5)").truthy?.should be_true
+        interp.eval("(1..10).member?(20)").truthy?.should be_false
+      end
+    end
   end
 end
