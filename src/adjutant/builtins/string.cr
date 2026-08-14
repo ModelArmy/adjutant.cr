@@ -94,16 +94,27 @@ module Adjutant::Builtins
       recv = args.first
       s = recv.as_string
       sep_val = args[1]?
-      # Additive Regexp branch, same shape as #index/#rindex/#sub/
-      # #gsub above — Crystal's `String#split` has a real `::Regex`
-      # overload (not independently verified against a toolchain here;
-      # flag if `ops test` says otherwise), so this is a direct
-      # pass-through, not a hand-rolled scan like #rindex needed.
+      # A `limit` (3rd arg) was never threaded through at all before —
+      # `"a,".split(/,/, 1)` silently ignored the `1` and did an
+      # ordinary unlimited split. Real Ruby's limit semantics: > 0
+      # caps the field count (the LAST field holds whatever's left
+      # unsplit, trailing empties KEPT); omitted/0 is unlimited but
+      # drops trailing empty fields; negative is unlimited and KEEPS
+      # them. Threaded through to Crystal's own `String#split(sep,
+      # limit)` overloads below — not independently verified against
+      # a toolchain here that Crystal's limit semantics line up with
+      # Ruby's this closely; flag if `ops test` says otherwise. Only
+      # threaded through the Regexp/String-separator branches, not the
+      # bare whitespace-split (`s.split` with no separator) case below
+      # — limit-plus-whitespace-split is a rare enough combination
+      # that guessing at an unverified Crystal API shape for it isn't
+      # worth the risk; a real, narrower gap if it ever comes up.
+      limit = args[2]?.try(&.as_int?).try(&.to_i)
       parts =
         if (robj = sep_val.try(&.as_robject?)) && robj.is_a?(Adjutant::RegexpObject)
-          s.split(robj.regex)
+          limit ? s.split(robj.regex, limit) : s.split(robj.regex)
         elsif sep = sep_val.try(&.as_string?)
-          s.split(sep)
+          limit ? s.split(sep, limit) : s.split(sep)
         else
           s.split
         end
@@ -281,6 +292,39 @@ module Adjutant::Builtins
       Adjutant::Value.string(string_sub_or_gsub(recv.as_string, args, blk, ncc, "gsub", all: true), recv.label)
     end
 
+    # Real Ruby's String#match(pattern): unlike #index/#rindex/#sub/
+    # #gsub/#split, a STRING pattern argument here is compiled as a
+    # REGEX PATTERN, not searched for as a literal substring — real
+    # Ruby's own `"hello".match("l+")` matches "ll" via regex
+    # semantics, proving the point. That's genuinely different from
+    # `string_pattern_arg`'s own String-case contract (a literal
+    # substring, for #index's/#sub's callers), so this doesn't reuse
+    # it — a real semantic difference, not an oversight.
+    define(cls, interp, "match") do |args, _blk, ncc|
+      recv = args.first
+      pattern_val = args[1]?
+      ncc.raise_error("R018", {"method" => "match"}, "ArgumentError") unless pattern_val
+      regex, regexp_value =
+        if (robj = pattern_val.as_robject?) && robj.is_a?(Adjutant::RegexpObject)
+          {robj.regex, pattern_val}
+        elsif pat_str = pattern_val.as_string?
+          compiled = compile_regex(pat_str, 0, ncc)
+          regexp_cls = interp.find_builtin_class("Regexp")
+          raise "Regexp class not registered — bootstrap_regexp must run before any script executes" unless regexp_cls
+          obj = Adjutant::RegexpObject.new(regexp_cls, compiled)
+          obj.ivars[interp.symbols.intern("__source").value] = Adjutant::Value.string(pat_str)
+          obj.ivars[interp.symbols.intern("__options").value] = Adjutant::Value.int(0)
+          {compiled, Adjutant::Value.robject(obj)}
+        else
+          ncc.raise_error("R019", {"method" => "match", "class_name" => builtin_type_name(pattern_val)}, "TypeError")
+        end
+      if md = regex.match(recv.as_string)
+        make_match_data(interp, md, recv.as_string, regexp_value)
+      else
+        Adjutant::Value.nil_value
+      end
+    end
+
     cls
   end
 
@@ -439,19 +483,54 @@ module Adjutant::Builtins
                                       ncc : Adjutant::NativeCallContext, method : String, all : Bool) : String
     pattern = string_pattern_arg(args, method, ncc)
     replacement_val = args[2]?
-    replacement = nil
-    unless blk
-      if replacement_val.nil?
-        ncc.raise_error("R018", {"method" => method}, "ArgumentError")
-      end
-      # `ncc.raise_error` is NoReturn, so Crystal narrows `replacement_val`
-      # from `Value?` to `Value` after the branch above — no `.not_nil!`
-      # needed here or below.
-      replacement = replacement_val.as_string?
-      if replacement.nil?
-        ncc.raise_error("R019", {"method" => method, "class_name" => builtin_type_name(replacement_val)}, "TypeError")
-      end
+    # Real Ruby: a replacement STRING argument wins over a block when
+    # BOTH are given — `"abc".sub(/b/, "X") { "Y" }` is "aXc", not
+    # "aYc" (see the upstream mruby-regexp gem's own "replacement
+    # string takes precedence over the block" test, which is exactly
+    # what caught this). `replacement` is computed unconditionally
+    # here (not `unless blk` as before — that was the actual bug: it
+    # meant a given replacement string was silently ignored whenever a
+    # block was ALSO present, always deferring to the block instead of
+    # only when no replacement was given). `use_block` below is the
+    # single place that decision gets made.
+    replacement = replacement_val.try(&.as_string?)
+    if replacement_val && replacement.nil? && blk.nil?
+      # A replacement arg was given but isn't a String, and there's no
+      # block to fall back on — same R019 a missing-block call would
+      # eventually hit anyway, raised here instead so the message
+      # names the real culprit (the wrong-type argument) rather than
+      # a confusing "no replacement given" further down.
+      ncc.raise_error("R019", {"method" => method, "class_name" => builtin_type_name(replacement_val)}, "TypeError")
     end
+    if replacement.nil? && blk.nil?
+      ncc.raise_error("R018", {"method" => method}, "ArgumentError")
+    end
+
+    # A single `resolver` proc, decided once, replaces the earlier
+    # `use_block ? ... : ...` branch that ran INSIDE the match loop —
+    # that version needed `blk.not_nil!`/`replacement.not_nil!` on
+    # every iteration, since Crystal can't carry a plain `if blk`
+    # narrowing of an outer local into a nested closure (the
+    # `positions.each do |...|` block below recaptures `blk`/
+    # `replacement` at their full nilable declared type, not
+    # whatever was narrowed at the `if` check). Binding fresh,
+    # already-non-nil locals (`b`, `r`) at proc-construction time,
+    # OUTSIDE the loop, sidesteps that entirely — no `not_nil!`
+    # anywhere, and the match loop itself stays a single shared body
+    # instead of being duplicated per branch.
+    resolver =
+      if blk && replacement.nil?
+        b = blk
+        ->(matched : String, _pre : String, _post : String, _caps : Array(String?)) {
+          ncc.invoke(b, [Adjutant::Value.string(matched)]).to_s
+        }
+      elsif r = replacement
+        ->(matched : String, pre : String, post : String, caps : Array(String?)) {
+          expand_backslash_refs(r, matched, pre, post, caps)
+        }
+      else
+        raise "unreachable: validated above that a replacement or a block is present"
+      end
 
     positions = string_match_positions(s, pattern, all)
     String.build do |io|
@@ -459,11 +538,7 @@ module Adjutant::Builtins
       positions.each do |(start, len, captures)|
         io << s[last_end...start]
         matched = s[start, len]
-        io << if blk
-          ncc.invoke(blk, [Adjutant::Value.string(matched)]).to_s
-        else
-          expand_backslash_refs(replacement.as(String), matched, s[0...start], s[(start + len)..], captures)
-        end
+        io << resolver.call(matched, s[0...start], s[(start + len)..], captures)
         last_end = start + len
       end
       io << s[last_end..]

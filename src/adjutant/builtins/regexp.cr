@@ -33,8 +33,9 @@ module Adjutant
   class MatchDataObject < RubyObject
     getter md : ::Regex::MatchData
     getter subject : String
+    getter regexp_value : Value
 
-    def initialize(rclass : RubyClass, @md : ::Regex::MatchData, @subject : String)
+    def initialize(rclass : RubyClass, @md : ::Regex::MatchData, @subject : String, @regexp_value : Value)
       super(rclass)
     end
   end
@@ -158,7 +159,7 @@ module Adjutant
         str = args[1]?.try(&.as_string?)
         ncc.raise_error("R022", {"method" => "match"}, "ArgumentError") unless str
         if md = robj.regex.match(str)
-          make_match_data(interp, md, str)
+          make_match_data(interp, md, str, args.first)
         else
           Value.nil_value
         end
@@ -216,10 +217,11 @@ module Adjutant
     # registration order — this is a call-time lookup, and by the time
     # any script can actually call #match, every builtin class is long
     # since registered.
-    def self.make_match_data(interp : Interpreter, md : ::Regex::MatchData, subject : String) : Value
+    def self.make_match_data(interp : Interpreter, md : ::Regex::MatchData, subject : String,
+                             regexp_value : Value) : Value
       cls = interp.find_builtin_class("MatchData")
       raise "MatchData class not registered — bootstrap_match_data must run before any script executes" unless cls
-      Value.robject(MatchDataObject.new(cls, md, subject))
+      Value.robject(MatchDataObject.new(cls, md, subject, regexp_value))
     end
 
     def self.bootstrap_match_data(interp : Interpreter) : RubyClass
@@ -278,6 +280,45 @@ module Adjutant
         n = args[1]?.try(&.as_int.to_i) || 0
         pos = obj.md.begin(n)
         pos ? Value.int(pos.to_i64) : Value.nil_value
+      end
+
+      # `#end` mirrors `#begin` exactly — same not-independently-
+      # verified caveat on `::Regex::MatchData#end`'s exact name/
+      # signature as the rest of this file's Crystal-API surface.
+      define(cls, interp, "end") do |args|
+        obj = args.first.as_robject.as(MatchDataObject)
+        n = args[1]?.try(&.as_int.to_i) || 0
+        pos = obj.md.end(n)
+        pos ? Value.int(pos.to_i64) : Value.nil_value
+      end
+
+      # `#captures` — every numbered group's text (group 0, the whole
+      # match, excluded — same as real Ruby), `nil` for a group that
+      # didn't participate. Real Ruby has no fixed upper bound on
+      # group count; this reuses the same `1..9` cap `Regexp#match`'s
+      # own capture population already settled on (see that method's
+      # own scoping) rather than introducing a different limit here.
+      # `#captures` — every numbered group's text (group 0, the whole
+      # match, excluded — same as real Ruby), `nil` for a group that
+      # didn't participate. Unlike the `1..9` cap `Regexp#match`'s own
+      # backslash-ref capture population uses (a real Ruby syntax
+      # limit specific to `\1`-`\9` replacement references), this
+      # needs the PATTERN's real group count — real Ruby's own
+      # `#captures` isn't capped at 9. `::Regex::MatchData#size`'s
+      # exact semantics (total groups including group 0, per Crystal's
+      # own docs as recalled) aren't independently verified against a
+      # toolchain here; flag if `ops test` says otherwise.
+      define(cls, interp, "captures") do |args|
+        obj = args.first.as_robject.as(MatchDataObject)
+        caps = (1...obj.md.size).map { |i| (c = obj.md[i]?) ? Value.string(c) : Value.nil_value }
+        Value.new(LabeledArray.new(caps, nil), nil)
+      end
+
+      # `#regexp` — the Regexp instance #match was called on, threaded
+      # through from `Regexp#match` at construction time (see
+      # `make_match_data`'s own `regexp_value` parameter).
+      define(cls, interp, "regexp") do |args|
+        args.first.as_robject.as(MatchDataObject).regexp_value
       end
 
       cls

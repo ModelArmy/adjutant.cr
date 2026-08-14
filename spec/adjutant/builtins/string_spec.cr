@@ -536,5 +536,41 @@ module Adjutant
         eval(%("a1b22c333".sub(/\\d+/, "#"))).as_string.should eq "a#b22c333"
       end
     end
+
+    describe "#match" do
+      it "matches a Regexp argument, returning a MatchData" do
+        eval(%("hello world".match(Regexp.new("(\\\\w+)\\\\s(\\\\w+)"))[1])).as_string.should eq "hello"
+      end
+
+      it "compiles a String argument as a regex pattern, not a literal substring" do
+        # Real Ruby: "hello".match("l+") matches "ll" via regex
+        # semantics — a literal-substring search would only ever
+        # match a single "l". This is what actually distinguishes
+        # #match's String-argument handling from #index/#sub's own
+        # (see #match's own comment in builtins/string.cr).
+        eval(%("hello".match("l+")[0])).as_string.should eq "ll"
+      end
+
+      it "returns nil on no match" do
+        eval(%("hello".match("z"))).null?.should be_true
+      end
+
+      it "raises ArgumentError with no pattern argument" do
+        interp, _ = make_interp
+        error = expect_raises(RuntimeError) { interp.eval(%("hello".match)) }
+        error.diagnostic.not_nil!.code.should eq("R018")
+      end
+
+      it "raises TypeError for a non-String, non-Regexp pattern" do
+        interp, _ = make_interp
+        error = expect_raises(RuntimeError) { interp.eval(%("hello".match(101))) }
+        error.diagnostic.not_nil!.code.should eq("R019")
+      end
+
+      it "the returned MatchData's #regexp is a real, usable Regexp" do
+        result = eval(%("hello".match("l+").regexp.source))
+        result.as_string.should eq "l+"
+      end
+    end
   end
 end
