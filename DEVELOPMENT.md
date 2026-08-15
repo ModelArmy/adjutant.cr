@@ -422,7 +422,7 @@ A plain `Constant` reference (`X`) walks that lexical chain. An explicit path (`
 
 Not yet implemented: `include`. Script-defined class-side (singleton) methods (`def self.foo`) ARE implemented — see "Script-defined singleton methods" below.
 
-**Native methods.** `RubyClass` also holds a `native_methods` table (`Sym id → NativeCallable`), parallel to `methods` but for Crystal-implemented instance methods — the mechanism base types use. `Integer`, `Float`, `NilClass`, `TrueClass`, `FalseClass`, `Symbol`, `String`, `Array`, `Hash`, and `Range` are all implemented this way (see `src/adjutant/builtins/`) — the base-types work is complete at this level; further base types (`Regexp`, ...) would follow the same pattern if ever needed. `find_native_method` walks the superclass chain the same way `find_method` does. Dispatch checks `find_method` first, so a script-defined method always shadows a native one of the same name.
+**Native methods.** `RubyClass` also holds a `native_methods` table (`Sym id → NativeCallable`), parallel to `methods` but for Crystal-implemented instance methods — the mechanism base types use. `Integer`, `Float`, `NilClass`, `TrueClass`, `FalseClass`, `Symbol`, `String`, `Array`, `Hash`, and `Range` are all implemented this way (see `src/adjutant/builtins/`) — the base-types work is complete at this level. `Regexp`/`MatchData` (see "Regexp and MatchData" below) use the same `native_methods` mechanism but need a `RubyObject` SUBCLASS rather than plain `ivars` for their real internal state (a compiled `::Regex`, a `::Regex::MatchData`) — the pattern to follow for any future builtin with similar needs, not the plain-`ivars` shape `Range` and the rest use. `find_native_method` walks the superclass chain the same way `find_method` does. Dispatch checks `find_method` first, so a script-defined method always shadows a native one of the same name.
 
 Unlike `Interpreter#define_native`, `RubyClass#define_native_method` takes `risk : RiskProfile` with **no default** — base types are registered in bulk in one place, exactly where it's easiest to wave a whole batch through as `RiskProfile.none` without thinking; the missing default forces that judgment call per method.
 
@@ -489,6 +489,131 @@ Deliberately out of scope at `include`-time, filed rather than silently expanded
 - `super`'s singleton resolution rewritten to match — genuinely more complex than the instance-side version, not just a find-and-replace: a new `RubyClass#singleton_ancestors` returns `Array({RubyClass, Bool})` rather than a flat class list, because (unlike `include`, where a class and an included module both store their methods in the SAME `.methods` table, checkable uniformly) an extended module's own contribution needs its ORDINARY method table checked, while `self` and its superclasses need `.singleton_methods` — a flat list can't represent "which table this entry means," so each entry carries which one to use.
 
 **`extend`/`include` via an explicit receiver are permanently excluded (U018), not a missing feature.** Decided once `extend` itself was real, working code and the natural next question — "what about `obj.extend(M)`?" — had a concrete implementation to weigh against, not just a hypothetical. Tracing it found the explicit-receiver form (`X.extend(M)`, `obj.extend(M)`, `X.include(M)`, `obj.include(M)`) simply didn't resolve at all — no dispatch path checks a receiver's own class's class for these the way the bare/implicit-self path does — surfacing as a generic, misleading `R008` that reads like a typo rather than a boundary. Rather than fix that dispatch gap, the decision was to formalize it as excluded: `UNSUPPORTED.md` gained a third standing principle alongside its first two — a declared class/module/object's behavior should be reasoned about from its own text, not something that can change later, conditionally, at runtime, regardless of whether risk-flow analysis could still resolve it. `class X; extend M; end` is a one-time, textually-fixed claim; `X.extend(M)` written anywhere else is an ordinary statement that could run conditionally, in a loop, or twice, and the concern isn't whether THIS script happens to write it unconditionally — it's that the language shouldn't offer a form whose reasonability depends on usage discipline. Enforced via the same `EXCLUDED_METHODS` mechanism `send`/`eval` already use (`error_catalog.cr`) — the bare/declarative form never reaches that check at all, since it resolves successfully via a different path first, so the table entry only ever fires for the excluded shape. `class_eval`/`module_eval`/`instance_exec`/`class_exec` joined `eval`/`instance_eval` (U006) in the same pass, for the identical reason — a block whose contents were never fixed at declaration time, run in a shifted binding — previously left as a "plausible but not declared" gap in that table's own comment, now made explicit once the underlying principle was named clearly enough to declare with confidence.
+
+### Regexp and MatchData
+
+Built 2026-08-14, one continuous session, from lexer literal syntax
+through String integration. `Regexp`/`MatchData` are the first
+builtin types whose real state can't fit in `ivars` — `ivars` only
+holds `Value`s, and there's no `Value` variant for a compiled Crystal
+`::Regex` or a `::Regex::MatchData`. Both follow the exact pattern
+`Proc`'s `outer_locals` field already established (see "The Object
+model" above): a `RubyObject` subclass (`RegexpObject`,
+`MatchDataObject`, `builtins/regexp.cr`) with real, additional, typed
+Crystal fields alongside the inherited `ivars` — `RegexpObject` wraps
+`regex : ::Regex`; `MatchDataObject` wraps `md : ::Regex::MatchData`
+plus `subject : String` (kept explicit rather than trusting an assumed
+`::Regex::MatchData#string` accessor to exist) and `regexp_value :
+Value` (the `Regexp` `#match` was called on, threaded through at
+construction so `MatchData#regexp` has something real to return).
+
+**Literal syntax and the division/regex lexer ambiguity.**
+`/pattern/flags` reuses the same interpolation machinery
+double-quoted strings already had (`@in_interp`/`@interp_brace_depth`
+in `lexer.cr`, generalized behind a new `InterpKind` enum so
+`continue_interp` knows whether it's resuming a string or a regex),
+but pattern text is captured RAW — unlike `decode_string_escapes` for
+strings, a regex literal's own backslash sequences (`\d`, `\1`, `\A`)
+belong to the regex engine's syntax, not Adjutant's, so nothing
+decodes them. The harder problem: a bare `/` is genuinely ambiguous
+between division and a regex literal's opening delimiter
+(`x / y` vs. `/abc/`), and Adjutant has no expr-beg/expr-end parser
+state the way real Ruby's own lexer does. `regex_starts_here?`
+approximates it from the previous token alone — most kinds fall
+cleanly into "can end an expression" (division) or "can't" (regex
+opens) via a static `EXPR_END_KINDS` set, with a bare `Identifier`
+resolved by real Ruby's own spacing heuristic (`foo /bar/` is a regex
+argument, `foo / bar` is division) — but this alone over-fires for a
+bare `/`/`/=` with nothing to actually close, and for `def /(o)`
+defining the operator method itself: `regex_closable_ahead?`, a
+bounded non-consuming lookahead to the next unescaped `/` or newline,
+gates the decision so a line with no real closing delimiter always
+falls back to division/`SlashEq`.
+
+**PCRE2 vs. Onigmo — the one load-bearing compatibility gotcha.**
+Crystal's `::Regex` is PCRE2-backed; real Ruby's is Onigmo. The single
+most likely silent-wrong-answer trap between them: real Ruby's `^`/`$`
+ALWAYS match line boundaries, not gated by any flag, while PCRE2 only
+does that under `Regex::Options::MULTILINE` — and Ruby's own `/m` flag
+means something different entirely (dot matches newline, PCRE2's
+`DOTALL`). `Builtins.regex_options` (`builtins/regexp.cr`) passes
+`MULTILINE` to Crystal UNCONDITIONALLY for exactly this reason,
+mapping Adjutant's own `Regexp::MULTILINE` flag to `DOTALL` instead —
+getting this backwards would silently break every `^`/`$` match in a
+pattern that didn't explicitly ask for multiline behavior. Covered by
+a dedicated regression spec (`regexp_spec.cr`'s "^ and $ always match
+line boundaries" describe block) specifically so a future
+"simplification" back to a naive 1:1 flag translation gets caught.
+Several exact Crystal API names used elsewhere in this area
+(`Regex::Options` member spelling, `Regex::MatchData#begin`/`#end`/
+`#[]`/`#[]?`, `String#split`'s Regex overload) were used from memory
+without a local toolchain to verify against — flagged inline at each
+use site, not asserted as fact.
+
+**Two pre-existing VM dispatch tables didn't know about the new type,
+and silently no-opped rather than erroring — found via real
+end-to-end tests, not by inspection.** Both are the "hardcoded
+per-type table, not general method dispatch" shape, and both were
+fixed by adding a branch rather than by generalizing the mechanism
+(scoped narrowly on purpose):
+
+- `case`/`when` doesn't compile `when pattern` into an ordinary
+  receiver call the way `.===(x)`'s own dot-call syntax does —
+  `Compiler#compile_case` emits a bare `Op::Call` with no receiver bit
+  set, which falls through to `exec_builtin`'s own hardcoded `"==="`
+  case (`vm.cr`) — previously branching only on `Class`/`Range`. A
+  real, working `Regexp#===` native method existed and was reachable
+  via `.===(x)` dot-call, but `when /pattern/` never reached it at
+  all. Fixed by adding a `RegexpObject` branch to that same table.
+- `obj[i]` bracket indexing (`exec_get_index`, `vm.cr`) was a fixed
+  case statement over `Array`/`Hash`/`String` only, falling to a
+  silent `Value.nil_value` for anything else — so `MatchData#[]`,
+  though registered correctly as a native method, was completely
+  unreachable via `md[0]` syntax. Fixed via `exec_get_index_fallback`,
+  which calls a `RubyObject` receiver's own native `[]` method through
+  the same synchronous `call_native` path `dispatch_call`'s ordinary
+  `.foo` receiver-call branch already uses. Deliberately does NOT
+  cover a SCRIPT-defined `[]` (`find_method`, not
+  `find_native_method`) — that would need `call_script_proc`'s
+  frame-push-and-resume machinery, which `exec_get_index_fallback`
+  has no way to do from inside a single synchronous opcode handler.
+  Moot today regardless: `def [](i)` can't be written in script at all
+  yet (see UNSUPPORTED.md's U017 — no combined `[]` lexer token), so
+  only native `[]` methods exist to reach in the first place.
+  `Op::SetIndex`/`exec_set_index` (the write side) has the identical
+  shape of gap and was NOT touched by this fix.
+
+**`$~`/`$1`-`$9`/`$&`/`` $` ``/`$'`/`$+` were considered and
+deliberately dropped, not deferred — U011 enforced as part of this
+same decision.** Real Ruby's own match globals were traced seriously:
+the parser had (and still has, for every OTHER `$name`) zero support
+for `$`-prefixed globals at all — not a lexer gap, a genuine `grep` of
+`parser.cr` for `TokenKind::GVar` came back empty entirely, confirming
+UNSUPPORTED.md's own U011 exclusion (a global mutable channel bypasses
+the IFC/risk-flow model's parameter/return-value/ivar tracking) was a
+real, load-bearing design boundary, not an oversight to patch around.
+Building `$~` would have meant carving a narrow, reasoned exception
+into that boundary. The actual capability check: `MatchData` already
+exposes everything the globals would (`#[]`, `#captures`,
+`#pre_match`, `#post_match`, `#string`, `#begin`/`#end`, `#regexp`),
+reachable from any variable holding a match result — the ONE genuine
+(not just less convenient) gap is real Ruby's own `#sub`/`#gsub` block
+form, which only ever yields the matched STRING, never a `MatchData`
+— `$~` is the only path to capture groups there in real Ruby too, not
+an Adjutant limitation. `Regexp#match`/`String#match`'s OWN block
+form — genuinely different in real Ruby, yielding a real `MatchData`
+directly — covers the case that actually mattered and was built
+instead (`define(cls, interp, "match")` in both `builtins/regexp.cr`
+and `builtins/string.cr`, using the previously-discarded `blk`
+parameter; only invoked on an actual match, returning the block's own
+value in place of the `MatchData`, matching real Ruby exactly). U011
+itself went from "lexed but never consumed, generic P002 either way"
+to actively enforced the same session: `primary`'s `TokenKind::GVar`
+case (`parser.cr`) is the only place a `GVar` token is ever consumed
+anywhere in this parser, deliberately a dead end, raising a real
+`U011` diagnostic by name — covering both a read and an assignment
+target uniformly, since assignment parsing bottoms out through the
+same `primary` entry point for its left-hand side.
 
 ### Information flow control (risk flow)
 

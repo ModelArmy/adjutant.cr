@@ -167,6 +167,37 @@ module Adjutant
       it "compiles an interpolated string" do
         ops(%("hello \#{42}!")).should contain(Op::Concat)
       end
+
+      describe "regex literals" do
+        it "compiles a simple regex to Concat + MakeRegex" do
+          chunk = compile("/abc/")
+          chunk.code.map(&.op).should contain(Op::MakeRegex)
+          chunk.code.map(&.op).should contain(Op::Concat)
+        end
+
+        it "encodes flags into MakeRegex's a operand" do
+          chunk = compile("/abc/i")
+          inst = chunk.code.find { |i| i.op == Op::MakeRegex }.not_nil!
+          inst.a.should eq Builtins::IGNORECASE.to_u8
+        end
+
+        it "combines multiple flags into the bitmask" do
+          chunk = compile("/abc/imx")
+          inst = chunk.code.find { |i| i.op == Op::MakeRegex }.not_nil!
+          inst.a.should eq (Builtins::IGNORECASE | Builtins::EXTENDED | Builtins::MULTILINE).to_u8
+        end
+
+        it "no flags means a=0" do
+          chunk = compile("/abc/")
+          inst = chunk.code.find { |i| i.op == Op::MakeRegex }.not_nil!
+          inst.a.should eq 0_u8
+        end
+
+        it "compiles an interpolated regex the same way as an interpolated string" do
+          ops(%(/a\#{1}b/)).should contain(Op::Concat)
+          ops(%(/a\#{1}b/)).should contain(Op::MakeRegex)
+        end
+      end
     end
 
     describe "constant pool deduplication" do

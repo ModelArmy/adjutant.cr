@@ -5,6 +5,7 @@ require "./value_ops"
 require "./ast"
 require "./risk_flow_policy"
 require "./risk_flow_decision"
+require "./builtins/regexp"
 
 module Adjutant
   # A compiled proc (method body or block).
@@ -881,11 +882,11 @@ module Adjutant
           when Op::GetIndex
             idx = pop
             target = pop
-            push(exec_get_index(target, idx, safe: false))
+            push(exec_get_index(target, idx, safe: false, filename: f.filename, line: inst.line))
           when Op::SafeIndex
             idx = pop
             target = pop
-            push(exec_get_index(target, idx, safe: true))
+            push(exec_get_index(target, idx, safe: true, filename: f.filename, line: inst.line))
           when Op::SetIndex
             val = pop
             idx = pop
@@ -1114,6 +1115,9 @@ module Adjutant
             joined_label = RiskFlowLabel.join(rstart.label, rend.label)
             @risk_flow_log.record("MakeRange", [rstart.label, rend.label], joined_label, f.line)
             push(make_range_object(rstart, rend, exclusive, joined_label))
+          when Op::MakeRegex
+            pattern_val = pop
+            push(make_regexp_object(pattern_val.as_string, inst.a.to_i32, pattern_val.label))
           when Op::Concat
             n = inst.a.to_i
             parts = @stack.last(n)
@@ -2560,6 +2564,24 @@ module Adjutant
           # Comparable-style custom bound type works here for free,
           # exactly like Range#each already gets for #succ.
           Value.bool(range_include?(pattern, subject))
+        elsif (robj = pattern.as_robject?) && robj.is_a?(RegexpObject)
+          # `Regexp#===` — real match test. Found 2026-08-14: this
+          # hardcoded case/when dispatch predates Regexp entirely, and
+          # (like Class/Range above) never consults a receiver's own
+          # native `===` method table at all — `Regexp#===` IS
+          # registered as a real native method (builtins/regexp.cr)
+          # and IS reachable via ordinary `.===(x)` dot-call dispatch,
+          # but `case/when` itself doesn't route through that: it
+          # calls this fixed case statement directly, with no receiver
+          # bit set (see this case's own comment above on
+          # subject/pattern arg order) — so without this branch,
+          # `when /pattern/` would silently fall through to the
+          # `values_equal?` catch-all below and almost never match.
+          # Same fix shape as the exec_get_index_fallback found the
+          # same day for MatchData#[] — a hardcoded per-type dispatch
+          # table not yet knowing about a newly added builtin type.
+          str = subject.as_string?
+          Value.bool(str ? robj.regex.matches?(str) : false)
         else
           # Every other receiver: real Ruby's own default `Object#===`
           # genuinely is `==` — not a fallback standing in for a
@@ -2896,7 +2918,8 @@ module Adjutant
     # --- Index helpers ------------------------------------------------------
 
     # ameba:disable Metrics/CyclomaticComplexity
-    private def exec_get_index(target : Value, idx : Value, safe : Bool) : Value
+    private def exec_get_index(target : Value, idx : Value, safe : Bool,
+                               filename : String, line : Int32) : Value
       return Value.nil_value if safe && target.null?
       case
       when target.array? && idx.int?
@@ -2914,8 +2937,46 @@ module Adjutant
       when target.string? && range_receiver?(idx)
         exec_get_index_string_range(target, idx)
       else
-        Value.nil_value
+        exec_get_index_fallback(target, idx, filename, line)
       end
+    end
+
+    # `obj[i]`-style bracket indexing on anything that ISN'T one of the
+    # hardcoded Array/Hash/String cases above used to just silently
+    # return nil, unconditionally — found 2026-08-14 while wiring up
+    # MatchData#[] (`builtins/regexp.cr`): `Op::GetIndex`/`Op::SafeIndex`
+    # never consulted a receiver's own method table at all, so a NATIVE
+    # `[]` method (MatchData's, here) was registered correctly but
+    # completely unreachable via `md[0]` bracket syntax — the exact
+    # same "declared but unreachable" trap UNSUPPORTED.md's own
+    # standing principles exist to catch, just found in existing
+    # indexing code rather than new syntax.
+    #
+    # This fallback closes the NATIVE half of that gap: a RubyObject
+    # receiver with a native `[]` method now gets it called for real,
+    # synchronously, via `call_native` — the same call `dispatch_call`'s
+    # own receiver branch makes for an ordinary `.foo` call, just
+    # reached from indexing instead. A SCRIPT-DEFINED `[]` is
+    # deliberately still NOT handled here and still silently returns
+    # nil: `call_script_proc` pushes a new VM frame and returns a
+    # sentinel, relying on the normal `Op::Call`/`Op::Ret` dispatch loop
+    # to later pop it and deliver the real result — `exec_get_index` is
+    # called synchronously from inside a single opcode's handler and
+    # has no equivalent mechanism to suspend and resume around that.
+    # Moot in practice today anyway: `def [](i)` can't even be written
+    # in script (see UNSUPPORTED.md's U017 — no combined `[]` lexer
+    # token, so `parse_def` trips on the stray `]` before it could ever
+    # produce one), so only NATIVE `[]` methods exist to reach at all
+    # right now. Flagged in SCOPE.md as a real, separate, still-open
+    # gap for whenever a script-definable `[]` is worth adding.
+    private def exec_get_index_fallback(target : Value, idx : Value,
+                                        filename : String, line : Int32) : Value
+      return Value.nil_value unless obj = target.as_robject?
+      sym_id = @symbols.lookup("[]").try(&.value)
+      return Value.nil_value unless sym_id
+      native = obj.rclass.find_native_method(sym_id)
+      return Value.nil_value unless native
+      call_native(native, [target, idx], filename, line, nil, "#{obj.rclass.name}#[]")
     end
 
     private def exec_set_index(target : Value, idx : Value, val : Value) : Nil
@@ -3156,6 +3217,52 @@ module Adjutant
       obj.ivars[@symbols.intern("__min").value] = rstart
       obj.ivars[@symbols.intern("__max").value] = rend
       obj.ivars[@symbols.intern("__exclusive").value] = Value.bool(exclusive)
+      Value.robject(obj, label)
+    end
+
+    # Companion to make_range_object above, for Op::MakeRegex — see
+    # that op's own comment and Builtins.compile_regex for the actual
+    # compile step. `ctx: nil` there is deliberate: a regex LITERAL
+    # (unlike a `Regexp.new(...)` call) has no NativeCallContext in
+    # scope, so an invalid pattern is turned into the same R021/
+    # RegexpError here that `NativeCallContext#raise_error` would
+    # produce for the constructor form — one error shape regardless of
+    # which syntax produced the bad pattern.
+    private def make_regexp_object(pattern : String, flags : Int32, label : RiskFlowLabel?) : Value
+      cls = builtin_class_by_name("Regexp")
+      unless cls
+        raise runtime_diagnostic(
+          Diagnostic.new(
+            code: "I004",
+            primary: frame_span(current_frame),
+            data: {
+              "class" => "Regexp",
+            }
+          )
+        )
+      end
+      regex =
+        begin
+          Builtins.compile_regex(pattern, flags, nil)
+        rescue ex : ::Exception
+          raise runtime_diagnostic(
+            Diagnostic.new(
+              code: "R021",
+              primary: frame_span(current_frame),
+              data: {"reason" => ex.message || "invalid pattern"}
+            ),
+            error_class: "RegexpError"
+          )
+        end
+      obj = RegexpObject.new(cls, regex)
+      # Same "seed the ivar with the same label as the object itself"
+      # fix as Regexp.new's own constructor (builtins/regexp.cr) —
+      # `label` here already came from the interpolated pattern
+      # string's own label (see Op::MakeRegex's caller), so an
+      # interpolated `/#{tainted}/`'s `#source` needs to reflect that,
+      # not just the Regexp object as a whole.
+      obj.ivars[@symbols.intern("__source").value] = Value.string(pattern, label)
+      obj.ivars[@symbols.intern("__options").value] = Value.int(flags)
       Value.robject(obj, label)
     end
 

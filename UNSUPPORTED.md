@@ -467,14 +467,34 @@ static-traceability property the `send`/`eval`/reflection exclusions
 
 **Instead:** pass values explicitly as parameters/return values, or use
 an instance variable on an object shared between the parts of the
-script that need to communicate.
+script that need to communicate. For a Regexp match result
+specifically — the case this came up around, 2026-08-14, while
+deciding against building real Ruby's `$~`/`$1`-`$9`/`$&`/`` $` ``/
+`$'`/`$+` match globals — keep the `MatchData` `#match` returns in a
+local variable; it already exposes everything those globals would
+(`#[]`, `#captures`, `#pre_match`, `#post_match`, `#begin`/`#end`).
+The one real (not just less-convenient) gap: real Ruby's own
+`#sub`/`#gsub` block form only ever yields the matched STRING, never a
+`MatchData` — `$~` is genuinely the only path to capture groups from
+inside that specific block, in real Ruby too, not an Adjutant
+limitation. `Regexp#match`/`String#match`'s OWN block form (yielding a
+real `MatchData`, unlike `#sub`/`#gsub`'s) covers the common case
+where this actually matters; re-matching the yielded substring covers
+the rest, imperfectly (a pattern anchored to context outside the
+matched span, e.g. a lookbehind, could behave differently re-matched
+in isolation) but adequately.
 
-**Enforcement — not yet enforced.** `$name`-shaped tokens are lexed as
-`GVar` but the parser never consumes them into a usable node — so a
-script writing `$foo = 1` fails at parse time today, but with a generic
-parse error rather than one naming globals as a deliberate exclusion
-tied to the IFC model. Tracked as part of the U008–U011 batch in
-[SCOPE.md](./SCOPE.md)'s Error reporting group.
+**Enforcement — active since 2026-08-14, parse time.** `$name`-shaped
+tokens are lexed as `GVar`, but `primary`'s `TokenKind::GVar` case
+(`parser.cr`) is the ONLY place one is ever consumed anywhere in this
+parser — deliberately a dead end, not a real expression node — raising
+a `U011` diagnostic by name instead of falling through to the generic
+`P002` "not valid here" the rest of `primary`'s fallback produces.
+Covers both read (`$foo`) and write (`$foo = 1`) attempts uniformly,
+since assignment-target parsing bottoms out through the same
+`primary` entry point for its left-hand side. U008, U009, and
+U012–U015 remain unenforced — see SCOPE.md's Error reporting group;
+this closes only U011 out of that batch.
 
 ### U012 — Numbered block parameters (`_1`, `_2`)
 

@@ -12,6 +12,7 @@ module Adjutant::Builtins
     yield RubyClass.new("TypeError", standard_error)
     yield RubyClass.new("ArgumentError", standard_error)
     yield RubyClass.new("ZeroDivisionError", standard_error)
+    yield RubyClass.new("RegexpError", standard_error)
     yield name_error = define_name_error_class(interp, standard_error)
     yield RubyClass.new("NoMethodError", name_error)
     yield index_error = RubyClass.new("IndexError", standard_error)

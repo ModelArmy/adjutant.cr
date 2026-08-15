@@ -1,6 +1,7 @@
 require "./ast"
 require "./bytecode"
 require "./diagnostic"
+require "./builtins/regexp"
 
 module Adjutant
   class CompileError < Exception
@@ -363,6 +364,8 @@ module Adjutant
       when ArrayLiteral   then compile_array(node)
       when HashLiteral    then compile_hash(node)
       when RangeLiteral   then compile_range(node)
+      when RegexFragment  then compile_regex_fragment(node)
+      when RegexLiteral   then compile_regex(node)
       when Identifier     then compile_identifier(node)
       when Constant       then compile_constant(node)
       when ConstPath      then compile_const_path(node)
@@ -607,6 +610,37 @@ module Adjutant
       compile_node(node.start_node)
       compile_node(node.end_node)
       @chunk.emit(Op::MakeRange, node.line, a: node.exclusive? ? 1_u8 : 0_u8)
+    end
+
+    private def compile_regex_fragment(node : RegexFragment) : Nil
+      idx = @chunk.add_const(Value.string(node.value))
+      @chunk.emit(Op::Const, node.line, c: idx)
+    end
+
+    # Compiles a regex literal's parts down to a single pattern String
+    # on the stack (via Concat — see compile_interp_string, which this
+    # mirrors exactly, including for the non-interpolated case: a
+    # plain `/abc/` literal still arrives here as a single-fragment
+    # RegexLiteral, so Concat with a=1 is always the path, not a
+    # special case), then emits Op::MakeRegex with the flag letters
+    # encoded into a bitmask VM#make_regexp_object can decode without
+    # re-parsing strings at runtime.
+    private def compile_regex(node : RegexLiteral) : Nil
+      node.parts.each { |part| compile_node(part) }
+      @chunk.emit(Op::Concat, node.line, a: node.parts.size.to_u8)
+      @chunk.emit(Op::MakeRegex, node.line, a: encode_regex_flags(node.flags))
+    end
+
+    # "imx" letters (Token#regex_flags / RegexLiteral#flags, always
+    # some subset of these three per the lexer's scan_regex_flags) →
+    # Builtins::IGNORECASE/EXTENDED/MULTILINE bitmask, the same
+    # encoding Builtins.regex_options expects on the runtime side.
+    private def encode_regex_flags(flags : String) : UInt8
+      bits = 0
+      bits |= Builtins::IGNORECASE if flags.includes?('i')
+      bits |= Builtins::EXTENDED if flags.includes?('x')
+      bits |= Builtins::MULTILINE if flags.includes?('m')
+      bits.to_u8
     end
 
     # --- Variables ----------------------------------------------------------

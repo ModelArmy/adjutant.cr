@@ -6,6 +6,15 @@ module Adjutant
   # Call #next_token repeatedly until EOF, or use #tokenize to
   # collect all tokens at once (useful for testing).
   class Lexer
+    # Which literal kind an in-progress `#{...}` interpolation belongs
+    # to, so `continue_interp` (resumed after the interpolation's
+    # closing `}`) knows whether it's looking for a closing `"` (Str)
+    # or a closing `/` plus trailing flags (Regex).
+    enum InterpKind
+      Str
+      Regex
+    end
+
     getter filename : String
 
     # The full source text, already read eagerly in the constructor.
@@ -26,7 +35,15 @@ module Adjutant
       @column = 1
       @in_interp = false
       @interp_brace_depth = 0
+      @interp_kind = InterpKind::Str
       @space_before = false
+      # Last significant (non-space, non-comment) token kind emitted,
+      # read by `regex_starts_here?` to disambiguate a bare `/` between
+      # division and the start of a regex literal — see that method's
+      # own comment for the actual heuristic. Nil only before the very
+      # first token of the source, which is itself a "start of
+      # expression" position (same bucket as Newline).
+      @prev_kind = nil.as(TokenKind?)
     end
 
     # Convenience constructor for string literals and tests.
@@ -46,8 +63,14 @@ module Adjutant
     end
 
     def next_token : Token
+      tok = next_token_inner
+      @prev_kind = tok.kind
+      tok
+    end
+
+    private def next_token_inner : Token
       if @in_interp && @interp_brace_depth == 0
-        return continue_interp_string
+        return continue_interp
       end
 
       # Set once per token, read by `make_token` for every token scanned
@@ -148,7 +171,21 @@ module Adjutant
       @source[start, @pos - start]
     end
 
-    # Resume scanning the string body after the closing } of an interpolation.
+    # Resume scanning a string or regex body after the closing } of an
+    # interpolation. Dispatches on @interp_kind (set when the literal
+    # was first opened, in scan_string/scan_regex) since a string's
+    # terminator is a bare `"` while a regex's is `/` followed by
+    # optional trailing flags — two different shapes, not something a
+    # single shared terminator char could express.
+    private def continue_interp : Token
+      case @interp_kind
+      when InterpKind::Regex
+        continue_interp_regex
+      else
+        continue_interp_string
+      end
+    end
+
     private def continue_interp_string : Token
       @in_interp = false
       # Resuming right after the interpolation's closing `}` — never
@@ -184,6 +221,39 @@ module Adjutant
         advance
       end
       make_token(TokenKind::Error, "unterminated string", line, col)
+    end
+
+    private def continue_interp_regex : Token
+      @in_interp = false
+      @space_before = false
+      line = @line
+      col = @column
+      start = @pos
+
+      while !at_end?
+        c = current_char
+        if c == '\\'
+          advance
+          advance unless at_end?
+          next
+        end
+        if c == '/'
+          content = @source[start, @pos - start]
+          advance
+          flags = scan_regex_flags
+          return Token.new(TokenKind::RegexEnd, content, line, col, false, flags)
+        end
+        if c == '#' && peek_next == '{'
+          content = @source[start, @pos - start]
+          advance # #
+          advance # {
+          @in_interp = true
+          @interp_brace_depth = 1
+          return make_token(TokenKind::RegexPart, content, line, col)
+        end
+        advance
+      end
+      make_token(TokenKind::Error, "unterminated regex", line, col)
     end
 
     # Main scan dispatch — called after consuming the first character `c`.
@@ -233,7 +303,11 @@ module Adjutant
       when '*'
         match('=') ? make_token(TokenKind::StarEq, "*=", line, col) : make_token(TokenKind::Star, "*", line, col)
       when '/'
-        match('=') ? make_token(TokenKind::SlashEq, "/=", line, col) : make_token(TokenKind::Slash, "/", line, col)
+        if regex_starts_here?
+          scan_regex(start, line, col)
+        else
+          match('=') ? make_token(TokenKind::SlashEq, "/=", line, col) : make_token(TokenKind::Slash, "/", line, col)
+        end
       when '%'
         match('=') ? make_token(TokenKind::PercentEq, "%=", line, col) : make_token(TokenKind::Percent, "%", line, col)
       when '^' then make_token(TokenKind::Caret, "^", line, col)
@@ -386,6 +460,7 @@ module Adjutant
           advance # {
           @in_interp = true
           @interp_brace_depth = 1
+          @interp_kind = InterpKind::Str
           return make_token(TokenKind::StringPart, content, line, col)
         end
         if c == quote
@@ -397,6 +472,159 @@ module Adjutant
 
       make_token(TokenKind::String, lexeme_from(start), line, col)
     end
+
+    # Trailing flag letters on a regex literal's closing `/` — real
+    # Ruby's `i`/`m`/`x` (IGNORECASE/MULTILINE/EXTENDED). Any other
+    # letter immediately after the closing `/` is a real Ruby error
+    # ("unknown regexp option") in the general case, but scoped v1
+    # here just stops consuming at the first unrecognized letter and
+    # leaves it for the next token — good enough to not choke on
+    # legitimate follow-on code like `/abc/.match(x)`, and a stricter
+    # "unknown flag" diagnostic is a small follow-up, not a blocker
+    # for v1.
+    private def scan_regex_flags : String
+      fstart = @pos
+      while !at_end? && "imx".includes?(current_char)
+        advance
+      end
+      @source[fstart, @pos - fstart]
+    end
+
+    # Scans a /pattern/flags literal, starting right after the opening
+    # `/` has already been consumed by `scan` (mirrors scan_string's
+    # own contract). Interpolation (`#{...}`) is supported exactly
+    # like double-quoted strings — real Ruby regex literals interpolate
+    # too (see "Regexp#to_s - interpolation" in the mruby fixture) — by
+    # switching into the same @in_interp machinery, just tagged
+    # InterpKind::Regex so `continue_interp` resumes looking for a
+    # closing `/` instead of `"`.
+    #
+    # Escape sequences inside the pattern are NOT decoded here (unlike
+    # decode_string_escapes for string literals) — a regex pattern's
+    # backslash sequences (`\d`, `\bfoo\b`, `\A`, `\1`) belong to the
+    # regex engine's own syntax, not Adjutant's string-escape table, so
+    # the raw source text is exactly what Regexp.new must receive.
+    # `\/` is left as two characters (backslash + slash) rather than
+    # collapsed — PCRE2 (and Onigmo) both treat a backslash-escaped
+    # delimiter as a no-op escape of a literal `/`, so passing it
+    # through unmodified matches a bare `/` correctly without
+    # Adjutant's lexer needing to understand regex escape semantics
+    # itself.
+    private def scan_regex(start : Int32, line : Int32, col : Int32) : Token
+      body_start = @pos
+      while !at_end?
+        c = current_char
+        if c == '\\'
+          advance
+          advance unless at_end?
+          next
+        end
+        if c == '/'
+          content = @source[body_start, @pos - body_start]
+          advance
+          flags = scan_regex_flags
+          return Token.new(TokenKind::Regex, content, line, col, @space_before, flags)
+        end
+        if c == '#' && peek_next == '{'
+          content = @source[body_start, @pos - body_start]
+          advance # #
+          advance # {
+          @in_interp = true
+          @interp_brace_depth = 1
+          @interp_kind = InterpKind::Regex
+          return make_token(TokenKind::RegexPart, content, line, col)
+        end
+        advance
+      end
+      make_token(TokenKind::Error, "unterminated regex", line, col)
+    end
+
+    # Ruby-style regex/division disambiguation for a bare `/`. Ruby's
+    # real lexer decides based on parser state (expr-beg vs expr-end);
+    # Adjutant has no such state machine, so this approximates it from
+    # the previous token alone, which covers the common cases:
+    #
+    #   - If the previous token is something that CAN end an
+    #     expression (a literal, identifier, closing bracket, `end`,
+    #     etc.) then `/` defaults to division — `x / y`, `arr[0] / 2`.
+    #   - Otherwise (after `(`, `,`, an operator, a keyword like
+    #     `return`/`if`/`and`, a newline, or at the very start of the
+    #     source) `/` starts a regex literal — `foo(/abc/)`, `if /x/`.
+    #   - The one genuinely ambiguous real-Ruby case is a bare
+    #     identifier immediately followed by `/`, since the identifier
+    #     might be a local variable (division) or a method call taking
+    #     a regex argument (`grep /foo/`). Real Ruby breaks the tie on
+    #     spacing: space before `/` but NOT after it means "argument",
+    #     i.e. regex; anything else means division. That heuristic is
+    #     applied here too, via a one-character lookahead.
+    #
+    # Deliberately does not attempt full expr-beg/expr-end tracking —
+    # that would require threading parser-level context back into the
+    # lexer. This is a real, scoped simplification (worth a SCOPE.md
+    # line if a script turns up that it gets wrong), not a silent gap.
+    private def regex_starts_here? : Bool
+      prev = @prev_kind
+      wants_regex =
+        if prev.nil?
+          true
+        elsif prev == TokenKind::Identifier
+          space_after = current_char == ' ' || current_char == '\t'
+          @space_before && !space_after
+        else
+          !EXPR_END_KINDS.includes?(prev)
+        end
+      wants_regex && regex_closable_ahead?
+    end
+
+    # Bounded lookahead confirming there's an actual closing `/` to be
+    # found before end-of-line/end-of-source, without consuming
+    # anything. Needed alongside the previous-token heuristic above:
+    # that heuristic alone treated every bare `/` at the very start of
+    # a line (or after `def`, `(`, etc.) as a regex opener, which is
+    # right for `/abc/` but wrong for the common "just division/an
+    # operator token, nothing regex-shaped here at all" case — e.g. a
+    # lone `/` or `/=` as an entire source (real lexer-spec cases),
+    # or `def /(o)` defining the `/` operator method itself. Real
+    # regex literals never span a newline unescaped (single-line
+    # `/pattern/` — the `%r{...}` multiline form is deliberately
+    # deferred, see SCOPE.md), so scanning to the next unescaped `/`
+    # or newline, whichever comes first, is a cheap and accurate
+    # feasibility check: no closing `/` on this line means it was
+    # never a regex to begin with.
+    private def regex_closable_ahead? : Bool
+      i = @pos
+      while i < @source.size
+        c = @source[i]
+        break if c == '\n'
+        if c == '\\'
+          i += 2
+          next
+        end
+        return true if c == '/'
+        i += 1
+      end
+      false
+    end
+
+    # Token kinds after which a bare `/` is division, not the start of
+    # a regex literal — i.e. kinds that can end an expression. Every
+    # kind NOT in this set (operators, keywords like `return`/`if`,
+    # opening brackets, `,`, `;`, Newline, and start-of-source) is
+    # treated as "expression is about to begin", where `/` starts a
+    # regex. TokenKind::Identifier is handled separately in
+    # `regex_starts_here?` (see its own comment) since it's genuinely
+    # ambiguous rather than falling cleanly into either bucket.
+    EXPR_END_KINDS = [
+      TokenKind::Constant, TokenKind::IVar, TokenKind::CVar, TokenKind::GVar,
+      TokenKind::Integer, TokenKind::Float, TokenKind::String,
+      TokenKind::StringEnd, TokenKind::Regex, TokenKind::RegexEnd,
+      TokenKind::Symbol,
+      TokenKind::RParen, TokenKind::RBracket, TokenKind::RBrace,
+      TokenKind::KwEnd, TokenKind::KwSelf, TokenKind::KwTrue,
+      TokenKind::KwFalse, TokenKind::KwNil,
+      TokenKind::KwFile, TokenKind::KwLine, TokenKind::KwMethodName,
+      TokenKind::KwCalleeName,
+    ] of TokenKind
 
     # ameba:disable Metrics/CyclomaticComplexity
     private def scan_colon(start : Int32, line : Int32, col : Int32) : Token

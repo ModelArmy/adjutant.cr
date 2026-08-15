@@ -51,6 +51,29 @@ module Adjutant
       @items[index]?
     end
 
+    # `#first`/`#last` (and their `?` forms) — genuinely missing
+    # rather than deliberately excluded, unlike `Indexable`/
+    # `Enumerable` itself (see this class's own top comment for why
+    # those specifically are out). Added 2026-08-14 after hitting the
+    # gap writing a spec — flagged there as "not the first time,"
+    # so added for real rather than working around it in the test
+    # again.
+    def first : Value
+      @items.first
+    end
+
+    def first? : Value?
+      @items.first?
+    end
+
+    def last : Value
+      @items.last
+    end
+
+    def last? : Value?
+      @items.last?
+    end
+
     def each(& : Value ->) : Nil
       @items.each { |v| yield v }
     end

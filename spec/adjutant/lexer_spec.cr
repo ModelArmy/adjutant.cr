@@ -356,6 +356,103 @@ module Adjutant
       end
     end
 
+    describe "regex literals" do
+      it "scans a simple regex literal, pattern in lexeme" do
+        pairs("/abc/").should eq [{TokenKind::Regex, "abc"}]
+      end
+
+      it "captures trailing flags separately from the pattern" do
+        tok = Lexer.new("/abc/im").next_token
+        tok.kind.should eq TokenKind::Regex
+        tok.lexeme.should eq "abc"
+        tok.regex_flags.should eq "im"
+      end
+
+      it "leaves a non-flag character after the closing / for the next token" do
+        # /abc/.match(x) — the `.` must not be swallowed as a flag.
+        tokens = Lexer.new("/abc/.match(x)").tokenize.reject { |t| t.kind == TokenKind::EOF }
+        tokens.first.kind.should eq TokenKind::Regex
+        tokens.first.regex_flags.should eq ""
+        tokens[1].kind.should eq TokenKind::Dot
+      end
+
+      it "does not decode escapes inside the pattern (raw, unlike strings)" do
+        pairs("/a\\nb/").should eq [{TokenKind::Regex, "a\\nb"}]
+      end
+
+      it "splits an interpolated regex into parts, like a string" do
+        tokens = Lexer.new("/hello \#{name}!/").tokenize.reject { |t| t.kind == TokenKind::EOF }
+        tokens.map(&.kind).should eq [
+          TokenKind::RegexPart,
+          TokenKind::Identifier,
+          TokenKind::InterpEnd,
+          TokenKind::RegexEnd,
+        ]
+      end
+
+      it "attaches flags to the final RegexEnd token, not any earlier part" do
+        tokens = Lexer.new("/a\#{x}b/i").tokenize
+        part = tokens.find { |t| t.kind == TokenKind::RegexPart }.not_nil!
+        tail = tokens.find { |t| t.kind == TokenKind::RegexEnd }.not_nil!
+        part.regex_flags.should eq ""
+        tail.regex_flags.should eq "i"
+        tail.lexeme.should eq "b"
+      end
+
+      describe "division vs. regex disambiguation" do
+        it "a bare / with nothing to close it is division" do
+          pairs("/").should eq [{TokenKind::Slash, "/"}]
+        end
+
+        it "a bare /= with nothing to close it is SlashEq" do
+          pairs("/=").should eq [{TokenKind::SlashEq, "/="}]
+        end
+
+        it "/ after an identifier with space on both sides is division" do
+          kinds("a / b").should eq [TokenKind::Identifier, TokenKind::Slash, TokenKind::Identifier]
+        end
+
+        it "/ after an identifier, space before only, is a regex (call-arg heuristic)" do
+          kinds("foo /abc/").should eq [TokenKind::Identifier, TokenKind::Regex]
+        end
+
+        it "/ after an integer literal is division" do
+          kinds("10 / 2").should eq [TokenKind::Integer, TokenKind::Slash, TokenKind::Integer]
+        end
+
+        it "/ after a closing bracket is division" do
+          kinds("arr[0] / 2").should eq [
+            TokenKind::Identifier, TokenKind::LBracket, TokenKind::Integer, TokenKind::RBracket,
+            TokenKind::Slash, TokenKind::Integer,
+          ]
+        end
+
+        it "/ right after ( is a regex" do
+          kinds("foo(/abc/)").should eq [
+            TokenKind::Identifier, TokenKind::LParen, TokenKind::Regex, TokenKind::RParen,
+          ]
+        end
+
+        it "/ right after return is a regex" do
+          kinds("return /x/").should eq [TokenKind::KwReturn, TokenKind::Regex]
+        end
+
+        it "/ at the very start of the source is a regex" do
+          kinds("/abc/").should eq [TokenKind::Regex]
+        end
+
+        it "def /(o) defines the / operator method, not a regex literal" do
+          # Regression case: no closing `/` on the line, so this must
+          # fall back to Slash even though `def` is otherwise a
+          # regex-eligible context.
+          kinds("def /(o)\nend").should eq [
+            TokenKind::KwDef, TokenKind::Slash, TokenKind::LParen, TokenKind::Identifier,
+            TokenKind::RParen, TokenKind::Newline, TokenKind::KwEnd,
+          ]
+        end
+      end
+    end
+
     describe "symbols" do
       it "scans a simple symbol" do
         pairs(":ok").should eq [{TokenKind::Symbol, ":ok"}]

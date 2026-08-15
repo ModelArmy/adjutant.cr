@@ -2,6 +2,7 @@ require "../ruby_class"
 require "../native_callable"
 require "../risk_profile"
 require "./helpers"
+require "./regexp"
 
 module Adjutant::Builtins
   # Builds the `String` RubyClass and registers its native methods.
@@ -92,12 +93,43 @@ module Adjutant::Builtins
     define(cls, interp, "split") do |args|
       recv = args.first
       s = recv.as_string
-      sep = args[1]?.try(&.as_string?)
-      parts = sep ? s.split(sep) : s.split
-      # Parts are substrings of a labeled receiver — the array as a
-      # whole inherits the receiver's label, same principle as any other
-      # construction from a labeled source (see MakeArray/MakeHash).
-      Adjutant::Value.new(Adjutant::LabeledArray.new(parts.map { |part| Adjutant::Value.string(part) }, recv.label), nil)
+      sep_val = args[1]?
+      # A `limit` (3rd arg) was never threaded through at all before —
+      # `"a,".split(/,/, 1)` silently ignored the `1` and did an
+      # ordinary unlimited split. Real Ruby's limit semantics: > 0
+      # caps the field count (the LAST field holds whatever's left
+      # unsplit, trailing empties KEPT); omitted/0 is unlimited but
+      # drops trailing empty fields; negative is unlimited and KEEPS
+      # them. Threaded through to Crystal's own `String#split(sep,
+      # limit)` overloads below — not independently verified against
+      # a toolchain here that Crystal's limit semantics line up with
+      # Ruby's this closely; flag if `ops test` says otherwise. Only
+      # threaded through the Regexp/String-separator branches, not the
+      # bare whitespace-split (`s.split` with no separator) case below
+      # — limit-plus-whitespace-split is a rare enough combination
+      # that guessing at an unverified Crystal API shape for it isn't
+      # worth the risk; a real, narrower gap if it ever comes up.
+      limit = args[2]?.try(&.as_int?).try(&.to_i)
+      parts =
+        if (robj = sep_val.try(&.as_robject?)) && robj.is_a?(Adjutant::RegexpObject)
+          limit ? s.split(robj.regex, limit) : s.split(robj.regex)
+        elsif sep = sep_val.try(&.as_string?)
+          limit ? s.split(sep, limit) : s.split(sep)
+        else
+          s.split
+        end
+      # Each substring is a piece of a labeled receiver — same
+      # "extracted data inherits the source's label" principle as
+      # `exec_get_index_string_range`'s plain string slicing (vm.cr)
+      # and MatchData's own accessors (builtins/regexp.cr) — joined
+      # with the SEPARATOR's own label too (a tainted separator
+      # argument shaping how the string got cut is still a real
+      # taint source, same "join every plausible source" reasoning as
+      # Hash#merge). Fixed 2026-08-14 alongside the Regexp IFC audit —
+      # previously only the ARRAY WRAPPER got `recv.label`; each
+      # element itself was constructed with no label at all.
+      whole_label = Adjutant::RiskFlowLabel.join(recv.label, sep_val.try(&.label))
+      Adjutant::Value.new(Adjutant::LabeledArray.new(parts.map { |part| Adjutant::Value.string(part, whole_label) }, whole_label), nil)
     end
 
     define(cls, interp, "reverse") do |args|
@@ -216,8 +248,8 @@ module Adjutant::Builtins
     # the end, same convention as `[]`'s own single-Integer indexing
     # elsewhere in this codebase — an out-of-range negative start
     # returns nil rather than clamping to 0). `pattern` is REQUIRED
-    # (ArgumentError/R018 if omitted) and must be a String — Regexp
-    # isn't supported yet (TypeError/R019 otherwise; see SCOPE.md).
+    # (ArgumentError/R018 if omitted) and must be a String or a Regexp
+    # (TypeError/R019 otherwise).
     define(cls, interp, "index") do |args, _blk, ncc|
       recv = args.first
       pattern = string_pattern_arg(args, "index", ncc)
@@ -225,7 +257,7 @@ module Adjutant::Builtins
       start = args[2]?.try(&.as_int.to_i) || 0
       start += s.size if start < 0
       next Adjutant::Value.nil_value if start < 0 || start > s.size
-      idx = s.index(pattern, start)
+      idx = string_index_pattern(s, pattern, start)
       idx ? Adjutant::Value.int(idx.to_i64) : Adjutant::Value.nil_value
     end
 
@@ -242,7 +274,7 @@ module Adjutant::Builtins
       start += s.size if start < 0
       next Adjutant::Value.nil_value if start < 0
       start = s.size if start > s.size
-      idx = s.rindex(pattern, start)
+      idx = string_rindex_pattern(s, pattern, start)
       idx ? Adjutant::Value.int(idx.to_i64) : Adjutant::Value.nil_value
     end
 
@@ -254,45 +286,156 @@ module Adjutant::Builtins
     # `#to_s`) is substituted in; with a replacement String, real
     # Ruby's backslash-reference syntax is honored (`\0`/`\&` the
     # match itself, `` \` ``/`\'` the pre-/post-match, `\\` a literal
-    # backslash, `\1`-`\9` — always empty here, since a literal
-    # String pattern has no capture groups to reference; only
-    # meaningful once Regexp support lands). See
+    # backslash, `\1`-`\9` a Regexp pattern's capture groups — empty
+    # for a literal String pattern, which has none). See
     # `string_sub_or_gsub`'s own comment for the zero-width
     # (empty-pattern) matching behavior this shares with both.
+    # `recv`'s and the PATTERN's own labels both join into the result
+    # — a tainted pattern determining WHAT gets matched/replaced is a
+    # real taint source, same "join every plausible source" reasoning
+    # applied to Regexp/MatchData elsewhere in this file. What's
+    # DELIBERATELY NOT covered here, a real remaining gap rather than
+    # an oversight: the REPLACEMENT string's own label, or a BLOCK's
+    # per-call return value's label — `string_sub_or_gsub` builds the
+    # result through a single Crystal `String.build`, which has no way
+    # to carry a `Value`-level label through per-segment, so only ONE
+    # overall label can be applied post-hoc to the whole result today.
+    # Correctly tracking a replacement/block-result's own taint would
+    # need per-segment label tracking through that build, a real,
+    # separate piece of work — worth a SCOPE.md entry if this matters
+    # in practice, not attempted here.
     define(cls, interp, "sub") do |args, blk, ncc|
       recv = args.first
-      Adjutant::Value.string(string_sub_or_gsub(recv.as_string, args, blk, ncc, "sub", all: false), recv.label)
+      result_label = Adjutant::RiskFlowLabel.join(recv.label, args[1]?.try(&.label))
+      Adjutant::Value.string(string_sub_or_gsub(recv.as_string, args, blk, ncc, "sub", all: false), result_label)
     end
 
     define(cls, interp, "gsub") do |args, blk, ncc|
       recv = args.first
-      Adjutant::Value.string(string_sub_or_gsub(recv.as_string, args, blk, ncc, "gsub", all: true), recv.label)
+      result_label = Adjutant::RiskFlowLabel.join(recv.label, args[1]?.try(&.label))
+      Adjutant::Value.string(string_sub_or_gsub(recv.as_string, args, blk, ncc, "gsub", all: true), result_label)
+    end
+
+    # Real Ruby's String#match(pattern): unlike #index/#rindex/#sub/
+    # #gsub/#split, a STRING pattern argument here is compiled as a
+    # REGEX PATTERN, not searched for as a literal substring — real
+    # Ruby's own `"hello".match("l+")` matches "ll" via regex
+    # semantics, proving the point. That's genuinely different from
+    # `string_pattern_arg`'s own String-case contract (a literal
+    # substring, for #index's/#sub's callers), so this doesn't reuse
+    # it — a real semantic difference, not an oversight.
+    define(cls, interp, "match") do |args, blk, ncc|
+      recv = args.first
+      pattern_val = args[1]?
+      ncc.raise_error("R018", {"method" => "match"}, "ArgumentError") unless pattern_val
+      regex, regexp_value =
+        if (robj = pattern_val.as_robject?) && robj.is_a?(Adjutant::RegexpObject)
+          {robj.regex, pattern_val}
+        elsif pat_str = pattern_val.as_string?
+          compiled = compile_regex(pat_str, 0, ncc)
+          regexp_cls = interp.find_builtin_class("Regexp")
+          raise "Regexp class not registered — bootstrap_regexp must run before any script executes" unless regexp_cls
+          obj = Adjutant::RegexpObject.new(regexp_cls, compiled)
+          # Same "seed the ivar with the SAME label the object itself
+          # gets" fix as Regexp.new's own constructor and Op::MakeRegex
+          # (builtins/regexp.cr, vm.cr) — a String pattern argument
+          # here is synthesized into a real Regexp on the fly, and its
+          # own label (`pattern_val.label`, since `pattern_val` IS
+          # `pat_str` here) needs to survive into that synthesized
+          # object exactly the same way.
+          obj.ivars[interp.symbols.intern("__source").value] = Adjutant::Value.string(pat_str, pattern_val.label)
+          obj.ivars[interp.symbols.intern("__options").value] = Adjutant::Value.int(0)
+          {compiled, Adjutant::Value.robject(obj, pattern_val.label)}
+        else
+          ncc.raise_error("R019", {"method" => "match", "class_name" => builtin_type_name(pattern_val)}, "TypeError")
+        end
+      if md = regex.match(recv.as_string)
+        # Same join-subject-and-pattern-labels principle as
+        # Regexp#match's own MatchData construction (builtins/regexp.cr)
+        # — `recv` IS the subject here (String#match's receiver).
+        match_label = Adjutant::RiskFlowLabel.join(recv.label, regexp_value.label)
+        match_data = make_match_data(interp, md, recv.as_string, regexp_value, match_label)
+        # WITH A BLOCK: same real-Ruby shape as Regexp#match's own
+        # block form (see that method's own comment, builtins/regexp.cr)
+        # — the MatchData itself is yielded, not just the matched
+        # substring, and the block's return value replaces the
+        # MatchData as #match's own result. Only called on an actual
+        # match, same as Regexp#match.
+        blk ? ncc.invoke(blk, [match_data]) : match_data
+      else
+        Adjutant::Value.nil_value
+      end
     end
 
     cls
   end
 
-  # Shared by #index/#rindex — both require a pattern argument (R018
-  # if missing) that's a String (R019 if some other type; Regexp
-  # isn't supported yet).
-  private def self.string_pattern_arg(args : Array(Adjutant::Value), method : String, ncc : Adjutant::NativeCallContext) : String
+  # Shared by #index/#rindex/#sub/#gsub/#split — all require a pattern
+  # argument (R018 if missing) that's either a String or a Regexp
+  # (R019 for anything else). Returns the union rather than coercing
+  # to one shape, since each caller needs different capabilities from
+  # it (a literal String for #index's substring search vs. a real
+  # ::Regex for capture groups in #sub/#gsub's backslash-refs) — see
+  # `string_match_positions`/`string_index_pattern`/
+  # `string_rindex_pattern` below, which all branch on this union
+  # themselves rather than this method picking one representation
+  # upfront.
+  private def self.string_pattern_arg(args : Array(Adjutant::Value), method : String,
+                                      ncc : Adjutant::NativeCallContext) : String | ::Regex
     pattern_val = args[1]?
     unless pattern_val
       ncc.raise_error("R018", {"method" => method}, "ArgumentError")
     end
-    pattern = pattern_val.as_string?
-    unless pattern
-      ncc.raise_error("R019", {"method" => method, "class_name" => builtin_type_name(pattern_val)}, "TypeError")
+    if pattern = pattern_val.as_string?
+      return pattern
     end
-    pattern
+    if (robj = pattern_val.as_robject?) && robj.is_a?(Adjutant::RegexpObject)
+      return robj.regex
+    end
+    ncc.raise_error("R019", {"method" => method, "class_name" => builtin_type_name(pattern_val)}, "TypeError")
+  end
+
+  # #index's forward search, for either pattern kind. The Regex branch
+  # uses Crystal's own `Regex#match(str, pos)` offset parameter (not
+  # independently verified against a toolchain here — flag if `ops
+  # test` reports otherwise) to search starting at `start`, exactly
+  # matching `String#index(str, offset)`'s own contract for the
+  # literal-String branch.
+  private def self.string_index_pattern(s : String, pattern : String | ::Regex, start : Int32) : Int32?
+    if pattern.is_a?(::Regex)
+      md = pattern.match(s, start)
+      md ? md.begin(0) : nil
+    else
+      s.index(pattern, start)
+    end
+  end
+
+  # #rindex's backward search. Crystal's `String#rindex` has no Regex
+  # overload the way `#index` does, so the Regex branch instead reuses
+  # `string_match_positions`' own forward-scanning-with-captures loop
+  # (finding every match is no more expensive than finding the last
+  # one, and keeps the zero-width-match advance-by-1 logic in exactly
+  # one place rather than a second copy here) and picks the last match
+  # starting at or before `bound`.
+  private def self.string_rindex_pattern(s : String, pattern : String | ::Regex, bound : Int32) : Int32?
+    if pattern.is_a?(::Regex)
+      string_match_positions(s, pattern, true)
+        .reverse_each.find { |(start, _len, _captures)| start <= bound }
+        .try { |(start, _len, _captures)| start }
+    else
+      s.rindex(pattern, bound)
+    end
   end
 
   # Every non-overlapping match of literal String `pattern` in `s`,
-  # as (start, length) pairs — shared by #sub/#gsub. `all: false`
-  # stops after the first match (sub), `all: true` finds every one
-  # (gsub).
+  # as (start, length, captures) triples — shared by #sub/#gsub.
+  # `all: false` stops after the first match (sub), `all: true` finds
+  # every one (gsub). `captures` is `\1`-`\9`'s source for
+  # `expand_backslash_refs` below — always empty for a literal String
+  # pattern (which has no groups), populated from a real ::Regex
+  # match's numbered capture groups otherwise.
   #
-  # The empty-pattern case needs special handling: Ruby's
+  # The empty-STRING-pattern case needs special handling: Ruby's
   # `"hello".gsub("", ".")` matches once at EVERY position from 0 to
   # s.size inclusive (6 matches for a 5-character string — before
   # each character, plus once after the last) — a naive
@@ -300,12 +443,31 @@ module Adjutant::Builtins
   # (a zero-length match never advances `pos`) or skip valid
   # positions if advanced by the match length (always 0). Handled as
   # its own branch rather than trying to force the general loop below
-  # to cover it.
-  private def self.string_match_positions(s : String, pattern : String, all : Bool) : Array({Int32, Int32})
-    positions = [] of {Int32, Int32}
+  # to cover it. A Regexp pattern that can match zero-width (`//`,
+  # `/x*/`) hits the same problem from the OTHER branch below, and is
+  # handled the same way there — advance by 1, not by the match
+  # length, whenever the match was zero-width.
+  private def self.string_match_positions(s : String, pattern : String | ::Regex,
+                                          all : Bool) : Array({Int32, Int32, Array(String?)})
+    positions = [] of {Int32, Int32, Array(String?)}
+    no_captures = [] of String?
+    if pattern.is_a?(::Regex)
+      pos = 0
+      while pos <= s.size
+        md = pattern.match(s, pos)
+        break unless md
+        start = md.begin(0) || pos
+        matched = md[0]
+        captures = (1..9).map { |i| md[i]? }
+        positions << {start, matched.size, captures}
+        pos = matched.empty? ? start + 1 : start + matched.size
+        break unless all
+      end
+      return positions
+    end
     if pattern.empty?
       (0..s.size).each do |i|
-        positions << {i, 0}
+        positions << {i, 0, no_captures}
         break unless all
       end
       return positions
@@ -314,7 +476,7 @@ module Adjutant::Builtins
     while pos <= s.size
       idx = s.index(pattern, pos)
       break unless idx
-      positions << {idx, pattern.size}
+      positions << {idx, pattern.size, no_captures}
       pos = idx + pattern.size
       break unless all
     end
@@ -325,10 +487,12 @@ module Adjutant::Builtins
   # replacement STRING (not a block return value, which is used
   # as-is) — `\\` a literal backslash, `\0`/`\&` the matched text,
   # `` \` `` everything before the match, `\'` everything after it,
-  # `\1`-`\9` a capture group (always empty here — a literal String
-  # pattern has no groups; only meaningful once Regexp support adds
-  # real capture groups).
-  private def self.expand_backslash_refs(replacement : String, matched : String, pre_match : String, post_match : String) : String
+  # `\1`-`\9` a capture group from `captures` (a literal String
+  # pattern's `string_match_positions` call always supplies an empty
+  # `captures`, so those stay empty here too — not a special case in
+  # THIS method, just a consequence of never being asked for one).
+  private def self.expand_backslash_refs(replacement : String, matched : String, pre_match : String,
+                                         post_match : String, captures : Array(String?)) : String
     String.build do |io|
       i = 0
       while i < replacement.size
@@ -339,7 +503,7 @@ module Adjutant::Builtins
           when '0', '&' then io << matched
           when '`'      then io << pre_match
           when '\''     then io << post_match
-          when '1'..'9' then nil # no capture groups for a literal String pattern
+          when '1'..'9' then io << (captures[replacement[i + 1].to_i - 1]? || "")
           else               io << ch << replacement[i + 1]
           end
           i += 2
@@ -361,31 +525,62 @@ module Adjutant::Builtins
                                       ncc : Adjutant::NativeCallContext, method : String, all : Bool) : String
     pattern = string_pattern_arg(args, method, ncc)
     replacement_val = args[2]?
-    replacement = nil
-    unless blk
-      if replacement_val.nil?
-        ncc.raise_error("R018", {"method" => method}, "ArgumentError")
-      end
-      # `ncc.raise_error` is NoReturn, so Crystal narrows `replacement_val`
-      # from `Value?` to `Value` after the branch above — no `.not_nil!`
-      # needed here or below.
-      replacement = replacement_val.as_string?
-      if replacement.nil?
-        ncc.raise_error("R019", {"method" => method, "class_name" => builtin_type_name(replacement_val)}, "TypeError")
-      end
+    # Real Ruby: a replacement STRING argument wins over a block when
+    # BOTH are given — `"abc".sub(/b/, "X") { "Y" }` is "aXc", not
+    # "aYc" (see the upstream mruby-regexp gem's own "replacement
+    # string takes precedence over the block" test, which is exactly
+    # what caught this). `replacement` is computed unconditionally
+    # here (not `unless blk` as before — that was the actual bug: it
+    # meant a given replacement string was silently ignored whenever a
+    # block was ALSO present, always deferring to the block instead of
+    # only when no replacement was given). `use_block` below is the
+    # single place that decision gets made.
+    replacement = replacement_val.try(&.as_string?)
+    if replacement_val && replacement.nil? && blk.nil?
+      # A replacement arg was given but isn't a String, and there's no
+      # block to fall back on — same R019 a missing-block call would
+      # eventually hit anyway, raised here instead so the message
+      # names the real culprit (the wrong-type argument) rather than
+      # a confusing "no replacement given" further down.
+      ncc.raise_error("R019", {"method" => method, "class_name" => builtin_type_name(replacement_val)}, "TypeError")
     end
+    if replacement.nil? && blk.nil?
+      ncc.raise_error("R018", {"method" => method}, "ArgumentError")
+    end
+
+    # A single `resolver` proc, decided once, replaces the earlier
+    # `use_block ? ... : ...` branch that ran INSIDE the match loop —
+    # that version needed `blk.not_nil!`/`replacement.not_nil!` on
+    # every iteration, since Crystal can't carry a plain `if blk`
+    # narrowing of an outer local into a nested closure (the
+    # `positions.each do |...|` block below recaptures `blk`/
+    # `replacement` at their full nilable declared type, not
+    # whatever was narrowed at the `if` check). Binding fresh,
+    # already-non-nil locals (`b`, `r`) at proc-construction time,
+    # OUTSIDE the loop, sidesteps that entirely — no `not_nil!`
+    # anywhere, and the match loop itself stays a single shared body
+    # instead of being duplicated per branch.
+    resolver =
+      if blk && replacement.nil?
+        b = blk
+        ->(matched : String, _pre : String, _post : String, _caps : Array(String?)) {
+          ncc.invoke(b, [Adjutant::Value.string(matched)]).to_s
+        }
+      elsif r = replacement
+        ->(matched : String, pre : String, post : String, caps : Array(String?)) {
+          expand_backslash_refs(r, matched, pre, post, caps)
+        }
+      else
+        raise "unreachable: validated above that a replacement or a block is present"
+      end
 
     positions = string_match_positions(s, pattern, all)
     String.build do |io|
       last_end = 0
-      positions.each do |(start, len)|
+      positions.each do |(start, len, captures)|
         io << s[last_end...start]
         matched = s[start, len]
-        io << if blk
-          ncc.invoke(blk, [Adjutant::Value.string(matched)]).to_s
-        else
-          expand_backslash_refs(replacement.as(String), matched, s[0...start], s[(start + len)..])
-        end
+        io << resolver.call(matched, s[0...start], s[(start + len)..], captures)
         last_end = start + len
       end
       io << s[last_end..]

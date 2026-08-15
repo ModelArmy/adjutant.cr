@@ -226,14 +226,14 @@ module Adjutant
         summary: "`{method}` called with no pattern argument",
         why: "`{method}` needs something to search for — a pattern " \
              "argument is required, not optional.",
-        help: "Pass a String (or, once supported, a Regexp) to search for."
+        help: "Pass a String or a Regexp to search for."
       ),
       "R019" => Entry.new(
         code: "R019",
-        summary: "`{method}` given a non-String pattern ({class_name})",
-        why: "Adjutant's `{method}` only accepts a String pattern " \
-             "today — Regexp support doesn't exist yet (see SCOPE.md).",
-        help: "Pass a String to search for."
+        summary: "`{method}` given a non-String, non-Regexp pattern ({class_name})",
+        why: "`{method}` only accepts a String or a Regexp as a " \
+             "pattern to search for.",
+        help: "Pass a String or a Regexp to search for."
       ),
       "R020" => Entry.new(
         code: "R020",
@@ -241,6 +241,24 @@ module Adjutant
         why: "A step of 0 would never move past the range's start — " \
              "walking it would never finish.",
         help: "Pass a non-zero step."
+      ),
+      "R021" => Entry.new(
+        code: "R021",
+        summary: "invalid regex pattern: {reason}",
+        why: "The text between the `/`s doesn't form a valid regular " \
+             "expression — something about its syntax (an unclosed " \
+             "group, a bad character class, an unknown escape, ...) " \
+             "isn't parseable as a pattern.",
+        help: "Fix the pattern. If the pattern was built with string " \
+              "interpolation, check the interpolated piece isn't " \
+              "introducing something like an unclosed group or class."
+      ),
+      "R022" => Entry.new(
+        code: "R022",
+        summary: "`{method}` called with no string argument",
+        why: "`{method}` needs a string to match the pattern against — " \
+             "that argument is required, not optional.",
+        help: "Pass a String to match against."
       ),
 
       # --- L: limits reached ----------------------------------------
@@ -577,6 +595,22 @@ module Adjutant
              "`{param}`, stored, returned, or called later.",
         help: "Run the block with `yield` inside `{method}`, or take a " \
               "lambda as an ordinary parameter and call it with `.call`."
+      ),
+      "U011" => Entry.new(
+        code: "U011",
+        summary: "global variables (`{name}`) are not supported",
+        why: "A `$`-prefixed global is a mutable channel visible from " \
+             "anywhere in a script, independent of lexical scope — " \
+             "outside the parameter/return-value/instance-variable paths " \
+             "Adjutant's risk-flow tracking otherwise sees everything " \
+             "move through. `$~`/`$1`-`$9`/`$&` and friends (Regexp's " \
+             "own match-result globals) are excluded for the same " \
+             "reason, not as a narrower case of it.",
+        help: "Pass the value explicitly as a parameter or return value, " \
+              "or use an instance variable on an object shared between " \
+              "the parts of the script that need it. For a Regexp match " \
+              "result specifically, keep the `MatchData` `#match` " \
+              "returns in a local variable instead of `$~`."
       ),
       "U004" => Entry.new(
         code: "U004",
