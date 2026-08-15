@@ -125,9 +125,25 @@ module Adjutant
           end
         regex = compile_regex(pattern, flags, ncc)
         obj = RegexpObject.new(cls, regex)
-        obj.ivars[source_sym] = Value.string(pattern)
+        # `first.label` seeds BOTH the constructed Regexp's own outer
+        # label and the `__source` ivar directly — a String pattern's
+        # taint (or, for the copy-constructor form, the SOURCE
+        # Regexp's own label) has to survive into whatever
+        # `#source` later returns, not just the object as a whole.
+        # `#source`/`#options` (below) just return the stored ivar
+        # value directly, so getting this right HERE is what makes
+        # those correct — same "seed derived values from the source's
+        # own label" principle DEVELOPMENT.md documents for
+        # Array/Hash/Range's own container-labeling fix, applied here
+        # to a Regexp's own pattern text. `__options` (a bitmask) is
+        # deliberately left unlabeled, matching this codebase's own
+        # established precedent that metadata about labeled data
+        # (`String#length`/`#size`, a match position) doesn't itself
+        # carry the label — only actual DATA extracted from a labeled
+        # source does.
+        obj.ivars[source_sym] = Value.string(pattern, first.label)
         obj.ivars[options_sym] = Value.int(flags)
-        Value.robject(obj)
+        Value.robject(obj, first.label)
       end
 
       define(cls, interp, "source") do |args|
@@ -167,7 +183,17 @@ module Adjutant
         str = args[1]?.try(&.as_string?)
         ncc.raise_error("R022", {"method" => "match"}, "ArgumentError") unless str
         if md = robj.regex.match(str)
-          match_data = make_match_data(interp, md, str, args.first)
+          # Joins the SUBJECT string's own label with the Regexp's
+          # own — a MatchData is fundamentally a view INTO the
+          # subject (real data), so it inherits taint the same way a
+          # sliced substring does (`exec_get_index_string_range`,
+          # vm.cr); the Regexp's own label is joined too on the same
+          # "when in doubt, join every plausible source" principle
+          # DEVELOPMENT.md documents for Hash#merge's multi-source
+          # case, in case the PATTERN itself was built from tainted
+          # text (`/#{tainted}/`).
+          match_label = RiskFlowLabel.join(args[1]?.try(&.label), args.first.label)
+          match_data = make_match_data(interp, md, str, args.first, match_label)
           blk ? ncc.invoke(blk, [match_data]) : match_data
         else
           Value.nil_value
@@ -226,11 +252,17 @@ module Adjutant
     # registration order — this is a call-time lookup, and by the time
     # any script can actually call #match, every builtin class is long
     # since registered.
+    # `label` is the caller's responsibility to compute (join of the
+    # SUBJECT string's own label with the Regexp's own label — see
+    # both call sites, Regexp#match and String#match) rather than
+    # derived in here, since this helper only sees the already-matched
+    # `::Regex::MatchData` and subject text, not the original labeled
+    # `Value`s either came from.
     def self.make_match_data(interp : Interpreter, md : ::Regex::MatchData, subject : String,
-                             regexp_value : Value) : Value
+                             regexp_value : Value, label : RiskFlowLabel?) : Value
       cls = interp.find_builtin_class("MatchData")
       raise "MatchData class not registered — bootstrap_match_data must run before any script executes" unless cls
-      Value.robject(MatchDataObject.new(cls, md, subject, regexp_value))
+      Value.robject(MatchDataObject.new(cls, md, subject, regexp_value), label)
     end
 
     def self.bootstrap_match_data(interp : Interpreter) : RubyClass
@@ -241,6 +273,22 @@ module Adjutant
       # "not independently verified against a toolchain here" caveat
       # as Builtins.regex_options above — flag any compile mismatch
       # and this gets corrected on the spot.
+      #
+      # LABELING: every accessor here that returns an actual PIECE of
+      # the subject (`#[]`, `#to_s`, `#pre_match`, `#post_match`,
+      # `#string`, `#captures`) threads `args.first.label` — this
+      # MatchData's OWN label, already the join of the subject's and
+      # the Regexp's own labels (see Regexp#match/String#match's own
+      # construction) — onto the returned Value, the same "a piece
+      # extracted from a labeled source inherits its label" principle
+      # `exec_get_index_string_range` (vm.cr, plain string slicing)
+      # and the Array/Hash container-labeling fix (DEVELOPMENT.md)
+      # both already establish. `#begin`/`#end` deliberately do NOT —
+      # a match position is metadata about the data, not a piece of it,
+      # matching this codebase's own existing precedent that
+      # `String#length`/`#size` don't inherit the receiver's label
+      # either.
+      #
       # `#[](n)` — indexed (0 = whole match, 1.. = capture groups) or
       # named (String/Symbol) access. Real Ruby raises IndexError for
       # an out-of-range integer index and returns nil for a group that
@@ -261,27 +309,27 @@ module Adjutant
             name = key.as_string? || key.as_sym?.try(&.name)
             name ? obj.md[name]? : nil
           end
-        result ? Value.string(result) : Value.nil_value
+        result ? Value.string(result, args.first.label) : Value.nil_value
       end
 
       define(cls, interp, "to_s") do |args|
         obj = args.first.as_robject.as(MatchDataObject)
-        Value.string(obj.md[0])
+        Value.string(obj.md[0], args.first.label)
       end
 
       define(cls, interp, "pre_match") do |args|
         obj = args.first.as_robject.as(MatchDataObject)
-        Value.string(obj.md.pre_match)
+        Value.string(obj.md.pre_match, args.first.label)
       end
 
       define(cls, interp, "post_match") do |args|
         obj = args.first.as_robject.as(MatchDataObject)
-        Value.string(obj.md.post_match)
+        Value.string(obj.md.post_match, args.first.label)
       end
 
       define(cls, interp, "string") do |args|
         obj = args.first.as_robject.as(MatchDataObject)
-        Value.string(obj.subject)
+        Value.string(obj.subject, args.first.label)
       end
 
       define(cls, interp, "begin") do |args|
@@ -303,12 +351,6 @@ module Adjutant
 
       # `#captures` — every numbered group's text (group 0, the whole
       # match, excluded — same as real Ruby), `nil` for a group that
-      # didn't participate. Real Ruby has no fixed upper bound on
-      # group count; this reuses the same `1..9` cap `Regexp#match`'s
-      # own capture population already settled on (see that method's
-      # own scoping) rather than introducing a different limit here.
-      # `#captures` — every numbered group's text (group 0, the whole
-      # match, excluded — same as real Ruby), `nil` for a group that
       # didn't participate. Unlike the `1..9` cap `Regexp#match`'s own
       # backslash-ref capture population uses (a real Ruby syntax
       # limit specific to `\1`-`\9` replacement references), this
@@ -319,8 +361,8 @@ module Adjutant
       # toolchain here; flag if `ops test` says otherwise.
       define(cls, interp, "captures") do |args|
         obj = args.first.as_robject.as(MatchDataObject)
-        caps = (1...obj.md.size).map { |i| (c = obj.md[i]?) ? Value.string(c) : Value.nil_value }
-        Value.new(LabeledArray.new(caps, nil), nil)
+        caps = (1...obj.md.size).map { |i| (c = obj.md[i]?) ? Value.string(c, args.first.label) : Value.nil_value }
+        Value.new(LabeledArray.new(caps, args.first.label), nil)
       end
 
       # `#regexp` — the Regexp instance #match was called on, threaded

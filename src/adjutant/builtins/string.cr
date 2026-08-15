@@ -118,10 +118,18 @@ module Adjutant::Builtins
         else
           s.split
         end
-      # Parts are substrings of a labeled receiver — the array as a
-      # whole inherits the receiver's label, same principle as any other
-      # construction from a labeled source (see MakeArray/MakeHash).
-      Adjutant::Value.new(Adjutant::LabeledArray.new(parts.map { |part| Adjutant::Value.string(part) }, recv.label), nil)
+      # Each substring is a piece of a labeled receiver — same
+      # "extracted data inherits the source's label" principle as
+      # `exec_get_index_string_range`'s plain string slicing (vm.cr)
+      # and MatchData's own accessors (builtins/regexp.cr) — joined
+      # with the SEPARATOR's own label too (a tainted separator
+      # argument shaping how the string got cut is still a real
+      # taint source, same "join every plausible source" reasoning as
+      # Hash#merge). Fixed 2026-08-14 alongside the Regexp IFC audit —
+      # previously only the ARRAY WRAPPER got `recv.label`; each
+      # element itself was constructed with no label at all.
+      whole_label = Adjutant::RiskFlowLabel.join(recv.label, sep_val.try(&.label))
+      Adjutant::Value.new(Adjutant::LabeledArray.new(parts.map { |part| Adjutant::Value.string(part, whole_label) }, whole_label), nil)
     end
 
     define(cls, interp, "reverse") do |args|
@@ -282,14 +290,30 @@ module Adjutant::Builtins
     # for a literal String pattern, which has none). See
     # `string_sub_or_gsub`'s own comment for the zero-width
     # (empty-pattern) matching behavior this shares with both.
+    # `recv`'s and the PATTERN's own labels both join into the result
+    # — a tainted pattern determining WHAT gets matched/replaced is a
+    # real taint source, same "join every plausible source" reasoning
+    # applied to Regexp/MatchData elsewhere in this file. What's
+    # DELIBERATELY NOT covered here, a real remaining gap rather than
+    # an oversight: the REPLACEMENT string's own label, or a BLOCK's
+    # per-call return value's label — `string_sub_or_gsub` builds the
+    # result through a single Crystal `String.build`, which has no way
+    # to carry a `Value`-level label through per-segment, so only ONE
+    # overall label can be applied post-hoc to the whole result today.
+    # Correctly tracking a replacement/block-result's own taint would
+    # need per-segment label tracking through that build, a real,
+    # separate piece of work — worth a SCOPE.md entry if this matters
+    # in practice, not attempted here.
     define(cls, interp, "sub") do |args, blk, ncc|
       recv = args.first
-      Adjutant::Value.string(string_sub_or_gsub(recv.as_string, args, blk, ncc, "sub", all: false), recv.label)
+      result_label = Adjutant::RiskFlowLabel.join(recv.label, args[1]?.try(&.label))
+      Adjutant::Value.string(string_sub_or_gsub(recv.as_string, args, blk, ncc, "sub", all: false), result_label)
     end
 
     define(cls, interp, "gsub") do |args, blk, ncc|
       recv = args.first
-      Adjutant::Value.string(string_sub_or_gsub(recv.as_string, args, blk, ncc, "gsub", all: true), recv.label)
+      result_label = Adjutant::RiskFlowLabel.join(recv.label, args[1]?.try(&.label))
+      Adjutant::Value.string(string_sub_or_gsub(recv.as_string, args, blk, ncc, "gsub", all: true), result_label)
     end
 
     # Real Ruby's String#match(pattern): unlike #index/#rindex/#sub/
@@ -312,14 +336,25 @@ module Adjutant::Builtins
           regexp_cls = interp.find_builtin_class("Regexp")
           raise "Regexp class not registered — bootstrap_regexp must run before any script executes" unless regexp_cls
           obj = Adjutant::RegexpObject.new(regexp_cls, compiled)
-          obj.ivars[interp.symbols.intern("__source").value] = Adjutant::Value.string(pat_str)
+          # Same "seed the ivar with the SAME label the object itself
+          # gets" fix as Regexp.new's own constructor and Op::MakeRegex
+          # (builtins/regexp.cr, vm.cr) — a String pattern argument
+          # here is synthesized into a real Regexp on the fly, and its
+          # own label (`pattern_val.label`, since `pattern_val` IS
+          # `pat_str` here) needs to survive into that synthesized
+          # object exactly the same way.
+          obj.ivars[interp.symbols.intern("__source").value] = Adjutant::Value.string(pat_str, pattern_val.label)
           obj.ivars[interp.symbols.intern("__options").value] = Adjutant::Value.int(0)
-          {compiled, Adjutant::Value.robject(obj)}
+          {compiled, Adjutant::Value.robject(obj, pattern_val.label)}
         else
           ncc.raise_error("R019", {"method" => "match", "class_name" => builtin_type_name(pattern_val)}, "TypeError")
         end
       if md = regex.match(recv.as_string)
-        match_data = make_match_data(interp, md, recv.as_string, regexp_value)
+        # Same join-subject-and-pattern-labels principle as
+        # Regexp#match's own MatchData construction (builtins/regexp.cr)
+        # — `recv` IS the subject here (String#match's receiver).
+        match_label = Adjutant::RiskFlowLabel.join(recv.label, regexp_value.label)
+        match_data = make_match_data(interp, md, recv.as_string, regexp_value, match_label)
         # WITH A BLOCK: same real-Ruby shape as Regexp#match's own
         # block form (see that method's own comment, builtins/regexp.cr)
         # — the MatchData itself is yielded, not just the matched

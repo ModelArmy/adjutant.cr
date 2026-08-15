@@ -561,5 +561,106 @@ module Adjutant
         result.label.should be_nil
       end
     end
+
+    # Regexp/MatchData are native-method-dispatch label joining, not
+    # VM-opcode-level (Op::Concat/Op::MakeArray/etc above all fire a
+    # real RiskFlowEvent because they're opcodes the VM's own dispatch
+    # loop instruments directly) — a native method just constructs a
+    # labeled Value itself, so there's no "records a RiskFlowEvent"
+    # assertion to make here the way the opcode-level describe blocks
+    # above have; only the resulting label itself is checked. Added
+    # 2026-08-14 auditing the whole Regexp/MatchData feature against
+    # this file's own established principle after finding `label`
+    # never appeared anywhere in `builtins/regexp.cr` at all — every
+    # construction there defaulted to an unlabeled `nil`, a real gap
+    # this describe block exists specifically to keep from
+    # regressing.
+    describe "Regexp / MatchData (native method label joining)" do
+      it "Regexp.new(tainted pattern).source carries the label" do
+        interp, _ = make_tainted_interp
+        result = interp.eval(%(Regexp.new(tainted_str("/etc/passwd")).source))
+        result.label.not_nil!.sensitivity.should eq Sensitivity::High
+      end
+
+      it "an interpolated regex literal's #source carries the interpolated label" do
+        interp, _ = make_tainted_interp
+        result = interp.eval(%q(/a#{tainted_str("/etc/passwd")}b/.source))
+        result.label.not_nil!.sensitivity.should eq Sensitivity::High
+      end
+
+      it "Regexp#match's MatchData inherits the SUBJECT string's label" do
+        interp, _ = make_tainted_interp
+        result = interp.eval(%(/x/.match(tainted_str("/etc/passwd"))[0]))
+        result.label.not_nil!.sensitivity.should eq Sensitivity::High
+      end
+
+      it "Regexp#match's MatchData ALSO inherits a tainted PATTERN's label" do
+        interp, _ = make_tainted_interp
+        result = interp.eval(%q(Regexp.new(tainted_str("/etc/passwd")).match("xx")[0]))
+        result.label.not_nil!.sensitivity.should eq Sensitivity::High
+      end
+
+      it "MatchData#captures elements carry the label" do
+        interp, _ = make_tainted_interp
+        result = interp.eval(%(/(x)/.match(tainted_str("/etc/passwd")).captures[0]))
+        result.label.not_nil!.sensitivity.should eq Sensitivity::High
+      end
+
+      it "MatchData#pre_match / #post_match / #string carry the label" do
+        interp, _ = make_tainted_interp
+        pre = interp.eval(%(/x/.match(tainted_str("/etc/passwd")).pre_match))
+        post = interp.eval(%(/x/.match(tainted_str("/etc/passwd")).post_match))
+        str = interp.eval(%(/x/.match(tainted_str("/etc/passwd")).string))
+        pre.label.not_nil!.sensitivity.should eq Sensitivity::High
+        post.label.not_nil!.sensitivity.should eq Sensitivity::High
+        str.label.not_nil!.sensitivity.should eq Sensitivity::High
+      end
+
+      it "String#match's MatchData inherits the RECEIVER string's label" do
+        interp, _ = make_tainted_interp
+        result = interp.eval(%(tainted_str("/etc/passwd").match("x")[0]))
+        result.label.not_nil!.sensitivity.should eq Sensitivity::High
+      end
+
+      it "String#sub/#gsub results carry the receiver's label" do
+        interp, _ = make_tainted_interp
+        sub = interp.eval(%(tainted_str("/etc/passwd").sub("x", "y")))
+        gsub = interp.eval(%(tainted_str("/etc/passwd").gsub("x", "y")))
+        sub.label.not_nil!.sensitivity.should eq Sensitivity::High
+        gsub.label.not_nil!.sensitivity.should eq Sensitivity::High
+      end
+
+      it "String#gsub's result ALSO carries a tainted PATTERN's label" do
+        interp, _ = make_tainted_interp
+        result = interp.eval(%q("xx".gsub(Regexp.new(tainted_str("x")), "y")))
+        result.label.not_nil!.sensitivity.should eq Sensitivity::High
+      end
+
+      it "String#split's array AND its elements carry the receiver's label" do
+        interp, _ = make_tainted_interp
+        arr = interp.eval(%(tainted_str("/etc/passwd").split(",")))
+        arr.label.not_nil!.sensitivity.should eq Sensitivity::High
+        arr.as_array.first.label.not_nil!.sensitivity.should eq Sensitivity::High
+      end
+
+      it "an unlabeled match stays unlabeled (negative case)" do
+        interp, _ = make_tainted_interp
+        interp.eval(%(/b./.match("abc")[0])).label.should be_nil
+      end
+
+      it "#begin/#end stay unlabeled — position metadata, not extracted data" do
+        interp, _ = make_tainted_interp
+        result = interp.eval(%(/x/.match(tainted_str("/etc/passwd")).begin(0)))
+        result.label.should be_nil
+      end
+
+      it "#match?/#=== stay unlabeled — a boolean fact, not extracted data" do
+        interp, _ = make_tainted_interp
+        match_q = interp.eval(%(/x/.match?(tainted_str("/etc/passwd"))))
+        eqeqeq = interp.eval(%(/x/.===(tainted_str("/etc/passwd"))))
+        match_q.label.should be_nil
+        eqeqeq.label.should be_nil
+      end
+    end
   end
 end

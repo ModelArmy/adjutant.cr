@@ -781,5 +781,52 @@ module Adjutant
         RUBY
       end
     end
+
+    # End-to-end: a value that picked up its taint via Regexp/MatchData
+    # (risk_flow_propagation_spec.cr's own concern — does the LABEL
+    # survive the trip) reaching a risky call and actually getting
+    # rejected (this file's own concern — does the enforcement
+    # DECISION fire). Neither spec alone proves the two compose
+    # correctly; this does, without re-testing either layer's own
+    # logic in isolation. Added 2026-08-14 after the Regexp IFC audit,
+    # per the same "propagation coverage and enforcement coverage are
+    # two different questions" reasoning that motivated NOT folding
+    # this into risk_flow_propagation_spec.cr itself.
+    describe "a value extracted via Regexp/MatchData reaching a risky call" do
+      it "a MatchData capture group extracted from a tainted subject is rejected" do
+        interp, _ = make_enforcement_interp(enforcement_policy_for(RiskFlowAction::Reject))
+        error = expect_raises(RuntimeError, /risk flow policy rejected/) do
+          interp.eval(<<-RUBY)
+            path = tainted_path("/etc/passwd")
+            md = /etc\\/(\\w+)/.match(path)
+            delete_file(md[1])
+          RUBY
+        end
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("F001")
+        diag.data["call"].should eq("delete_file")
+      end
+
+      it "a String#gsub result built from a tainted receiver is rejected" do
+        interp, _ = make_enforcement_interp(enforcement_policy_for(RiskFlowAction::Reject))
+        error = expect_raises(RuntimeError, /risk flow policy rejected/) do
+          interp.eval(<<-RUBY)
+            path = tainted_path("/etc/passwd")
+            cleaned = path.gsub(/^\\//, "")
+            delete_file(cleaned)
+          RUBY
+        end
+        error.diagnostic.not_nil!.code.should eq("F001")
+      end
+
+      it "a MatchData capture group extracted from an UNTAINTED subject does NOT raise" do
+        interp, _ = make_enforcement_interp(enforcement_policy_for(RiskFlowAction::Reject))
+        result = interp.eval(<<-RUBY)
+          md = /etc\\/(\\w+)/.match("/etc/plain_ordinary_path")
+          delete_file(md[1])
+        RUBY
+        result.as_bool.should be_true
+      end
+    end
   end
 end

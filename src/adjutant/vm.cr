@@ -3255,7 +3255,13 @@ module Adjutant
           )
         end
       obj = RegexpObject.new(cls, regex)
-      obj.ivars[@symbols.intern("__source").value] = Value.string(pattern)
+      # Same "seed the ivar with the same label as the object itself"
+      # fix as Regexp.new's own constructor (builtins/regexp.cr) —
+      # `label` here already came from the interpolated pattern
+      # string's own label (see Op::MakeRegex's caller), so an
+      # interpolated `/#{tainted}/`'s `#source` needs to reflect that,
+      # not just the Regexp object as a whole.
+      obj.ivars[@symbols.intern("__source").value] = Value.string(pattern, label)
       obj.ivars[@symbols.intern("__options").value] = Value.int(flags)
       Value.robject(obj, label)
     end
