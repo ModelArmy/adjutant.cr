@@ -300,7 +300,7 @@ module Adjutant::Builtins
     # `string_pattern_arg`'s own String-case contract (a literal
     # substring, for #index's/#sub's callers), so this doesn't reuse
     # it — a real semantic difference, not an oversight.
-    define(cls, interp, "match") do |args, _blk, ncc|
+    define(cls, interp, "match") do |args, blk, ncc|
       recv = args.first
       pattern_val = args[1]?
       ncc.raise_error("R018", {"method" => "match"}, "ArgumentError") unless pattern_val
@@ -319,7 +319,14 @@ module Adjutant::Builtins
           ncc.raise_error("R019", {"method" => "match", "class_name" => builtin_type_name(pattern_val)}, "TypeError")
         end
       if md = regex.match(recv.as_string)
-        make_match_data(interp, md, recv.as_string, regexp_value)
+        match_data = make_match_data(interp, md, recv.as_string, regexp_value)
+        # WITH A BLOCK: same real-Ruby shape as Regexp#match's own
+        # block form (see that method's own comment, builtins/regexp.cr)
+        # — the MatchData itself is yielded, not just the matched
+        # substring, and the block's return value replaces the
+        # MatchData as #match's own result. Only called on an actual
+        # match, same as Regexp#match.
+        blk ? ncc.invoke(blk, [match_data]) : match_data
       else
         Adjutant::Value.nil_value
       end

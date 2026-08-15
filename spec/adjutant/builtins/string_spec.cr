@@ -571,6 +571,16 @@ module Adjutant
         result = eval(%("hello".match("l+").regexp.source))
         result.as_string.should eq "l+"
       end
+
+      it "with a block, yields the MatchData and returns the block's value" do
+        result = eval(%("hello".match("l+") { |md| md[0].upcase }))
+        result.as_string.should eq "LL"
+      end
+
+      it "with a block, is not invoked at all on no match" do
+        result = eval(%("hello".match("z") { |md| "should not run" }))
+        result.null?.should be_true
+      end
     end
   end
 end

@@ -156,6 +156,26 @@ module Adjutant
         RUBY
         result.as_bool.should be_true
       end
+
+      it "with a block, yields the MatchData (not just the substring)" do
+        result = eval(%(/b./.match("abc") { |md| md[0] }))
+        result.as_string.should eq "bc"
+      end
+
+      it "with a block, returns the block's own return value" do
+        result = eval(%(/b./.match("abc") { |md| md.begin(0) }))
+        result.as_int.should eq 1
+      end
+
+      it "with a block, is not invoked at all on no match" do
+        result = eval(%(/xyz/.match("abc") { |md| "should not run" }))
+        result.null?.should be_true
+      end
+
+      it "with a block, break escapes with the break value" do
+        result = eval(%(/l+/.match("hello") { break :broke }))
+        result.as_sym.name.should eq "broke"
+      end
     end
 
     describe "#===" do

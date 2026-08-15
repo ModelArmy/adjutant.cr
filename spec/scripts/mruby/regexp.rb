@@ -35,15 +35,20 @@ require "assert"
 #    isn't re-proven here just to route around this gap.
 #
 # Beyond those three, several methods genuinely don't exist yet at
-# all: block-form `#match`, `Regexp.escape`, `#inspect`/`#to_s`
-# (the same to_s/inspect rendering gap already tracked in SCOPE.md for
-# Array/Hash/Range, now also true for Regexp), `#==`/`#eql?`/`#hash`
-# (the same cross-cutting eql?/hash gap from the original six-class
-# survey handoff), and `Class#allocate`. And `#match`/`#match?` accept
-# ONLY a String argument — no Symbol coercion, and a wrong-type
-# argument raises ArgumentError (R022) rather than real Ruby's
-# TypeError, a real, separate divergence from upstream's own
-# expectations, not just a missing feature.
+# all: `Regexp.escape`, `#inspect`/`#to_s` (the same to_s/inspect
+# rendering gap already tracked in SCOPE.md for Array/Hash/Range, now
+# also true for Regexp), `#==`/`#eql?`/`#hash` (the same cross-cutting
+# eql?/hash gap from the original six-class survey handoff), and
+# `Class#allocate`. Block-form `#match` (yielding a real MatchData —
+# see the file's own "Regexp#match - block" case below, now active)
+# WAS on this list too, added 2026-08-14 alongside the decision to
+# drop `$~`/`$1`.. globals entirely (UNSUPPORTED.md's U011) — this
+# method is what actually covers the case that would otherwise have
+# needed them. And `#match`/`#match?` accept ONLY a String argument —
+# no Symbol coercion, and a wrong-type argument raises ArgumentError
+# (R022) rather than real Ruby's TypeError, a real, separate
+# divergence from upstream's own expectations, not just a missing
+# feature.
 
 assert('Regexp.new with string') do
   re = Regexp.new("abc")
@@ -90,20 +95,14 @@ end
 #   assert_nil $~
 # end
 
-# --- BLOCKED: block-form `#match` (yielding the MatchData to a block,
-# with the block's return value becoming #match's own return value)
-# isn't implemented — Regexp#match's native method never invokes a
-# passed block at all right now. A real, worthwhile SCOPE.md candidate
-# (not filed as its own entry yet — flagging here rather than
-# silently skipping).
-# assert("Regexp#match - block") do
-#   result = /bc/.match("abcd") { |md| [md[0], md.begin(0)] }
-#   assert_equal ["bc", 1], result
-#   assert_nil(/xyz/.match("abcd") { |md| md[0] })
-# end
-# assert("Regexp#match - break out of the block") do
-#   assert_equal :broke, /l+/.match("hello") { break :broke }
-# end
+assert('Regexp#match - block') do
+  result = /bc/.match("abcd") { |md| [md[0], md.begin(0)] }
+  assert_equal ["bc", 1], result
+  assert_nil(/xyz/.match("abcd") { |md| md[0] })
+end
+assert('Regexp#match - break out of the block') do
+  assert_equal :broke, /l+/.match("hello") { break :broke }
+end
 
 assert('Regexp#match?') do
   re = Regexp.new("abc")

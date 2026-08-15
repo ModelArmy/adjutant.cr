@@ -90,28 +90,6 @@ may unblock ones above it.
   since `NativeCallContext#compare` returns false for any pairing it
   can't order including anything-vs-nil).
 
-- **No Regex support at all — no `Regexp` class, no `=~`, no
-  `String#match`, and `String#gsub`/`#sub`/`#index`/`#rindex`/`#scan`
-  have no way to accept a pattern argument (only a plain String, once
-  those land — see the separate entry below).** Found 2026-08-13
-  triaging `spec/scripts/mruby/string.rb`: nearly every upstream
-  pattern-matching test needs this and is currently blocked outright,
-  with no workaround — this is core, ordinary-use Ruby, not an edge
-  case. Genuinely necessary for Adjutant to be useful for real
-  scripting work, not just a nice-to-have alongside the other
-  per-class method surveys. Real work needed: a `Regexp` class/
-  literal syntax (`/pattern/flags`), a matching engine (even a
-  minimal one — real Ruby regex features like lookaround/backrefs are
-  a much bigger lift than the common case), `=~`/`String#match`/
-  `MatchData`, and then wiring a Regexp-accepting case into every
-  String method that takes a pattern. Sized as its own, separate
-  effort — not scoped further here yet. `String#gsub`/`#sub`/
-  `#index`/`#rindex` all have a String-only form landing WITHOUT
-  waiting for this (see below) — deliberately not blocked on Regex,
-  since the String-argument case is common and useful on its own, and
-  adding a Regexp case later is additive (a new dispatch branch, not
-  a rewrite), not a reason to delay the String case.
-
 - **`Array#to_s`/`Hash#to_s`/`Range#to_s` (called implicitly — e.g.
   string interpolation, `puts`, `p` — and `#inspect`, which defers to
   `to_s`) silently produce garbage, not a real Ruby-style rendering.**
@@ -245,9 +223,7 @@ wins.
   Ruby's own `$~`/`$1`.. side effects on `=~` are NOT part of this:
   match globals were decided against entirely, 2026-08-14, not
   deferred pending this — see `UNSUPPORTED.md`'s U011 entry (now
-  enforced) for the full reasoning, and the Standard library surface
-  section's Regexp/MatchData entry for what's actually still open
-  there instead.
+  enforced) for the full reasoning.
 
 - **`a === b` as general infix script syntax doesn't parse — a
   narrower, DELIBERATE gap, not an oversight; do not conflate with
@@ -744,30 +720,6 @@ individually.
   `RiskFlowPolicy` — still not decided.
 
 ### Standard library surface
-
-- **Regexp/MatchData: `#match`'s block form doesn't yield a
-  `MatchData` yet.** Filed 2026-08-14, the one piece left open from
-  the original three-item Regexp/MatchData follow-up list (filed the
-  same day the core work landed) once the other two were resolved:
-  String's pattern-taking methods accepting a Regexp shipped the same
-  day (`string_pattern_arg`, `builtins/string.cr`); the ISO fixture
-  shipped as three files (`regexp.rb`, `match_data.rb`,
-  `string_regexp.rb`); and `$~`/`$1`-`$9`/`$&`/`` $` ``/`$'`/`$+`
-  match globals were decided AGAINST entirely, not merely deferred —
-  see `UNSUPPORTED.md`'s U011 entry (now enforced, same day) for the
-  full reasoning. That decision is what leaves this one real gap:
-  real Ruby's own `#sub`/`#gsub` block form only ever yields the
-  matched STRING, never a `MatchData` — `$~` is genuinely the only
-  path to capture groups from inside THAT specific block, in real
-  Ruby too, so dropping match globals doesn't create a gap there
-  beyond what real Ruby itself has. But `Regexp#match`/`String#match`'s
-  OWN block form is different in real Ruby: it yields a real
-  `MatchData` directly, no globals involved, and Adjutant's
-  `#match`/`#match?` don't invoke a passed block at all right now
-  (confirmed unreachable in `regexp.rb`'s own "Regexp#match - block"
-  blocked section). A real, self-contained piece of work — no
-  parser/lexer/global-variable machinery needed, unlike the globals
-  question — worth picking up on its own.
 
 - **`lambda { ... }`/`proc { ... }` (the `Kernel`-method spelling)
   don't exist — only `-> { ... }` (stabby lambda) works.** Found

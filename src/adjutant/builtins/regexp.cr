@@ -154,12 +154,21 @@ module Adjutant
       # String-first scoping already applied to #source/#options
       # above), raising the same R022 rather than silently doing
       # nothing.
-      define(cls, interp, "match") do |args, _blk, ncc|
+      #
+      # WITH A BLOCK: real Ruby yields the MatchData itself (not just
+      # the matched substring, unlike #sub/#gsub's own block form —
+      # see UNSUPPORTED.md's U011 entry for why that distinction is
+      # exactly what makes this method worth having a real block form
+      # for) and returns the block's own return value in place of the
+      # MatchData. The block is only invoked on an actual match — same
+      # as real Ruby, which doesn't call it at all on a failed match.
+      define(cls, interp, "match") do |args, blk, ncc|
         robj = args.first.as_robject.as(RegexpObject)
         str = args[1]?.try(&.as_string?)
         ncc.raise_error("R022", {"method" => "match"}, "ArgumentError") unless str
         if md = robj.regex.match(str)
-          make_match_data(interp, md, str, args.first)
+          match_data = make_match_data(interp, md, str, args.first)
+          blk ? ncc.invoke(blk, [match_data]) : match_data
         else
           Value.nil_value
         end

@@ -97,3 +97,13 @@ assert('String#match with a Regexp argument') do
   assert_equal "hello", md[1]
   assert_equal "world", md[2]
 end
+
+assert('String#match - block yields a real MatchData, not just the substring') do
+  assert_equal "L", "hello".match("l") { |md| md[0].upcase }
+  assert_equal "ll", "hello".match("l+") { |md| md[0] }
+  assert_nil("hello".match("z") { |md| md[0] })
+end
+
+assert('String#match - break out of the block') do
+  assert_equal :broke, "hello".match("l+") { break :broke }
+end
