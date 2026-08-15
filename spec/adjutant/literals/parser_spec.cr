@@ -145,6 +145,31 @@ module Adjutant
         end
       end
 
+      describe "global variables (U011 — deliberately unsupported)" do
+        it "raises U011 by name rather than the generic P002 fallback" do
+          error = expect_raises(ParseError) { parse_expr("$foo") }
+          diag = error.diagnostic.not_nil!
+          diag.code.should eq("U011")
+          diag.data["name"].should eq("$foo")
+        end
+
+        it "rejects Regexp's own would-be match globals the same way" do
+          # The specific case this check was added for: deciding
+          # against building real Ruby's $~/$1-$9 match globals for
+          # Regexp (see UNSUPPORTED.md's U011 entry) means these need
+          # to fail clearly, not silently misparse.
+          %w[$~ $1 $9 $& $` $' $+].each do |name|
+            error = expect_raises(ParseError) { parse_expr(name) }
+            error.diagnostic.not_nil!.code.should eq("U011")
+          end
+        end
+
+        it "rejects a global as an assignment target too, not just a read" do
+          error = expect_raises(ParseError) { parse_expr("$foo = 1") }
+          error.diagnostic.not_nil!.code.should eq("U011")
+        end
+      end
+
       it "parses a symbol" do
         node = parse_expr(":ok")
         node.should be_a(SymbolLiteral)

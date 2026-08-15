@@ -813,6 +813,28 @@ module Adjutant
         # keyword-headed construct that's a real expression, not just
         # a statement, needs a case in BOTH dispatch tables.
         parse_super
+      when TokenKind::GVar
+        # Deliberate exclusion (UNSUPPORTED.md's U011), not a gap —
+        # raised here explicitly rather than left to fall through to
+        # the generic P002 below, so a script (or the LLM agent
+        # writing one) sees "global variables aren't supported" by
+        # name instead of a bare "`$foo` not valid here" that reads
+        # like an ordinary syntax mistake worth retrying. No
+        # GlobalVar AST node exists anywhere in this parser — this is
+        # the ONLY place TokenKind::GVar is ever consumed at all,
+        # deliberately, so there's no path that could reach one.
+        raise ParseError.new(
+          Diagnostic.new(
+            code: "U011",
+            primary: Span.new(
+              line: l,
+              column: c,
+              length: caret_width(@current),
+              label: "not supported"
+            ),
+            data: {"name" => @current.lexeme}
+          )
+        )
       else
         raise ParseError.new(
           Diagnostic.new(

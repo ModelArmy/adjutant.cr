@@ -596,6 +596,22 @@ module Adjutant
         help: "Run the block with `yield` inside `{method}`, or take a " \
               "lambda as an ordinary parameter and call it with `.call`."
       ),
+      "U011" => Entry.new(
+        code: "U011",
+        summary: "global variables (`{name}`) are not supported",
+        why: "A `$`-prefixed global is a mutable channel visible from " \
+             "anywhere in a script, independent of lexical scope — " \
+             "outside the parameter/return-value/instance-variable paths " \
+             "Adjutant's risk-flow tracking otherwise sees everything " \
+             "move through. `$~`/`$1`-`$9`/`$&` and friends (Regexp's " \
+             "own match-result globals) are excluded for the same " \
+             "reason, not as a narrower case of it.",
+        help: "Pass the value explicitly as a parameter or return value, " \
+              "or use an instance variable on an object shared between " \
+              "the parts of the script that need it. For a Regexp match " \
+              "result specifically, keep the `MatchData` `#match` " \
+              "returns in a local variable instead of `$~`."
+      ),
       "U004" => Entry.new(
         code: "U004",
         summary: "`{definition}` cannot be nested inside another method's body",

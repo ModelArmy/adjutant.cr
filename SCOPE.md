@@ -240,11 +240,14 @@ wins.
   `<=>`'s existing infix support — see `operators/compiler_spec.cr`
   — not `===`'s deliberate infix exclusion) so `x =~ y` parses as an
   ordinary receiver call `x.=~(y)`. Once both land, `Regexp#=~` (and
-  `String#=~`, which doesn't exist yet either) can be added for real,
-  including real Ruby's `$~`/`$1`.. side effects if that global-var
-  plumbing exists by then (see the Standard library surface section's
-  Regexp/MatchData entry, filed the same session, for the other two
-  pieces of that same still-outstanding work).
+  `String#=~`, which doesn't exist yet either) can be added for real —
+  as a match-position return value only, same as `#match?`. Real
+  Ruby's own `$~`/`$1`.. side effects on `=~` are NOT part of this:
+  match globals were decided against entirely, 2026-08-14, not
+  deferred pending this — see `UNSUPPORTED.md`'s U011 entry (now
+  enforced) for the full reasoning, and the Standard library surface
+  section's Regexp/MatchData entry for what's actually still open
+  there instead.
 
 - **`a === b` as general infix script syntax doesn't parse — a
   narrower, DELIBERATE gap, not an oversight; do not conflate with
@@ -448,21 +451,32 @@ Runtime diagnostic carets — same underlying gap as originally filed
 here — were promoted to `Must Fix` 2026-08-05; see that entry above for
 current status.
 
-- **U008, U009, U011–U015 are decided but not enforced.** Filed
-  2026-08-05 in two sessions (U008–U011, then U012–U015 added the same
-  day after the mruby full-repo sweep) — see `UNSUPPORTED.md` for all
-  seven remaining entries (`private`/`protected`/`public`,
-  `Struct.new`, `$globals`, numbered block params, endless `def`,
-  `class << self`, `undef`/method-added hooks). `U010` (originally
-  "`super` across multiple `rescue` clauses") was retired 2026-08-10,
-  the same session `super` itself was built and shipped — the
-  concern turned out not to be a real gap once `super` actually
-  worked; see `UNSUPPORTED.md`'s U010 entry. Each of the remaining
-  seven currently falls through to a generic undefined-name/
-  undefined-method/parse error rather than naming the construct — the
-  same gap U001–U004 had before their 2026-07-27/28 enforcement pass,
-  and the exact failure shape `UNSUPPORTED.md`'s own design principle
-  warns against. Follows the established decide-first-enforce-second
+- **U008, U009, U012–U015 are decided but not enforced; U011 was
+  enforced 2026-08-14, no longer part of this list.** Filed 2026-08-05
+  in two sessions (U008–U011, then U012–U015 added the same day after
+  the mruby full-repo sweep) — see `UNSUPPORTED.md` for the six
+  remaining entries (`private`/`protected`/`public`, `Struct.new`,
+  numbered block params, endless `def`, `class << self`, `undef`/
+  method-added hooks). `U010` (originally "`super` across multiple
+  `rescue` clauses") was retired 2026-08-10, the same session `super`
+  itself was built and shipped — the concern turned out not to be a
+  real gap once `super` actually worked; see `UNSUPPORTED.md`'s U010
+  entry. `U011` (`$globals`) was enforced 2026-08-14, prompted by
+  deciding against building real Ruby's `$~`/`$1`-`$9`.. match
+  globals for Regexp specifically (see `UNSUPPORTED.md`'s own U011
+  entry for the full reasoning and what covers the gap instead) — a
+  real `U011` diagnostic now fires at parse time by name rather than
+  the generic fallback. Each of the remaining six currently falls
+  through to a generic undefined-name/undefined-method/parse error
+  rather than naming the construct — the same gap U001–U004 had
+  before their 2026-07-27/28 enforcement pass, and the exact failure
+  shape `UNSUPPORTED.md`'s own design principle warns against. Follows
+  the established decide-first-enforce-second pattern rather than
+  waiting on enforcement to write the entries (see U007's own
+  precedent — already partially enforced/partially not, same file).
+  Most of the six are a lookup-after-resolution-fails check, same
+  mechanism as U005–U007 (`dispatch_call`/constant resolution,
+  `vm.cr`); U012–U015 are parse-time rather than
   pattern rather than waiting on enforcement to write the entries (see
   U007's own precedent — already partially enforced/partially not,
   same file). Most of the seven are a lookup-after-resolution-fails
@@ -731,30 +745,29 @@ individually.
 
 ### Standard library surface
 
-- **Regexp/MatchData: String integration and `$~`/`$1`.. globals
-  still outstanding.** Filed 2026-08-14 once the core Regexp/MatchData
-  work landed (`/pattern/flags` literals, `Regexp.new`, `#match`/
-  `#match?`/`#===`, `MatchData#[]`/`#pre_match`/`#post_match`/
-  `#string`/`#begin`) — three concrete pieces left, independent of
-  each other:
-  - **String's pattern-taking methods (`#gsub`/`#sub`/`#index`/
-    `#rindex`/`#split`) still only accept a String pattern** —
-    `string_pattern_arg` (`builtins/string.cr`) is the single
-    chokepoint; adding a Regexp branch there is additive, not a
-    rewrite (R019's own message already says "Regexp support doesn't
-    exist yet").
-  - **`$~`/`$1`.. globals don't exist** — real new machinery (no
-    `$`-global plumbing exists in Adjutant at all yet, separate from
-    U011's `$globals` exclusion, which is about ordinary
-    script-defined globals specifically; `$~` is VM-internal
-    per-match state, not a script-writable channel, so it isn't
-    covered by that exclusion). Blocks a real `Regexp#=~`/
-    `String#=~` from matching real Ruby's full behavior even once the
-    `=~` token/precedence gap above is fixed — those methods can
-    return a match position without this, but not set `$~`.
-  - **ISO fixture** (`spec/scripts/mruby/regexp.rb`) not yet ported
-    from the upstream mruby test file, following the established
-    triage conventions (see recent handoffs).
+- **Regexp/MatchData: `#match`'s block form doesn't yield a
+  `MatchData` yet.** Filed 2026-08-14, the one piece left open from
+  the original three-item Regexp/MatchData follow-up list (filed the
+  same day the core work landed) once the other two were resolved:
+  String's pattern-taking methods accepting a Regexp shipped the same
+  day (`string_pattern_arg`, `builtins/string.cr`); the ISO fixture
+  shipped as three files (`regexp.rb`, `match_data.rb`,
+  `string_regexp.rb`); and `$~`/`$1`-`$9`/`$&`/`` $` ``/`$'`/`$+`
+  match globals were decided AGAINST entirely, not merely deferred —
+  see `UNSUPPORTED.md`'s U011 entry (now enforced, same day) for the
+  full reasoning. That decision is what leaves this one real gap:
+  real Ruby's own `#sub`/`#gsub` block form only ever yields the
+  matched STRING, never a `MatchData` — `$~` is genuinely the only
+  path to capture groups from inside THAT specific block, in real
+  Ruby too, so dropping match globals doesn't create a gap there
+  beyond what real Ruby itself has. But `Regexp#match`/`String#match`'s
+  OWN block form is different in real Ruby: it yields a real
+  `MatchData` directly, no globals involved, and Adjutant's
+  `#match`/`#match?` don't invoke a passed block at all right now
+  (confirmed unreachable in `regexp.rb`'s own "Regexp#match - block"
+  blocked section). A real, self-contained piece of work — no
+  parser/lexer/global-variable machinery needed, unlike the globals
+  question — worth picking up on its own.
 
 - **`lambda { ... }`/`proc { ... }` (the `Kernel`-method spelling)
   don't exist — only `-> { ... }` (stabby lambda) works.** Found
