@@ -1,4 +1,5 @@
 require "./builtins/helpers"
+require "./builtins/object"
 require "./builtins/integer"
 require "./builtins/float"
 require "./builtins/literals"

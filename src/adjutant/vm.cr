@@ -1122,17 +1122,7 @@ module Adjutant
             n = inst.a.to_i
             parts = @stack.last(n)
             @stack.pop(n) if n > 0
-            str = parts.map { |part|
-              case
-              when part.string? then part.as_string
-              when part.int?    then part.as_int.to_s
-              when part.float?  then part.as_float.to_s
-              when part.bool?   then part.as_bool.to_s
-              when part.null?   then ""
-              when part.symbol? then part.as_sym.name
-              else                   part.to_s
-              end
-            }.join
+            str = parts.map { |part| render_to_s(part, f.filename, f.line) }.join
             joined_label = parts.reduce(nil.as(RiskFlowLabel?)) { |acc, part| RiskFlowLabel.join(acc, part.label) }
             @risk_flow_log.record("Concat", parts.map(&.label), joined_label, f.line)
             push(Value.string(str, joined_label))
@@ -1805,6 +1795,42 @@ module Adjutant
         ),
         error_class: "NoMethodError"
       )
+    end
+
+    # Renders `value`'s REAL `to_s` — real method dispatch
+    # (`call_method`), not a Crystal-level `Value#to_s` call, for
+    # anything that could have a script- or builtin-defined override
+    # (`RubyObject`, `LabeledArray`, `LabeledHash`). True scalars
+    # (Nil/Bool/Int64/Float64/String/Sym) keep the existing direct
+    # Crystal-level rendering — cheaper, and equivalent regardless:
+    # none of those types is reachable from script code for
+    # redefinition (`U003` forbids reopening any class, builtins
+    # included), so there's no override real dispatch could ever
+    # find that this fast path would miss. `RubyClass` ALSO stays on
+    # the fast path for now — a script CAN give its own class a
+    # `def self.to_s` override, which this does NOT yet consult (a
+    # real, known, separate gap from the one this method fixes,
+    # deliberately not folded in here).
+    #
+    # Deliberately its own small method, not inlined into Op::Concat
+    # directly — `puts`/`print`/`p` (currently hardcoded VM hardcoded
+    # names in exec_builtin, not real dispatch either) are the next
+    # callers, and are ALSO the ones planned to eventually move
+    # outside the VM into a native integration API; keeping the
+    # actual "get this value's real string" logic in one place, not
+    # duplicated across four call sites, is what makes that future
+    # move a relocation rather than a rewrite.
+    private def render_to_s(value : Value, filename : String, line : Int32) : String
+      case
+      when value.string? then value.as_string
+      when value.int?    then value.as_int.to_s
+      when value.float?  then value.as_float.to_s
+      when value.bool?   then value.as_bool.to_s
+      when value.null?   then ""
+      when value.symbol? then value.as_sym.name
+      when value.rclass? then value.to_s
+      else                    call_method(value, "to_s", [] of Value, filename, line).as_string
+      end
     end
 
     # ameba:disable Metrics/CyclomaticComplexity - Clear steps, better together

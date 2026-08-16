@@ -297,6 +297,14 @@ module Adjutant
       # every non-nilable ivar assigned before `self` escapes the
       # constructor in any way, not just before it returns.
       @main = RubyObject.new(object_class)
+      # Same ordering reasoning as bootstrap_builtin_classes just
+      # below: Object's OWN native methods (to_s/inspect — the
+      # default every other type inherits) need object_class to
+      # already exist, which it does as of the line above. Ahead of
+      # bootstrap_builtin_classes specifically only because it's
+      # logically prerequisite to it, not because anything currently
+      # in bootstrap_builtin_classes depends on it directly.
+      Builtins.bootstrap_object_methods(self, object_class)
       bootstrap_builtin_classes
     end
 
