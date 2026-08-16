@@ -4,6 +4,18 @@ require "../risk_profile"
 require "./helpers"
 
 module Adjutant::Builtins
+  # Decides which of the two Symbol-key spellings real Ruby's
+  # Hash#inspect uses for the shorthand — a bare name (`name: value`)
+  # if it matches, the name's own quoted-string form otherwise
+  # (`"foo bar": value`) — NOT whether the shorthand applies at all;
+  # confirmed against a real `irb` session that EVERY Symbol key uses
+  # colon-shorthand, never hash-rocket. See bootstrap_hash's own
+  # "SYMBOL-KEY SHORTHAND" comment for the full reasoning. Module-
+  # level, not inline in the `inspect` block, so it's compiled once
+  # rather than re-parsed as a Regex literal on every single
+  # Hash#inspect call.
+  SIMPLE_SYMBOL_KEY = /\A[a-zA-Z_][a-zA-Z0-9_]*[?!=]?\z/
+
   # Builds the `Hash` RubyClass and registers its native methods.
   #
   # `[]`/`[]=` are already real opcodes (Op::GetIndex/Op::SetIndex, see
@@ -48,33 +60,44 @@ module Adjutant::Builtins
     # a cycle running THROUGH an Array (`a = []; h = {a: a}; a << h`)
     # is caught by the exact same mechanism, with no Hash-specific
     # tracking needed. `" => "` (with spaces) matches Ruby 4.0's
-    # current default `Hash#inspect` format — worth a real `irb`
-    # check on whatever Ruby version matters here, since this changed
-    # from the older, space-less `"a"=>1` at some point and isn't
-    # something I independently verified beyond your own earlier
-    # `irb` transcripts already showing Ruby 4.0.6.
+    # current default `Hash#inspect` format for the non-shorthand
+    # case — worth a real `irb` check on whatever Ruby version matters
+    # here, since this changed from the older, space-less `"a"=>1` at
+    # some point and isn't something I independently verified beyond
+    # your own earlier `irb` transcripts already showing Ruby 4.0.6.
     #
-    # KNOWN GAP, not yet handled: real Ruby's `Hash#inspect` uses
-    # shorthand notation for a Symbol key that looks like a plain
-    # identifier — `{name: "x", age: 5}.inspect` renders as
-    # `{name: "x", age: 5}`, NOT `{:name => "x", :age => 5}` — and
-    # that shorthand key syntax is the MOST common way a script
-    # writes a Hash literal in the first place, so this isn't an edge
-    # case. This method uses the uniform `key => value` form for
-    # EVERY key type, including Symbol, which is wrong for that
-    # common case. Deliberately not guessed at here: real Ruby's
-    # exact identifier-validity rule for when the shorthand applies
-    # (plain names vs. ones needing quoting, trailing `?`/`!`/`=`,
-    # ...) is itself nontrivial and worth confirming precisely rather
-    # than approximating. Filed as a follow-up rather than shipped
-    # wrong or guessed at.
+    # SYMBOL-KEY SHORTHAND: EVERY Symbol key uses `name: value`
+    # notation, never hash-rocket — confirmed against a real `irb`
+    # session (Ruby 4.0.6): `{ "a" => 5, b: 6, :c => 8, :"foo bar" =>
+    # 19 }.inspect => {"a" => 5, b: 6, c: 8, "foo bar": 19}`. Two
+    # things confirmed by that trace: the shorthand depends only on
+    # the key's TYPE and NAME, not which literal syntax originally
+    # built the Hash (`:c => 8` and `b: 6` both render as plain
+    # `c: 8`/`b: 6`) — and an IRREGULAR name (`"foo bar"`, contains a
+    # space) does NOT fall back to hash-rocket the way an earlier
+    # draft of this assumed; it still uses colon-shorthand, just with
+    # the name quoted like an ordinary String (`"foo bar": 19`, not
+    # `:"foo bar" => 19`). `SIMPLE_SYMBOL_KEY` (module-level, above)
+    # decides only WHICH of the two spellings to use — bare name if it
+    # matches (a leading letter/underscore, then letters/digits/
+    # underscores, optionally one trailing `?`/`!`/`=`), the name's
+    # own real `inspect` (reusing String's quoting rules directly,
+    # not hand-rolled here) otherwise. Non-Symbol keys are entirely
+    # unaffected — they always use the uniform `key => value` form,
+    # regardless of what they look like.
     define(cls, interp, "inspect") do |args, _blk, ncc|
       h = args.first.as_hash
       str = ncc.guard_rendering(h.object_id, "{...}") do
         pairs = h.keys.zip(h.values).map do |k, v|
-          key_str = ncc.call_method(k, "inspect", [] of Adjutant::Value).as_string
           val_str = ncc.call_method(v, "inspect", [] of Adjutant::Value).as_string
-          "#{key_str} => #{val_str}"
+          if k.symbol?
+            name = k.as_sym.name
+            label = name.matches?(SIMPLE_SYMBOL_KEY) ? name : ncc.call_method(Adjutant::Value.string(name), "inspect", [] of Adjutant::Value).as_string
+            "#{label}: #{val_str}"
+          else
+            key_str = ncc.call_method(k, "inspect", [] of Adjutant::Value).as_string
+            "#{key_str} => #{val_str}"
+          end
         end
         "{" + pairs.join(", ") + "}"
       end

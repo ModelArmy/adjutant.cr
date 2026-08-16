@@ -102,14 +102,39 @@ module Adjutant
         interp.eval(%({"a" => [1, 2]}.to_s)).as_string.should eq %({"a" => [1, 2]})
       end
 
-      it "KNOWN GAP: a Symbol key does NOT yet use real Ruby's shorthand inspect notation — documents current behavior, not desired behavior" do
-        # Real Ruby: {name: "x"}.inspect => {name: "x"}, NOT
-        # {:name => "x"}. This test exists so the gap is visible and
-        # tracked, not silently passing — if/when the shorthand is
-        # implemented, THIS test should start failing and get
-        # updated to assert the correct shorthand output instead.
+      it "a Symbol key that's a plain identifier uses the shorthand name: value notation, matching real Ruby" do
         interp, _ = make_interp
-        interp.eval(%({name: "x"}.to_s)).as_string.should eq %({:name => "x"})
+        interp.eval(%({name: "x"}.to_s)).as_string.should eq %({name: "x"})
+      end
+
+      it "multiple plain-identifier Symbol keys each use the shorthand" do
+        interp, _ = make_interp
+        interp.eval(%({name: "x", age: 5}.to_s)).as_string.should eq %({name: "x", age: 5})
+      end
+
+      it "a Symbol key ending in ? or ! still uses the shorthand" do
+        interp, _ = make_interp
+        interp.eval(%({valid?: true}.to_s)).as_string.should eq %({valid?: true})
+      end
+
+      it "a Symbol key that ISN'T a plain identifier (contains a space) still uses colon-shorthand, with the name quoted like a String — confirmed against a real irb session, NOT hash-rocket" do
+        interp, _ = make_interp
+        result = interp.eval(<<-RUBY)
+        h = {}
+        h[:"foo bar"] = 1
+        h.to_s
+        RUBY
+        result.as_string.should eq %({"foo bar": 1})
+      end
+
+      it "the shorthand depends only on the key's type and name, not which literal syntax built the Hash — a hash-rocket-written symbol key renders identically to a shorthand-written one" do
+        interp, _ = make_interp
+        interp.eval(%({"a" => 5, b: 6, :c => 8}.to_s)).as_string.should eq %({"a" => 5, b: 6, c: 8})
+      end
+
+      it "a non-Symbol key never uses the shorthand, even a String that looks like an identifier" do
+        interp, _ = make_interp
+        interp.eval(%({"name" => "x"}.to_s)).as_string.should eq %({"name" => "x"})
       end
 
       it "a script class's own `def inspect` override is respected for a value, via real dispatch" do
