@@ -686,7 +686,7 @@ module Adjutant
     # here is genuinely still the CALLING frame — the one whose
     # `self_val` is exactly what "self" means at the call site.
     # `protected`, not `private`, so `NativeFunctionCall`
-    # (interpreter.cr, this module's only `NativeCallContext`
+    # (native_function_call.cr, this module's only `NativeCallContext`
     # implementor) can call it — same visibility as `invoke`/
     # `call_method`/`compare`, which already do this for their own
     # reasons.
@@ -2956,14 +2956,14 @@ module Adjutant
     # dispatch, previously duplicated here across 8 separate methods
     # plus a third copy in the FakeContext spec helper. These two
     # `protected` wrappers exist only because NativeCallContext's real
-    # implementation (NativeFunctionCall, in interpreter.cr) delegates
+    # implementation (NativeFunctionCall, in native_function_call.cr) delegates
     # to `@vm.compare`/`@vm.values_equal?` by name — the delegation
     # contract stays the same, the logic behind it moved.
 
     # `filename`/`line` default to the current frame's own position —
     # right for every VM-opcode call site (Op::Lt/Le/Gt/Ge below,
     # already inside whatever frame is being compared) — and
-    # `NativeFunctionCall#compare` (interpreter.cr) passes its own
+    # `NativeFunctionCall#compare` (native_function_call.cr) passes its own
     # explicit `@filename`/`@line` instead, same pattern `call_method`
     # already uses, so an R013 raised from a native method's own
     # comparison points at the native call site, not wherever the VM

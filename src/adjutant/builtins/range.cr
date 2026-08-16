@@ -194,7 +194,7 @@ module Adjutant::Builtins
     # (ValueOps.add under the hood, same as Op::Add), NOT
     # `call_method(current, "+", [n])`: unlike `succ`, `+` is
     # opcode-only, never registered as a real native method (see
-    # NativeCallContext#add's own comment in interpreter.cr for the
+    # NativeCallContext#add's own comment in native_call_context.cr for the
     # full reasoning) — `call_method` would have no native-method
     # table entry to find for a builtin-typed receiver like
     # Integer/Float. `n` of exactly 0 would never advance past `min`,
