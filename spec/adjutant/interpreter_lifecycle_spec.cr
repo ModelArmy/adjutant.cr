@@ -20,6 +20,107 @@ module Adjutant
         interp.eval(%{print("hi")})
         ef.stdout.should eq "hi"
       end
+
+      # Step 2 of the to_s/inspect overridability work (see
+      # object_spec.cr's own header comment and DEVELOPMENT.md for
+      # the full plan) — puts/print/p now go through real dispatch
+      # (render_to_s/render_inspect, vm.cr), the same fix Op::Concat
+      # (string interpolation) already got in step 1.
+      it "puts uses a script class's own `def to_s` override, not the generic default" do
+        interp, ef = make_interp
+        interp.eval(<<-RUBY)
+        class A
+          def to_s
+            "custom!"
+          end
+        end
+        puts(A.new)
+        RUBY
+        ef.stdout.should eq "custom!\n"
+      end
+
+      it "puts on a plain object with no override still prints #<ClassName>, unchanged" do
+        interp, ef = make_interp
+        interp.eval(<<-RUBY)
+        class A
+        end
+        puts(A.new)
+        RUBY
+        ef.stdout.should eq "#<A>\n"
+      end
+
+      it "print uses a script class's own `def to_s` override too" do
+        interp, ef = make_interp
+        interp.eval(<<-RUBY)
+        class A
+          def to_s
+            "custom!"
+          end
+        end
+        print(A.new)
+        RUBY
+        ef.stdout.should eq "custom!"
+      end
+
+      it "puts fixes a real pre-existing bug: a Symbol argument no longer prints with a stray leading colon" do
+        # The OLD exec_builtin code called `arg.as_sym.to_s`, which
+        # (per Sym#to_s's own colon-inclusive quirk, symbol_table.cr)
+        # printed `puts :sym` as `:sym`. Real Ruby's `puts :sym`
+        # prints `sym`, no colon — matching what render_to_s (already
+        # used by string interpolation since step 1) has always done.
+        interp, ef = make_interp
+        interp.eval("puts(:sym)")
+        ef.stdout.should eq "sym\n"
+      end
+
+      it "puts on a Range now prints its real rendering, not the generic RubyObject fallback — fixed as a side effect of routing through real dispatch, same as interpolation's Range fix in step 1" do
+        interp, ef = make_interp
+        interp.eval("puts(1..3)")
+        ef.stdout.should eq "1..3\n"
+      end
+
+      it "p uses a script class's own `def inspect` override" do
+        interp, ef = make_interp
+        interp.eval(<<-RUBY)
+        class A
+          def inspect
+            "custom inspect!"
+          end
+        end
+        p(A.new)
+        RUBY
+        ef.stdout.should eq "custom inspect!\n"
+      end
+
+      it "p on a plain object with no override falls back to Object's own default #inspect (ivar-listing, from step 1) — not just #<ClassName>" do
+        interp, ef = make_interp
+        interp.eval(<<-RUBY)
+        class A
+          def initialize
+            @x = 1
+          end
+        end
+        p(A.new)
+        RUBY
+        ef.stdout.should eq "#<A @x=1>\n"
+      end
+
+      it "p still returns its single argument, unaffected by the render_inspect wiring" do
+        interp, _ = make_interp
+        interp.eval("p(5)").as_int.should eq 5_i64
+      end
+
+      it "p on a String still quotes it, via the existing Value#inspect fast path" do
+        interp, ef = make_interp
+        interp.eval(%{p("hi")})
+        ef.stdout.should eq %{"hi"\n}
+      end
+
+      it "p on a Symbol still keeps the leading colon (unlike puts) — inspect and to_s deliberately differ here" do
+        interp, ef = make_interp
+        interp.eval("p(:sym)")
+        ef.stdout.should eq ":sym\n"
+      end
     end
 
     describe "execution limits" do

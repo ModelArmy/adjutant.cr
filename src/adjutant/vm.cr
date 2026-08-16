@@ -1812,14 +1812,14 @@ module Adjutant
     # real, known, separate gap from the one this method fixes,
     # deliberately not folded in here).
     #
-    # Deliberately its own small method, not inlined into Op::Concat
-    # directly — `puts`/`print`/`p` (currently hardcoded VM hardcoded
-    # names in exec_builtin, not real dispatch either) are the next
-    # callers, and are ALSO the ones planned to eventually move
-    # outside the VM into a native integration API; keeping the
-    # actual "get this value's real string" logic in one place, not
-    # duplicated across four call sites, is what makes that future
-    # move a relocation rather than a rewrite.
+    # Deliberately its own small method, not inlined into any one
+    # call site — `puts`/`print` (exec_builtin, below) use it too, as
+    # of this same step, and all three (plus Op::Concat) are the ones
+    # planned to eventually move outside the VM into a native
+    # integration API; keeping the actual "get this value's real
+    # string" logic in one place, not duplicated across four call
+    # sites, is what makes that future move a relocation rather than
+    # a rewrite.
     private def render_to_s(value : Value, filename : String, line : Int32) : String
       case
       when value.string? then value.as_string
@@ -1830,6 +1830,24 @@ module Adjutant
       when value.symbol? then value.as_sym.name
       when value.rclass? then value.to_s
       else                    call_method(value, "to_s", [] of Value, filename, line).as_string
+      end
+    end
+
+    # Same shape as render_to_s, `inspect` instead. Simpler split than
+    # render_to_s's: `Value#inspect` (value.cr) ALREADY correctly
+    # handles every true scalar (Nil/String/Sym get their own real
+    # branch there — no `Sym#to_s`-includes-a-colon-style workaround
+    # needed here, since `Value#inspect`'s own Sym branch already
+    # produces the colon-INCLUDING form real Ruby's `Symbol#inspect`
+    # wants), so the only thing this needs to intercept is the three
+    # types with a REAL, potentially-overridden `inspect` to dispatch
+    # to — `RubyObject`/`LabeledArray`/`LabeledHash`. `RubyClass`
+    # stays on the fast path, same boundary decision as render_to_s.
+    private def render_inspect(value : Value, filename : String, line : Int32) : String
+      if value.robject? || value.array? || value.hash?
+        call_method(value, "inspect", [] of Value, filename, line).as_string
+      else
+        value.inspect
       end
     end
 
@@ -2592,17 +2610,16 @@ module Adjutant
       reject_kwargs!(kwargs, name, filename, line)
       case name
       when "puts"
-        str = args.map { |arg|
-          case
-          when arg.string? then arg.as_string
-          when arg.null?   then ""
-          when arg.bool?   then arg.as_bool.to_s
-          when arg.int?    then arg.as_int.to_s
-          when arg.float?  then arg.as_float.to_s
-          when arg.symbol? then arg.as_sym.to_s
-          else                  arg.to_s
-          end
-        }.join("\n")
+        # `render_to_s`, not each arg's own hand-rolled case — real
+        # dispatch for anything with an overridable `to_s`, matching
+        # Op::Concat (string interpolation)'s own fix. Fixes a real,
+        # pre-existing bug as a side effect: the OLD code here used
+        # `arg.as_sym.to_s`, which (per `Sym#to_s`'s own colon-
+        # inclusive quirk — see symbol_table.cr) printed `puts :sym`
+        # as `:sym`, WITH the colon; real Ruby's `puts :sym` prints
+        # `sym`. `render_to_s`'s symbol case already uses `.name`
+        # (no colon), the same fix Op::Concat already got.
+        str = args.map { |arg| render_to_s(arg, filename, line) }.join("\n")
         if ef = @effect
           ef.write_stdout(str + "\n")
         else
@@ -2610,7 +2627,7 @@ module Adjutant
         end
         Value.nil_value
       when "print"
-        str = args.map(&.to_s).join
+        str = args.map { |arg| render_to_s(arg, filename, line) }.join
         if ef = @effect
           ef.write_stdout(str)
         else
@@ -2618,7 +2635,9 @@ module Adjutant
         end
         Value.nil_value
       when "p"
-        str = args.map(&.inspect).join("\n")
+        # `render_inspect`, not `arg.inspect` (Crystal-level) — same
+        # fix as `puts`/`print` above, `inspect` instead of `to_s`.
+        str = args.map { |arg| render_inspect(arg, filename, line) }.join("\n")
         if ef = @effect
           ef.write_stdout(str + "\n")
         else
