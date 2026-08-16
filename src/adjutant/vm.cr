@@ -1863,6 +1863,50 @@ module Adjutant
       unless has_receiver
         if self_val && (sym_id = @symbols.lookup(name).try(&.value))
           if obj = self_val.as_robject?
+            # Top-level `include` is NOT a generic Object/Module
+            # inheritance relationship — Object does NOT include
+            # Module (the real hierarchy runs the other way:
+            # `Module < Object`), so `obj.rclass`'s own chain (walked
+            # just below) can never reach `Module#include` the way a
+            # class/module body's self_rclass branch does. Real
+            # Ruby's own `main` object has bespoke singleton behavior
+            # for exactly this case (confirmed against a real `irb`
+            # session — `main` mutates `Object`'s ancestor chain
+            # directly on `include`, publicly, matching the SAME
+            # bare/declarative shape `U018` already treats as safe
+            # for a class/module body — see SCOPE.md's "Object model"
+            # group and UNSUPPORTED.md's U018 entry for the full
+            # reasoning). Checked BEFORE the ordinary find_method/
+            # find_native_method lookups below, matching real Ruby's
+            # own singleton-methods-before-class-chain resolution
+            # order: a top-level `def include` should NOT shadow this
+            # (real `main.singleton_methods` lists `include` as a
+            # pre-existing singleton method, taking precedence over
+            # anything `def` could add to Object itself). Restricted
+            # to `main` specifically, not every RubyObject self —
+            # same "only reachable case" shape Op::DefSingleton's own
+            # comment already established for a RubyObject self
+            # reaching that opcode at all.
+            #
+            # `extend` is DELIBERATELY not handled here — confirmed
+            # against a real `irb` session that top-level `extend`
+            # writes to a genuine per-object singleton class on
+            # `main` alone (untouched Object ancestors, unaffected
+            # sibling instances, unaffected `Object.foo`), which
+            # `RubyObject` has no storage for at all today. Left
+            # unhandled on purpose: falls through to the ordinary
+            # undefined-method path below, then to U018's
+            # EXCLUDED_METHODS catch, same as before this change —
+            # a clear, already-existing "not supported" outcome
+            # rather than a silently wrong one. Tracked as its own,
+            # separate SCOPE.md item once scoped.
+            if name == "include" && !args.empty? &&
+               (interp = @interpreter) && obj.same?(interp.main) &&
+               (mod = args.first.as_rclass?)
+              obj.rclass.include_module(mod)
+              return self_val
+            end
+
             # self is an ordinary object (main at top level, or any
             # instance inside its own method body) — its OWN class's
             # instance-method chain is exactly what a bare call means

@@ -647,45 +647,35 @@ Quality-of-diagnostic gaps in the `Diagnostic`/`ErrorCatalog` system
   implicit-self branch, or `new` registered as a real native singleton
   method both branches would find the same way.
 
-- **Bare `include`/`extend` at the top level of a script should mix a
-  module into `Object` directly, matching real Ruby — currently
-  neither resolves at all.** Found 2026-08-15, scoping a request to
-  let a script `include M` at the top level and call `M`'s methods
-  bare afterward. Confirmed against real `irb`: top-level `include M`
-  mutates `Object`'s own ancestor chain (`self.class.ancestors` shows
-  `M` inserted right after `Object`), and the mixed-in methods are
-  ordinary PUBLIC instance methods — reachable via explicit receiver
-  from any `Object` instance, not just bare calls at the top level
-  (confirmed with a fresh `x = Object.new; x.hello("x")`, which
-  worked). `include`/`extend` are currently registered only as
-  `Module` instance methods (`builtins/mixins.cr#
-  register_module_methods`), reached exclusively via `dispatch_call`'s
-  self-is-rclass branch (a bare call made from inside a `class`/
-  `module` body, where `self` genuinely IS the `RubyClass` being
-  defined) — `ncc.self_val.as_rclass` assumes this unconditionally. At
-  the top level, `self` is `main`, a `RubyObject`, not a `RubyClass`,
-  so dispatch never reaches these methods at all today; a bare
-  top-level `include M`/`extend M` currently fails as an ordinary
-  undefined-method call. Fix shape: extend `dispatch_call`'s
-  implicit-self resolution so that when `self` is `main` specifically
-  (the only `RubyObject`-self case reachable this way — same precedent
-  `Op::DefSingleton`'s own top-level guard already established) and the
-  call resolves to `include`/`extend`, target `self.rclass` (`Object`)
-  the same way the existing self-is-rclass branch targets `self`
-  directly — not a new dispatch mechanism, the existing one aimed at
-  one more concrete case.
-
-  **Deliberately NOT the same thing `U018` excludes.** `U018` excludes
-  the EXPLICIT-receiver spelling (`X.include(M)`, `obj.include(M)`)
-  everywhere, top level included — that restriction is unchanged and
-  still applies. This item is specifically the BARE, declarative form
-  (`include M` with no receiver) written directly at the top level —
-  the exact shape `U018`'s own reasoning already treats as safe
-  (`class X; extend M; end`'s "one-time, textually-fixed claim"
-  argument applies identically to a bare top-level statement). See
-  `UNSUPPORTED.md`'s own `U018` entry, which now carries a matching
-  clarifying note, added alongside this item so a future reader
-  doesn't conflate the two.
+- **Top-level `extend` doesn't work — deliberately still excluded,
+  not yet a real gap fix.** Bare top-level `include M` shipped
+  2026-08-16 (see `DEVELOPMENT.md`'s "Bare `include` at the top level
+  of a script" writeup for the full build-out) — this item is the
+  narrower remainder, `extend` specifically, left out of that work on
+  purpose rather than folded in. Confirmed against real `irb`:
+  top-level `extend M` writes to a genuine PER-OBJECT singleton class
+  belonging to `main` alone — `Object`'s own ancestors stay untouched,
+  sibling `Object.new` instances are unaffected, and `Object.foo`
+  doesn't pick up the extended method either (all three behaviors
+  confirmed directly, not inferred). `RubyObject` has no storage for
+  a per-instance singleton method table at all today — only
+  `RubyClass` carries one (`singleton_methods`/`extended_modules`) —
+  so `extend`'s existing mechanism (`RubyClass#extend_module`,
+  consulted by `find_singleton_method`/`find_native_singleton_method`)
+  has nowhere correct to target from `main`: writing into `Object`'s
+  own `extended_modules` would make `Object.foo`-style calls work
+  (wrong — real Ruby doesn't) while leaving bare calls at the top
+  level unaffected (also wrong — that's the actual goal), the exact
+  opposite of what's needed. Fix shape, if taken on: give `RubyObject`
+  a genuinely new field (a `singleton_methods`/native counterpart,
+  `nil` for every object except `main`), and a new lookup step in
+  `dispatch_call`'s implicit-self `RubyObject` branch — checked BEFORE
+  `cls.find_method`, matching the real `irb`-confirmed resolution
+  order (`self.hello` found the extended method ahead of anything
+  `Object` itself could offer) — gated on `self_val.same?(interp.main)`,
+  the same restriction the shipped `include` fix already uses. Real,
+  separate plumbing, not a small addition to the `include` mechanism —
+  worth its own session rather than a quick follow-on.
 
 - **Top-level `def` should be an implicitly PRIVATE method of
   `Object` — unreachable via an explicit receiver from outside `self`,
