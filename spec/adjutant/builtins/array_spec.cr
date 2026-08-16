@@ -56,6 +56,116 @@ module Adjutant
       end
     end
 
+    # Step 3 of the to_s/inspect overridability work (see
+    # object_spec.cr's own header comment and DEVELOPMENT.md for the
+    # full plan). `#to_s` here was previously a Crystal-level
+    # `args.first.to_s` call — a circular no-op through the same
+    # broken generic fallback `Object#inspect` guards against
+    # (object_spec.cr) — so every case below is a real, previously-
+    # broken behavior, not just new coverage of something that already
+    # worked.
+    describe "#to_s / #inspect" do
+      it "to_s and inspect produce the same output — real Ruby aliases them for Array" do
+        interp, _ = make_interp
+        result = interp.eval("[[1, 2].to_s, [1, 2].inspect]")
+        strs = result.as_array.map(&.as_string)
+        strs[0].should eq strs[1]
+      end
+
+      it "an empty array renders as []" do
+        interp, _ = make_interp
+        interp.eval("[].to_s").as_string.should eq "[]"
+      end
+
+      it "elements render via THEIR OWN inspect, not to_s — a String element stays quoted even though the outer call is to_s" do
+        interp, _ = make_interp
+        interp.eval(%{[1, "a"].to_s}).as_string.should eq %{[1, "a"]}
+      end
+
+      it "a nested Array renders recursively" do
+        interp, _ = make_interp
+        interp.eval("[1, [2, 3]].to_s").as_string.should eq "[1, [2, 3]]"
+      end
+
+      it "a script class's own `def inspect` override is respected for an element, via real dispatch — not a hand-rolled per-type case" do
+        interp, _ = make_interp
+        result = interp.eval(<<-RUBY)
+        class A
+          def inspect
+            "custom!"
+          end
+        end
+        [A.new].to_s
+        RUBY
+        result.as_string.should eq "[custom!]"
+      end
+
+      it "a plain object element with no override renders via Object's own default #inspect (ivar-listing, from step 1)" do
+        interp, _ = make_interp
+        result = interp.eval(<<-RUBY)
+        class A
+          def initialize
+            @x = 1
+          end
+        end
+        [A.new].to_s
+        RUBY
+        result.as_string.should eq "[#<A @x=1>]"
+      end
+
+      it "a directly self-referential array renders as [[...]], matching real Ruby, instead of a native stack overflow" do
+        interp, _ = make_interp
+        result = interp.eval(<<-RUBY)
+        a = []
+        a << a
+        a.to_s
+        RUBY
+        result.as_string.should eq "[[...]]"
+      end
+
+      it "an indirect cycle (a contains b, b contains a) is also caught" do
+        interp, _ = make_interp
+        result = interp.eval(<<-RUBY)
+        a = []
+        b = [a]
+        a << b
+        a.to_s
+        RUBY
+        result.as_string.should eq "[[[...]]]"
+      end
+
+      it "the cycle guard does not leak across unrelated inspect calls on the SAME array — inspecting it a second time still recurses normally" do
+        interp, _ = make_interp
+        result = interp.eval(<<-RUBY)
+        a = [1, 2]
+        first = a.to_s
+        second = a.to_s
+        [first, second]
+        RUBY
+        strs = result.as_array.map(&.as_string)
+        strs.should eq ["[1, 2]", "[1, 2]"]
+      end
+
+      it "the cycle guard does not leak after an element's own inspect raises mid-render — the SAME array can be inspected again afterward, not stuck reporting [...] forever" do
+        interp, _ = make_interp
+        result = interp.eval(<<-RUBY)
+        class Boom
+          def inspect
+            raise "boom"
+          end
+        end
+        a = [Boom.new]
+        begin
+          a.to_s
+        rescue RuntimeError
+        end
+        a[0] = 5
+        a.to_s
+        RUBY
+        result.as_string.should eq "[5]"
+      end
+    end
+
     describe "#empty?" do
       it "true for an empty array" do
         interp, _ = make_interp

@@ -31,8 +31,37 @@ module Adjutant::Builtins
   def self.bootstrap_array(interp : Adjutant::Interpreter) : Adjutant::RubyClass
     cls = Adjutant::RubyClass.new("Array")
 
-    define(cls, interp, "to_s") do |args|
-      Adjutant::Value.string(args.first.to_s)
+    # Real Ruby (as I understand it — worth a real `irb` check, not
+    # independently confirmed here): `Array#to_s` is a plain alias for
+    # `Array#inspect` — identical output, no separate algorithm.
+    # `to_s` here calls real dispatch on `inspect` (`ncc.call_method`)
+    # rather than duplicating the same rendering logic in two places —
+    # pointless in practice today, since `U003` forbids reopening
+    # `Array` (or any builtin) to override just one of the two, but
+    # still the correct single-source-of-truth shape regardless.
+    #
+    # `inspect` itself: each element rendered via ITS OWN real
+    # `inspect` (`ncc.call_method`, not a hand-rolled per-type case) —
+    # a nested custom object's own `#inspect` override is respected
+    # for free, the same way `Object#inspect`'s ivar rendering already
+    # works (builtins/object.cr). Cycle-guarded (see
+    # NativeCallContext#guard_rendering's own comment): a genuinely self-
+    # referential array now renders as `[[...]]`, matching real Ruby,
+    # rather than recursing until the native stack overflows — this
+    # guard did not exist before this method could actually recurse,
+    # since the old `to_s` (a Crystal-level `args.first.to_s` call)
+    # never walked elements at all.
+    define(cls, interp, "inspect") do |args, _blk, ncc|
+      arr = args.first.as_array
+      str = ncc.guard_rendering(arr.object_id, "[...]") do
+        rendered = arr.to_a.map { |elem| ncc.call_method(elem, "inspect", [] of Adjutant::Value).as_string }
+        "[" + rendered.join(", ") + "]"
+      end
+      Adjutant::Value.string(str)
+    end
+
+    define(cls, interp, "to_s") do |args, _blk, ncc|
+      ncc.call_method(args.first, "inspect", [] of Adjutant::Value)
     end
 
     define(cls, interp, "length") do |args|

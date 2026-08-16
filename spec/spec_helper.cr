@@ -157,6 +157,17 @@ module Adjutant
       Value.nil_value
     end
 
+    # No-op passthrough — runs the block once with no cycle tracking
+    # at all (this harness has no VM-level Set to back real tracking
+    # with). Correct for these direct-NativeCallable tests: none of
+    # them exercise a self-referential container, and a spec that
+    # needs real cycle-guard behavior should go through the real VM
+    # instead (interp.eval), the way array_spec.cr's own coverage
+    # does.
+    def guard_rendering(obj_id : UInt64, cycle_result : String, & : -> String) : String
+      yield
+    end
+
     # No-op — these direct-NativeCallable tests don't exercise risk
     # flow enforcement, just method dispatch. See
     # risk_flow_enforcement_spec.cr for real declare_sensitivity

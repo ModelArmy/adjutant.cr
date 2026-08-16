@@ -309,6 +309,13 @@ module Adjutant
       # never gets read; it's cleared at the top of every fresh catch
       # so it can't leak into an unrelated later error.
       @pending_reraise = nil.as(Value?)
+      # Backing store for NativeCallContext#guard_rendering (see that
+      # method's own comment for the full reasoning) — one VM-level
+      # Set, not per-call state, since a recursive inspect walks back
+      # OUT through the VM (via `call_method`) between each container
+      # level, so there's nowhere else to durably hold "currently
+      # rendering" across those calls.
+      @rendering_ids = Set(UInt64).new
     end
 
     # Execute a compiled chunk and return the result.
@@ -1848,6 +1855,21 @@ module Adjutant
         call_method(value, "inspect", [] of Value, filename, line).as_string
       else
         value.inspect
+      end
+    end
+
+    # See NativeCallContext#guard_rendering's own comment for the full
+    # reasoning — this is where the actual Set lives and where the
+    # `ensure` actually runs, which is the entire point of this being
+    # one method instead of a begin/end pair every caller has to
+    # bracket correctly themselves.
+    def guard_rendering(obj_id : UInt64, cycle_result : String, & : -> String) : String
+      return cycle_result if @rendering_ids.includes?(obj_id)
+      @rendering_ids << obj_id
+      begin
+        yield
+      ensure
+        @rendering_ids.delete(obj_id)
       end
     end
 

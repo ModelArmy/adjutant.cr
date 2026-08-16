@@ -112,6 +112,42 @@ module Adjutant
     # any bound type that defines #succ, not just Integer.
     abstract def call_method(recv : Value, name : String, args : Array(Value)) : Value
 
+    # Cycle guard for a recursive `inspect` — `Array#inspect`
+    # (builtins/array.cr, first user) needs to know whether the
+    # container it's ABOUT to recurse into is one it's ALREADY in the
+    # middle of rendering, further up the same call — real Ruby's own
+    # behavior for a genuinely self-referential array (`a = []; a <<
+    # a; a.inspect`) prints `[[...]]` rather than recursing until the
+    # native stack overflows. `obj_id` is the CONTAINER'S OWN Crystal
+    # `object_id` (a `LabeledArray`/`LabeledHash` is a `Reference`, so
+    # this is free) — not a Value's own identity, since a `Value` is a
+    # struct rebuilt on every access and has no stable identity of its
+    # own to key on.
+    #
+    # Block-based, not a begin_rendering/end_rendering pair a caller
+    # has to remember to bracket correctly (an earlier draft of this
+    # was exactly that pair — the block form exists specifically
+    # because a paired API makes "forgot to release on the exception
+    # path" a mistake every future caller could make individually,
+    # where a block-based one makes the cleanup structural instead:
+    # the ensure lives ONCE, inside the implementation, not
+    # re-derived at every call site). Returns `cycle_result` (the
+    # caller's own placeholder — `"[...]"` for Array, `"{...}"` for a
+    # future Hash) immediately without running the block at all if
+    # `obj_id` is already being rendered; otherwise marks it as
+    # rendering, runs the block, and always clears the mark again
+    # before returning — even if the block raises.
+    #
+    # Global to the whole rendering call (one VM-level `Set`, not
+    # reset between calls) — a cycle several levels deep (`a = []; b =
+    # [a]; a << b`) needs the SAME tracking a direct self-reference
+    # does, and only the top-level render call and its own recursive
+    # `call_method("inspect", ...)` calls ever touch this, so leaking
+    # across genuinely separate `p`/`puts`/interpolation calls isn't a
+    # concern — each completes (or raises) before the next one
+    # starts.
+    abstract def guard_rendering(obj_id : UInt64, cycle_result : String, & : -> String) : String
+
     # Lets a native function declare that one of its own arguments
     # (identified by a concrete ProvenanceKind + origin, not
     # necessarily an already-labeled Value) is the risky subject of
@@ -202,6 +238,10 @@ module Adjutant
 
     def call_method(recv : Value, name : String, args : Array(Value)) : Value
       @vm.call_method(recv, name, args, filename, line)
+    end
+
+    def guard_rendering(obj_id : UInt64, cycle_result : String, & : -> String) : String
+      @vm.guard_rendering(obj_id, cycle_result) { yield }
     end
 
     def declare_sensitivity(tag : RiskTag, kind : ProvenanceKind, origin : String,
