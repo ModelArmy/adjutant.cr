@@ -115,19 +115,54 @@ module Adjutant::Builtins
       end
     end
 
-    # Note: this only fires for an explicit script-level `.to_s` call
-    # (goes through real dispatch_call). Value#to_s's Crystal-level
-    # fallback for a RubyObject (used by string interpolation, `puts`,
-    # etc. when no explicit `.to_s` is called) does NOT consult this —
-    # it prints "#<Range>" via RubyObject#to_s's generic default. Same
-    # pre-existing, broader gap the 2026-07-14 handoff already flagged
-    # for Array/Hash (Value#to_s has no Array/Hash case either); not
-    # fixed here since it's a Value#to_s-wide limitation, not specific
-    # to Range, and touching it risks unrelated behavior changes.
-    define(cls, interp, "to_s") do |args|
+    # `to_s` previously interpolated each bound via raw Crystal string
+    # interpolation (`"#{obj.ivars[min_sym]}"`) — Crystal-level
+    # `Value#to_s`, not real dispatch, the same category of bug
+    # already fixed for Array/Hash/Object/string interpolation
+    # elsewhere in this session. A custom object used as a bound with
+    # its own script-defined `to_s` override wasn't being respected;
+    # now it is, via `ncc.call_method`.
+    #
+    # `inspect` didn't exist at all before this — any implicit render
+    # (`p`, a Range nested inside an Array/Hash's own `inspect`) fell
+    # through to `Object`'s generic `#<Range>` fallback instead of a
+    # real rendering. Real Ruby (as I understand it — worth a real
+    # `irb` check, not independently confirmed here): `Range#to_s` and
+    # `Range#inspect` differ when a bound isn't a plain number — `to_s`
+    # renders each bound via its own `to_s` (a String bound appears
+    # unquoted: `("a".."c").to_s => "a..c"`), `inspect` renders each
+    # bound via its own `inspect` (quoted: `("a".."c").inspect =>
+    # "\"a\"..\"c\""`) — unlike Array/Hash, where `to_s` is a plain
+    # alias for `inspect` with no distinction at all. Implemented as
+    # two genuinely separate methods here, not one aliased to the
+    # other, to match that difference; each bound rendered via real
+    # dispatch (`ncc.call_method`) either way, so a custom bound
+    # type's own `to_s`/`inspect` override is respected for both.
+    #
+    # KNOWN, DELIBERATELY OUT-OF-SCOPE EDGE CASE: a `nil` bound (only
+    # reachable today via explicit `Range.new(nil, 5)` — endless/
+    # beginless range SYNTAX isn't parseable yet, a separate, already-
+    # tracked SCOPE.md item) renders here via real dispatch same as
+    # any other bound, producing `"nil..5"`. Real Ruby specially
+    # OMITS a nil bound entirely (`Range.new(nil, 5).inspect =>
+    # "..5"`). Not fixed here — Range's bound representation itself
+    # is the separate item's concern, not this step's; revisit
+    # alongside that work rather than as a special case bolted on
+    # here.
+    define(cls, interp, "to_s") do |args, _blk, ncc|
       obj = args.first.as_robject
       sep = obj.ivars[excl_sym].as_bool ? "..." : ".."
-      Adjutant::Value.string("#{obj.ivars[min_sym]}#{sep}#{obj.ivars[max_sym]}")
+      min_str = ncc.call_method(obj.ivars[min_sym], "to_s", [] of Adjutant::Value).as_string
+      max_str = ncc.call_method(obj.ivars[max_sym], "to_s", [] of Adjutant::Value).as_string
+      Adjutant::Value.string("#{min_str}#{sep}#{max_str}")
+    end
+
+    define(cls, interp, "inspect") do |args, _blk, ncc|
+      obj = args.first.as_robject
+      sep = obj.ivars[excl_sym].as_bool ? "..." : ".."
+      min_str = ncc.call_method(obj.ivars[min_sym], "inspect", [] of Adjutant::Value).as_string
+      max_str = ncc.call_method(obj.ivars[max_sym], "inspect", [] of Adjutant::Value).as_string
+      Adjutant::Value.string("#{min_str}#{sep}#{max_str}")
     end
 
     define(cls, interp, "include?") do |args, _blk, ncc|
