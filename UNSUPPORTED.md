@@ -354,10 +354,12 @@ reports as an ordinary undefined name.
 
 ### U008 — `private`/`protected`/`public`
 
-Ruby's implicit-`self` method visibility model. A native function or
-top-level `def` (both land on `Object`) is reachable via an explicit
-receiver on any inheriting object today — there is no way to mark a
-method unreachable from outside its own class.
+Ruby's implicit-`self` method visibility model AS A SCRIPT-DECLARABLE
+FEATURE — a script writing `private`/`protected`/`public` itself to
+control a class or module's own interface. A native function is
+reachable via an explicit receiver on any inheriting object today;
+there is no way for a SCRIPT to mark one of its own methods
+unreachable from outside its own class.
 
 **Why:** decided 2026-08-05, during a session filtering the mruby-derived
 gap survey by value against Adjutant's actual use case. Visibility exists
@@ -371,10 +373,24 @@ should have been private, and getting an error for a distinction that
 serves no purpose in this use case) without a corresponding safety
 benefit here.
 
-**Instead:** nothing; every method stays callable via an explicit
-receiver, as it is today. If a script wants to signal "don't call this,"
-naming convention (a leading underscore, a comment) is the available
-tool, same as it would be in a language with no visibility model at all.
+**Instead:** nothing; every method a SCRIPT defines stays callable via
+an explicit receiver, as it is today. If a script wants to signal
+"don't call this," naming convention (a leading underscore, a
+comment) is the available tool, same as it would be in a language with
+no visibility model at all.
+
+**Not the same thing as top-level `def`'s own implicit privacy,
+shipped 2026-08-16.** A bare top-level `def` IS now unreachable via an
+explicit receiver from outside `self` (`R023`) — but this is a single,
+fixed, always-on rule replicating one specific thing real Ruby does
+unconditionally, not a script-declarable feature; nothing about it
+lets a script write `private`/`protected`/`public` itself, and every
+method a script defines inside an ordinary `class`/`module` body stays
+exactly as reachable as it always was. See `DEVELOPMENT.md`'s
+"Top-level `def` is implicitly private" writeup for the full build-out.
+This entry's own exclusion — no script-declarable visibility, for
+methods defined however a script chooses to define them — is
+unchanged.
 
 **Enforcement — not yet enforced.** `private`/`protected`/`public` are
 currently either undefined names (if used as bare calls) or silently

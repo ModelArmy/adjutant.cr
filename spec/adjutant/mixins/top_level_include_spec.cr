@@ -2,99 +2,79 @@ require "../../spec_helper"
 
 module Adjutant
   describe Interpreter do
-    describe "bare `include` at the top level (main)" do
+    describe "top-level `def` is implicitly private (matches real Ruby's `main`/Object relationship)" do
       # Confirmed against a real `irb` session before implementing:
-      # top-level `include M` mutates `Object`'s own ancestor chain
-      # directly — the mixed-in method is an ordinary PUBLIC instance
-      # method, reachable from ANY `Object` instance via explicit
-      # receiver, not just bare calls at the top level. See
-      # SCOPE.md's "Object model" group and UNSUPPORTED.md's U018
-      # entry for the full design reasoning.
+      # a top-level `def` lands in `Object.private_methods`, not
+      # `Object.methods` — unreachable via an explicit receiver from
+      # outside `self`, even where the receiver is `Object` itself or
+      # a freshly-constructed `Object.new` — while a bare call and
+      # `self.` both still work. See SCOPE.md's "Object model" group
+      # and DEVELOPMENT.md for the full design reasoning. NOT a
+      # reopening of U008 (private/protected/public stays a
+      # deliberate non-goal as a script-declarable feature) — this is
+      # a single, fixed, always-on rule with no `private` keyword
+      # involved.
 
-      it "a bare call to the included module's method works after `include` at the top level" do
-        eval(<<-RUBY).should eq Value.string("hi from M")
-        module M
-          def greet
-            "hi from M"
-          end
+      it "a bare call to a top-level `def` still works" do
+        eval(<<-RUBY).should eq Value.string("hi")
+        def greet
+          "hi"
         end
-        include M
         greet
         RUBY
       end
 
-      it "the included method is also callable via `self.` at the top level" do
-        eval(<<-RUBY).should eq Value.string("hi from M")
-        module M
-          def greet
-            "hi from M"
-          end
+      it "`self.` still works from inside the frame where self is main" do
+        eval(<<-RUBY).should eq Value.string("hi")
+        def greet
+          "hi"
         end
-        include M
         self.greet
         RUBY
       end
 
-      it "the included method becomes callable on OTHER, unrelated Object instances too — matching real Ruby, not scoped to main alone" do
-        eval(<<-RUBY).should eq Value.string("xy")
-        module M
-          def greet(s)
-            s
+      it "an explicit receiver on a fresh, unrelated Object instance is rejected — R023" do
+        error = expect_raises(RuntimeError) do
+          eval(<<-RUBY)
+          def greet
+            "hi"
           end
+          x = Object.new
+          x.greet
+          RUBY
         end
-        include M
-        x = Object.new
-        y = Object.new
-        x.greet("x") + y.greet("y")
-        RUBY
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("R023")
+        diag.data["method"].should eq("greet")
       end
 
-      it "top-level `include` adds the module to Object's own included_modules" do
-        interp, _ = make_interp
-        interp.eval(<<-RUBY)
-        module M
-        end
-        include M
-        RUBY
-        object_class = interp.get_global("Object").as_rclass
-        m = interp.get_global("M").as_rclass
-        object_class.included_modules.should eq [m]
-      end
-
-      it "multiple top-level includes resolve in real MRO order — the LAST one included wins" do
-        eval(<<-RUBY).should eq Value.string("from M2")
-        module M1
-          def greet
-            "from M1"
-          end
-        end
-        module M2
-          def greet
-            "from M2"
-          end
-        end
-        include M1
-        include M2
-        greet
-        RUBY
-      end
-
-      it "a top-level `def` still wins over an included module's same-named method — implicit-self resolution order is unaffected" do
-        eval(<<-RUBY).should eq Value.string("top-level def")
-        module M
-          def greet
-            "from M"
-          end
-        end
-        include M
+      it "R023 is script-catchable as NoMethodError, matching Ruby" do
+        eval(<<-RUBY).should eq Value.string("caught")
         def greet
-          "top-level def"
+          "hi"
         end
-        greet
+        begin
+          Object.new.greet
+        rescue NoMethodError => e
+          "caught"
+        end
         RUBY
       end
 
-      it "an included module's method still runs with self bound to main, not the module" do
+      it "the R023 diagnostic names the method and the receiver's class" do
+        error = expect_raises(RuntimeError) do
+          eval(<<-RUBY)
+          def greet
+            "hi"
+          end
+          Object.new.greet
+          RUBY
+        end
+        diag = error.diagnostic.not_nil!
+        diag.data["target"].should eq("an instance of Object")
+      end
+
+      it "a top-level def is still an ordinary, callable method for everything OTHER than an outside explicit receiver — no regression in the include fix's own coverage" do
         eval(<<-RUBY).should eq Value.string("A-helper-M")
         module M
           def run
@@ -108,87 +88,100 @@ module Adjutant
         run
         RUBY
       end
-
-      it "top-level `include` returns self (main), matching real Ruby's Module#include" do
-        interp, _ = make_interp
-        result = interp.eval(<<-RUBY)
-        module M
-        end
-        include M
-        RUBY
-        result.as_robject.rclass.should eq interp.main.rclass
-      end
-
-      it "a script with no top-level `include` at all leaves Object's included_modules untouched" do
-        interp, _ = make_interp
-        interp.eval("1 + 1")
-        object_class = interp.get_global("Object").as_rclass
-        object_class.included_modules.should be_empty
-      end
-
-      it "bare `include M` written inside an ORDINARY instance method body (self is not main) is NOT resolved by this new path — still excluded (U018), same as before this change" do
-        error = expect_raises(RuntimeError) do
-          eval(<<-RUBY)
-          module M
-          end
-          class A
-            def try_include
-              include M
-            end
-          end
-          A.new.try_include
-          RUBY
-        end
-        diag = error.diagnostic.not_nil!
-        diag.code.should eq("U018")
-      end
     end
 
-    describe "bare `extend` at the top level (main) — deliberately still excluded" do
-      # Confirmed against a real `irb` session: top-level `extend`
-      # writes to a genuine per-object singleton class on main alone
-      # (Object's ancestors unchanged, sibling instances unaffected,
-      # Object.foo unaffected) — RubyObject has no storage for that
-      # today. Left excluded on purpose rather than approximated with
-      # `include`'s semantics; see vm.cr's own comment on this
-      # decision and SCOPE.md for the follow-up item.
-
-      it "`extend M` at the top level still raises U018, unaffected by the include fix" do
-        error = expect_raises(RuntimeError) do
-          eval(<<-RUBY)
-          module M
-            def greet
-              "hi"
-            end
-          end
-          extend M
-          greet
-          RUBY
-        end
-        diag = error.diagnostic.not_nil!
-        diag.code.should eq("U018")
-        diag.data["construct"].should eq("extend")
-      end
+    describe "the distinguishing factor is HOW a method was defined, not WHERE it ends up" do
+      # `class Object; def foo; end; end` would be the natural script-
+      # level way to demonstrate this contrast directly — but `U003`
+      # forbids reopening ANY class, Object included, so that
+      # construct isn't reachable from a script at all. The underlying
+      # logic (self is a RubyClass at Op::DefMethod time never marks
+      # private, regardless of WHICH class) is instead covered
+      # directly against `RubyClass` below, in the "direct unit
+      # coverage" describe block — `find_method_private?` returning
+      # `false` for an ordinarily-defined method demonstrates exactly
+      # this, without needing a script construct Adjutant doesn't
+      # support to exercise it.
     end
 
-    describe "top-level `include` inside a class/module body is completely unaffected (regression check)" do
-      # The new dispatch branch is gated on self.same?(interp.main) —
-      # this confirms a class/module body's own, already-working
-      # `include` path (self is a RubyClass there, a different branch
-      # entirely) never even reaches the new check.
+    describe "redefinition resets visibility (matches real Ruby — visibility is per-declaration, not inherited automatically)" do
+      # A top-level `def` redefining Object directly (rather than a
+      # subclass overriding an inherited name) would be the more
+      # direct way to show this — but that's the same `class Object;
+      # ...; end` shape `U003` forbids, same as the describe block
+      # above. The subclass case below exercises the identical
+      # underlying rule (a closer definition's own visibility wins,
+      # regardless of what an ancestor declared) through a construct
+      # Adjutant actually supports.
 
-      it "`include` still works normally inside a class body" do
-        eval(<<-RUBY).should eq Value.string("hi from M")
-        module M
-          def greet
-            "hi from M"
-          end
+      it "a subclass overriding a private inherited method WITHOUT redeclaring it private makes the override public" do
+        eval(<<-RUBY).should eq Value.string("A's own")
+        def greet
+          "top-level"
         end
         class A
-          include M
+          def greet
+            "A's own"
+          end
         end
         A.new.greet
         RUBY
+      end
+    end
+
+    describe "`RubyClass#private_methods`/`native_private_methods` — direct unit coverage" do
+      it "define_method with is_private: true adds to private_methods; false (default) doesn't" do
+        cls = RubyClass.new("Test")
+        proc = ScriptProc.new(Chunk.new, "foo")
+        cls.define_method(1, proc, is_private: true)
+        cls.private_methods.should eq Set{1}
+      end
+
+      it "redefining the same sym_id without is_private clears it from private_methods" do
+        cls = RubyClass.new("Test")
+        proc = ScriptProc.new(Chunk.new, "foo")
+        cls.define_method(1, proc, is_private: true)
+        cls.define_method(1, proc)
+        cls.private_methods.should be_empty
+      end
+
+      it "find_method_private? returns false for a name that isn't defined at all" do
+        cls = RubyClass.new("Test")
+        cls.find_method_private?(999).should be_false
+      end
+
+      it "find_method_private? returns false for a name that resolves but isn't private" do
+        cls = RubyClass.new("Test")
+        proc = ScriptProc.new(Chunk.new, "foo")
+        cls.define_method(1, proc)
+        cls.find_method_private?(1).should be_false
+      end
+
+      it "find_method_private? walks the superclass chain, same as find_method itself" do
+        base = RubyClass.new("Base")
+        proc = ScriptProc.new(Chunk.new, "foo")
+        base.define_method(1, proc, is_private: true)
+        sub = RubyClass.new("Sub", base)
+        sub.find_method_private?(1).should be_true
+      end
+
+      it "a subclass's own (public) override of a privately-inherited name wins — closer definition, matches find_method's own resolution order" do
+        base = RubyClass.new("Base")
+        base_proc = ScriptProc.new(Chunk.new, "foo")
+        base.define_method(1, base_proc, is_private: true)
+        sub = RubyClass.new("Sub", base)
+        sub_proc = ScriptProc.new(Chunk.new, "foo")
+        sub.define_method(1, sub_proc)
+        sub.find_method_private?(1).should be_false
+      end
+
+      it "an included module's own private method stays private when consulted through the including class" do
+        mod = RubyClass.new("M", is_module: true)
+        proc = ScriptProc.new(Chunk.new, "whisper")
+        mod.define_method(1, proc, is_private: true)
+        cls = RubyClass.new("A")
+        cls.include_module(mod)
+        cls.find_method_private?(1).should be_true
       end
     end
   end

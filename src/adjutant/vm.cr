@@ -1246,13 +1246,31 @@ module Adjutant
             # not a special top-level-only table — matching real
             # Ruby's actual `main`/Object relationship rather than a
             # simplification of it.
-            owner = f.self_val.as_rclass? || f.self_val.as_robject?.try(&.rclass)
+            owner_rclass = f.self_val.as_rclass?
+            owner = owner_rclass || f.self_val.as_robject?.try(&.rclass)
             unless owner
               raise script_diagnostic("R006", {"definition" => "def #{name_sym.name}"}, f)
             end
             proc = proc_val.as_proc
             proc.lexical_scope = owner
-            owner.define_method(name_sym.value, proc)
+            # `is_private: owner_rclass.nil?` — owner came from the
+            # RubyObject branch, not the RubyClass one, exactly when
+            # this `def` executed with a RubyObject self. `compile_def`
+            # (compiler.cr)'s `@def_depth` guard rejects ANY `def`
+            # lexically nested inside another `def`/lambda body at
+            # COMPILE time (both `def foo` and `def self.foo` — see
+            # that guard's own comment), so a RubyObject self reaching
+            # this opcode at RUNTIME can only be `main` — the same
+            # "only reachable case" precedent `Op::DefSingleton` (a few
+            # lines down) already relies on, not a fresh assumption.
+            # Confirmed against real `irb`: top-level `def` lands in
+            # `Object.private_methods`, unreachable via an explicit
+            # receiver from outside `self` (`x.hello`/`Object.hello`
+            # both raise `NoMethodError`) even though bare calls and
+            # `self.hello` both work — see `find_method_private?`
+            # (ruby_class.cr) for the read side and this method's
+            # explicit-receiver branch (below) for enforcement.
+            owner.define_method(name_sym.value, proc, is_private: owner_rclass.nil?)
             push(Value.nil_value)
           when Op::DefSingleton
             recv = pop
@@ -1758,6 +1776,37 @@ module Adjutant
       {args, kwargs}
     end
 
+    # Raises R023 (NoMethodError) if the method/native method that
+    # `sym_id` just resolved to, on `cls`, is private (see
+    # `RubyClass#find_method_private?`/`find_native_method_private?`)
+    # AND the call was made with a receiver that isn't the SAME
+    # object as `self` at the call site. Object-identity comparison
+    # (`same?`), not "was this spelled `self.`" — matches real Ruby's
+    # own relaxed rule (confirmed against a real `irb` session:
+    # `self.hello(1)` works from inside the frame where `self` IS
+    # that object, the exact same dispatch path an explicit `x.hello`
+    # from anywhere else takes). Checked here, once, for both the
+    # script-method and native-method branches of the explicit-
+    # receiver `RubyObject` dispatch path — the only place this
+    # matters, since the implicit-self path never has an "other"
+    # receiver to compare against at all.
+    private def raise_if_private_call(cls : RubyClass, sym_id : Int32, name : String,
+                                      recv : Value, self_val : Value?, filename : String, line : Int32,
+                                      native : Bool) : Nil
+      is_private = native ? cls.find_native_method_private?(sym_id) : cls.find_method_private?(sym_id)
+      return unless is_private
+      caller_self = self_val.try(&.as_robject?)
+      return if caller_self && caller_self.same?(recv.as_robject)
+      raise runtime_diagnostic(
+        Diagnostic.new(
+          code: "R023",
+          primary: Span.new(line: line, filename: filename),
+          data: {"method" => name, "target" => "an instance of #{cls.name}"}
+        ),
+        error_class: "NoMethodError"
+      )
+    end
+
     # ameba:disable Metrics/CyclomaticComplexity - Clear steps, better together
     private def dispatch_call(name : String,
                               args : Array(Value),
@@ -1797,9 +1846,11 @@ module Adjutant
           cls = recv.as_robject.rclass
           if sym_id = @symbols.lookup(name).try(&.value)
             if method = cls.find_method(sym_id)
+              raise_if_private_call(cls, sym_id, name, recv, self_val, filename, line, native: false)
               return call_script_proc(method, args[1..], filename, blk, nil, self_val: recv, block_outer: blk_outer, kwargs: kwargs)
             end
             if native = cls.find_native_method(sym_id)
+              raise_if_private_call(cls, sym_id, name, recv, self_val, filename, line, native: true)
               return call_native(native, args, filename, line, blk, "#{cls.name}##{name}", kwargs: kwargs)
             end
           end

@@ -449,10 +449,16 @@ module Adjutant
     # the block; NativeFunc's own signature is unchanged, so this is
     # opt-in per function, not a blast-radius change to every existing
     # native function body.
-    def define_native(name : String, risk : RiskProfile = RiskProfile.none, kwarg_names : Set(String) = Set(String).new,
+    # `private` — opt-in, default false; a native function registering
+    # itself private (matching real Ruby's own `Kernel` methods, most
+    # of which are private) is a deliberate per-function choice, not
+    # something flipped globally here. No existing `define_native`
+    # call site passes it, so no existing native function's behavior
+    # changes by this parameter existing.
+    def define_native(name : String, risk : RiskProfile = RiskProfile.none, kwarg_names : Set(String) = Set(String).new, is_private : Bool = false,
                       &block : Array(Value), ScriptProc?, NativeCallContext -> Value) : Nil
       sym = @symbols.intern(name)
-      object_class.define_native_method(sym.value, risk, kwarg_names, &block)
+      object_class.define_native_method(sym.value, risk, kwarg_names, is_private: is_private, &block)
     end
 
     # Look up a native callable by symbol ID — called by VM dispatch.

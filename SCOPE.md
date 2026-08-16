@@ -677,53 +677,14 @@ Quality-of-diagnostic gaps in the `Diagnostic`/`ErrorCatalog` system
   separate plumbing, not a small addition to the `include` mechanism —
   worth its own session rather than a quick follow-on.
 
-- **Top-level `def` should be an implicitly PRIVATE method of
-  `Object` — unreachable via an explicit receiver from outside `self`,
-  even where the receiver is `Object` itself.** Found 2026-08-15, while
-  scoping the `include`/`extend` item above, confirmed against real
-  `irb`: `Object.private_methods` contains a top-level-defined method,
-  `Object.methods` doesn't, and both `Object.hello(1)` and
-  `x.hello(3)` (a separately-constructed `Object.new`) raise
-  `NoMethodError: private method 'hello' called for ...` — but
-  `self.hello(1)` and bare `hello(1)` both work. This is a real
-  "proper subset" violation, not a missing-feature gap in the ordinary
-  sense: **a script that raises in real Ruby currently SUCCEEDS in
-  Adjutant** (`x.hello(3)` on a fresh `Object.new` works today, since
-  nothing checks visibility), which is the one direction of divergence
-  Adjutant's own "proper subset" goal should never allow. Distinct
-  from `U008`'s general `private`/`protected`/`public` exclusion, and
-  NOT a re-opening of that decision: `U008`'s reasoning (no second
-  author to defend against, in single-authored LLM scripts) is about
-  visibility as a DECLARED, general-purpose feature scripts would opt
-  into, and still holds on those terms. This item is narrower — real
-  Ruby applies this ONE rule unconditionally, with no `private`/
-  `public` keyword involved at all, so replicating it doesn't require
-  building a general visibility system: a method whose
-  `ScriptProc#lexical_scope` is `Object` AND was defined via a bare
-  top-level `def` (not `class Object; def ...; end`, which stays
-  ordinarily public — worth confirming that distinction against `irb`
-  too before implementing) raises the same `NoMethodError` when called
-  via an EXPLICIT receiver from outside the frame where
-  `self == main`. Not yet traced to a specific dispatch location —
-  likely a single additional check in `dispatch_call`'s
-  explicit-receiver branch, keyed on the target method's
-  `lexical_scope` and the receiver, rather than a general per-method
-  visibility flag.
-
-  **Confirmed NOT shared by the `include`/`extend` item above** — a
-  module's own public method, once mixed in via top-level `include`,
-  stays public (same `irb` trace: `x.hello`/`y.hello` both worked on
-  fresh `Object` instances after `include M`). Flagging the
-  distinction here only so the two items aren't accidentally
-  conflated later.
-
 Per-instance singleton methods became a deliberate non-goal 2026-07-27
 (see [UNSUPPORTED.md](./UNSUPPORTED.md), U004). Implicit-`self`
 privacy/visibility (`private`/`public`/`protected`) became a deliberate
 non-goal 2026-08-05 (see UNSUPPORTED.md, U008) — this remains true for
-visibility as a general, declarative feature; the top-level-`def`-is-
-private item above is a narrower, always-on rule, not a reopening of
-that decision (see its own entry for the distinction). `Class.new(kwargs)` →
+visibility as a general, declarative feature; top-level `def` shipped
+its own narrow, always-on private treatment 2026-08-16, not a
+reopening of that decision (see DEVELOPMENT.md's "Top-level `def` is
+implicitly private" writeup for the distinction). `Class.new(kwargs)` →
 `initialize` binding was promoted to `Must Fix` 2026-08-05 and has
 since shipped (see git history/`DEVELOPMENT.md`'s "Argument binding"
 section).
