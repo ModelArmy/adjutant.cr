@@ -28,8 +28,61 @@ module Adjutant::Builtins
   def self.bootstrap_hash(interp : Adjutant::Interpreter) : Adjutant::RubyClass
     cls = Adjutant::RubyClass.new("Hash")
 
-    define(cls, interp, "to_s") do |args|
-      Adjutant::Value.string(args.first.to_s)
+    # Real Ruby (as I understand it — worth a real `irb` check, not
+    # independently confirmed here): `Hash#to_s` is a plain alias for
+    # `Hash#inspect`, same as `Array`'s own aliasing (builtins/
+    # array.cr). `to_s` here calls real dispatch on `inspect`
+    # (`ncc.call_method`) rather than duplicating the same rendering
+    # logic in two places.
+    #
+    # `inspect` itself: BOTH each key and each value rendered via
+    # THEIR OWN real `inspect` (`ncc.call_method`, not a hand-rolled
+    # per-type case) — a nested custom object's own `#inspect`
+    # override is respected for free, same as Array's own elements.
+    # Cycle-guarded via the SAME shared `NativeCallContext#
+    # guard_rendering` Array uses (see that method's own comment) —
+    # a Hash whose own value is itself (`h = {}; h["self"] = h`) now
+    # renders as `{"self" => {...}}` rather than recursing until the
+    # native stack overflows, and — since the guard is keyed on
+    # object identity across ANY container type, not per-type state —
+    # a cycle running THROUGH an Array (`a = []; h = {a: a}; a << h`)
+    # is caught by the exact same mechanism, with no Hash-specific
+    # tracking needed. `" => "` (with spaces) matches Ruby 4.0's
+    # current default `Hash#inspect` format — worth a real `irb`
+    # check on whatever Ruby version matters here, since this changed
+    # from the older, space-less `"a"=>1` at some point and isn't
+    # something I independently verified beyond your own earlier
+    # `irb` transcripts already showing Ruby 4.0.6.
+    #
+    # KNOWN GAP, not yet handled: real Ruby's `Hash#inspect` uses
+    # shorthand notation for a Symbol key that looks like a plain
+    # identifier — `{name: "x", age: 5}.inspect` renders as
+    # `{name: "x", age: 5}`, NOT `{:name => "x", :age => 5}` — and
+    # that shorthand key syntax is the MOST common way a script
+    # writes a Hash literal in the first place, so this isn't an edge
+    # case. This method uses the uniform `key => value` form for
+    # EVERY key type, including Symbol, which is wrong for that
+    # common case. Deliberately not guessed at here: real Ruby's
+    # exact identifier-validity rule for when the shorthand applies
+    # (plain names vs. ones needing quoting, trailing `?`/`!`/`=`,
+    # ...) is itself nontrivial and worth confirming precisely rather
+    # than approximating. Filed as a follow-up rather than shipped
+    # wrong or guessed at.
+    define(cls, interp, "inspect") do |args, _blk, ncc|
+      h = args.first.as_hash
+      str = ncc.guard_rendering(h.object_id, "{...}") do
+        pairs = h.keys.zip(h.values).map do |k, v|
+          key_str = ncc.call_method(k, "inspect", [] of Adjutant::Value).as_string
+          val_str = ncc.call_method(v, "inspect", [] of Adjutant::Value).as_string
+          "#{key_str} => #{val_str}"
+        end
+        "{" + pairs.join(", ") + "}"
+      end
+      Adjutant::Value.string(str)
+    end
+
+    define(cls, interp, "to_s") do |args, _blk, ncc|
+      ncc.call_method(args.first, "inspect", [] of Adjutant::Value)
     end
 
     define(cls, interp, "length") do |args|
