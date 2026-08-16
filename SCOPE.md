@@ -24,6 +24,80 @@ Blocking, or actively causing incorrect behavior in normal use. Ordered
 roughly by dependency, not necessarily by importance — an item lower down
 may unblock ones above it.
 
+**Reordered 2026-08-15**, on top of the existing dependency ordering: the
+first six entries below are additionally sorted by how often ordinary,
+idiomatic Ruby would reach for the construct and get silently wrong output
+or a hard block — silent-wrong-answer entries lead, then everyday syntax
+blocks, then idioms with a workaround. Two entries (`%w[]`/`%i[]`/heredocs,
+`lambda`/`proc`) were promoted from `Will Fix` as part of the same pass —
+common enough in ordinary scripts that "not currently blocking anything"
+no longer held. The remaining entries (runtime carets, `respond_to?`) keep
+their prior relative order; they weren't re-evaluated against the
+promoted two on this axis, just carried forward.
+
+- **`Array#to_s`/`Hash#to_s`/`Range#to_s` (called implicitly — e.g.
+  string interpolation, `puts`, `p` — and `#inspect`, which defers to
+  `to_s`) silently produce garbage, not a real Ruby-style rendering.**
+  Found 2026-08-13 writing fresh ISO-style coverage for `Hash`, then
+  confirmed the identical gap already applies to `Range` too —
+  `builtins/range.cr`'s own `to_s` method comment flags it, tracing
+  back to the 2026-07-14 handoff, predating this entry.
+  `Value#to_s`'s case statement (`value.cr`) has no branch for
+  `LabeledArray`, `LabeledHash`, OR a `Range` RubyObject at all — all
+  three fall through to the generic `"#<" << @raw.class << ">"` (or,
+  for a RubyObject like Range, `RubyObject#to_s`'s own generic
+  `"#<Range>"`) fallback, so `{"a" => 1}.to_s` actually produces
+  `"#<Adjutant::LabeledHash>"`, `[1,2,3].to_s` produces
+  `"#<Adjutant::LabeledArray>"`, and interpolating a Range (`"#{1..3}"`)
+  produces `"#<Range>"` rather than `"1..3"` — none of these the real
+  rendering a script or its author would expect. IMPORTANT scope note
+  from `range.cr`'s own comment: Range DOES have a working `#to_s`
+  reachable via an EXPLICIT script-level `.to_s` call (real dispatch
+  through `find_native_method`) — the gap is specifically the
+  IMPLICIT path (string interpolation, `puts`, `p`, anything using
+  `Value#to_s` directly rather than going through method dispatch),
+  which never consults a class's own native `to_s` at all. Silent-
+  wrong-answer, not a missing method or a raised error, so it's the
+  kind of gap that's easy to never notice: no test anywhere in the
+  suite (including array_spec.cr, predating this finding) ever checked
+  `#to_s`'s actual STRING CONTENT for any of the three types, only
+  that it returns *a* string. Real work needed: proper recursive
+  Array/Hash-aware rendering (`[1, 2, "a"]`, `{"a" => 1, "b" => [1,
+  2]}`), a real Range case, string quoting rules matching real Ruby's
+  `to_s` vs `inspect` distinction, and — per the separate cycle-
+  detection gap already flagged in `array.rb`'s own triage — a guard
+  against self-referential containers recursing until the native stack
+  overflows, since a real implementation would need to touch the same
+  code either way.
+
+- **Endless/beginless ranges (`1..`, `..10`, `1...`, `...10`) don't
+  parse at all.** Found 2026-08-13 triaging `spec/scripts/mruby/
+  range.rb` — nearly every assertion in that file needs at least one
+  partial range, even ones otherwise testing something unrelated and
+  already-working. `parse_range` (parser.cr) always calls
+  `parse_expression` unconditionally for BOTH sides of `..`/`...`, so
+  there's no way to omit either bound — not a Range-representation
+  gap so much as a parser one: `RangeLiteral`'s AST node itself would
+  need to accept a missing `start_node`/`end_node` (today both are
+  non-nilable `Node`, not `Node?`), the parser would need to check for
+  "nothing here, an operator/closing-delimiter follows instead" on
+  each side independently (endless: no valid expression follows;
+  beginless: `..`/`...` appears in a position with no left operand at
+  all, meaning `parse_primary` — not just the infix loop — needs to
+  recognize `..`/`...` as a valid EXPRESSION START, not just an infix
+  operator), and `Op::MakeRange`/`make_range_object` would need to
+  accept and store a real nil bound. Genuinely common in idiomatic
+  Ruby (`arr[2..]`, `case age when 18.. then ...`), not just a
+  theoretical ISO-suite curiosity — ordinary-use blocking, not an edge
+  case. Once bounds CAN be nil, every iteration method
+  (`each`/`to_a`/`step`) also needs real handling for a nil bound
+  (walk forever for `each`/`step`, raise `RangeError` for `to_a` — see
+  `builtins/range.cr`'s own comment on `Range.new` accepting a nil
+  bound today via the CONSTRUCTOR path already, silently producing a
+  range that iterates zero times rather than doing either of those,
+  since `NativeCallContext#compare` returns false for any pairing it
+  can't order including anything-vs-nil).
+
 - **A trailing `,` at the end of a line doesn't let a PAREN-LESS
   (bare) method call's argument list continue onto the next line —
   the newline is parsed as a statement terminator instead, a `P002`
@@ -62,68 +136,40 @@ may unblock ones above it.
   worth fixing before it quietly shapes how future fixtures get
   written around it.
 
-- **Endless/beginless ranges (`1..`, `..10`, `1...`, `...10`) don't
-  parse at all.** Found 2026-08-13 triaging `spec/scripts/mruby/
-  range.rb` — nearly every assertion in that file needs at least one
-  partial range, even ones otherwise testing something unrelated and
-  already-working. `parse_range` (parser.cr) always calls
-  `parse_expression` unconditionally for BOTH sides of `..`/`...`, so
-  there's no way to omit either bound — not a Range-representation
-  gap so much as a parser one: `RangeLiteral`'s AST node itself would
-  need to accept a missing `start_node`/`end_node` (today both are
-  non-nilable `Node`, not `Node?`), the parser would need to check for
-  "nothing here, an operator/closing-delimiter follows instead" on
-  each side independently (endless: no valid expression follows;
-  beginless: `..`/`...` appears in a position with no left operand at
-  all, meaning `parse_primary` — not just the infix loop — needs to
-  recognize `..`/`...` as a valid EXPRESSION START, not just an infix
-  operator), and `Op::MakeRange`/`make_range_object` would need to
-  accept and store a real nil bound. Genuinely common in idiomatic
-  Ruby (`arr[2..]`, `case age when 18.. then ...`), not just a
-  theoretical ISO-suite curiosity — ordinary-use blocking, not an edge
-  case. Once bounds CAN be nil, every iteration method
-  (`each`/`to_a`/`step`) also needs real handling for a nil bound
-  (walk forever for `each`/`step`, raise `RangeError` for `to_a` — see
-  `builtins/range.cr`'s own comment on `Range.new` accepting a nil
-  bound today via the CONSTRUCTOR path already, silently producing a
-  range that iterates zero times rather than doing either of those,
-  since `NativeCallContext#compare` returns false for any pairing it
-  can't order including anything-vs-nil).
+- **Heredocs and `%w[]`/`%i[]` literals don't exist.** Promoted from
+  `Will Fix` 2026-08-15 — common enough in idiomatic Ruby (`%w[a b c]`
+  for word arrays, heredocs for any string spanning more than a couple
+  of lines) that "not currently blocking" no longer held; reasoning
+  below is unchanged from the original entry. Long-standing,
+  untriaged since the original 2026-07-14 handoff bundle — split out
+  and confirmed still missing 2026-08-10 on review (no `Heredoc`/`%w`
+  handling found anywhere in `lexer.cr`/`token.cr`). Both fail loudly
+  at parse time (unrecognized syntax), not silently — genuinely
+  independent, mechanical lexer/parser additions rather than
+  something touching the compiler or VM: a heredoc is just a
+  string literal with a different opening/closing spelling, and
+  `%w[a b c]` desugars to an ordinary array-of-strings literal once
+  lexed. Good candidate for whoever wants a self-contained,
+  low-risk pickup.
 
-- **`Array#to_s`/`Hash#to_s`/`Range#to_s` (called implicitly — e.g.
-  string interpolation, `puts`, `p` — and `#inspect`, which defers to
-  `to_s`) silently produce garbage, not a real Ruby-style rendering.**
-  Found 2026-08-13 writing fresh ISO-style coverage for `Hash`, then
-  confirmed the identical gap already applies to `Range` too —
-  `builtins/range.cr`'s own `to_s` method comment flags it, tracing
-  back to the 2026-07-14 handoff, predating this entry.
-  `Value#to_s`'s case statement (`value.cr`) has no branch for
-  `LabeledArray`, `LabeledHash`, OR a `Range` RubyObject at all — all
-  three fall through to the generic `"#<" << @raw.class << ">"` (or,
-  for a RubyObject like Range, `RubyObject#to_s`'s own generic
-  `"#<Range>"`) fallback, so `{"a" => 1}.to_s` actually produces
-  `"#<Adjutant::LabeledHash>"`, `[1,2,3].to_s` produces
-  `"#<Adjutant::LabeledArray>"`, and interpolating a Range (`"#{1..3}"`)
-  produces `"#<Range>"` rather than `"1..3"` — none of these the real
-  rendering a script or its author would expect. IMPORTANT scope note
-  from `range.cr`'s own comment: Range DOES have a working `#to_s`
-  reachable via an EXPLICIT script-level `.to_s` call (real dispatch
-  through `find_native_method`) — the gap is specifically the
-  IMPLICIT path (string interpolation, `puts`, `p`, anything using
-  `Value#to_s` directly rather than going through method dispatch),
-  which never consults a class's own native `to_s` at all. Silent-
-  wrong-answer, not a missing method or a raised error, so it's the
-  kind of gap that's easy to never notice: no test anywhere in the
-  suite (including array_spec.cr, predating this finding) ever checked
-  `#to_s`'s actual STRING CONTENT for any of the three types, only
-  that it returns *a* string. Real work needed: proper recursive
-  Array/Hash-aware rendering (`[1, 2, "a"]`, `{"a" => 1, "b" => [1,
-  2]}`), a real Range case, string quoting rules matching real Ruby's
-  `to_s` vs `inspect` distinction, and — per the separate cycle-
-  detection gap already flagged in `array.rb`'s own triage — a guard
-  against self-referential containers recursing until the native stack
-  overflows, since a real implementation would need to touch the same
-  code either way.
+- **`lambda { ... }`/`proc { ... }` (the `Kernel`-method spelling)
+  don't exist — only `-> { ... }` (stabby lambda) works.** Promoted
+  from `Will Fix` 2026-08-15 — the more common spelling in ordinary
+  Ruby, reasonable to expect an idiomatic script to reach for it
+  first; reasoning below is unchanged from the original entry. Found
+  2026-08-10, while preparing a multi-level-closures test script —
+  reached for `lambda { x + 1 }` first, the more common spelling in
+  ordinary Ruby, and it doesn't parse/resolve at all. `Arrow` (`->`)
+  is a real token with real parser support (`parser.cr`);
+  `lambda`/`proc` are `Kernel` methods in real Ruby, not keywords, so
+  — same reasoning as `catch`/`throw` (see `Will Fix`) — nothing about
+  the grammar needs to change. Confirmed no trace of either name
+  anywhere in the codebase (`grep -rn '"lambda"'` and `'"proc"'` both
+  empty), so today `lambda { ... }` just fails loudly as an ordinary
+  undefined-method call (`R008`) with a block attached, not silently.
+  Likely a small native-function addition once a `->`-built
+  `ScriptProc`/lambda object already exists to return — wrapping the
+  given block as that same object shape, not a new construct.
 
 - **Runtime diagnostics have no carets** (`Frame` records a line but no
   column). Promoted from Error reporting 2026-08-05 on a
@@ -243,18 +289,6 @@ wins.
   `=~` above, `case/when` and `.===(x)` between them already cover
   the pattern's real-world uses reasonably well) — flagging here
   rather than deciding it.
-
-- **Heredocs and `%w[]`/`%i[]` literals don't exist.** Long-standing,
-  untriaged since the original 2026-07-14 handoff bundle — split out
-  and confirmed still missing 2026-08-10 on review (no `Heredoc`/`%w`
-  handling found anywhere in `lexer.cr`/`token.cr`). Both fail loudly
-  at parse time (unrecognized syntax), not silently — genuinely
-  independent, mechanical lexer/parser additions rather than
-  something touching the compiler or VM: a heredoc is just a
-  string literal with a different opening/closing spelling, and
-  `%w[a b c]` desugars to an ordinary array-of-strings literal once
-  lexed. Good candidate for whoever wants a self-contained,
-  low-risk pickup.
 
 - **Do `class`/`module` bodies want the same implicit `rescue`/`else`/
   `ensure` treatment `def` bodies just got?** Open question, not a
@@ -720,23 +754,6 @@ individually.
   `RiskFlowPolicy` — still not decided.
 
 ### Standard library surface
-
-- **`lambda { ... }`/`proc { ... }` (the `Kernel`-method spelling)
-  don't exist — only `-> { ... }` (stabby lambda) works.** Found
-  2026-08-10, while preparing a multi-level-closures test script
-  (see the entry above) — reached for `lambda { x + 1 }` first, the
-  more common spelling in ordinary Ruby, and it doesn't parse/resolve
-  at all. `Arrow` (`->`) is a real token with real parser support
-  (`parser.cr`); `lambda`/`proc` are `Kernel` methods in real Ruby,
-  not keywords, so — same reasoning as `catch`/`throw` just below —
-  nothing about the grammar needs to change. Confirmed no trace of
-  either name anywhere in the codebase (`grep -rn '"lambda"'` and
-  `'"proc"'` both empty), so today `lambda { ... }` just fails loudly
-  as an ordinary undefined-method call (`R008`) with a block
-  attached, not silently. Likely a small native-function addition
-  once a `->`-built `ScriptProc`/lambda object already exists to
-  return — wrapping the given block as that same object shape, not a
-  new construct.
 
 - **`catch`/`throw` (Kernel non-local jump, tagged block).** Found
   2026-08-05 in the mruby full-repo sweep — mruby packages this as an
