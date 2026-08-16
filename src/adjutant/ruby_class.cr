@@ -71,6 +71,22 @@ module Adjutant
     # `find_native_singleton_method`, below, for the read side.
     getter extended_modules : Array(RubyClass)
 
+    # Symbol ids of THIS class's own `methods`/`native_methods` entries
+    # that are implicitly private — currently populated only two ways
+    # (see `define_method`/`define_native_method`'s own `is_private`
+    # kwarg, below): a bare top-level `def` (Op::DefMethod, vm.cr —
+    # matching real Ruby's own top-level-def-is-private rule), and a
+    # native method that opts in at registration time. NOT a general
+    # script-declarable `private`/`protected`/`public` mechanism —
+    # that stays U008's own deliberate non-goal; a script has no way
+    # to add an entry here itself. A `Set`, not a second copy of the
+    # method table — `@methods`/`@native_methods` already hold the
+    # callable; this only tracks WHICH already-registered names are
+    # restricted, mirroring how `@private_methods` is genuinely a
+    # thin overlay, not parallel storage.
+    getter private_methods : Set(Int32)
+    getter native_private_methods : Set(Int32)
+
     def initialize(@name : String, @superclass : RubyClass? = nil, @is_module : Bool = false, @uninstantiable : Bool = false)
       @methods = {} of Int32 => ScriptProc
       @native_methods = {} of Int32 => NativeCallable
@@ -81,6 +97,8 @@ module Adjutant
       @constants = {} of Int32 => Value
       @included_modules = [] of RubyClass
       @extended_modules = [] of RubyClass
+      @private_methods = Set(Int32).new
+      @native_private_methods = Set(Int32).new
     end
 
     # `include SomeModule` — mixes SomeModule's instance methods into
@@ -105,8 +123,19 @@ module Adjutant
       @extended_modules << mod
     end
 
-    def define_method(sym_id : Int32, proc : ScriptProc) : Nil
+    # `is_private` — see `private_methods`'s own comment for the two
+    # (and only two) legitimate callers today. Explicit, not inferred:
+    # a REDEFINITION of the same name defaults back to public unless
+    # it says otherwise, matching real Ruby (a subclass, or a second
+    # `def` of the same name, resets visibility rather than inheriting
+    # the prior definition's).
+    def define_method(sym_id : Int32, proc : ScriptProc, is_private : Bool = false) : Nil
       @methods[sym_id] = proc
+      if is_private
+        @private_methods << sym_id
+      else
+        @private_methods.delete(sym_id)
+      end
     end
 
     # Register a script-defined singleton (class-level) method —
@@ -153,10 +182,15 @@ module Adjutant
     # `kwarg_names` declares which keyword names this method accepts
     # (see NativeCallable#kwarg_names) — empty by default, matching
     # every pre-existing native method, which accepted none.
-    def define_native_method(sym_id : Int32, risk : RiskProfile, kwarg_names : Set(String) = Set(String).new,
+    def define_native_method(sym_id : Int32, risk : RiskProfile, kwarg_names : Set(String) = Set(String).new, is_private : Bool = false,
                              &block : Array(Value), ScriptProc?, NativeCallContext -> Value) : Nil
       func = NativeFunc.new { |args, blk, ncc| block.call(args, blk, ncc) }
       @native_methods[sym_id] = NativeCallable.new(func, risk, kwarg_names)
+      if is_private
+        @native_private_methods << sym_id
+      else
+        @native_private_methods.delete(sym_id)
+      end
     end
 
     # Register a Crystal-implemented singleton (class-level) method
@@ -309,6 +343,41 @@ module Adjutant
       nil
     end
 
+    # Whether the method `find_method` would ACTUALLY return for
+    # `sym_id` is private — mirrors `find_method`'s own walk (own
+    # table, then included modules, then superclass) exactly, so it
+    # reports the visibility of the SAME entry `find_method` resolves
+    # to, not just "is this name private somewhere in the chain."
+    # Matters for real Ruby parity: a subclass (or an included module
+    # checked earlier in MRO order) can redefine a name WITHOUT
+    # `private`, which correctly makes the closer definition public
+    # even if a farther-up class marked the same name private — this
+    # walk stops at the first class/module where the name resolves AT
+    # ALL, same as `find_method` does, and reports THAT one's
+    # visibility. Checked only after `find_method` itself already
+    # found something — never affects whether a name resolves, only
+    # whether an explicit-receiver call is allowed once it did.
+    def find_method_private?(sym_id : Int32) : Bool
+      cls = self
+      while cls
+        result = cls.find_own_or_included_method_private?(sym_id)
+        return result unless result.nil?
+        cls = cls.superclass
+      end
+      false
+    end
+
+    # Same shape as find_method_private?, native table.
+    def find_native_method_private?(sym_id : Int32) : Bool
+      cls = self
+      while cls
+        result = cls.find_own_or_included_native_method_private?(sym_id)
+        return result unless result.nil?
+        cls = cls.superclass
+      end
+      false
+    end
+
     # Checks THIS class/module's own method table, then its included
     # modules — deliberately NOT the superclass (find_method's own
     # loop, above, handles moving up that chain; folding it in here
@@ -334,6 +403,21 @@ module Adjutant
       nil
     end
 
+    # Bool? — nil means "sym_id doesn't resolve at THIS level at all"
+    # (own table, then included modules), distinct from `false`
+    # ("resolves here, and is public"). Mirrors
+    # find_own_or_included_method's own walk exactly, one level at a
+    # time, so find_method_private? (above) can stop searching
+    # superclasses at the same point find_method itself would.
+    protected def find_own_or_included_method_private?(sym_id : Int32) : Bool?
+      return @private_methods.includes?(sym_id) if @methods.has_key?(sym_id)
+      @included_modules.reverse_each do |mod|
+        result = mod.find_own_or_included_method_private?(sym_id)
+        return result unless result.nil?
+      end
+      nil
+    end
+
     # Same shape as find_own_or_included_method, native table.
     protected def find_own_or_included_native_method(sym_id : Int32) : NativeCallable?
       if m = @native_methods[sym_id]?
@@ -343,6 +427,16 @@ module Adjutant
         if m = mod.find_own_or_included_native_method(sym_id)
           return m
         end
+      end
+      nil
+    end
+
+    # Same shape as find_own_or_included_method_private?, native table.
+    protected def find_own_or_included_native_method_private?(sym_id : Int32) : Bool?
+      return @native_private_methods.includes?(sym_id) if @native_methods.has_key?(sym_id)
+      @included_modules.reverse_each do |mod|
+        result = mod.find_own_or_included_native_method_private?(sym_id)
+        return result unless result.nil?
       end
       nil
     end

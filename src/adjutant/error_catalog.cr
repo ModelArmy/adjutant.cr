@@ -260,6 +260,18 @@ module Adjutant
              "that argument is required, not optional.",
         help: "Pass a String to match against."
       ),
+      "R023" => Entry.new(
+        code: "R023",
+        summary: "private method `{method}` called for {target}",
+        why: "`{method}` is private — reachable via a bare call or " \
+             "`self.{method}`, but not via an explicit receiver from " \
+             "outside `self`. A bare top-level `def` is implicitly " \
+             "private on `Object`, matching real Ruby (Adjutant has no " \
+             "general `private`/`protected`/`public` declarations a " \
+             "script can write itself).",
+        help: "Call `{method}` without a receiver, or via `self.`, " \
+              "from the same object that defines it."
+      ),
 
       # --- L: limits reached ----------------------------------------
       #

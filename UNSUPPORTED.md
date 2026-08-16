@@ -354,10 +354,12 @@ reports as an ordinary undefined name.
 
 ### U008 — `private`/`protected`/`public`
 
-Ruby's implicit-`self` method visibility model. A native function or
-top-level `def` (both land on `Object`) is reachable via an explicit
-receiver on any inheriting object today — there is no way to mark a
-method unreachable from outside its own class.
+Ruby's implicit-`self` method visibility model AS A SCRIPT-DECLARABLE
+FEATURE — a script writing `private`/`protected`/`public` itself to
+control a class or module's own interface. A native function is
+reachable via an explicit receiver on any inheriting object today;
+there is no way for a SCRIPT to mark one of its own methods
+unreachable from outside its own class.
 
 **Why:** decided 2026-08-05, during a session filtering the mruby-derived
 gap survey by value against Adjutant's actual use case. Visibility exists
@@ -371,10 +373,24 @@ should have been private, and getting an error for a distinction that
 serves no purpose in this use case) without a corresponding safety
 benefit here.
 
-**Instead:** nothing; every method stays callable via an explicit
-receiver, as it is today. If a script wants to signal "don't call this,"
-naming convention (a leading underscore, a comment) is the available
-tool, same as it would be in a language with no visibility model at all.
+**Instead:** nothing; every method a SCRIPT defines stays callable via
+an explicit receiver, as it is today. If a script wants to signal
+"don't call this," naming convention (a leading underscore, a
+comment) is the available tool, same as it would be in a language with
+no visibility model at all.
+
+**Not the same thing as top-level `def`'s own implicit privacy,
+shipped 2026-08-16.** A bare top-level `def` IS now unreachable via an
+explicit receiver from outside `self` (`R023`) — but this is a single,
+fixed, always-on rule replicating one specific thing real Ruby does
+unconditionally, not a script-declarable feature; nothing about it
+lets a script write `private`/`protected`/`public` itself, and every
+method a script defines inside an ordinary `class`/`module` body stays
+exactly as reachable as it always was. See `DEVELOPMENT.md`'s
+"Top-level `def` is implicitly private" writeup for the full build-out.
+This entry's own exclusion — no script-declarable visibility, for
+methods defined however a script chooses to define them — is
+unchanged.
 
 **Enforcement — not yet enforced.** `private`/`protected`/`public` are
 currently either undefined names (if used as bare calls) or silently
@@ -757,22 +773,32 @@ value the receiver happens to be.
 **Instead:** write `extend M` / `include M` as a bare statement directly
 inside the `class`/`module` body being mixed into.
 
-**Not the same restriction as top-level bare `include`/`extend`.**
-Scoped 2026-08-15: a bare `include M`/`extend M` statement written at
-the TOP LEVEL of a script (no enclosing `class`/`module` body at all)
-is the same textually-fixed, one-time shape this entry treats as safe —
+**Not the same restriction as top-level bare `include`.** Scoped
+2026-08-15, shipped 2026-08-16: a bare `include M` statement written at
+the TOP LEVEL of a script (no enclosing `class`/`module` body at all) is
+the same textually-fixed, one-time shape this entry treats as safe —
 just with `main`'s own class (`Object`) standing in for the class/module
-body, rather than one being absent. Confirmed against real `irb`: top-
-level `include M` mutates `Object`'s ancestor chain directly, and the
-mixed-in methods stay ordinary public instance methods, reachable from
-any object via explicit receiver — not a new, more permissive behavior
-Adjutant would be inventing, but the literal thing real Ruby already
-does. See [SCOPE.md](./SCOPE.md)'s "Object model" group for the concrete
-gap (dispatch never reaches `include`/`extend` from `main`'s implicit-
-self today, so this currently just fails as an undefined method, not
-by design). This entry's own restriction — explicit receiver, anywhere,
-including at the top level (`Object.include(M)`, `main.include(M)` if
-such a spelling existed) — is unchanged and still applies.
+body, rather than one being absent. Confirmed against real `irb` before
+implementing: top-level `include M` mutates `Object`'s ancestor chain
+directly, and the mixed-in methods stay ordinary public instance
+methods, reachable from any object via explicit receiver — not a new,
+more permissive behavior Adjutant would be inventing, but the literal
+thing real Ruby already does. See `DEVELOPMENT.md`'s "Bare `include` at
+the top level of a script" writeup for the implementation. This entry's
+own restriction — explicit receiver, anywhere, including at the top
+level (`Object.include(M)`, `main.include(M)` if such a spelling
+existed) — is unchanged and still applies.
+
+**Top-level bare `extend` is NOT the same case, and stays excluded —
+for a different reason than this entry.** Confirmed against a separate
+real `irb` trace, also 2026-08-15: unlike `include`, top-level `extend M`
+writes to a genuine per-object singleton class belonging to `main`
+alone, something `RubyObject` has no storage for at all today. That's an
+ordinary missing-feature gap (see [SCOPE.md](./SCOPE.md)'s "Object
+model" group), not this entry's explicit-receiver concern — a bare
+top-level `extend M` currently still falls through to this same
+`EXCLUDED_METHODS` catch, same as before `include`'s fix, simply
+because nothing yet resolves it any other way.
 
 **Enforcement — active since 2026-08-10, runtime.** Same mechanism as
 U005/U006 (`EXCLUDED_METHODS`, checked after ordinary resolution fails —
