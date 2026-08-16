@@ -757,6 +757,23 @@ value the receiver happens to be.
 **Instead:** write `extend M` / `include M` as a bare statement directly
 inside the `class`/`module` body being mixed into.
 
+**Not the same restriction as top-level bare `include`/`extend`.**
+Scoped 2026-08-15: a bare `include M`/`extend M` statement written at
+the TOP LEVEL of a script (no enclosing `class`/`module` body at all)
+is the same textually-fixed, one-time shape this entry treats as safe —
+just with `main`'s own class (`Object`) standing in for the class/module
+body, rather than one being absent. Confirmed against real `irb`: top-
+level `include M` mutates `Object`'s ancestor chain directly, and the
+mixed-in methods stay ordinary public instance methods, reachable from
+any object via explicit receiver — not a new, more permissive behavior
+Adjutant would be inventing, but the literal thing real Ruby already
+does. See [SCOPE.md](./SCOPE.md)'s "Object model" group for the concrete
+gap (dispatch never reaches `include`/`extend` from `main`'s implicit-
+self today, so this currently just fails as an undefined method, not
+by design). This entry's own restriction — explicit receiver, anywhere,
+including at the top level (`Object.include(M)`, `main.include(M)` if
+such a spelling existed) — is unchanged and still applies.
+
 **Enforcement — active since 2026-08-10, runtime.** Same mechanism as
 U005/U006 (`EXCLUDED_METHODS`, checked after ordinary resolution fails —
 see U005's own entry for why after, not at compile time). The bare/
