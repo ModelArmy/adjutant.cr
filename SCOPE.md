@@ -25,50 +25,19 @@ roughly by dependency, not necessarily by importance — an item lower down
 may unblock ones above it.
 
 **Reordered 2026-08-15**, on top of the existing dependency ordering: the
-first six entries below are additionally sorted by how often ordinary,
+first five entries below are additionally sorted by how often ordinary,
 idiomatic Ruby would reach for the construct and get silently wrong output
 or a hard block — silent-wrong-answer entries lead, then everyday syntax
-blocks, then idioms with a workaround. Two entries (`%w[]`/`%i[]`/heredocs,
-`lambda`/`proc`) were promoted from `Will Fix` as part of the same pass —
-common enough in ordinary scripts that "not currently blocking anything"
-no longer held. The remaining entries (runtime carets, `respond_to?`) keep
-their prior relative order; they weren't re-evaluated against the
-promoted two on this axis, just carried forward.
-
-- **`Array#to_s`/`Hash#to_s`/`Range#to_s` (called implicitly — e.g.
-  string interpolation, `puts`, `p` — and `#inspect`, which defers to
-  `to_s`) silently produce garbage, not a real Ruby-style rendering.**
-  Found 2026-08-13 writing fresh ISO-style coverage for `Hash`, then
-  confirmed the identical gap already applies to `Range` too —
-  `builtins/range.cr`'s own `to_s` method comment flags it, tracing
-  back to the 2026-07-14 handoff, predating this entry.
-  `Value#to_s`'s case statement (`value.cr`) has no branch for
-  `LabeledArray`, `LabeledHash`, OR a `Range` RubyObject at all — all
-  three fall through to the generic `"#<" << @raw.class << ">"` (or,
-  for a RubyObject like Range, `RubyObject#to_s`'s own generic
-  `"#<Range>"`) fallback, so `{"a" => 1}.to_s` actually produces
-  `"#<Adjutant::LabeledHash>"`, `[1,2,3].to_s` produces
-  `"#<Adjutant::LabeledArray>"`, and interpolating a Range (`"#{1..3}"`)
-  produces `"#<Range>"` rather than `"1..3"` — none of these the real
-  rendering a script or its author would expect. IMPORTANT scope note
-  from `range.cr`'s own comment: Range DOES have a working `#to_s`
-  reachable via an EXPLICIT script-level `.to_s` call (real dispatch
-  through `find_native_method`) — the gap is specifically the
-  IMPLICIT path (string interpolation, `puts`, `p`, anything using
-  `Value#to_s` directly rather than going through method dispatch),
-  which never consults a class's own native `to_s` at all. Silent-
-  wrong-answer, not a missing method or a raised error, so it's the
-  kind of gap that's easy to never notice: no test anywhere in the
-  suite (including array_spec.cr, predating this finding) ever checked
-  `#to_s`'s actual STRING CONTENT for any of the three types, only
-  that it returns *a* string. Real work needed: proper recursive
-  Array/Hash-aware rendering (`[1, 2, "a"]`, `{"a" => 1, "b" => [1,
-  2]}`), a real Range case, string quoting rules matching real Ruby's
-  `to_s` vs `inspect` distinction, and — per the separate cycle-
-  detection gap already flagged in `array.rb`'s own triage — a guard
-  against self-referential containers recursing until the native stack
-  overflows, since a real implementation would need to touch the same
-  code either way.
+blocks, then idioms with a workaround. (A sixth, `Array#to_s`/`Hash#to_s`/
+`Range#to_s`, led this list at the time of that reorder — it shipped
+2026-08-16, see DEVELOPMENT.md's "to_s/inspect" writeup, and is removed
+from here rather than left as a stale entry.) Two entries (`%w[]`/`%i[]`/
+heredocs, `lambda`/`proc`) were promoted from `Will Fix` as part of the
+same reordering pass — common enough in ordinary scripts that "not
+currently blocking anything" no longer held. The remaining entries
+(runtime carets, `respond_to?`) keep their prior relative order; they
+weren't re-evaluated against the promoted two on this axis, just carried
+forward.
 
 - **Endless/beginless ranges (`1..`, `..10`, `1...`, `...10`) don't
   parse at all.** Found 2026-08-13 triaging `spec/scripts/mruby/
@@ -676,6 +645,32 @@ Quality-of-diagnostic gaps in the `Diagnostic`/`ErrorCatalog` system
   the same restriction the shipped `include` fix already uses. Real,
   separate plumbing, not a small addition to the `include` mechanism —
   worth its own session rather than a quick follow-on.
+
+- **A script's own `def self.to_s`/`def self.inspect` override on
+  its own class isn't respected by any of the IMPLICIT rendering
+  paths (string interpolation, `puts`, `print`, `p`, a class value
+  nested inside an Array/Hash's own `inspect`) — only an EXPLICIT
+  `MyClass.to_s` call reaches it.** Surfaced repeatedly, not fixed,
+  across the 2026-08-16 `to_s`/`inspect` overridability work
+  (`vm.cr`'s `render_to_s`/`render_inspect`, `array.cr`'s `to_s`-
+  aliased-to-`inspect` comment) — each of those deliberately kept
+  `RubyClass` values on the existing Crystal-level fast path (calling
+  `Value#to_s`, which for a `RubyClass` is just `RubyObject#
+  qualified_name`) rather than routing them through real dispatch the
+  way `RubyObject`/`LabeledArray`/`LabeledHash` values now are.
+  Real Ruby: a class is itself an object (an instance of `Class`),
+  and `def self.to_s` on it is a genuine singleton-method override,
+  reachable the same implicit ways an instance's own `to_s` override
+  now is. Not fixed as part of that work since it's a different
+  dispatch path entirely (`find_native_singleton_method`, not
+  `find_method`/`find_native_method` — see `dispatch_call`'s
+  self-is-rclass branch) and a narrower need (overriding a CLASS's
+  own `to_s`, as opposed to an instance's, is rare in practice) — but
+  a real, now-cleanly-scoped gap, not a guess: `render_to_s`/
+  `render_inspect` would need a `value.rclass?` branch calling
+  `call_method` the same way the `RubyObject`/container branches
+  already do, instead of returning `value.to_s`/`value.inspect`
+  directly.
 
 Per-instance singleton methods became a deliberate non-goal 2026-07-27
 (see [UNSUPPORTED.md](./UNSUPPORTED.md), U004). Implicit-`self`
