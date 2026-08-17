@@ -2911,6 +2911,30 @@ module Adjutant
       when "to_s"
         recv = args.first? || Value.nil_value
         Value.string(recv.to_s)
+      when "inspect"
+        # Only reached for a receiver with no OTHER resolution path —
+        # every type with its own real, registered `inspect`
+        # (`RubyObject`/`Array`/`Hash`/`Range`/`Proc`, all inheriting
+        # from or overriding `Object`'s default) resolves at an
+        # earlier dispatch step and never reaches this fallback at
+        # all. In practice, today, that means specifically a
+        # `RubyClass` receiver — the explicit-receiver rclass branch
+        # (above) only checks SINGLETON method tables, and no type
+        # registers a native singleton `inspect` — so `MyClass.
+        # inspect` fell all the way through to here and raised R008
+        # (undefined method) before this case existed, even though
+        # `MyClass.to_s` already worked via this exact same fallback
+        # mechanism, one case up. `Value#inspect` (value.cr) already
+        # has no special `RubyClass` branch of its own, deferring to
+        # `to_s(io)` — so this produces the same qualified name
+        # `to_s` does, matching real Ruby's own `MyClass.inspect ==
+        # MyClass.to_s` for the DEFAULT case. A script's own `def
+        # self.inspect` override is a real, separate, SCOPE.md-tracked
+        # gap ("Object model" group) — this fallback is only ever
+        # reached when no override (or default) was found any other
+        # way, so it can't and doesn't paper over that.
+        recv = args.first? || Value.nil_value
+        Value.string(recv.inspect)
       when "to_i"
         recv = args.first? || Value.nil_value
         case

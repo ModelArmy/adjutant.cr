@@ -1055,5 +1055,45 @@ module Adjutant
         val.as_string.should eq "A::B"
       end
     end
+
+    describe "a Class/Module value's own #to_s/#inspect" do
+      # `MyClass.to_s` already worked before this fix, via a
+      # universal exec_builtin fallback case (vm.cr) — the explicit-
+      # receiver rclass dispatch branch only checks SINGLETON method
+      # tables, finds nothing (no type registers a native singleton
+      # `to_s`/`inspect`), and falls through to that catch-all.
+      # `MyClass.inspect` had NO equivalent fallback at all before
+      # this — a flat `NoMethodError` (R008), not just a wrong
+      # string. Every case below documents that specific fix.
+
+      it "MyClass.to_s returns the qualified name, unaffected by this change" do
+        eval("class Foo\nend\nFoo.to_s").as_string.should eq "Foo"
+      end
+
+      it "MyClass.inspect now works at all — previously raised NoMethodError" do
+        eval("class Foo\nend\nFoo.inspect").as_string.should eq "Foo"
+      end
+
+      it "to_s and inspect agree, matching real Ruby's default (no override) case" do
+        result = eval("class Foo\nend\n[Foo.to_s, Foo.inspect]")
+        strs = result.as_array.map(&.as_string)
+        strs[0].should eq strs[1]
+      end
+
+      it "a nested class's inspect returns its qualified name, same as to_s" do
+        val = eval(<<-RB)
+          module A
+            class B
+            end
+          end
+          A::B.inspect
+        RB
+        val.as_string.should eq "A::B"
+      end
+
+      it "a Module value's inspect works the same way as a Class value's" do
+        eval("module M\nend\nM.inspect").as_string.should eq "M"
+      end
+    end
   end
 end
