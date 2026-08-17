@@ -1185,7 +1185,7 @@ module Adjutant
               # point could see — see OuterChain's own comment for why
               # (found 2026-08-10, SCOPE.md's "Closures / block
               # scoping" entry).
-              push(make_lambda_object(sproc_val.as_proc, sproc_val.label, [f.locals] + (f.outer_locals || [] of Array(Value))))
+              push(make_lambda_object(sproc_val.as_proc, sproc_val.label, [f.locals] + (f.outer_locals || [] of Array(Value)), f.filename, f.line))
             else
               push(sproc_val)
             end
@@ -3434,7 +3434,8 @@ module Adjutant
     # goes through this; call-site block literals and def bodies keep
     # using the bare sproc Value directly (Op::MakeProc with a=0),
     # never reach here.
-    private def make_lambda_object(sproc : ScriptProc, label : RiskFlowLabel?, outer_locals : OuterChain?) : Value
+    private def make_lambda_object(sproc : ScriptProc, label : RiskFlowLabel?, outer_locals : OuterChain?,
+                                   filename : String, line : Int32) : Value
       cls = builtin_class_by_name("Proc")
       unless cls
         raise runtime_diagnostic(
@@ -3449,6 +3450,18 @@ module Adjutant
       end
       obj = RubyObject.new(cls)
       obj.ivars[@symbols.intern("__sproc").value] = Value.proc(sproc)
+      # `filename`/`line` — the CREATION site (`f.filename`/`f.line` at
+      # the moment `Op::MakeProc` ran for this literal, passed in by
+      # the caller), not anything about where `.call` happens to be
+      # invoked from later — matches real Ruby's own `Proc#to_s`,
+      # which reports where a proc/lambda was DEFINED. Real Ruby also
+      # includes a memory address (`#<Proc:0x... file:line>`) — see
+      # `builtins/proc.cr`'s own `to_s`/`inspect` comment for why this
+      # deliberately doesn't (no debugging value here, matching
+      # `Object#inspect`'s own default omitting it for the same
+      # reason).
+      obj.ivars[@symbols.intern("__filename").value] = Value.string(filename)
+      obj.ivars[@symbols.intern("__line").value] = Value.int(line.to_i64)
       # The lambda's true lexical parent scope, captured at THIS
       # evaluation of the literal (not shared across other
       # evaluations of the same source lambda, e.g. inside a loop —

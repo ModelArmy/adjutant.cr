@@ -40,6 +40,8 @@ module Adjutant::Builtins
   # method.
   def self.bootstrap_proc(interp : Adjutant::Interpreter) : Adjutant::RubyClass
     cls = Adjutant::RubyClass.new("Proc")
+    filename_sym = interp.symbols.intern("__filename").value
+    line_sym = interp.symbols.intern("__line").value
 
     # `.(...)` sugar is not implemented (no parser support for it
     # today) — only explicit `.call(...)`. Real Ruby's `.(...)` is
@@ -68,6 +70,46 @@ module Adjutant::Builtins
     # method itself.
     define(cls, interp, "lambda?") do |_args|
       Adjutant::Value.bool(true)
+    end
+
+    # Real Ruby: `Proc#to_s`/`#inspect` render identically —
+    # `#<Proc:0x... file:line (lambda)>` for a lambda, no `(lambda)`
+    # suffix for an ordinary (non-lambda) Proc — as I recall it, not
+    # independently confirmed here; worth a real `irb` check,
+    # including the exact separator real Ruby uses between the
+    # (here, omitted) address and `file:line` (I believe it may be
+    # `@`, not a plain space — `#<Proc:0x...@file:line (lambda)>` —
+    # this implementation just uses a space after `Proc`, since
+    # there's no address to separate FROM here). `(lambda)` is
+    # UNCONDITIONAL here, not a check against `lambda?` — same
+    # reasoning as `lambda?` itself just above: only Lambda-node
+    # output ever becomes a Proc instance at all, so there's no
+    # non-lambda case to distinguish from today. The memory address
+    # (`0x...`) is deliberately OMITTED — no debugging value here (not
+    # stable across runs, nothing script-side can correlate it
+    # against, Adjutant doesn't expose real addresses to begin with),
+    # the same reasoning `Object#inspect`'s own default already
+    # applies (builtins/object.cr). `file:line` IS included — real
+    # debugging value (which literal lambda, in a script with several)
+    # that `__filename`/`__line` (vm.cr's `make_lambda_object`, set at
+    # the lambda's CREATION site, not wherever `.call` later happens
+    # to run from) make available for free.
+    #
+    # Before this, Proc had NO to_s/inspect at all, meaning it fell
+    # through to `Object`'s own default `#inspect` — which lists
+    # ivars, and Proc's own internal representation ivar is literally
+    # named `__sproc`, so the OLD behavior LEAKED that implementation
+    # detail into user-visible output (`#<Proc __sproc=#<Proc> ...>`),
+    # not just an incomplete rendering.
+    define(cls, interp, "to_s") do |args|
+      obj = args.first.as_robject
+      filename = obj.ivars[filename_sym].as_string
+      line = obj.ivars[line_sym].as_int
+      Adjutant::Value.string("#<Proc #{filename}:#{line} (lambda)>")
+    end
+
+    define(cls, interp, "inspect") do |args, _blk, ncc|
+      ncc.call_method(args.first, "to_s", [] of Adjutant::Value)
     end
 
     cls
