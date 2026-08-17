@@ -148,6 +148,18 @@ module Adjutant
       # Mirrors the mruby fixture's "Regexp.new with regexp" case: given
       # an existing Regexp, copies its source/options rather than
       # treating it as a pattern string.
+      #
+      # `args.first.as_rclass` for the constructed object's own class
+      # — NOT the closure-captured `cls` from THIS method's own
+      # definition-time scope (always `Regexp` itself). Found
+      # 2026-08-18: the identical closure-capture bug
+      # `Exception.new`/`NameError.new` had (`DEVELOPMENT.md`'s "to_s/
+      # inspect" writeup) — a script subclassing `Regexp` and calling
+      # `.new` on that subclass would have silently gotten a
+      # `Regexp`-classed object back, not one of the subclass. Lower
+      # priority than the `Exception` case was (subclassing `Regexp`
+      # is exotic even in real Ruby, unlike exception subclassing,
+      # which is everyday) — but the identical fix applies directly.
       define_singleton(cls, interp, "new") do |args, _blk, ncc|
         first = args[1]? || Value.nil_value
         pattern, flags =
@@ -157,7 +169,7 @@ module Adjutant
             {first.as_string, (args[2]?.try(&.as_int.to_i32) || 0)}
           end
         regex = compile_regex(pattern, flags, ncc)
-        obj = RegexpObject.new(cls, regex)
+        obj = RegexpObject.new(args.first.as_rclass, regex)
         # `first.label` seeds BOTH the constructed Regexp's own outer
         # label and the `__source` ivar directly — a String pattern's
         # taint (or, for the copy-constructor form, the SOURCE

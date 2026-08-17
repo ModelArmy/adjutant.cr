@@ -137,6 +137,20 @@ module Adjutant
         arr[0].as_string.should eq "abc"
         arr[1].as_bool.should be_true
       end
+
+      it "a script's own subclass calling .new (inheriting Regexp's singleton new, having none of its own) produces a correctly-classed instance, not a Regexp-classed one" do
+        # Found 2026-08-18, the identical closure-capture bug
+        # Exception.new/NameError.new had (DEVELOPMENT.md's "to_s/
+        # inspect" writeup) — regexp.cr's own singleton `new` closed
+        # over `cls` from its OWN definition-time scope (always
+        # `Regexp`), never the actual receiver.
+        result = eval(<<-RUBY)
+          class MyRegex < Regexp
+          end
+          MyRegex.new("abc").class.to_s
+        RUBY
+        result.as_string.should eq "MyRegex"
+      end
     end
 
     describe "^ and $ always match line boundaries (real Ruby semantics)" do

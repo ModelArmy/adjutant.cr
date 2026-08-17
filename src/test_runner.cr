@@ -1,4 +1,6 @@
 require "colorize"
+require "sync/exclusive"
+require "wait_group"
 
 require "./adjutant"
 require "./testing/assert_module"
@@ -31,7 +33,23 @@ module Testing
         return 0
       end
 
-      results = files.map { |file| run_file(file) }
+      # Run each file in parallel
+      results = [] of FileResult
+      ctx = Fiber::ExecutionContext::Parallel.new("MULTI", maximum: System.cpu_count // 2)
+      sync_results = Sync::Exclusive.new(results)
+      sync_stdout = Sync::Exclusive.new(STDOUT)
+      wait_group = WaitGroup.new(files.size)
+
+      files.each do |file|
+        ctx.spawn do
+          result = run_file(file, sync_stdout)
+          sync_results.lock(&.push(result))
+        ensure
+          wait_group.done
+        end
+      end
+      wait_group.wait
+
       puts
       print_summary(results)
 
@@ -39,7 +57,7 @@ module Testing
       any_failed ? 1 : 0
     end
 
-    private def run_file(path : String) : FileResult
+    private def run_file(path : String, sync_io) : FileResult
       short = path.sub(@scripts_dir + "/", "")
       ef = Adjutant::TestEffectHandler.new
       limits = Adjutant::ExecutionLimits.new(instruction_limit: 500_000_u64, call_depth_limit: 256)
@@ -67,10 +85,13 @@ module Testing
         cause = e
       end
 
-      mod.results.each do |result|
-        print(result.passed ? ".".colorize(:green) : "F".colorize(:light_red))
+      # Exclusive access to STDOUT
+      sync_io.lock do |stdout|
+        mod.results.each do |result|
+          stdout.print(result.passed ? ".".colorize(:green) : "F".colorize(:light_red))
+        end
+        stdout.print "E".colorize(:yellow) if error
       end
-      print "E".colorize(:yellow) if error
 
       FileResult.new(short, mod, error, cause)
     end

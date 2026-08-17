@@ -746,23 +746,6 @@ section).
   underlying content-vs-reference identity question, not a fix of its
   own.
 
-- **`Regexp.new`'s own singleton constructor has the same closure-
-  capture bug `Exception.new`/`NameError.new` had, unfixed here.**
-  Found 2026-08-17 while writing `Regexp#to_s`/`#inspect`'s own
-  coverage, unrelated to that work directly. `define_singleton(cls,
-  interp, "new") do |args, _blk, ncc| ... RegexpObject.new(cls,
-  regex) ... end` (`builtins/regexp.cr`) uses `cls` — the closure-
-  captured class from `bootstrap_regexp`'s OWN definition-time scope
-  (always `Regexp` itself) — not `args.first.as_rclass` (the actual
-  receiver), the exact same shape the `Exception`/`NameError` fix
-  (`DEVELOPMENT.md`'s "to_s/inspect" writeup) corrected. A script
-  subclassing `Regexp` and calling `.new` on that subclass would
-  silently get a `Regexp`-classed object back, not one of the
-  subclass — lower priority than the `Exception` case was (subclassing
-  `Regexp` is exotic even in real Ruby, unlike exception subclassing,
-  which is everyday), but the identical fix (`args.first.as_rclass`)
-  applies directly if picked up.
-
 
 
 
