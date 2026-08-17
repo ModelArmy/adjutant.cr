@@ -56,6 +56,42 @@ module Adjutant
       end
     end
 
+    # Before this, Regexp had no to_s/inspect at all — it fell
+    # through to Object's own default #inspect, listing ivars
+    # (#<Regexp @__source="abc", @__options=0>), leaking internal
+    # names, not real Ruby's actual formats.
+    describe "#to_s" do
+      it "no flags: shows every letter as disabled, no enabled letters before the dash" do
+        eval("/abc/.to_s").as_string.should eq "(?-mix:abc)"
+      end
+
+      it "a single flag: shown before the dash, remaining two after, in m,i,x order" do
+        eval("/abc/i.to_s").as_string.should eq "(?i-mx:abc)"
+      end
+
+      it "multiple flags: still m,i,x order, only the ones actually set appear before the dash" do
+        eval("/abc/mi.to_s").as_string.should eq "(?mi-x:abc)"
+      end
+
+      it "every flag enabled: the -disabled section is omitted entirely, no trailing dash" do
+        eval("/abc/mix.to_s").as_string.should eq "(?mix:abc)"
+      end
+    end
+
+    describe "#inspect" do
+      it "no flags: plain /pattern/, no trailing flag letters at all" do
+        eval("/abc/.inspect").as_string.should eq "/abc/"
+      end
+
+      it "a single flag appended directly after the closing slash" do
+        eval("/abc/i.inspect").as_string.should eq "/abc/i"
+      end
+
+      it "multiple flags: m,i,x order, matching to_s's own enabled-side order" do
+        eval("/abc/mix.inspect").as_string.should eq "/abc/mix"
+      end
+    end
+
     describe "interpolation" do
       it "builds the pattern from an interpolated expression" do
         result = eval(<<-RUBY)

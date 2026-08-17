@@ -79,6 +79,25 @@ module Adjutant
       opts
     end
 
+    # Splits `adjutant_flags` into its enabled/disabled letter strings,
+    # always in `m`, `i`, `x` order on both sides — the fixed order
+    # real Ruby's own `Regexp#to_s`/`#inspect` use. Shared by both
+    # methods (bootstrap_regexp, below) rather than each recomputing
+    # it — `to_s` needs both halves, `inspect` only the enabled one.
+    def self.flag_letters(adjutant_flags : Int32) : {String, String}
+      enabled = String.build do |io|
+        io << 'm' if adjutant_flags & MULTILINE != 0
+        io << 'i' if adjutant_flags & IGNORECASE != 0
+        io << 'x' if adjutant_flags & EXTENDED != 0
+      end
+      disabled = String.build do |io|
+        io << 'm' if adjutant_flags & MULTILINE == 0
+        io << 'i' if adjutant_flags & IGNORECASE == 0
+        io << 'x' if adjutant_flags & EXTENDED == 0
+      end
+      {enabled, disabled}
+    end
+
     # Compiles `pattern` under `adjutant_flags`, raising a real,
     # script-catchable R021 (RegexpError) through `ctx` on an invalid
     # pattern rather than letting Crystal's own Regex::Error escape and
@@ -157,6 +176,45 @@ module Adjutant
       define(cls, interp, "casefold?") do |args|
         flags = args.first.as_robject.ivars[options_sym].as_int.to_i32
         Value.bool(flags & IGNORECASE != 0)
+      end
+
+      # Real Ruby (as I understand it — worth a real `irb` check, not
+      # independently confirmed here): `Regexp#to_s` renders as
+      # `(?enabled-disabled:pattern)` — e.g. `/a/i.to_s =>
+      # "(?i-mx:a)"` — flag letters ALWAYS in `m`, `i`, `x` order on
+      # both sides of the `-`, and the `-disabled` section (dash
+      # included) OMITTED ENTIRELY when every flag is enabled (no
+      # disabled flags left to list) — `/a/mix.to_s => "(?mix:a)"`,
+      # no trailing `-`. `Regexp#inspect` is simpler: real source
+      # syntax, `/pattern/enabledflags` — `/a/i.inspect => "/a/i"`.
+      # `flag_letters` (below) computes both the enabled and disabled
+      # letter strings once, shared by both methods, in the same
+      # fixed order either format needs.
+      #
+      # KNOWN, DELIBERATELY UNHANDLED EDGE CASE: `inspect` does NOT
+      # escape an unescaped `/` inside the pattern itself (real Ruby's
+      # own `inspect` does — `Regexp.new("a/b").inspect` would show
+      # `\/` there, not a bare `/`) — the interpolated pattern is used
+      # as-is. Uncommon in practice (most patterns don't contain a
+      # literal `/`), and the exact escaping rule (which slashes count
+      # as "unescaped," whether an already-escaped `\/` in the source
+      # gets left alone or double-escaped) is a real subtlety not
+      # worth guessing at without a way to verify it directly.
+      define(cls, interp, "to_s") do |args|
+        obj = args.first.as_robject
+        pattern = obj.ivars[source_sym].as_string
+        flags = obj.ivars[options_sym].as_int.to_i32
+        enabled, disabled = flag_letters(flags)
+        suffix = disabled.empty? ? "" : "-#{disabled}"
+        Value.string("(?#{enabled}#{suffix}:#{pattern})")
+      end
+
+      define(cls, interp, "inspect") do |args|
+        obj = args.first.as_robject
+        pattern = obj.ivars[source_sym].as_string
+        flags = obj.ivars[options_sym].as_int.to_i32
+        enabled, _ = flag_letters(flags)
+        Value.string("/#{pattern}/#{enabled}")
       end
 
       # `#match(str)` — real Ruby returns a MatchData on success, nil
