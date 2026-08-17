@@ -1807,17 +1807,15 @@ module Adjutant
     # Renders `value`'s REAL `to_s` — real method dispatch
     # (`call_method`), not a Crystal-level `Value#to_s` call, for
     # anything that could have a script- or builtin-defined override
-    # (`RubyObject`, `LabeledArray`, `LabeledHash`). True scalars
+    # (`RubyObject`, `LabeledArray`, `LabeledHash`, and — as of
+    # 2026-08-18 — a `RubyClass` value WITH a real `def self.to_s`
+    # override; see `rclass_override?`'s own comment). True scalars
     # (Nil/Bool/Int64/Float64/String/Sym) keep the existing direct
     # Crystal-level rendering — cheaper, and equivalent regardless:
     # none of those types is reachable from script code for
     # redefinition (`U003` forbids reopening any class, builtins
     # included), so there's no override real dispatch could ever
-    # find that this fast path would miss. `RubyClass` ALSO stays on
-    # the fast path for now — a script CAN give its own class a
-    # `def self.to_s` override, which this does NOT yet consult (a
-    # real, known, separate gap from the one this method fixes,
-    # deliberately not folded in here).
+    # find that this fast path would miss.
     #
     # Deliberately its own small method, not inlined into any one
     # call site — `puts`/`print` (exec_builtin, below) use it too, as
@@ -1835,8 +1833,13 @@ module Adjutant
       when value.bool?   then value.as_bool.to_s
       when value.null?   then ""
       when value.symbol? then value.as_sym.name
-      when value.rclass? then value.to_s
-      else                    call_method(value, "to_s", [] of Value, filename, line).as_string
+      when value.rclass?
+        if rclass_override?(value.as_rclass, "to_s")
+          call_method(value, "to_s", [] of Value, filename, line).as_string
+        else
+          value.to_s
+        end
+      else call_method(value, "to_s", [] of Value, filename, line).as_string
       end
     end
 
@@ -1846,16 +1849,45 @@ module Adjutant
     # branch there — no `Sym#to_s`-includes-a-colon-style workaround
     # needed here, since `Value#inspect`'s own Sym branch already
     # produces the colon-INCLUDING form real Ruby's `Symbol#inspect`
-    # wants), so the only thing this needs to intercept is the three
-    # types with a REAL, potentially-overridden `inspect` to dispatch
-    # to — `RubyObject`/`LabeledArray`/`LabeledHash`. `RubyClass`
-    # stays on the fast path, same boundary decision as render_to_s.
+    # wants), so this only needs to intercept the types with a REAL,
+    # potentially-overridden `inspect` to dispatch to —
+    # `RubyObject`/`LabeledArray`/`LabeledHash` always, `RubyClass`
+    # only when it actually HAS an override (`rclass_override?`).
     private def render_inspect(value : Value, filename : String, line : Int32) : String
-      if value.robject? || value.array? || value.hash?
+      if value.robject? || value.array? || value.hash? ||
+         (value.rclass? && rclass_override?(value.as_rclass, "inspect"))
         call_method(value, "inspect", [] of Value, filename, line).as_string
       else
         value.inspect
       end
+    end
+
+    # Whether `cls` has a REAL singleton override for `name` — checked
+    # BEFORE dispatching, not "dispatch and rescue on failure," since
+    # a blanket rescue would ALSO swallow a genuine exception a
+    # script's own override deliberately raises (real Ruby propagates
+    # that; render_to_s/render_inspect must too, not silently fall
+    # back to the default rendering instead). No override found means
+    # the DEFAULT rendering applies (`value.to_s`/`value.inspect`,
+    # unchanged from before this check existed) — real Ruby's own
+    # `Class#to_s`/`#inspect` default (the qualified name, no
+    # override) doesn't require an actual registered method to exist
+    # either; `exec_builtin`'s own universal `"to_s"`/`"inspect"`
+    # fallback cases (below) already provide that default via the
+    # EXPLICIT-call path, and this mirrors it for the implicit one.
+    # `find_singleton_method`/`find_native_singleton_method` — same
+    # two tables `respond_to?`'s own check already consults, so a
+    # class WITH an override was ALREADY respond_to?-visible before
+    # this fix; only the IMPLICIT-rendering gap (this method) was
+    # open, not a respond_to? gap for the has-an-override case. A
+    # class with NO override remains a known, accepted, narrower
+    # respond_to? gap (SCOPE.md's own entry on that) — real Ruby's
+    # `Class#to_s` is a genuine inherited `Object` method reachable
+    # through the metaclass chain, which Adjutant doesn't model.
+    private def rclass_override?(cls : RubyClass, name : String) : Bool
+      sym_id = @symbols.lookup(name).try(&.value)
+      return false unless sym_id
+      !!(cls.find_singleton_method(sym_id) || cls.find_native_singleton_method(sym_id))
     end
 
     # See NativeCallContext#guard_rendering's own comment for the full

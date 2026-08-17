@@ -65,7 +65,12 @@ forward.
   bound today via the CONSTRUCTOR path already, silently producing a
   range that iterates zero times rather than doing either of those,
   since `NativeCallContext#compare` returns false for any pairing it
-  can't order including anything-vs-nil).
+  can't order including anything-vs-nil). Also affects rendering: a
+  `nil` bound (already reachable today via `Range.new(nil, 5)`)
+  currently renders as `"nil..5"`, not real Ruby's special-cased
+  `"..5"` — see DEVELOPMENT.md's "to_s/inspect" writeup for the exact
+  gap; worth fixing alongside this item's own bound-representation
+  work, not in isolation.
 
 - **A trailing `,` at the end of a line doesn't let a PAREN-LESS
   (bare) method call's argument list continue onto the next line —
@@ -646,40 +651,6 @@ Quality-of-diagnostic gaps in the `Diagnostic`/`ErrorCatalog` system
   separate plumbing, not a small addition to the `include` mechanism —
   worth its own session rather than a quick follow-on.
 
-- **A script's own `def self.to_s`/`def self.inspect` override on
-  its own class isn't respected by any of the IMPLICIT rendering
-  paths (string interpolation, `puts`, `print`, `p`, a class value
-  nested inside an Array/Hash's own `inspect`) — only an EXPLICIT
-  `MyClass.to_s` call reaches it.** Surfaced repeatedly, not fixed,
-  across the 2026-08-16 `to_s`/`inspect` overridability work
-  (`vm.cr`'s `render_to_s`/`render_inspect`, `array.cr`'s `to_s`-
-  aliased-to-`inspect` comment) — each of those deliberately kept
-  `RubyClass` values on the existing Crystal-level fast path (calling
-  `Value#to_s`, which for a `RubyClass` is just `RubyObject#
-  qualified_name`) rather than routing them through real dispatch the
-  way `RubyObject`/`LabeledArray`/`LabeledHash` values now are.
-  Real Ruby: a class is itself an object (an instance of `Class`),
-  and `def self.to_s` on it is a genuine singleton-method override,
-  reachable the same implicit ways an instance's own `to_s` override
-  now is. Not fixed as part of that work since it's a different
-  dispatch path entirely (`find_native_singleton_method`, not
-  `find_method`/`find_native_method` — see `dispatch_call`'s
-  self-is-rclass branch) and a narrower need (overriding a CLASS's
-  own `to_s`, as opposed to an instance's, is rare in practice) — but
-  a real, now-cleanly-scoped gap, not a guess: `render_to_s`/
-  `render_inspect` would need a `value.rclass?` branch calling
-  `call_method` the same way the `RubyObject`/container branches
-  already do, instead of returning `value.to_s`/`value.inspect`
-  directly.
-
-  **Distinct from, and unaffected by, a separate bug already fixed**
-  2026-08-17: explicit `MyClass.inspect` used to raise `NoMethodError`
-  outright (no dispatch path resolved it at all — see
-  `DEVELOPMENT.md`'s "to_s/inspect" writeup). That's fixed; `MyClass.
-  inspect` now returns the qualified name, same as `MyClass.to_s`
-  already did. This entry's own gap — an OVERRIDE not being respected
-  implicitly — is narrower and still open.
-
 Per-instance singleton methods became a deliberate non-goal 2026-07-27
 (see [UNSUPPORTED.md](./UNSUPPORTED.md), U004). Implicit-`self`
 privacy/visibility (`private`/`public`/`protected`) became a deliberate
@@ -774,6 +745,23 @@ section).
   Depends on (or at least belongs right alongside) resolving that
   underlying content-vs-reference identity question, not a fix of its
   own.
+
+- **`Regexp.new`'s own singleton constructor has the same closure-
+  capture bug `Exception.new`/`NameError.new` had, unfixed here.**
+  Found 2026-08-17 while writing `Regexp#to_s`/`#inspect`'s own
+  coverage, unrelated to that work directly. `define_singleton(cls,
+  interp, "new") do |args, _blk, ncc| ... RegexpObject.new(cls,
+  regex) ... end` (`builtins/regexp.cr`) uses `cls` — the closure-
+  captured class from `bootstrap_regexp`'s OWN definition-time scope
+  (always `Regexp` itself) — not `args.first.as_rclass` (the actual
+  receiver), the exact same shape the `Exception`/`NameError` fix
+  (`DEVELOPMENT.md`'s "to_s/inspect" writeup) corrected. A script
+  subclassing `Regexp` and calling `.new` on that subclass would
+  silently get a `Regexp`-classed object back, not one of the
+  subclass — lower priority than the `Exception` case was (subclassing
+  `Regexp` is exotic even in real Ruby, unlike exception subclassing,
+  which is everyday), but the identical fix (`args.first.as_rclass`)
+  applies directly if picked up.
 
 
 
