@@ -1055,5 +1055,138 @@ module Adjutant
         val.as_string.should eq "A::B"
       end
     end
+
+    describe "a Class/Module value's own #to_s/#inspect" do
+      # `MyClass.to_s` already worked before this fix, via a
+      # universal exec_builtin fallback case (vm.cr) — the explicit-
+      # receiver rclass dispatch branch only checks SINGLETON method
+      # tables, finds nothing (no type registers a native singleton
+      # `to_s`/`inspect`), and falls through to that catch-all.
+      # `MyClass.inspect` had NO equivalent fallback at all before
+      # this — a flat `NoMethodError` (R008), not just a wrong
+      # string. Every case below documents that specific fix.
+
+      it "MyClass.to_s returns the qualified name, unaffected by this change" do
+        eval("class Foo\nend\nFoo.to_s").as_string.should eq "Foo"
+      end
+
+      it "MyClass.inspect now works at all — previously raised NoMethodError" do
+        eval("class Foo\nend\nFoo.inspect").as_string.should eq "Foo"
+      end
+
+      it "to_s and inspect agree, matching real Ruby's default (no override) case" do
+        result = eval("class Foo\nend\n[Foo.to_s, Foo.inspect]")
+        strs = result.as_array.map(&.as_string)
+        strs[0].should eq strs[1]
+      end
+
+      it "a nested class's inspect returns its qualified name, same as to_s" do
+        val = eval(<<-RB)
+          module A
+            class B
+            end
+          end
+          A::B.inspect
+        RB
+        val.as_string.should eq "A::B"
+      end
+
+      it "a Module value's inspect works the same way as a Class value's" do
+        eval("module M\nend\nM.inspect").as_string.should eq "M"
+      end
+    end
+
+    describe "a Class's own def self.to_s/def self.inspect override, respected implicitly (not just via an explicit call)" do
+      # Fixed 2026-08-18 — the "Known gap" SCOPE.md flagged when the
+      # rest of the to_s/inspect overridability work shipped:
+      # render_to_s/render_inspect (vm.cr) used to keep RubyClass
+      # values on the Crystal-level fast path unconditionally, never
+      # checking for a script-defined override at all. Now checks
+      # first (rclass_override?) and only dispatches when one
+      # actually exists — a class with NO override still uses the
+      # exact same default rendering as before, unaffected.
+
+      it "string interpolation respects a class's own def self.to_s override" do
+        eval(<<-RB).should eq Value.string("value: custom!")
+          class Foo
+            def self.to_s
+              "custom!"
+            end
+          end
+          "value: \#{Foo}"
+        RB
+      end
+
+      it "a class with NO override still interpolates as its qualified name, unaffected" do
+        eval(<<-RB).should eq Value.string("value: Foo")
+          class Foo
+          end
+          "value: \#{Foo}"
+        RB
+      end
+
+      it "puts respects a class's own def self.to_s override" do
+        interp, ef = make_interp
+        interp.eval(<<-RB)
+          class Foo
+            def self.to_s
+              "custom!"
+            end
+          end
+          puts(Foo)
+        RB
+        ef.stdout.should eq "custom!\n"
+      end
+
+      it "p respects a class's own def self.inspect override, independent of any to_s override" do
+        interp, ef = make_interp
+        interp.eval(<<-RB)
+          class Foo
+            def self.to_s
+              "custom to_s"
+            end
+
+            def self.inspect
+              "custom inspect"
+            end
+          end
+          p(Foo)
+        RB
+        ef.stdout.should eq "custom inspect\n"
+      end
+
+      it "a class with an inspect override respond_to?(:inspect) is true — was already true before this fix, since a real override is a real singleton method" do
+        result = eval(<<-RB)
+          class Foo
+            def self.inspect
+              "x"
+            end
+          end
+          Foo.respond_to?(:inspect)
+        RB
+        result.truthy?.should be_true
+      end
+
+      it "a class with NO override still fails respond_to?(:to_s) — the documented, accepted, narrower residual gap" do
+        result = eval("class Foo\nend\nFoo.respond_to?(:to_s)")
+        result.falsy?.should be_true
+      end
+
+      it "an exception (deliberately raised inside the override) propagates normally, is NOT silently swallowed into a fallback rendering" do
+        result = eval(<<-RB)
+          class Boom
+            def self.to_s
+              raise "boom"
+            end
+          end
+          begin
+            "\#{Boom}"
+          rescue RuntimeError
+            "caught"
+          end
+        RB
+        result.as_string.should eq "caught"
+      end
+    end
   end
 end

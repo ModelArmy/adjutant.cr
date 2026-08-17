@@ -306,10 +306,6 @@ Using a struct means values are stack-allocated and copied on assignment — no 
 
 Symbols are represented as `Sym` — a struct carrying an integer ID and an interned name string. The `SymbolTable` assigns stable IDs so symbol comparison is an integer equality check rather than a string comparison. A `SymbolTable` is owned by the `Interpreter` and shared across all compilations, so `:foo` always has the same ID regardless of which script introduced it.
 
-**`to_s` and `inspect` genuinely differ for `nil`**, matching real Ruby: `nil.to_s == ""` (an empty string — `puts nil` prints a blank line, `"#{nil}"` interpolates to nothing), while `nil.inspect == "nil"` (the word, for debugging output). This is easy to regress since three call sites independently need to agree on it rather than one shared path: `Value#to_s`/`Value#inspect` themselves, `Op::Concat` (string interpolation), and `exec_builtin`'s `"puts"` case each do their own `Nil` case rather than all funneling through one. `print` and every OTHER string-producing path (`.to_s` the dispatchable method, error messages, `Op::Throw`, ...) delegate to `Value#to_s` directly and so inherit the fix automatically — it's specifically `Op::Concat` and `"puts"` that hardcode their own per-kind formatting and need checking individually if this class of bug shows up again for some other kind.
-
-**`Value#to_s`'s case statement has no branch at all for `LabeledArray`, `LabeledHash`, or a `Range` `RubyObject`** — all three fall through to the generic `"#<" << @raw.class << ">"` fallback, so `{"a" => 1}.to_s` currently renders `"#<Adjutant::LabeledHash>"`, not `{"a" => 1}`. This is a real, open Must Fix item (see `SCOPE.md`), not yet fixed — found 2026-08-13 writing fresh ISO-style test coverage for `Hash`, when it turned out nothing anywhere in the suite had ever checked `#to_s`'s actual STRING CONTENT for a container type, only that it returned *a* string. `Range` does have a working `#to_s` (`builtins/range.cr`) — but only reachable via an EXPLICIT script-level `.to_s` call through real method dispatch; the IMPLICIT path this paragraph is about (string interpolation, `puts`, `p`, anything going through `Value#to_s` directly) never consults it.
-
 ### The Object model
 
 `RubyClass` and `RubyObject` are plain Crystal classes, not `Value` variants wrapping something else — they sit directly in the `ValueRaw` union like any other type.
@@ -500,6 +496,28 @@ Built as real per-class storage, not a boolean flag on `ScriptProc` (an earlier,
 
 `find_method_private?`/`find_native_method_private?` mirror `find_method`/`find_native_method`'s own walk EXACTLY (own table, then included modules recursively, then superclass) rather than answering "is this name private anywhere in the chain" — a `Bool?`-returning inner pair (`find_own_or_included_method_private?` and its native twin) reports `nil` for "doesn't resolve at this level," distinct from `false` ("resolves here, and is public"), so the outer walk stops at the exact same point `find_method` itself would and reports THAT entry's visibility — a closer override with no `private` of its own correctly reads as public even if a farther ancestor marked the same name private, matching real Ruby. Enforcement is a single new check (`dispatch_call`'s `raise_if_private_call`, vm.cr) in the explicit-receiver `RubyObject` branch, run once a method/native method has already been found: private and the receiver ISN'T the same object as `self` at the call site (`same?`, object identity — not "was this spelled `self.`," matching real Ruby's own relaxed rule that `self.hello` and any receiver aliasing `self` both stay allowed) raises `R023` as `NoMethodError`.
 
+### `to_s`/`inspect`
+
+`to_s`/`inspect` are ordinary, overridable instance methods, with a default on `Object` (`builtins/object.cr`) that every other type either inherits or overrides — matching real Ruby, where a script's own `def to_s` on any class is respected everywhere a value gets rendered, not just via an explicit call.
+
+`Object#to_s`'s default renders `"#<ClassName>"`. `Object#inspect`'s default lists instance variables in insertion order (`"#<ClassName @x=1, @y=\"hi\">"`), each rendered via its own real, recursive `inspect` call (`ncc.call_method`) rather than hand-rolled recursion — matching real Ruby's own default `Object#inspect`, minus the memory address (`0x...`), which has no debugging value here (not stable across runs, nothing script-side can correlate it against, and Adjutant doesn't expose real addresses to begin with). It guards against a non-`RubyObject` receiver (a scalar like `5`/`"a"`, or an `Array`/`Hash`, all of which reach it by inheritance before having their own `inspect`) falling through and crashing on an unconditional cast — those fall back to the plain Crystal-level `Value#inspect` instead, which already handles every true scalar correctly.
+
+Every IMPLICIT render path — string interpolation (`Op::Concat`), `puts`, `print`, `p` (all in `vm.cr`) — goes through two small VM methods, `render_to_s`/`render_inspect`, which call real dispatch (`call_method`) for anything that could have an override (`RubyObject`, `LabeledArray`, `LabeledHash`), and fall back to `Value#to_s`/`Value#inspect` directly only for true scalars (unreachable for redefinition anyway, since `U003` forbids reopening any class) and `RubyClass` values (see "Known gap," below). This is what makes a script's own `def to_s`/`def inspect` override visible everywhere a value gets rendered, not just via an explicit `.to_s` call — and it's why `nil` genuinely differing between the two (`nil.to_s == ""`, `nil.inspect == "nil"`, matching real Ruby) now holds consistently everywhere, rather than needing several independent call sites to individually agree on it.
+
+`Array`/`Hash` both have real, recursive `inspect` — each element (or, for `Hash`, each key AND value) rendered via ITS OWN real `inspect`, so a nested custom object's override is respected. `to_s` is a real dispatch call onto `inspect` for both, not a separate algorithm — matching real Ruby, which aliases them exactly. `Hash#inspect` additionally uses real Ruby's `name: value` shorthand for every `Symbol` key, never hash-rocket (confirmed against a real `irb` session) — `SIMPLE_SYMBOL_KEY` (`builtins/hash.cr`) decides only which of the two spellings to use (a bare name, or the name's own quoted-string form for an irregular one), never whether the shorthand applies; it always does for a `Symbol` key.
+
+`Range` has genuinely SEPARATE `to_s`/`inspect` — unlike `Array`/`Hash`, real Ruby's own `Range#to_s`/`#inspect` differ when a bound isn't a plain number (`to_s` renders each bound via its own `to_s`, unquoted for a `String` bound; `inspect` via its own `inspect`, quoted). A `nil` bound (only reachable today via explicit `Range.new(nil, 5)` — endless/beginless range syntax isn't parseable yet, see `SCOPE.md`) renders as `"nil..5"` here rather than real Ruby's special-cased `"..5"` — a known, narrow gap tied to that separate item.
+
+A container recursing into elements it doesn't own means it could recurse into ITSELF, directly or through another container. `NativeCallContext#guard_rendering(obj_id, cycle_result, &block)` — one VM-level `Set(UInt64)`, keyed on each container's own Crystal `object_id` (free, since `LabeledArray`/`LabeledHash` are `Reference` types) — returns `cycle_result` immediately without running the block if `obj_id` is already being rendered, otherwise marks it, runs the block, and always clears the mark again before returning, even if the block raises. Block-based rather than a begin/end pair a caller has to bracket correctly itself, so the cleanup is structural, not something every future caller has to get right individually. Global to the whole rendering call, not per-container-type state, so a cycle running through a DIFFERENT container type (an `Array` inside a `Hash` inside that same `Array`) is caught by the same mechanism, with no per-type tracking needed.
+
+A `RubyClass` value's own `def self.to_s`/`def self.inspect` override is respected by every implicit path too, not just an explicit call — `render_to_s`/`render_inspect` check `rclass_override?` (whether `find_singleton_method`/`find_native_singleton_method` finds a REAL registered override) BEFORE dispatching, rather than dispatching unconditionally and rescuing on failure: a blanket rescue would also swallow a genuine exception a script's own override deliberately raises, which real Ruby propagates rather than silently falling back to the default rendering. No override found means the exact same default rendering as before this check existed (the qualified name) — real Ruby's own `Class#to_s` default doesn't require an actual registered method to exist either. A class WITH an override was already `respond_to?`-visible before this fix (same two tables `respond_to?`'s own check consults); a class withOUT one remains a documented, accepted, narrower gap — real Ruby's `Class#to_s` is a genuine inherited `Object` method reachable through the metaclass chain, which Adjutant doesn't model. Explicit-call `inspect` on a class value ITSELF was a separate, earlier-fixed bug, not a design gap — `MyClass.inspect` used to raise `NoMethodError` outright, since no dispatch path resolved it at all (`exec_builtin`'s universal fallback, `vm.cr`, had a `"to_s"` case but no matching `"inspect"` one); fixed by adding that case, mirroring `"to_s"` exactly.
+
+`Proc` gained real `to_s`/`inspect` — `#<Proc file:line (lambda)>`, `file:line` reflecting the lambda's CREATION site (threaded through from the calling frame at `Op::MakeProc`, stored as `__filename`/`__line` ivars — `vm.cr`'s `make_lambda_object`), not wherever `.call` later happens to run from. Deliberately omits the memory address real Ruby's own format includes (same reasoning as `Object#inspect`'s own omission) but keeps `file:line`, genuine debugging value for a script with several lambdas. Before this, `Proc` had no `to_s`/`inspect` at all, meaning it fell through to `Object`'s own default — and since `Proc`'s own internal representation ivar is literally named `__sproc`, the OLD behavior LEAKED that implementation detail into user-visible output (`#<Proc __sproc=#<Proc>>`), not merely an incomplete rendering.
+
+`Exception` gained real `inspect` — `#<ClassName: message>`, calling real dispatch on `to_s` (not reading the raw `message` ivar directly), so a script's own subclass overriding `to_s` has that reflected in `inspect` too, matching real Ruby's own default `Exception#inspect` implementation. Registered once on the base `Exception` class, inherited by every subclass, using `obj.rclass.name` (the actual instance's class) rather than the class the defining method happened to be registered on.
+
+**A recurring closure-capture bug, found and fixed twice while writing this work, worth naming as its own pattern**: a native singleton `new` closing over `cls` from its OWN definition-time scope, rather than reading the actual receiver (`args.first.as_rclass`), silently builds an instance of the WRONG class whenever a subclass with no `new` of its own inherits that singleton method. First found in `Exception`'s (and `NameError`'s) own `new` — `TypeError.new("msg")` silently built an `Exception`-classed object, not a `TypeError`-classed one, invisible in the existing test suite since every test constructed typed errors via `raise TypeError, "msg"` instead, a genuinely separate, already-correct path (`make_error_object`, `vm.cr`). The identical bug turned up independently in `Regexp.new` while writing ITS OWN `to_s`/`inspect` coverage, unrelated to the `Exception` fix directly — same fix (`args.first.as_rclass`) applied there too. Worth checking for this same shape (`define_singleton(cls, ...) do |args| ... SomeObject.new(cls, ...) ... end`, closure `cls` used instead of the receiver) in any FUTURE native singleton `new` this codebase adds.
+
 ### Regexp and MatchData
 
 Built 2026-08-14, one continuous session, from lexer literal syntax
@@ -624,6 +642,39 @@ anywhere in this parser, deliberately a dead end, raising a real
 `U011` diagnostic by name — covering both a read and an assignment
 target uniformly, since assignment parsing bottoms out through the
 same `primary` entry point for its left-hand side.
+
+**`Regexp`/`MatchData`'s own `to_s`/`inspect`**, built 2026-08-17 and
+confirmed against a real `irb` session rather than assumed — every
+format below was checked directly, not guessed at. `Regexp#to_s`
+renders `(?enabled-disabled:pattern)` (flag letters always `m`, `i`,
+`x` order on both sides of the `-`, that whole `-disabled` section
+omitted when every flag is enabled); `#inspect` the source form,
+`/pattern/enabledflags`, ALSO escaping an unescaped `/` in the pattern
+as `\/` (`escape_slashes`, `builtins/regexp.cr` — a one-character
+lookback, skipping an already-escaped `\/` rather than double-escaping
+it; a genuinely doubled backslash before a slash isn't independently
+confirmed to round-trip correctly). `MatchData#inspect` renders `#<MatchData
+"whole" 1:"g1" 2:"g2">`, a NAMED capture group showing its own name
+instead of a number (`mid:"b"`, via `::Regex#name_table` — an
+UNVERIFIED Crystal API guess, same standing caveat as this section's
+other `::Regex`/`::Regex::MatchData` surface), a non-participating
+group as bare `N:nil`. Both `flag_letters` (splits enabled/disabled
+letters once, shared by `to_s`/`inspect`) and `escape_slashes` live in
+`builtins/regexp.cr`, module-level.
+
+**`Value#inspect`'s `String` case did NO escaping at all before this**
+— `io << '"' << r << '"'`, verbatim, no matter what `r` contained.
+Found while writing `MatchData#inspect`'s own test coverage, which was
+the first thing anywhere to actually assert on ESCAPED content rather
+than just "some string came back" — a genuinely foundational bug, not
+specific to `MatchData` at all: any `String` containing a literal `"`
+rendered as invalid, unparseable output wherever `#inspect` was used.
+Fixed in `value.cr` (the single shared implementation every caller
+already routed through) to escape `"`, `\`, `\n`, `\t` — deliberately
+not the full set real Ruby's own `String#inspect` produces (`\e`,
+`\0`, `\a`, `\b`, `\f`, `\v`, non-ASCII/invalid-encoding handling),
+which stay real, separate, lower-confidence gaps rather than guessed
+at without a way to verify each one directly.
 
 ### Information flow control (risk flow)
 

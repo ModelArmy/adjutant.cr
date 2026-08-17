@@ -58,6 +58,145 @@ module Adjutant
       end
     end
 
+    # Step 4 of the to_s/inspect overridability work (see
+    # object_spec.cr's own header comment and DEVELOPMENT.md for the
+    # full plan). `#to_s` here was previously a Crystal-level
+    # `args.first.to_s` call — the same broken circular no-op Array's
+    # own pre-fix `#to_s` had — so every case below is a real,
+    # previously-broken behavior.
+    describe "#to_s / #inspect" do
+      it "to_s and inspect produce the same output — real Ruby aliases them for Hash, same as Array" do
+        interp, _ = make_interp
+        result = interp.eval(%([{"a" => 1}.to_s, {"a" => 1}.inspect]))
+        strs = result.as_array.map(&.as_string)
+        strs[0].should eq strs[1]
+      end
+
+      it "an empty hash renders as {}" do
+        interp, _ = make_interp
+        interp.eval("{}.to_s").as_string.should eq "{}"
+      end
+
+      it "a single string-keyed pair renders as \"key\" => value, both via real inspect" do
+        interp, _ = make_interp
+        interp.eval(%({"a" => 1}.to_s)).as_string.should eq %({"a" => 1})
+      end
+
+      it "multiple pairs join with a comma-space, insertion order" do
+        interp, _ = make_interp
+        interp.eval(%({"a" => 1, "b" => 2}.to_s)).as_string.should eq %({"a" => 1, "b" => 2})
+      end
+
+      it "values render via THEIR OWN inspect, not to_s — a String value stays quoted" do
+        interp, _ = make_interp
+        interp.eval(%({"a" => "hi"}.to_s)).as_string.should eq %({"a" => "hi"})
+      end
+
+      it "a nested Hash value renders recursively" do
+        interp, _ = make_interp
+        interp.eval(%({"a" => {"b" => 1}}.to_s)).as_string.should eq %({"a" => {"b" => 1}})
+      end
+
+      it "a nested Array value renders recursively, via the SAME cycle-guard mechanism Array uses" do
+        interp, _ = make_interp
+        interp.eval(%({"a" => [1, 2]}.to_s)).as_string.should eq %({"a" => [1, 2]})
+      end
+
+      it "a Symbol key that's a plain identifier uses the shorthand name: value notation, matching real Ruby" do
+        interp, _ = make_interp
+        interp.eval(%({name: "x"}.to_s)).as_string.should eq %({name: "x"})
+      end
+
+      it "multiple plain-identifier Symbol keys each use the shorthand" do
+        interp, _ = make_interp
+        interp.eval(%({name: "x", age: 5}.to_s)).as_string.should eq %({name: "x", age: 5})
+      end
+
+      it "a Symbol key ending in ? or ! still uses the shorthand" do
+        interp, _ = make_interp
+        interp.eval(%({valid?: true}.to_s)).as_string.should eq %({valid?: true})
+      end
+
+      it "a Symbol key that ISN'T a plain identifier (contains a space) still uses colon-shorthand, with the name quoted like a String — confirmed against a real irb session, NOT hash-rocket" do
+        interp, _ = make_interp
+        result = interp.eval(<<-RUBY)
+        h = {}
+        h[:"foo bar"] = 1
+        h.to_s
+        RUBY
+        result.as_string.should eq %({"foo bar": 1})
+      end
+
+      it "the shorthand depends only on the key's type and name, not which literal syntax built the Hash — a hash-rocket-written symbol key renders identically to a shorthand-written one" do
+        interp, _ = make_interp
+        interp.eval(%({"a" => 5, b: 6, :c => 8}.to_s)).as_string.should eq %({"a" => 5, b: 6, c: 8})
+      end
+
+      it "a non-Symbol key never uses the shorthand, even a String that looks like an identifier" do
+        interp, _ = make_interp
+        interp.eval(%({"name" => "x"}.to_s)).as_string.should eq %({"name" => "x"})
+      end
+
+      it "a script class's own `def inspect` override is respected for a value, via real dispatch" do
+        interp, _ = make_interp
+        result = interp.eval(<<-RUBY)
+        class A
+          def inspect
+            "custom!"
+          end
+        end
+        {"a" => A.new}.to_s
+        RUBY
+        result.as_string.should eq %({"a" => custom!})
+      end
+
+      it "a plain object value with no override renders via Object's own default #inspect (ivar-listing, from step 1)" do
+        interp, _ = make_interp
+        result = interp.eval(<<-RUBY)
+        class A
+          def initialize
+            @x = 1
+          end
+        end
+        {"a" => A.new}.to_s
+        RUBY
+        result.as_string.should eq %({"a" => #<A @x=1>})
+      end
+
+      it "a directly self-referential hash value renders as {...}, matching real Ruby, instead of a native stack overflow" do
+        interp, _ = make_interp
+        result = interp.eval(<<-RUBY)
+        h = {}
+        h["self"] = h
+        h.to_s
+        RUBY
+        result.as_string.should eq %({"self" => {...}})
+      end
+
+      it "a cycle running through an Array is caught by the SAME shared guard, not Hash-specific tracking" do
+        interp, _ = make_interp
+        result = interp.eval(<<-RUBY)
+        a = []
+        h = {"a" => a}
+        a << h
+        h.to_s
+        RUBY
+        result.as_string.should eq %({"a" => [{...}]})
+      end
+
+      it "the cycle guard does not leak across unrelated inspect calls on the SAME hash" do
+        interp, _ = make_interp
+        result = interp.eval(<<-RUBY)
+        h = {"a" => 1}
+        first = h.to_s
+        second = h.to_s
+        [first, second]
+        RUBY
+        strs = result.as_array.map(&.as_string)
+        strs.should eq [%({"a" => 1}), %({"a" => 1})]
+      end
+    end
+
     describe "#empty?" do
       it "true for an empty hash" do
         interp, _ = make_interp

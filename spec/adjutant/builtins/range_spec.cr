@@ -55,6 +55,85 @@ module Adjutant
       it "renders an exclusive range with ..." do
         eval("(1...5).to_s").as_string.should eq "1...5"
       end
+
+      # Step 5 of the to_s/inspect overridability work (see
+      # object_spec.cr's own header comment and DEVELOPMENT.md for
+      # the full plan). Previously each bound was rendered via raw
+      # Crystal string interpolation (Value#to_s), not real dispatch
+      # — so a custom bound type's own script-defined `to_s` override
+      # wasn't respected. Every case below exercises that fix.
+      it "a String bound renders UNQUOTED via to_s, matching real Ruby's own Range#to_s (each bound via its own to_s, not inspect)" do
+        eval(%(("a".."c").to_s)).as_string.should eq "a..c"
+      end
+
+      it "a custom bound type's own `def to_s` override is respected, via real dispatch" do
+        result = eval(<<-RUBY)
+        class Bound
+          def to_s
+            "custom!"
+          end
+        end
+        (Bound.new..5).to_s
+        RUBY
+        result.as_string.should eq "custom!..5"
+      end
+    end
+
+    describe "#inspect" do
+      # Previously Range had no `inspect` at all — any implicit
+      # render (`p`, a Range nested inside an Array/Hash's own
+      # inspect) fell through to Object's generic `#<Range>`
+      # fallback. See array_spec.cr's/hash_spec.cr's own Range-
+      # nesting coverage for the container side of this fix; these
+      # test Range#inspect directly.
+
+      it "renders an inclusive range the same shape as to_s, for plain numeric bounds" do
+        eval("(1..5).inspect").as_string.should eq "1..5"
+      end
+
+      it "renders an exclusive range with ..." do
+        eval("(1...5).inspect").as_string.should eq "1...5"
+      end
+
+      it "a String bound renders QUOTED via inspect — the actual to_s/inspect distinction real Ruby has for Range, unlike Array/Hash's plain aliasing" do
+        eval(%(("a".."c").inspect)).as_string.should eq %("a".."c")
+      end
+
+      it "a custom bound type's own `def inspect` override is respected, via real dispatch, independent of any to_s override it might also have" do
+        result = eval(<<-RUBY)
+        class Bound
+          def to_s
+            "custom to_s"
+          end
+
+          def inspect
+            "custom inspect"
+          end
+        end
+        (Bound.new..5).inspect
+        RUBY
+        result.as_string.should eq "custom inspect..5"
+      end
+
+      it "a plain object bound with no override renders via Object's own default #inspect (ivar-listing, from step 1)" do
+        result = eval(<<-RUBY)
+        class Bound
+          def initialize
+            @x = 1
+          end
+        end
+        (Bound.new..5).inspect
+        RUBY
+        result.as_string.should eq "#<Bound @x=1>..5"
+      end
+
+      it "a Range nested inside an Array now renders correctly, via real dispatch, instead of the generic #<Range> fallback" do
+        eval("[1..3].to_s").as_string.should eq "[1..3]"
+      end
+
+      it "a Range nested inside a Hash value now renders correctly too" do
+        eval(%({"r" => 1..3}.to_s)).as_string.should eq %({"r" => 1..3})
+      end
     end
 
     describe "#include?" do

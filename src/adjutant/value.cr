@@ -272,7 +272,7 @@ module Adjutant
     def inspect(io : IO) : Nil
       case r = @raw
       when Nil        then io << "nil"
-      when String     then io << '"' << r << '"'
+      when String     then inspect_string(io, r)
       when Sym        then io << r
       when ScriptProc then io << "#<Proc>"
       else                 to_s(io)
@@ -280,6 +280,36 @@ module Adjutant
       if l = label
         io << " [" << l << "]"
       end
+    end
+
+    # Real Ruby's `String#inspect` escapes `"`/`\` (needed for the
+    # output to even be valid re-quoted syntax at all) plus at least
+    # `\n`/`\t` (extremely common, unambiguous, low-risk to include).
+    # Found 2026-08-17: the PREVIOUS version of this method did none
+    # of that — `io << '"' << r << '"'`, no escaping whatsoever — a
+    # real, foundational bug (not specific to any one caller): ANY
+    # String containing a literal `"` rendered as genuinely invalid,
+    # unparseable output wherever `#inspect` was used, not just
+    # MatchData's own new `#inspect` (regexp_spec.cr) that happened to
+    # be the first thing to actually assert on the escaped content
+    # rather than just "some string came back." Deliberately NOT a
+    # full implementation of every escape real Ruby's own
+    # `String#inspect` produces (`\e`, `\0`, `\a`, `\b`, `\f`, `\v`,
+    # non-ASCII/invalid-encoding handling, ...) — those are real,
+    # separate, lower-confidence gaps, not folded in here without a
+    # way to verify each one directly.
+    private def inspect_string(io : IO, r : String) : Nil
+      io << '"'
+      r.each_char do |char|
+        case char
+        when '"'  then io << "\\\""
+        when '\\' then io << "\\\\"
+        when '\n' then io << "\\n"
+        when '\t' then io << "\\t"
+        else           io << char
+        end
+      end
+      io << '"'
     end
 
     # --- Protected constructor ------------------------------------------

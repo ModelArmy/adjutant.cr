@@ -25,50 +25,19 @@ roughly by dependency, not necessarily by importance — an item lower down
 may unblock ones above it.
 
 **Reordered 2026-08-15**, on top of the existing dependency ordering: the
-first six entries below are additionally sorted by how often ordinary,
+first five entries below are additionally sorted by how often ordinary,
 idiomatic Ruby would reach for the construct and get silently wrong output
 or a hard block — silent-wrong-answer entries lead, then everyday syntax
-blocks, then idioms with a workaround. Two entries (`%w[]`/`%i[]`/heredocs,
-`lambda`/`proc`) were promoted from `Will Fix` as part of the same pass —
-common enough in ordinary scripts that "not currently blocking anything"
-no longer held. The remaining entries (runtime carets, `respond_to?`) keep
-their prior relative order; they weren't re-evaluated against the
-promoted two on this axis, just carried forward.
-
-- **`Array#to_s`/`Hash#to_s`/`Range#to_s` (called implicitly — e.g.
-  string interpolation, `puts`, `p` — and `#inspect`, which defers to
-  `to_s`) silently produce garbage, not a real Ruby-style rendering.**
-  Found 2026-08-13 writing fresh ISO-style coverage for `Hash`, then
-  confirmed the identical gap already applies to `Range` too —
-  `builtins/range.cr`'s own `to_s` method comment flags it, tracing
-  back to the 2026-07-14 handoff, predating this entry.
-  `Value#to_s`'s case statement (`value.cr`) has no branch for
-  `LabeledArray`, `LabeledHash`, OR a `Range` RubyObject at all — all
-  three fall through to the generic `"#<" << @raw.class << ">"` (or,
-  for a RubyObject like Range, `RubyObject#to_s`'s own generic
-  `"#<Range>"`) fallback, so `{"a" => 1}.to_s` actually produces
-  `"#<Adjutant::LabeledHash>"`, `[1,2,3].to_s` produces
-  `"#<Adjutant::LabeledArray>"`, and interpolating a Range (`"#{1..3}"`)
-  produces `"#<Range>"` rather than `"1..3"` — none of these the real
-  rendering a script or its author would expect. IMPORTANT scope note
-  from `range.cr`'s own comment: Range DOES have a working `#to_s`
-  reachable via an EXPLICIT script-level `.to_s` call (real dispatch
-  through `find_native_method`) — the gap is specifically the
-  IMPLICIT path (string interpolation, `puts`, `p`, anything using
-  `Value#to_s` directly rather than going through method dispatch),
-  which never consults a class's own native `to_s` at all. Silent-
-  wrong-answer, not a missing method or a raised error, so it's the
-  kind of gap that's easy to never notice: no test anywhere in the
-  suite (including array_spec.cr, predating this finding) ever checked
-  `#to_s`'s actual STRING CONTENT for any of the three types, only
-  that it returns *a* string. Real work needed: proper recursive
-  Array/Hash-aware rendering (`[1, 2, "a"]`, `{"a" => 1, "b" => [1,
-  2]}`), a real Range case, string quoting rules matching real Ruby's
-  `to_s` vs `inspect` distinction, and — per the separate cycle-
-  detection gap already flagged in `array.rb`'s own triage — a guard
-  against self-referential containers recursing until the native stack
-  overflows, since a real implementation would need to touch the same
-  code either way.
+blocks, then idioms with a workaround. (A sixth, `Array#to_s`/`Hash#to_s`/
+`Range#to_s`, led this list at the time of that reorder — it shipped
+2026-08-16, see DEVELOPMENT.md's "to_s/inspect" writeup, and is removed
+from here rather than left as a stale entry.) Two entries (`%w[]`/`%i[]`/
+heredocs, `lambda`/`proc`) were promoted from `Will Fix` as part of the
+same reordering pass — common enough in ordinary scripts that "not
+currently blocking anything" no longer held. The remaining entries
+(runtime carets, `respond_to?`) keep their prior relative order; they
+weren't re-evaluated against the promoted two on this axis, just carried
+forward.
 
 - **Endless/beginless ranges (`1..`, `..10`, `1...`, `...10`) don't
   parse at all.** Found 2026-08-13 triaging `spec/scripts/mruby/
@@ -96,7 +65,12 @@ promoted two on this axis, just carried forward.
   bound today via the CONSTRUCTOR path already, silently producing a
   range that iterates zero times rather than doing either of those,
   since `NativeCallContext#compare` returns false for any pairing it
-  can't order including anything-vs-nil).
+  can't order including anything-vs-nil). Also affects rendering: a
+  `nil` bound (already reachable today via `Range.new(nil, 5)`)
+  currently renders as `"nil..5"`, not real Ruby's special-cased
+  `"..5"` — see DEVELOPMENT.md's "to_s/inspect" writeup for the exact
+  gap; worth fixing alongside this item's own bound-representation
+  work, not in isolation.
 
 - **A trailing `,` at the end of a line doesn't let a PAREN-LESS
   (bare) method call's argument list continue onto the next line —

@@ -309,6 +309,13 @@ module Adjutant
       # never gets read; it's cleared at the top of every fresh catch
       # so it can't leak into an unrelated later error.
       @pending_reraise = nil.as(Value?)
+      # Backing store for NativeCallContext#guard_rendering (see that
+      # method's own comment for the full reasoning) — one VM-level
+      # Set, not per-call state, since a recursive inspect walks back
+      # OUT through the VM (via `call_method`) between each container
+      # level, so there's nowhere else to durably hold "currently
+      # rendering" across those calls.
+      @rendering_ids = Set(UInt64).new
     end
 
     # Execute a compiled chunk and return the result.
@@ -679,7 +686,7 @@ module Adjutant
     # here is genuinely still the CALLING frame — the one whose
     # `self_val` is exactly what "self" means at the call site.
     # `protected`, not `private`, so `NativeFunctionCall`
-    # (interpreter.cr, this module's only `NativeCallContext`
+    # (native_function_call.cr, this module's only `NativeCallContext`
     # implementor) can call it — same visibility as `invoke`/
     # `call_method`/`compare`, which already do this for their own
     # reasons.
@@ -1122,17 +1129,7 @@ module Adjutant
             n = inst.a.to_i
             parts = @stack.last(n)
             @stack.pop(n) if n > 0
-            str = parts.map { |part|
-              case
-              when part.string? then part.as_string
-              when part.int?    then part.as_int.to_s
-              when part.float?  then part.as_float.to_s
-              when part.bool?   then part.as_bool.to_s
-              when part.null?   then ""
-              when part.symbol? then part.as_sym.name
-              else                   part.to_s
-              end
-            }.join
+            str = parts.map { |part| render_to_s(part, f.filename, f.line) }.join
             joined_label = parts.reduce(nil.as(RiskFlowLabel?)) { |acc, part| RiskFlowLabel.join(acc, part.label) }
             @risk_flow_log.record("Concat", parts.map(&.label), joined_label, f.line)
             push(Value.string(str, joined_label))
@@ -1188,7 +1185,7 @@ module Adjutant
               # point could see — see OuterChain's own comment for why
               # (found 2026-08-10, SCOPE.md's "Closures / block
               # scoping" entry).
-              push(make_lambda_object(sproc_val.as_proc, sproc_val.label, [f.locals] + (f.outer_locals || [] of Array(Value))))
+              push(make_lambda_object(sproc_val.as_proc, sproc_val.label, [f.locals] + (f.outer_locals || [] of Array(Value)), f.filename, f.line))
             else
               push(sproc_val)
             end
@@ -1805,6 +1802,107 @@ module Adjutant
         ),
         error_class: "NoMethodError"
       )
+    end
+
+    # Renders `value`'s REAL `to_s` — real method dispatch
+    # (`call_method`), not a Crystal-level `Value#to_s` call, for
+    # anything that could have a script- or builtin-defined override
+    # (`RubyObject`, `LabeledArray`, `LabeledHash`, and — as of
+    # 2026-08-18 — a `RubyClass` value WITH a real `def self.to_s`
+    # override; see `rclass_override?`'s own comment). True scalars
+    # (Nil/Bool/Int64/Float64/String/Sym) keep the existing direct
+    # Crystal-level rendering — cheaper, and equivalent regardless:
+    # none of those types is reachable from script code for
+    # redefinition (`U003` forbids reopening any class, builtins
+    # included), so there's no override real dispatch could ever
+    # find that this fast path would miss.
+    #
+    # Deliberately its own small method, not inlined into any one
+    # call site — `puts`/`print` (exec_builtin, below) use it too, as
+    # of this same step, and all three (plus Op::Concat) are the ones
+    # planned to eventually move outside the VM into a native
+    # integration API; keeping the actual "get this value's real
+    # string" logic in one place, not duplicated across four call
+    # sites, is what makes that future move a relocation rather than
+    # a rewrite.
+    private def render_to_s(value : Value, filename : String, line : Int32) : String
+      case
+      when value.string? then value.as_string
+      when value.int?    then value.as_int.to_s
+      when value.float?  then value.as_float.to_s
+      when value.bool?   then value.as_bool.to_s
+      when value.null?   then ""
+      when value.symbol? then value.as_sym.name
+      when value.rclass?
+        if rclass_override?(value.as_rclass, "to_s")
+          call_method(value, "to_s", [] of Value, filename, line).as_string
+        else
+          value.to_s
+        end
+      else call_method(value, "to_s", [] of Value, filename, line).as_string
+      end
+    end
+
+    # Same shape as render_to_s, `inspect` instead. Simpler split than
+    # render_to_s's: `Value#inspect` (value.cr) ALREADY correctly
+    # handles every true scalar (Nil/String/Sym get their own real
+    # branch there — no `Sym#to_s`-includes-a-colon-style workaround
+    # needed here, since `Value#inspect`'s own Sym branch already
+    # produces the colon-INCLUDING form real Ruby's `Symbol#inspect`
+    # wants), so this only needs to intercept the types with a REAL,
+    # potentially-overridden `inspect` to dispatch to —
+    # `RubyObject`/`LabeledArray`/`LabeledHash` always, `RubyClass`
+    # only when it actually HAS an override (`rclass_override?`).
+    private def render_inspect(value : Value, filename : String, line : Int32) : String
+      if value.robject? || value.array? || value.hash? ||
+         (value.rclass? && rclass_override?(value.as_rclass, "inspect"))
+        call_method(value, "inspect", [] of Value, filename, line).as_string
+      else
+        value.inspect
+      end
+    end
+
+    # Whether `cls` has a REAL singleton override for `name` — checked
+    # BEFORE dispatching, not "dispatch and rescue on failure," since
+    # a blanket rescue would ALSO swallow a genuine exception a
+    # script's own override deliberately raises (real Ruby propagates
+    # that; render_to_s/render_inspect must too, not silently fall
+    # back to the default rendering instead). No override found means
+    # the DEFAULT rendering applies (`value.to_s`/`value.inspect`,
+    # unchanged from before this check existed) — real Ruby's own
+    # `Class#to_s`/`#inspect` default (the qualified name, no
+    # override) doesn't require an actual registered method to exist
+    # either; `exec_builtin`'s own universal `"to_s"`/`"inspect"`
+    # fallback cases (below) already provide that default via the
+    # EXPLICIT-call path, and this mirrors it for the implicit one.
+    # `find_singleton_method`/`find_native_singleton_method` — same
+    # two tables `respond_to?`'s own check already consults, so a
+    # class WITH an override was ALREADY respond_to?-visible before
+    # this fix; only the IMPLICIT-rendering gap (this method) was
+    # open, not a respond_to? gap for the has-an-override case. A
+    # class with NO override remains a known, accepted, narrower
+    # respond_to? gap (SCOPE.md's own entry on that) — real Ruby's
+    # `Class#to_s` is a genuine inherited `Object` method reachable
+    # through the metaclass chain, which Adjutant doesn't model.
+    private def rclass_override?(cls : RubyClass, name : String) : Bool
+      sym_id = @symbols.lookup(name).try(&.value)
+      return false unless sym_id
+      !!(cls.find_singleton_method(sym_id) || cls.find_native_singleton_method(sym_id))
+    end
+
+    # See NativeCallContext#guard_rendering's own comment for the full
+    # reasoning — this is where the actual Set lives and where the
+    # `ensure` actually runs, which is the entire point of this being
+    # one method instead of a begin/end pair every caller has to
+    # bracket correctly themselves.
+    def guard_rendering(obj_id : UInt64, cycle_result : String, & : -> String) : String
+      return cycle_result if @rendering_ids.includes?(obj_id)
+      @rendering_ids << obj_id
+      begin
+        yield
+      ensure
+        @rendering_ids.delete(obj_id)
+      end
     end
 
     # ameba:disable Metrics/CyclomaticComplexity - Clear steps, better together
@@ -2566,17 +2664,16 @@ module Adjutant
       reject_kwargs!(kwargs, name, filename, line)
       case name
       when "puts"
-        str = args.map { |arg|
-          case
-          when arg.string? then arg.as_string
-          when arg.null?   then ""
-          when arg.bool?   then arg.as_bool.to_s
-          when arg.int?    then arg.as_int.to_s
-          when arg.float?  then arg.as_float.to_s
-          when arg.symbol? then arg.as_sym.to_s
-          else                  arg.to_s
-          end
-        }.join("\n")
+        # `render_to_s`, not each arg's own hand-rolled case — real
+        # dispatch for anything with an overridable `to_s`, matching
+        # Op::Concat (string interpolation)'s own fix. Fixes a real,
+        # pre-existing bug as a side effect: the OLD code here used
+        # `arg.as_sym.to_s`, which (per `Sym#to_s`'s own colon-
+        # inclusive quirk — see symbol_table.cr) printed `puts :sym`
+        # as `:sym`, WITH the colon; real Ruby's `puts :sym` prints
+        # `sym`. `render_to_s`'s symbol case already uses `.name`
+        # (no colon), the same fix Op::Concat already got.
+        str = args.map { |arg| render_to_s(arg, filename, line) }.join("\n")
         if ef = @effect
           ef.write_stdout(str + "\n")
         else
@@ -2584,7 +2681,7 @@ module Adjutant
         end
         Value.nil_value
       when "print"
-        str = args.map(&.to_s).join
+        str = args.map { |arg| render_to_s(arg, filename, line) }.join
         if ef = @effect
           ef.write_stdout(str)
         else
@@ -2592,7 +2689,9 @@ module Adjutant
         end
         Value.nil_value
       when "p"
-        str = args.map(&.inspect).join("\n")
+        # `render_inspect`, not `arg.inspect` (Crystal-level) — same
+        # fix as `puts`/`print` above, `inspect` instead of `to_s`.
+        str = args.map { |arg| render_inspect(arg, filename, line) }.join("\n")
         if ef = @effect
           ef.write_stdout(str + "\n")
         else
@@ -2844,6 +2943,30 @@ module Adjutant
       when "to_s"
         recv = args.first? || Value.nil_value
         Value.string(recv.to_s)
+      when "inspect"
+        # Only reached for a receiver with no OTHER resolution path —
+        # every type with its own real, registered `inspect`
+        # (`RubyObject`/`Array`/`Hash`/`Range`/`Proc`, all inheriting
+        # from or overriding `Object`'s default) resolves at an
+        # earlier dispatch step and never reaches this fallback at
+        # all. In practice, today, that means specifically a
+        # `RubyClass` receiver — the explicit-receiver rclass branch
+        # (above) only checks SINGLETON method tables, and no type
+        # registers a native singleton `inspect` — so `MyClass.
+        # inspect` fell all the way through to here and raised R008
+        # (undefined method) before this case existed, even though
+        # `MyClass.to_s` already worked via this exact same fallback
+        # mechanism, one case up. `Value#inspect` (value.cr) already
+        # has no special `RubyClass` branch of its own, deferring to
+        # `to_s(io)` — so this produces the same qualified name
+        # `to_s` does, matching real Ruby's own `MyClass.inspect ==
+        # MyClass.to_s` for the DEFAULT case. A script's own `def
+        # self.inspect` override is a real, separate, SCOPE.md-tracked
+        # gap ("Object model" group) — this fallback is only ever
+        # reached when no override (or default) was found any other
+        # way, so it can't and doesn't paper over that.
+        recv = args.first? || Value.nil_value
+        Value.string(recv.inspect)
       when "to_i"
         recv = args.first? || Value.nil_value
         case
@@ -2889,14 +3012,14 @@ module Adjutant
     # dispatch, previously duplicated here across 8 separate methods
     # plus a third copy in the FakeContext spec helper. These two
     # `protected` wrappers exist only because NativeCallContext's real
-    # implementation (NativeFunctionCall, in interpreter.cr) delegates
+    # implementation (NativeFunctionCall, in native_function_call.cr) delegates
     # to `@vm.compare`/`@vm.values_equal?` by name — the delegation
     # contract stays the same, the logic behind it moved.
 
     # `filename`/`line` default to the current frame's own position —
     # right for every VM-opcode call site (Op::Lt/Le/Gt/Ge below,
     # already inside whatever frame is being compared) — and
-    # `NativeFunctionCall#compare` (interpreter.cr) passes its own
+    # `NativeFunctionCall#compare` (native_function_call.cr) passes its own
     # explicit `@filename`/`@line` instead, same pattern `call_method`
     # already uses, so an R013 raised from a native method's own
     # comparison points at the native call site, not wherever the VM
@@ -3367,7 +3490,8 @@ module Adjutant
     # goes through this; call-site block literals and def bodies keep
     # using the bare sproc Value directly (Op::MakeProc with a=0),
     # never reach here.
-    private def make_lambda_object(sproc : ScriptProc, label : RiskFlowLabel?, outer_locals : OuterChain?) : Value
+    private def make_lambda_object(sproc : ScriptProc, label : RiskFlowLabel?, outer_locals : OuterChain?,
+                                   filename : String, line : Int32) : Value
       cls = builtin_class_by_name("Proc")
       unless cls
         raise runtime_diagnostic(
@@ -3382,6 +3506,18 @@ module Adjutant
       end
       obj = RubyObject.new(cls)
       obj.ivars[@symbols.intern("__sproc").value] = Value.proc(sproc)
+      # `filename`/`line` — the CREATION site (`f.filename`/`f.line` at
+      # the moment `Op::MakeProc` ran for this literal, passed in by
+      # the caller), not anything about where `.call` happens to be
+      # invoked from later — matches real Ruby's own `Proc#to_s`,
+      # which reports where a proc/lambda was DEFINED. Real Ruby also
+      # includes a memory address (`#<Proc:0x... file:line>`) — see
+      # `builtins/proc.cr`'s own `to_s`/`inspect` comment for why this
+      # deliberately doesn't (no debugging value here, matching
+      # `Object#inspect`'s own default omitting it for the same
+      # reason).
+      obj.ivars[@symbols.intern("__filename").value] = Value.string(filename)
+      obj.ivars[@symbols.intern("__line").value] = Value.int(line.to_i64)
       # The lambda's true lexical parent scope, captured at THIS
       # evaluation of the literal (not shared across other
       # evaluations of the same source lambda, e.g. inside a loop —

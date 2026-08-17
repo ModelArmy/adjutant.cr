@@ -79,6 +79,39 @@ module Adjutant
       opts
     end
 
+    # Splits `adjutant_flags` into its enabled/disabled letter strings,
+    # always in `m`, `i`, `x` order on both sides — the fixed order
+    # real Ruby's own `Regexp#to_s`/`#inspect` use. Shared by both
+    # methods (bootstrap_regexp, below) rather than each recomputing
+    # it — `to_s` needs both halves, `inspect` only the enabled one.
+    def self.flag_letters(adjutant_flags : Int32) : {String, String}
+      enabled = String.build do |io|
+        io << 'm' if adjutant_flags & MULTILINE != 0
+        io << 'i' if adjutant_flags & IGNORECASE != 0
+        io << 'x' if adjutant_flags & EXTENDED != 0
+      end
+      disabled = String.build do |io|
+        io << 'm' if adjutant_flags & MULTILINE == 0
+        io << 'i' if adjutant_flags & IGNORECASE == 0
+        io << 'x' if adjutant_flags & EXTENDED == 0
+      end
+      {enabled, disabled}
+    end
+
+    # Escapes a `/` in `pattern` as `\/`, UNLESS it's already preceded
+    # by a `\` (see `Regexp#inspect`'s own comment, bootstrap_regexp,
+    # for the full reasoning and the one known remaining edge case).
+    def self.escape_slashes(pattern : String) : String
+      String.build do |io|
+        prev_backslash = false
+        pattern.each_char do |char|
+          io << '\\' if char == '/' && !prev_backslash
+          io << char
+          prev_backslash = char == '\\'
+        end
+      end
+    end
+
     # Compiles `pattern` under `adjutant_flags`, raising a real,
     # script-catchable R021 (RegexpError) through `ctx` on an invalid
     # pattern rather than letting Crystal's own Regex::Error escape and
@@ -115,6 +148,18 @@ module Adjutant
       # Mirrors the mruby fixture's "Regexp.new with regexp" case: given
       # an existing Regexp, copies its source/options rather than
       # treating it as a pattern string.
+      #
+      # `args.first.as_rclass` for the constructed object's own class
+      # — NOT the closure-captured `cls` from THIS method's own
+      # definition-time scope (always `Regexp` itself). Found
+      # 2026-08-18: the identical closure-capture bug
+      # `Exception.new`/`NameError.new` had (`DEVELOPMENT.md`'s "to_s/
+      # inspect" writeup) — a script subclassing `Regexp` and calling
+      # `.new` on that subclass would have silently gotten a
+      # `Regexp`-classed object back, not one of the subclass. Lower
+      # priority than the `Exception` case was (subclassing `Regexp`
+      # is exotic even in real Ruby, unlike exception subclassing,
+      # which is everyday) — but the identical fix applies directly.
       define_singleton(cls, interp, "new") do |args, _blk, ncc|
         first = args[1]? || Value.nil_value
         pattern, flags =
@@ -124,7 +169,7 @@ module Adjutant
             {first.as_string, (args[2]?.try(&.as_int.to_i32) || 0)}
           end
         regex = compile_regex(pattern, flags, ncc)
-        obj = RegexpObject.new(cls, regex)
+        obj = RegexpObject.new(args.first.as_rclass, regex)
         # `first.label` seeds BOTH the constructed Regexp's own outer
         # label and the `__source` ivar directly — a String pattern's
         # taint (or, for the copy-constructor form, the SOURCE
@@ -157,6 +202,50 @@ module Adjutant
       define(cls, interp, "casefold?") do |args|
         flags = args.first.as_robject.ivars[options_sym].as_int.to_i32
         Value.bool(flags & IGNORECASE != 0)
+      end
+
+      # Confirmed against a real Ruby session (2026-08-17): `Regexp#
+      # to_s` renders as `(?enabled-disabled:pattern)` — e.g. `/a/i.
+      # to_s => "(?i-mx:a)"` — flag letters ALWAYS in `m`, `i`, `x`
+      # order on both sides of the `-`, and the `-disabled` section
+      # (dash included) OMITTED ENTIRELY when every flag is enabled
+      # (no disabled flags left to list) — `/a/mix.to_s => "(?mix:a)"`,
+      # no trailing `-`. `Regexp#inspect` is simpler: real source
+      # syntax, `/pattern/enabledflags` — `/a/i.inspect => "/a/i"`.
+      # `flag_letters` (below) computes both the enabled and disabled
+      # letter strings once, shared by both methods, in the same
+      # fixed order either format needs. All confirmed exactly as
+      # implemented — no changes needed from the original assumption.
+      #
+      # `inspect` escapes an unescaped `/` inside the pattern as `\/`
+      # — ALSO confirmed against that same real Ruby session
+      # (`Regexp.new("a/b").inspect => "/a\/b/"`), a real gap in the
+      # original version of this method, not left unhandled anymore.
+      # `escape_slashes` (below) only escapes a `/` NOT already
+      # preceded by a `\` — handles the confirmed case (a plain,
+      # unescaped `/`) and leaves an already-escaped `\/` (e.g. from
+      # `/a\/b/` literal syntax, where `#source` already stores the
+      # escape as written) alone rather than double-escaping it.
+      # Simple one-character lookback, not a full alternating-
+      # backslash-run parser — a genuinely doubled backslash before a
+      # slash (`a\\/b`, meaning a literal backslash followed by an
+      # UNESCAPED slash) isn't independently confirmed to round-trip
+      # correctly; flagged rather than guessed at further.
+      define(cls, interp, "to_s") do |args|
+        obj = args.first.as_robject
+        pattern = obj.ivars[source_sym].as_string
+        flags = obj.ivars[options_sym].as_int.to_i32
+        enabled, disabled = flag_letters(flags)
+        suffix = disabled.empty? ? "" : "-#{disabled}"
+        Value.string("(?#{enabled}#{suffix}:#{pattern})")
+      end
+
+      define(cls, interp, "inspect") do |args|
+        obj = args.first.as_robject
+        pattern = escape_slashes(obj.ivars[source_sym].as_string)
+        flags = obj.ivars[options_sym].as_int.to_i32
+        enabled, _ = flag_letters(flags)
+        Value.string("/#{pattern}/#{enabled}")
       end
 
       # `#match(str)` — real Ruby returns a MatchData on success, nil
@@ -265,6 +354,7 @@ module Adjutant
       Value.robject(MatchDataObject.new(cls, md, subject, regexp_value), label)
     end
 
+    # ameba:disable Metrics/CyclomaticComplexity - one `define` call per native method, each a flat independent case; count comes from many methods, not tangled branching
     def self.bootstrap_match_data(interp : Interpreter) : RubyClass
       cls = RubyClass.new("MatchData")
 
@@ -370,6 +460,57 @@ module Adjutant
       # `make_match_data`'s own `regexp_value` parameter).
       define(cls, interp, "regexp") do |args|
         args.first.as_robject.as(MatchDataObject).regexp_value
+      end
+
+      # Confirmed against a real Ruby session (2026-08-17):
+      # `MatchData#inspect` renders as `#<MatchData "whole_match"
+      # 1:"group1" 2:"group2">` — the whole match first, unlabeled,
+      # then each capture group as `LABEL:"text"` (or bare
+      # `LABEL:nil`, unquoted, for a group that didn't participate —
+      # e.g. the losing side of an alternation), all SPACE-separated,
+      # no commas — LABEL being the group's own NAME
+      # (`/a(?<mid>b)c/.match("abc").inspect =>
+      # '#<MatchData "abc" mid:"b">'`, confirmed) when it has one,
+      # its numeric position otherwise. Both confirmed exactly as
+      # implemented, except the named-group case, which the ORIGINAL
+      # version of this method didn't attempt at all — fixed now,
+      # using `::Regex#name_table` (a `Hash(Int32, String)`, capture
+      # index to name, AS I RECALL Crystal's own API — NOT
+      # independently verified against a toolchain here, same
+      # standing caveat as this file's other `::Regex`/`::Regex::
+      # MatchData` surface; if `ops test` reports an unknown method,
+      # this is the first place to check) reached via the
+      # already-stored `regexp_value` ivar, not a new field.
+      #
+      # NOT independently confirmed: what a PATTERN MIXING named and
+      # unnamed capture groups renders as (does an unnamed group in
+      # such a pattern still show its plain numeric position, or does
+      # something else happen?) — only an ALL-named and an ALL-
+      # unnamed pattern were tested. This implementation assumes the
+      # straightforward per-group answer (named groups show their
+      # name, unnamed ones their number, mixed freely) rather than
+      # anything more exotic; worth a real check if a mixed pattern's
+      # `inspect` output ever actually matters.
+      #
+      # Each piece of matched text is rendered via REAL dispatch on
+      # `inspect` (`ncc.call_method`) rather than hand-rolled quote-
+      # wrapping — reuses `String#inspect`'s own established escaping
+      # (a matched substring containing a literal `"` or `\` needs the
+      # same real quoting any other String does), not a second,
+      # independent implementation of the same logic.
+      define(cls, interp, "inspect") do |args, _blk, ncc|
+        obj = args.first.as_robject.as(MatchDataObject)
+        regexp_obj = obj.regexp_value.as_robject.as(RegexpObject)
+        names = regexp_obj.regex.name_table
+        whole = ncc.call_method(Value.string(obj.md[0]), "inspect", [] of Value).as_string
+        groups = (1...obj.md.size).map do |i|
+          text = obj.md[i]?
+          rendered = text ? ncc.call_method(Value.string(text), "inspect", [] of Value).as_string : "nil"
+          label = names[i]? || i.to_s
+          "#{label}:#{rendered}"
+        end
+        parts = [whole] + groups
+        Value.string("#<MatchData #{parts.join(" ")}>")
       end
 
       cls

@@ -321,3 +321,8 @@ assert "case/when matches by type, not equality" do
   end
   assert_equal result, "matched"
 end
+
+assert "interpolation" do
+  x = 1
+  assert_equal "a=1", "a=#{x}"
+end

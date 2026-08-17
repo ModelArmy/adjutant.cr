@@ -149,6 +149,62 @@ module Adjutant
       end
     end
 
+    # Before this, Proc had NO to_s/inspect at all — it fell through
+    # to Object's own default #inspect, which lists ivars, and Proc's
+    # own internal representation ivar is literally named `__sproc`,
+    # so the OLD behavior leaked that implementation detail into
+    # user-visible output. Every case below is a real, previously-
+    # broken behavior, not new coverage of something that already
+    # worked.
+    describe "#to_s / #inspect" do
+      it "to_s and inspect produce the same output — real Ruby renders them identically for Proc" do
+        interp, _ = make_interp
+        result = interp.eval("[(->(x) { x }).to_s, (->(x) { x }).inspect]")
+        strs = result.as_array.map(&.as_string)
+        strs[0].should eq strs[1]
+      end
+
+      it "renders as #<Proc file:line (lambda)>, not the old implementation-detail leak" do
+        interp, _ = make_interp
+        str = interp.eval("(->(x) { x }).to_s").as_string
+        str.starts_with?("#<Proc <eval>:").should be_true
+        str.ends_with?(" (lambda)>").should be_true
+      end
+
+      it "does NOT leak the internal __sproc ivar name into the output" do
+        interp, _ = make_interp
+        str = interp.eval("(->(x) { x }).to_s").as_string
+        str.includes?("__sproc").should be_false
+      end
+
+      it "the line number reflects the CREATION site, not wherever .call later happens to run from" do
+        interp, _ = make_interp
+        result = interp.eval(<<-RUBY)
+        def make_it
+          ->(x) { x }
+        end
+        f = make_it
+        f.call(1)
+        f.to_s
+        RUBY
+        # The lambda literal itself is on line 2 of this heredoc.
+        result.as_string.should contain("<eval>:2")
+      end
+
+      it "two lambdas created on different lines report different line numbers" do
+        interp, _ = make_interp
+        result = interp.eval(<<-RUBY)
+        a = ->(x) { x }
+        b = ->(x) { x }
+        [a.to_s, b.to_s]
+        RUBY
+        strs = result.as_array.map(&.as_string)
+        strs[0].should contain("<eval>:1")
+        strs[1].should contain("<eval>:2")
+        strs[0].should_not eq strs[1]
+      end
+    end
+
     it "block literals stay unaffected (no .class/.call as a value)" do
       # A call-site block ({ }) is only reachable via yield inside the
       # method it's passed to — it's never bound to a value at all, so
