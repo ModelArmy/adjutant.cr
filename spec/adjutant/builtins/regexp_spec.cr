@@ -90,6 +90,13 @@ module Adjutant
       it "multiple flags: m,i,x order, matching to_s's own enabled-side order" do
         eval("/abc/mix.inspect").as_string.should eq "/abc/mix"
       end
+
+      it "an unescaped / in the pattern is escaped as \\/ — confirmed against a real irb session" do
+        result = eval(<<-RUBY)
+        Regexp.new("a/b").inspect
+        RUBY
+        result.as_string.should eq "/a\\/b/"
+      end
     end
 
     describe "interpolation" do
@@ -330,6 +337,38 @@ module Adjutant
 
     it "begin(n) returns a capture group's start offset" do
       eval(%(/a(b)/.match("xab").begin(1))).as_int.should eq 2
+    end
+
+    # Before this, MatchData had no inspect at all — it fell through
+    # to Object's own default #inspect, and MatchDataObject has no
+    # ivars at all (its real state lives in typed fields, not `ivars`
+    # — see this file's own RegexpObject/MatchDataObject comment), so
+    # the old behavior was the empty-ivars case: a bare `#<MatchData>`
+    # with no match content shown at all.
+    describe "#inspect" do
+      it "shows the whole match, no capture groups, when the pattern has none" do
+        eval(%(/bc/.match("abc").inspect)).as_string.should eq %(#<MatchData "bc">)
+      end
+
+      it "shows numbered capture groups after the whole match" do
+        eval(%(/a(b)(c)/.match("abc").inspect)).as_string.should eq %(#<MatchData "abc" 1:"b" 2:"c">)
+      end
+
+      it "a group that didn't participate shows N:nil, unquoted" do
+        eval(%(/a(b)|a(c)/.match("ac").inspect)).as_string.should eq %(#<MatchData "ac" 1:nil 2:"c">)
+      end
+
+      it "matched text containing a literal quote is escaped correctly, via real String#inspect dispatch" do
+        result = eval(<<-RUBY)
+        m = /a(".*")a/.match("a\\"x\\"a")
+        m.inspect
+        RUBY
+        result.as_string.should eq %(#<MatchData "a\\"x\\"a" 1:"\\"x\\"">)
+      end
+
+      it "a named capture group shows its NAME instead of its number — confirmed against a real irb session" do
+        eval(%(/a(?<mid>b)c/.match("abc").inspect)).as_string.should eq %(#<MatchData "abc" mid:"b">)
+      end
     end
   end
 end

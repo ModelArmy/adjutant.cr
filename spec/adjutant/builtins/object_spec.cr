@@ -78,6 +78,28 @@ module Adjutant
         eval(":sym.inspect").should eq Value.string(":sym")
         eval("true.inspect").should eq Value.string("true")
       end
+
+      it "String#inspect actually escapes embedded quotes, backslashes, newlines, and tabs" do
+        # Found 2026-08-17: the previous implementation did no
+        # escaping at all (`io << '"' << r << '"'`) — a genuinely
+        # invalid, unparseable rendering for any string containing a
+        # literal quote, not just a cosmetic gap. Surfaced by
+        # MatchData#inspect's own test suite (regexp_spec.cr), which
+        # was the first thing to actually assert on escaped content
+        # rather than just "some string came back."
+        eval(<<-RUBY).should eq Value.string(%("say \\"hi\\""))
+        "say \\"hi\\"".inspect
+        RUBY
+        eval(<<-RUBY).should eq Value.string(%("a\\\\b"))
+        "a\\\\b".inspect
+        RUBY
+        eval(<<-RUBY).should eq Value.string(%("a\\nb"))
+        "a\\nb".inspect
+        RUBY
+        eval(<<-RUBY).should eq Value.string(%("a\\tb"))
+        "a\\tb".inspect
+        RUBY
+      end
     end
 
     describe "string interpolation now uses real dispatch for to_s (Op::Concat)" do
