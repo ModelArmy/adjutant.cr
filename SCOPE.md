@@ -672,6 +672,14 @@ Quality-of-diagnostic gaps in the `Diagnostic`/`ErrorCatalog` system
   already do, instead of returning `value.to_s`/`value.inspect`
   directly.
 
+  **Distinct from, and unaffected by, a separate bug already fixed**
+  2026-08-17: explicit `MyClass.inspect` used to raise `NoMethodError`
+  outright (no dispatch path resolved it at all — see
+  `DEVELOPMENT.md`'s "to_s/inspect" writeup). That's fixed; `MyClass.
+  inspect` now returns the qualified name, same as `MyClass.to_s`
+  already did. This entry's own gap — an OVERRIDE not being respected
+  implicitly — is narrower and still open.
+
 Per-instance singleton methods became a deliberate non-goal 2026-07-27
 (see [UNSUPPORTED.md](./UNSUPPORTED.md), U004). Implicit-`self`
 privacy/visibility (`private`/`public`/`protected`) became a deliberate

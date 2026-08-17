@@ -510,7 +510,11 @@ Every IMPLICIT render path — string interpolation (`Op::Concat`), `puts`, `pri
 
 A container recursing into elements it doesn't own means it could recurse into ITSELF, directly or through another container. `NativeCallContext#guard_rendering(obj_id, cycle_result, &block)` — one VM-level `Set(UInt64)`, keyed on each container's own Crystal `object_id` (free, since `LabeledArray`/`LabeledHash` are `Reference` types) — returns `cycle_result` immediately without running the block if `obj_id` is already being rendered, otherwise marks it, runs the block, and always clears the mark again before returning, even if the block raises. Block-based rather than a begin/end pair a caller has to bracket correctly itself, so the cleanup is structural, not something every future caller has to get right individually. Global to the whole rendering call, not per-container-type state, so a cycle running through a DIFFERENT container type (an `Array` inside a `Hash` inside that same `Array`) is caught by the same mechanism, with no per-type tracking needed.
 
-**Known gap:** a script's own `def self.to_s`/`def self.inspect` on its own CLASS (as opposed to an instance) isn't reached by any implicit path — only an explicit `MyClass.to_s` call is, since `render_to_s`/`render_inspect` keep `RubyClass` values on the Crystal-level fast path rather than routing them through real dispatch. See `SCOPE.md`'s "Object model" group.
+**Known gap:** a script's own `def self.to_s`/`def self.inspect` override on its own CLASS (as opposed to an instance) isn't reached by any IMPLICIT path — only an explicit `MyClass.to_s`/`MyClass.inspect` call is, since `render_to_s`/`render_inspect` keep `RubyClass` values on the Crystal-level fast path rather than routing them through real dispatch. See `SCOPE.md`'s "Object model" group. Explicit-call `inspect` on a class value ITSELF was a real, separate, now-FIXED bug rather than a design gap — `MyClass.inspect` used to raise `NoMethodError` outright, since no dispatch path resolved it at all (`exec_builtin`'s universal fallback, `vm.cr`, had a `"to_s"` case but no matching `"inspect"` one); fixed by adding that case, mirroring `"to_s"` exactly. The DEFAULT rendering (qualified name, no override) has worked both explicitly and implicitly all along; what remained missing was specifically the override path, and, until this fix, the explicit `inspect` call at all.
+
+`Proc` gained real `to_s`/`inspect` — `#<Proc file:line (lambda)>`, `file:line` reflecting the lambda's CREATION site (threaded through from the calling frame at `Op::MakeProc`, stored as `__filename`/`__line` ivars — `vm.cr`'s `make_lambda_object`), not wherever `.call` later happens to run from. Deliberately omits the memory address real Ruby's own format includes (same reasoning as `Object#inspect`'s own omission) but keeps `file:line`, genuine debugging value for a script with several lambdas. Before this, `Proc` had no `to_s`/`inspect` at all, meaning it fell through to `Object`'s own default — and since `Proc`'s own internal representation ivar is literally named `__sproc`, the OLD behavior LEAKED that implementation detail into user-visible output (`#<Proc __sproc=#<Proc>>`), not merely an incomplete rendering.
+
+`Exception` gained real `inspect` — `#<ClassName: message>`, calling real dispatch on `to_s` (not reading the raw `message` ivar directly), so a script's own subclass overriding `to_s` has that reflected in `inspect` too, matching real Ruby's own default `Exception#inspect` implementation. Registered once on the base `Exception` class, inherited by every subclass, using `obj.rclass.name` (the actual instance's class) rather than the class the defining method happened to be registered on. That distinction mattered directly: writing this surfaced a real, separate, pre-existing bug in `Exception`'s (and `NameError`'s) own singleton `new` — both closed over `cls` from their OWN definition-time scope rather than reading the actual receiver, so `TypeError.new("msg")` silently built an `Exception`-classed object, not a `TypeError`-classed one (and `NoMethodError.new(...)`, inheriting `NameError`'s singleton `new`, built a `NameError`-classed one) — invisible in the existing test suite, since every existing test constructed typed errors via `raise TypeError, "msg"` instead, a genuinely separate, already-correct path (`make_error_object`, `vm.cr`). Fixed by reading `args.first.as_rclass` (the actual receiver) instead of the closure's own `cls` in both places.
 
 ### Regexp and MatchData
 
@@ -636,6 +640,39 @@ anywhere in this parser, deliberately a dead end, raising a real
 `U011` diagnostic by name — covering both a read and an assignment
 target uniformly, since assignment parsing bottoms out through the
 same `primary` entry point for its left-hand side.
+
+**`Regexp`/`MatchData`'s own `to_s`/`inspect`**, built 2026-08-17 and
+confirmed against a real `irb` session rather than assumed — every
+format below was checked directly, not guessed at. `Regexp#to_s`
+renders `(?enabled-disabled:pattern)` (flag letters always `m`, `i`,
+`x` order on both sides of the `-`, that whole `-disabled` section
+omitted when every flag is enabled); `#inspect` the source form,
+`/pattern/enabledflags`, ALSO escaping an unescaped `/` in the pattern
+as `\/` (`escape_slashes`, `builtins/regexp.cr` — a one-character
+lookback, skipping an already-escaped `\/` rather than double-escaping
+it; a genuinely doubled backslash before a slash isn't independently
+confirmed to round-trip correctly). `MatchData#inspect` renders `#<MatchData
+"whole" 1:"g1" 2:"g2">`, a NAMED capture group showing its own name
+instead of a number (`mid:"b"`, via `::Regex#name_table` — an
+UNVERIFIED Crystal API guess, same standing caveat as this section's
+other `::Regex`/`::Regex::MatchData` surface), a non-participating
+group as bare `N:nil`. Both `flag_letters` (splits enabled/disabled
+letters once, shared by `to_s`/`inspect`) and `escape_slashes` live in
+`builtins/regexp.cr`, module-level.
+
+**`Value#inspect`'s `String` case did NO escaping at all before this**
+— `io << '"' << r << '"'`, verbatim, no matter what `r` contained.
+Found while writing `MatchData#inspect`'s own test coverage, which was
+the first thing anywhere to actually assert on ESCAPED content rather
+than just "some string came back" — a genuinely foundational bug, not
+specific to `MatchData` at all: any `String` containing a literal `"`
+rendered as invalid, unparseable output wherever `#inspect` was used.
+Fixed in `value.cr` (the single shared implementation every caller
+already routed through) to escape `"`, `\`, `\n`, `\t` — deliberately
+not the full set real Ruby's own `String#inspect` produces (`\e`,
+`\0`, `\a`, `\b`, `\f`, `\v`, non-ASCII/invalid-encoding handling),
+which stay real, separate, lower-confidence gaps rather than guessed
+at without a way to verify each one directly.
 
 ### Information flow control (risk flow)
 
