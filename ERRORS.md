@@ -12,17 +12,17 @@ or store in a log.
 The letter says what *kind* of problem it is — and therefore what to do
 next, which differs sharply between them:
 
-|Letter|Meaning                                           |What to do                                     |
-|------|--------------------------------------------------|-----------------------------------------------|
-|`P`   |The script could not be parsed                    |Fix the syntax                                 |
-|`C`   |Parsed, but rejected before running               |Fix the code that was rejected                 |
-|`R`   |Something went wrong while running                |Fix the script                                 |
-|`L`   |A limit was reached                               |Simplify the script, or raise the limit        |
-|`U`   |A construct Adjutant deliberately does not support|Use the documented alternative                 |
-|`F`   |A risk policy declined the call                   |Adjust the policy, or don't make the call      |
-|`N`   |A function the host provided raised               |Check the arguments, then report it to the host|
-|`H`   |The program embedding Adjutant called it wrongly  |Fix the integration                            |
-|`I`   |Adjutant itself has a bug                         |Nothing — please report it                     |
+Letter|Meaning                                           |What to do                                     
+------|--------------------------------------------------|-----------------------------------------------
+`P`   |The script could not be parsed                    |Fix the syntax                                 
+`C`   |Parsed, but rejected before running               |Fix the code that was rejected                 
+`R`   |Something went wrong while running                |Fix the script                                 
+`L`   |A limit was reached                               |Simplify the script, or raise the limit        
+`U`   |A construct Adjutant deliberately does not support|Use the documented alternative                 
+`F`   |A risk policy declined the call                   |Adjust the policy, or don't make the call      
+`N`   |A function the host provided raised               |Check the arguments, then report it to the host
+`H`   |The program embedding Adjutant called it wrongly  |Fix the integration                            
+`I`   |Adjutant itself has a bug                         |Nothing — please report it                     
 
 The letter describes the problem, not the part of Adjutant that noticed it.
 
@@ -61,13 +61,13 @@ report it.
 
 The script could not be parsed. Nothing ran.
 
-|Code|Meaning                                        |Placeholders                    |
-|----|-----------------------------------------------|--------------------------------|
-|P001|Expected one thing, found another              |`expected`, `found`             |
-|P002|This can't start an expression                 |`found`                         |
-|P003|A block construct is missing its `end`         |`construct`, `found`, `expected`|
-|P004|`else` without `rescue` is useless             |—                               |
-|P005|A `begin` block can have only one `else` clause|—                               |
+Code|Meaning                                        |Placeholders                    
+----|-----------------------------------------------|--------------------------------
+P001|Expected one thing, found another              |`expected`, `found`             
+P002|This can't start an expression                 |`found`                         
+P003|A block construct is missing its `end`         |`construct`, `found`, `expected`
+P004|`else` without `rescue` is useless             |—                               
+P005|A `begin` block can have only one `else` clause|—                               
 
 P003 points at two places: where the parser ran out of input, and the
 `def`, `class`, `if`, or other construct that was never closed. The second
@@ -83,48 +83,52 @@ the same as it allows at most one `ensure`.
 
 The script parsed, but was rejected before running.
 
-|Code|Meaning                                |Placeholders|
-|----|---------------------------------------|------------|
-|C001|Left-hand side of `=` can't be assigned|`target`    |
-|C002|`redo` used outside any loop           |—           |
+Code|Meaning                                |Placeholders
+----|---------------------------------------|------------
+C001|Left-hand side of `=` can't be assigned|`target`    
+C002|`redo` used outside any loop           |—           
 
 ## R — Runtime
 
 Something went wrong while the script was running.
 
-|Code|Meaning                                                           |Placeholders            |
-|----|------------------------------------------------------------------|------------------------|
-|R001|Constant assigned a second time                                   |`name`                  |
-|R002|Class variable used outside a class or module body                |—                       |
-|R003|Uninitialized constant                                            |`name`                  |
-|R004|`::` used on something that isn't a class or module               |`value`                 |
-|R005|Unary operator not applicable to this type                        |`operator`, `type`      |
-|R006|Method definition with no class or module to attach to            |`definition`            |
-|R007|`yield` reached, but no block was passed                          |`method`                |
-|R008|Undefined method or variable                                      |`name`                  |
-|R009|Modules cannot be instantiated                                    |`module`                |
-|R010|`require` cannot find the named module                            |`path`                  |
-|R011|Missing a required keyword argument                               |`name`, `method`        |
-|R012|Passed a keyword argument the method doesn't declare              |`name`, `method`        |
-|R013|`<=>` returned a non-integer for `<`/`<=`/`>`/`>=`                |`left`, `right`, `value`|
-|R014|`super` called, but no ancestor defines the method                |`method`                |
-|R015|`Integer#to_s` given an out-of-range base                         |`base`                  |
-|R016|`Float#to_i` called on Infinity or NaN                            |`value`                 |
-|R017|`Hash#merge` given a non-Hash argument                            |`class_name`            |
-|R018|A pattern-taking String method called with no pattern             |`method`                |
-|R019|A pattern-taking String method given neither a String nor a Regexp|`method`, `class_name`  |
-|R020|`Range#step` called with a step of 0                              |—                       |
-|R021|Invalid regex pattern                                             |`reason`                |
-|R022|A Regexp match method called with no string argument              |`method`                |
-|R023|A private method called via an explicit receiver from outside self|`method`, `target`      |
+Code|Meaning                                                           |Placeholders            
+----|------------------------------------------------------------------|------------------------
+R001|Constant assigned a second time                                   |`name`                  
+R002|Class variable used outside a class or module body                |—                       
+R003|Uninitialized constant                                            |`name`                  
+R004|`::` used on something that isn't a class or module               |`value`                 
+R005|Unary operator not applicable to this type                        |`operator`, `type`      
+R006|Method definition with no class or module to attach to            |`definition`            
+R007|`yield` reached, but no block was passed                          |`method`                
+R008|Undefined method or variable                                      |`name`                  
+R009|Modules cannot be instantiated                                    |`module`                
+R010|`require` cannot find the named module                            |`path`                  
+R011|Missing a required keyword argument                               |`name`, `method`        
+R012|Passed a keyword argument the method doesn't declare              |`name`, `method`        
+R013|`<=>` returned a non-integer for `<`/`<=`/`>`/`>=`                |`left`, `right`, `value`
+R014|`super` called, but no ancestor defines the method                |`method`                
+R015|`Integer#to_s` given an out-of-range base                         |`base`                  
+R016|`Float#to_i` called on Infinity or NaN                            |`value`                 
+R017|`Hash#merge` given a non-Hash argument                            |`class_name`            
+R018|A pattern-taking String method called with no pattern             |`method`                
+R019|A pattern-taking String method given neither a String nor a Regexp|`method`, `class_name`  
+R020|`Range#step` called with a step of 0                              |—                       
+R021|Invalid regex pattern                                             |`reason`                
+R022|A Regexp match method called with no string argument              |`method`                
+R023|A private method called via an explicit receiver from outside self|`method`, `target`      
+R024|`Range#each`/`#to_a` called on a beginless range                  |`method`                
+R025|`Range#step` called on a beginless range                          |—                       
+R026|`Range#to_a` called on an endless range                           |—                       
 
 Scripts can `rescue` these. R008 raises a `NameError`, matching Ruby;
 R011, R012, R015, and R018 raise `ArgumentError`, also matching Ruby;
 R014 and R023 raise a `NoMethodError`, also matching Ruby; R016 raises a
-`FloatDomainError`, also matching Ruby; R017 and R019 raise a
-`TypeError`, also matching Ruby; R020 and R022 raise an
+`FloatDomainError`, also matching Ruby; R017, R019, and R024 raise a
+`TypeError`, also matching Ruby; R020, R022, and R025 raise an
 `ArgumentError`, also matching Ruby; R021 raises a `RegexpError`, also
-matching Ruby; the rest raise `RuntimeError`.
+matching Ruby; R026 raises a `RangeError`, also matching Ruby; the rest
+raise `RuntimeError`.
 
 Adjutant's constants are assign-once, which Ruby only warns about. R001 is
 that rule firing on an ordinary constant; reopening a class or module is
@@ -139,12 +143,12 @@ raises R012 outright, rather than silently discarding it.
 
 The script is valid — it just exceeded something Adjutant is willing to do.
 
-|Code|Meaning                                       |Can the host raise it?|Placeholders|
-|----|----------------------------------------------|----------------------|------------|
-|L001|Loops nested too deeply                       |no                    |`limit`     |
-|L002|Too many method or block calls active at once |`call_depth_limit`    |`limit`     |
-|L003|Too many intermediate values in one expression|no                    |`limit`     |
-|L004|The script ran too long without finishing     |`instruction_limit`   |`limit`     |
+Code|Meaning                                       |Can the host raise it?|Placeholders
+----|----------------------------------------------|----------------------|------------
+L001|Loops nested too deeply                       |no                    |`limit`     
+L002|Too many method or block calls active at once |`call_depth_limit`    |`limit`     
+L003|Too many intermediate values in one expression|no                    |`limit`     
+L004|The script ran too long without finishing     |`instruction_limit`   |`limit`     
 
 Runaway recursion usually shows up as L002, and a loop that never
 terminates as L004. Where the right-hand column names a setting, the
@@ -157,26 +161,26 @@ Adjutant is a subset of Ruby. These constructs are not missing features
 awaiting implementation — they will not be added, and each has a documented
 alternative in [UNSUPPORTED.md](./UNSUPPORTED.md).
 
-|Code|Construct                                       |Placeholders     |
-|----|------------------------------------------------|-----------------|
-|U001|`&blk` parameter capture                        |`param`, `method`|
-|U002|`Class.new` / `Module.new`                      |`class`          |
-|U003|Reopening a class or module                     |`name`           |
-|U004|Defining a method inside another method         |`definition`     |
-|U005|Calling a method by computed name               |`construct`      |
-|U006|`eval` / `instance_eval`                        |—                |
-|U007|Reflection into the host's internals            |—                |
-|U008|`private`/`protected`/`public`                  |`construct`      |
-|U009|`Struct.new`                                    |—                |
-|U010|_retired — see UNSUPPORTED.md, not an exclusion_|—                |
-|U011|`$globals`                                      |`name`           |
-|U012|Numbered block parameters (`_1`, `_2`)          |—                |
-|U013|Endless method definitions                      |—                |
-|U014|`class << self` singleton-class syntax          |—                |
-|U015|`undef` / method-added hooks                    |`construct`      |
-|U016|`begin...end while`/`until` (do-while)          |—                |
-|U017|Operator-method overloading (`def ==`, ...)     |`operator`       |
-|U018|`extend`/`include` via an explicit receiver     |`construct`      |
+Code|Construct                                       |Placeholders     
+----|------------------------------------------------|-----------------
+U001|`&blk` parameter capture                        |`param`, `method`
+U002|`Class.new` / `Module.new`                      |`class`          
+U003|Reopening a class or module                     |`name`           
+U004|Defining a method inside another method         |`definition`     
+U005|Calling a method by computed name               |`construct`      
+U006|`eval` / `instance_eval`                        |—                
+U007|Reflection into the host's internals            |—                
+U008|`private`/`protected`/`public`                  |`construct`      
+U009|`Struct.new`                                    |—                
+U010|_retired — see UNSUPPORTED.md, not an exclusion_|—                
+U011|`$globals`                                      |`name`           
+U012|Numbered block parameters (`_1`, `_2`)          |—                
+U013|Endless method definitions                      |—                
+U014|`class << self` singleton-class syntax          |—                
+U015|`undef` / method-added hooks                    |`construct`      
+U016|`begin...end while`/`until` (do-while)          |—                
+U017|Operator-method overloading (`def ==`, ...)     |`operator`       
+U018|`extend`/`include` via an explicit receiver     |`construct`      
 
 U005 and U006 are reported when a name that would resolve to one of them
 resolves to nothing else. A script is still free to define its own method
@@ -210,9 +214,9 @@ before the method is ever defined. See
 Not a failure. The script asked to do something the host's risk policy
 declines to permit.
 
-|Code|Meaning                                     |Placeholders    |
-|----|--------------------------------------------|----------------|
-|F001|A call matched a policy rule that rejects it|`call`, `reason`|
+Code|Meaning                                     |Placeholders    
+----|--------------------------------------------|----------------
+F001|A call matched a policy rule that rejects it|`call`, `reason`
 
 A script can handle a refusal rather than aborting, by rescuing
 `RiskFlowRejectedError`. If the call is legitimate, the policy needs a rule
@@ -223,9 +227,9 @@ that allows it.
 A function the host registered raised while the script was calling it. The
 message shown is that function's own.
 
-|Code|Meaning                               |Placeholders         |
-|----|--------------------------------------|---------------------|
-|N001|A function provided by the host raised|`function`, `message`|
+Code|Meaning                               |Placeholders         
+----|--------------------------------------|---------------------
+N001|A function provided by the host raised|`function`, `message`
 
 Adjutant cannot tell whether the script passed bad arguments or the host's
 function is broken, which is why this is its own category rather than an
@@ -238,14 +242,14 @@ The program embedding Adjutant called it incorrectly. Neither the script
 nor Adjutant is at fault, and no script is necessarily involved — some of
 these fire while the host is still setting Adjutant up.
 
-|Code|Meaning                                        |Placeholders                 |
-|----|-----------------------------------------------|-----------------------------|
-|H001|A `RiskProfile` with no tags claiming risk     |—                            |
-|H002|`reversible: Depends` with no explanatory note |—                            |
-|H003|Two policy rules tie at the same priority      |`count`, `priority`, `target`|
-|H004|`invoke_proc` given something that isn't a Proc|`found`                      |
-|H005|A VM was reused for a second script            |—                            |
-|H006|`require` used on a VM with no interpreter     |—                            |
+Code|Meaning                                        |Placeholders                 
+----|-----------------------------------------------|-----------------------------
+H001|A `RiskProfile` with no tags claiming risk     |—                            
+H002|`reversible: Depends` with no explanatory note |—                            
+H003|Two policy rules tie at the same priority      |`count`, `priority`, `target`
+H004|`invoke_proc` given something that isn't a Proc|`found`                      
+H005|A VM was reused for a second script            |—                            
+H006|`require` used on a VM with no interpreter     |—                            
 
 These carry no source location, since there is no script position that
 would be honest to point at.
@@ -265,15 +269,15 @@ inside a native function.
 Adjutant has a bug. There is nothing to fix in the script or in the
 integration.
 
-|Code|Meaning                                          |Placeholders|
-|----|-------------------------------------------------|------------|
-|I001|The VM read an instruction it does not implement |`opcode`    |
-|I002|A jump was left unresolved                       |`target`    |
-|I003|The value stack went below its frame             |—           |
-|I004|A builtin class was used before it was registered|`class`     |
-|I005|The compiler has no case for part of the syntax  |`node`      |
-|I006|The compiler has no instruction for an operator  |`operator`  |
-|I007|Risk aggregation met a node kind it can't handle |`node`      |
+Code|Meaning                                          |Placeholders
+----|-------------------------------------------------|------------
+I001|The VM read an instruction it does not implement |`opcode`    
+I002|A jump was left unresolved                       |`target`    
+I003|The value stack went below its frame             |—           
+I004|A builtin class was used before it was registered|`class`     
+I005|The compiler has no case for part of the syntax  |`node`      
+I006|The compiler has no instruction for an operator  |`operator`  
+I007|Risk aggregation met a node kind it can't handle |`node`      
 
 Most arrive as a `CompileError` or `RuntimeError`, depending on when they
 happen. I007 is an `Adjutant::InternalError`, because risk aggregation is

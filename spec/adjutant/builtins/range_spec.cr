@@ -77,6 +77,18 @@ module Adjutant
         RUBY
         result.as_string.should eq "custom!..5"
       end
+
+      # A nil bound — real syntax now (endless/beginless ranges, see
+      # SCOPE.md), previously only reachable via Range.new(nil, x) —
+      # is OMITTED entirely, matching real Ruby, not rendered as the
+      # literal string "nil".
+      it "omits a nil end bound entirely (endless range)" do
+        eval("(1..).to_s").as_string.should eq "1.."
+      end
+
+      it "omits a nil start bound entirely (beginless range)" do
+        eval("(..5).to_s").as_string.should eq "..5"
+      end
     end
 
     describe "#inspect" do
@@ -134,6 +146,14 @@ module Adjutant
       it "a Range nested inside a Hash value now renders correctly too" do
         eval(%({"r" => 1..3}.to_s)).as_string.should eq %({"r" => 1..3})
       end
+
+      it "omits a nil end bound entirely (endless range)" do
+        eval("(1..).inspect").as_string.should eq "1.."
+      end
+
+      it "omits a nil start bound entirely (beginless range)" do
+        eval("(..5).inspect").as_string.should eq "..5"
+      end
     end
 
     describe "#include?" do
@@ -151,6 +171,27 @@ module Adjutant
 
       it "false for a value below the min bound" do
         eval("(1..5).include?(0)").falsy?.should be_true
+      end
+
+      # A nil bound means "no constraint on this side" — see
+      # range.cr's own comment on this. NOT independently confirmed
+      # against real Ruby the way #each/#step/#to_a's nil-bound
+      # behavior above was — see verify_range_include.rb in the
+      # handoff; revisit if that comes back different.
+      it "an endless range includes anything at or above its start" do
+        eval("(1..).include?(1_000_000)").truthy?.should be_true
+      end
+
+      it "an endless range excludes anything below its start" do
+        eval("(1..).include?(0)").falsy?.should be_true
+      end
+
+      it "a beginless range includes anything at or below its end" do
+        eval("(..5).include?(-1_000_000)").truthy?.should be_true
+      end
+
+      it "a beginless range excludes anything above its end" do
+        eval("(..5).include?(6)").falsy?.should be_true
       end
     end
 
@@ -193,6 +234,45 @@ module Adjutant
       it "with no block, does not raise, and returns the receiver" do
         result = eval("(1..3).each")
         result.as_robject.rclass.name.should eq "Range"
+      end
+
+      # Nil-bound handling — confirmed against real Ruby via `irb`
+      # first (see the handoff for the verification script), not
+      # assumed: a nil END walks forever (the caller `break`s); a nil
+      # START raises TypeError, since there's nothing to begin at.
+      #
+      # PENDING, not just failing: `break` inside a block passed to a
+      # NATIVE method (this one, or any other — Array#each has the
+      # identical gap) doesn't actually stop the native Crystal loop
+      # driving it. `Op::BlockBreak` only unwinds the isolated VM
+      # frame/stack `ncc.invoke` set up for that one block call and
+      # returns the break's value as an ordinary return — there's
+      # nothing telling the native method's own Crystal `loop do`
+      # a break happened at all, so it just calls the block again.
+      # Harmless-but-wrong for a finite collection (break silently
+      # doesn't happen early); for this endless range, the only thing
+      # that was ever going to stop the loop was that break, so it's a
+      # genuine, VM-locking-up hang — running this normally would
+      # never terminate the test suite, hence `pending` instead of a
+      # regular failing `it`. See SCOPE.md's new Must Fix entry for
+      # the real fix (own branch, not this one).
+      pending "an endless range walks forever — the caller is expected to break" do
+        result = eval(<<-RUBY)
+          seen = []
+          (1..).each do |n|
+            if n > 4
+              break
+            end
+            seen << n
+          end
+          seen
+        RUBY
+        result.as_array.map(&.as_int).should eq [1, 2, 3, 4]
+      end
+
+      it "a beginless range raises TypeError (R024), matching real Ruby's own message" do
+        error = expect_raises(RuntimeError) { eval("(..5).each { |n| n }") }
+        error.diagnostic.not_nil!.code.should eq("R024")
       end
     end
 
@@ -308,6 +388,20 @@ module Adjutant
         result = interp.eval("tainted_range.to_a")
         result.label.should_not be_nil
       end
+
+      # Nil-bound handling, confirmed against real Ruby first: #to_a
+      # has no `break` escape hatch the way #each does, so a nil END
+      # can't just walk forever here — it raises RangeError instead.
+      # A nil START still raises TypeError, same reason as #each.
+      it "an endless range raises RangeError (R026), matching real Ruby's own message" do
+        error = expect_raises(RuntimeError) { eval("(1..).to_a") }
+        error.diagnostic.not_nil!.code.should eq("R026")
+      end
+
+      it "a beginless range raises TypeError (R024)" do
+        error = expect_raises(RuntimeError) { eval("(..5).to_a") }
+        error.diagnostic.not_nil!.code.should eq("R024")
+      end
     end
 
     describe "#step" do
@@ -373,6 +467,38 @@ module Adjutant
           end
         RUBY
         result.as_bool.should be_true
+      end
+
+      # Nil-bound handling, confirmed against real Ruby first: a nil
+      # END walks forever, same as #each. A nil START raises
+      # ArgumentError (R025) — a DIFFERENT error class than #each's
+      # TypeError (R024) for the same nil-start situation; real Ruby
+      # genuinely picks a different class here, not a typo.
+      #
+      # PENDING, not just failing — same reason as #each's own
+      # identical spec above: `break` doesn't actually propagate out
+      # of a block passed to a native method today, so this hangs the
+      # VM rather than failing an assertion. See that spec's comment
+      # and SCOPE.md's new Must Fix entry.
+      pending "an endless range walks forever — the caller is expected to break" do
+        interp, _ = make_interp
+        result = interp.eval(<<-RUBY)
+          seen = []
+          (1..).step(3) do |n|
+            if seen.size == 3
+              break
+            end
+            seen << n
+          end
+          seen
+        RUBY
+        result.as_array.map(&.as_int).should eq [1, 4, 7]
+      end
+
+      it "a beginless range raises ArgumentError (R025), a different class than #each's TypeError" do
+        interp, _ = make_interp
+        error = expect_raises(RuntimeError) { interp.eval("(..5).step(1) { |n| n }") }
+        error.diagnostic.not_nil!.code.should eq("R025")
       end
     end
 

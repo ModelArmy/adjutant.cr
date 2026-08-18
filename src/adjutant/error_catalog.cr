@@ -272,6 +272,34 @@ module Adjutant
         help: "Call `{method}` without a receiver, or via `self.`, " \
               "from the same object that defines it."
       ),
+      "R024" => Entry.new(
+        code: "R024",
+        summary: "can't iterate from NilClass",
+        why: "`{method}` needs a real starting value to count up from — " \
+             "a beginless range (`..5`) has no start, so there's " \
+             "nothing to begin iterating at.",
+        help: "Only an endless range (`5..`) or an ordinary bounded " \
+              "range (`1..5`) can be iterated — a beginless range can " \
+              "still be used with `include?`/`===`, just not walked."
+      ),
+      "R025" => Entry.new(
+        code: "R025",
+        summary: "`#step` iteration for beginless ranges is meaningless",
+        why: "`#step` walks forward from the range's start in fixed " \
+             "increments — a beginless range (`..5`) has no start to " \
+             "step forward from.",
+        help: "Only an endless range (`5..`) or an ordinary bounded " \
+              "range (`1..5`) supports `#step`."
+      ),
+      "R026" => Entry.new(
+        code: "R026",
+        summary: "cannot convert endless range to an array",
+        why: "`#to_a` has to materialize every value the range covers " \
+             "into a real Array — an endless range (`5..`) has no " \
+             "upper bound, so that array would never finish.",
+        help: "Use `#each`/`#step` with an explicit `break`, or `#first(n)` " \
+              "for a bounded slice, instead of `#to_a`."
+      ),
 
       # --- L: limits reached ----------------------------------------
       #
