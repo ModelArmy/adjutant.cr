@@ -67,6 +67,21 @@ module Adjutant
         node.as(Call).args.first.should be_a(IntLiteral)
       end
 
+      # The parenthesized path (parse_call_args_and_block) already
+      # called skip_newlines after each comma; the bare (no-paren)
+      # path's own comma loop, parse_bare_call_args, was missing the
+      # same call — `assert_equal a,\n  b` hit a parse error while
+      # `assert_equal(a,\n  b)` worked. See HANDOFF-2026-08-18.md.
+      it "parses a bare call whose args span a newline after the comma" do
+        node = parse_expr("eq a,\n  b")
+        node.should be_a(Call)
+        c = node.as(Call)
+        c.method.should eq "eq"
+        c.args.size.should eq 2
+        c.args[0].should be_a(Identifier)
+        c.args[1].should be_a(Identifier)
+      end
+
       # Explicit regression coverage for the exact two shapes that
       # broke CI in a discarded first (known_local?-based) attempt at
       # this fix — see the fix's own comment for the full trace of why

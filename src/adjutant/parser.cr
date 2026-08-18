@@ -1014,6 +1014,7 @@ module Adjutant
       kwargs = [] of {String, Node}
       parse_call_arg(args, kwargs)
       while match(TokenKind::Comma)
+        skip_newlines
         parse_call_arg(args, kwargs)
       end
       blk = parse_block if block_follows_no_paren?
