@@ -518,6 +518,7 @@ module Adjutant
       l, c = first.line, first.column
       targets = [first] of Node
       while match(TokenKind::Comma)
+        skip_newlines
         targets << parse_expression(0)
       end
       expect(TokenKind::Eq)
@@ -544,6 +545,7 @@ module Adjutant
       return first unless at_kind?(TokenKind::Comma)
       values = [first] of Node
       while match(TokenKind::Comma)
+        skip_newlines
         values << parse_expression(0)
       end
       # Wrap as an array literal used as multi-rhs
@@ -612,6 +614,7 @@ module Adjutant
         end
 
         advance
+        skip_newlines
         right = parse_expression(prec)
         left = Binary.new(op_tok.kind, left, right, op_tok.line, op_tok.column)
       end
@@ -1166,7 +1169,9 @@ module Adjutant
       params = [] of Param
       until at_kind?(TokenKind::Pipe)
         params << parse_param
+        skip_newlines
         break unless match(TokenKind::Comma)
+        skip_newlines
       end
       expect(TokenKind::Pipe)
       params
@@ -1377,7 +1382,9 @@ module Adjutant
       params = [] of Param
       until at_kind?(TokenKind::RParen) || at_kind?(TokenKind::EOF)
         params << parse_param
+        skip_newlines
         break unless match(TokenKind::Comma)
+        skip_newlines
       end
       params
     end
@@ -1599,6 +1606,7 @@ module Adjutant
       vars << @current.lexeme
       advance
       while match(TokenKind::Comma)
+        skip_newlines
         vars << @current.lexeme
         advance
       end
@@ -1635,6 +1643,7 @@ module Adjutant
         expect(TokenKind::KwWhen)
         patterns = [parse_expression(0)] of Node
         while match(TokenKind::Comma)
+          skip_newlines
           patterns << parse_expression(0)
         end
         skip_terminators
@@ -1688,14 +1697,18 @@ module Adjutant
       args = [] of Node
       if at_kind?(TokenKind::LParen)
         advance
+        skip_newlines
         until at_kind?(TokenKind::RParen) || at_kind?(TokenKind::EOF)
           args << parse_expression(0)
+          skip_newlines
           break unless match(TokenKind::Comma)
+          skip_newlines
         end
         expect(TokenKind::RParen)
       elsif !at_any?(TokenKind::Newline, TokenKind::Semi, TokenKind::EOF, TokenKind::KwEnd)
         args << parse_expression(0)
         while match(TokenKind::Comma)
+          skip_newlines
           args << parse_expression(0)
         end
       end
@@ -1707,10 +1720,13 @@ module Adjutant
       expect(TokenKind::KwSuper)
       if at_kind?(TokenKind::LParen)
         advance
+        skip_newlines
         args = [] of Node
         until at_kind?(TokenKind::RParen) || at_kind?(TokenKind::EOF)
           args << parse_expression(0)
+          skip_newlines
           break unless match(TokenKind::Comma)
+          skip_newlines
         end
         expect(TokenKind::RParen)
         SuperNode.new(args, false, l, c)
@@ -1730,6 +1746,7 @@ module Adjutant
         # leaving `+`/`-` for the surrounding expression parser.
         args = [parse_expression(0)] of Node
         while match(TokenKind::Comma)
+          skip_newlines
           args << parse_expression(0)
         end
         SuperNode.new(args, false, l, c)
@@ -1755,6 +1772,7 @@ module Adjutant
       elsif arg_follows_no_paren?
         args << parse_expression(0)
         while match(TokenKind::Comma)
+          skip_newlines
           args << parse_expression(0)
         end
       end
@@ -1814,6 +1832,7 @@ module Adjutant
         # gets full constant-path support for free.
         classes << parse_expression(0)
         while match(TokenKind::Comma)
+          skip_newlines
           classes << parse_expression(0)
         end
         if match(TokenKind::HashRocket)
