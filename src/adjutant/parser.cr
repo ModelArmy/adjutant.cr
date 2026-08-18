@@ -1936,6 +1936,7 @@ module Adjutant
         tok = expect(TokenKind::Symbol)
         names << tok.lexeme.lstrip(':').strip('"').strip('\'')
         break unless match(TokenKind::Comma)
+        skip_newlines
       end
       expect(TokenKind::RParen) if paren
       defs = [] of Node

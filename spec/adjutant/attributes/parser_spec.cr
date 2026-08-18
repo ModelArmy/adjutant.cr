@@ -56,6 +56,21 @@ module Adjutant
         node.as(DefNode).name.should eq "x"
       end
 
+      # The trailing-comma-newline sweep of 2026-08-18 missed this
+      # site (see SCOPE.md's Will Fix note) — same shape as every
+      # other comma loop that got the fix, both the parenthesized and
+      # bare forms. Confirmed against real Ruby first (both split
+      # fine) before fixing.
+      it "parses attr_accessor names split across a newline after the comma, parens" do
+        body = parse("attr_accessor :x,\n  :y")
+        body.stmts.map { |s| s.as(DefNode).name }.should eq(["x", "x=", "y", "y="])
+      end
+
+      it "parses attr_reader names split across a newline after the comma, bare" do
+        body = parse("attr_reader :x,\n  :y")
+        body.stmts.map { |s| s.as(DefNode).name }.should eq(["x", "y"])
+      end
+
       # The critical regression: parse_attr returns a `Body` wrapping
       # its synthetic DefNodes (see that method's own comment), and
       # every statement-list builder (`parse`, `parse_body_until`,

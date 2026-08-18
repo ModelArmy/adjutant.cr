@@ -178,17 +178,6 @@ still roughly ordered by how cheap/independent the fix is.
 Small, mechanical, independent of each other — good candidates for quick
 wins.
 
-- **One more comma-loop site with the same missing-`skip_newlines`
-  shape, not yet fixed.** The trailing-comma-newline sweep of
-  2026-08-18 (see the now-removed Must Fix entry, and
-  `trailing_comma_newline_spec.cr`) covered every comma loop found
-  EXCEPT the symbol-list parser used for `attr_accessor`/`attr_reader`
-  /`attr_writer`-style `def`s (both the parenthesized and bare forms —
-  `parse.*symbol.*Comma` shape, near the end of `parser.cr`'s def-list
-  handling). Not confirmed against real Ruby either. Same fix if it
-  turns out broken; check it the same way (a small script + a spec)
-  before assuming.
-
 - **`=~` (regex/string match operator) doesn't exist at all — no
   lexer token, no infix precedence entry, and no working dot-call
   spelling either.** Found 2026-08-14 while wiring `Regexp#=~` as
