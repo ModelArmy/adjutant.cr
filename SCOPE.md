@@ -72,43 +72,19 @@ forward.
   gap; worth fixing alongside this item's own bound-representation
   work, not in isolation.
 
-- **A trailing `,` at the end of a line doesn't let a PAREN-LESS
-  (bare) method call's argument list continue onto the next line —
-  the newline is parsed as a statement terminator instead, a `P002`
-  parse error.** Found and precisely diagnosed 2026-08-14 from a real
-  failure while hand-writing `spec/scripts/mruby/regexp.rb` (a
-  multi-line bare `assert_equal Regexp::IGNORECASE | ... ,\n
-  Regexp.new(...).options` broke on exactly this — the reported error
-  pointed right after the trailing comma). Confirmed by direct
-  comparison of the two argument-list parsers in `parser.cr`: the
-  PARENTHESIZED path (`parse_call_args_and_block`'s `if
-  at_kind?(TokenKind::LParen)` branch) calls `skip_newlines`
-  immediately after matching each `Comma` — but the sibling BARE-call
-  path (`parse_bare_call_args`, used for exactly this
-  `assert_equal a,\n  b`-style no-parens call) has the identical
-  `while match(TokenKind::Comma) { parse_call_arg(...) }` loop with NO
-  `skip_newlines` call added. Fix is a one-line addition to
-  `parse_bare_call_args`'s loop, mirroring the parenthesized path
-  exactly.
-  Very likely the SAME missing-generalization shape recurs elsewhere
-  — predicted, not yet independently confirmed the way the comma case
-  above was: `parse_expression`'s main binary-operator loop
-  (`left = Binary.new(...)`) also `advance`s past the operator and
-  immediately recurses into `right = parse_expression(prec)` with no
-  `skip_newlines` between them, so a binary operator (`|`, `+`, `&&`,
-  ...) at the end of a line likely has the identical bug — worth
-  checking together rather than filing as a second, separate item
-  later. Real Ruby suppresses the newline as a statement boundary
-  whenever the preceding token can't end a statement — a general
-  rule Adjutant has only ever applied piecemeal, at specific
-  bracket/paren/comma call sites, never as one shared principle.
-  Multi-line calls and expressions broken across lines for
-  readability are everyday Ruby, not an edge case, and every
-  `spec/scripts/mruby/*.rb` fixture written from here on needs to
-  keep the BARE-call-comma case in mind specifically (wrap in parens,
-  or keep bare multi-arg calls on one line, until this is fixed) —
-  worth fixing before it quietly shapes how future fixtures get
-  written around it.
+- **`parse_expression`'s main binary-operator loop likely has the same
+  missing-`skip_newlines` shape** that `parse_bare_call_args`'s comma
+  loop had (see that item's own fix, closed 2026-08-18) — predicted,
+  not yet independently confirmed. `left = Binary.new(...)` `advance`s
+  past the operator and immediately recurses into `right =
+  parse_expression(prec)` with no `skip_newlines` between them, so a
+  binary operator (`|`, `+`, `&&`, ...) at the end of a line likely
+  hits the same `P002` a trailing-comma bare call did. Real Ruby
+  suppresses the newline as a statement boundary whenever the
+  preceding token can't end a statement — a general rule Adjutant has
+  only ever applied piecemeal, at specific bracket/paren/comma call
+  sites, never as one shared principle. Multi-line expressions broken
+  across lines for readability are everyday Ruby, not an edge case.
 
 - **Heredocs and `%w[]`/`%i[]` literals don't exist.** Promoted from
   `Will Fix` 2026-08-15 — common enough in idiomatic Ruby (`%w[a b c]`
