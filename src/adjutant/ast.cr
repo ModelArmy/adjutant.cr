@@ -107,9 +107,17 @@ module Adjutant
     end
   end
 
+  # `start_node`/`end_node` are nilable to represent endless (`1..`)
+  # and beginless (`..10`) ranges — real Ruby syntax, not just the
+  # already-supported `Range.new(nil, 5)` constructor form. See
+  # `parse_expression`'s RangeIncl/RangeExcl handling (endless: no
+  # valid expression follows the operator) and `parse_primary`'s own
+  # RangeIncl/RangeExcl case (beginless: the operator itself starts
+  # the expression, with no left operand at all) for where each nil
+  # actually gets produced.
   class RangeLiteral < Node
-    getter start_node : Node
-    getter end_node : Node
+    getter start_node : Node?
+    getter end_node : Node?
     getter? exclusive : Bool
 
     def initialize(@start_node, @end_node, @exclusive, line, column)

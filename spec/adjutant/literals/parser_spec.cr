@@ -259,6 +259,72 @@ module Adjutant
         node.as(RangeLiteral).exclusive?.should be_true
       end
 
+      # Endless/beginless ranges — see SCOPE.md's now-resolved Must
+      # Fix entry for the full research trail. `start_node`/`end_node`
+      # are nilable specifically to represent these; every OTHER
+      # RangeLiteral consumer (compile_range) must handle a nil bound
+      # too, but that's covered by builtins/range_spec.cr and the
+      # mruby range fixture, not here — this file is parser-shape only.
+
+      it "parses an inclusive endless range" do
+        node = parse_expr("1..").as(RangeLiteral)
+        node.start_node.should be_a(IntLiteral)
+        node.end_node.should be_nil
+        node.exclusive?.should be_false
+      end
+
+      it "parses an exclusive endless range" do
+        node = parse_expr("1...").as(RangeLiteral)
+        node.start_node.should be_a(IntLiteral)
+        node.end_node.should be_nil
+        node.exclusive?.should be_true
+      end
+
+      it "parses an inclusive beginless range" do
+        node = parse_expr("..10").as(RangeLiteral)
+        node.start_node.should be_nil
+        node.end_node.should be_a(IntLiteral)
+        node.exclusive?.should be_false
+      end
+
+      it "parses an exclusive beginless range" do
+        node = parse_expr("...10").as(RangeLiteral)
+        node.start_node.should be_nil
+        node.end_node.should be_a(IntLiteral)
+        node.exclusive?.should be_true
+      end
+
+      it "parses an endless range as an array index (arr[2..])" do
+        node = parse("arr = []\narr[2..]").stmts.last
+        node.should be_a(Index)
+        idx = node.as(Index).index.as(RangeLiteral)
+        idx.start_node.should be_a(IntLiteral)
+        idx.end_node.should be_nil
+      end
+
+      it "parses an endless range followed by a comma, in an array literal" do
+        node = parse_expr("[2.., 3]").as(ArrayLiteral)
+        first = node.elements.first.as(RangeLiteral)
+        first.start_node.should be_a(IntLiteral)
+        first.end_node.should be_nil
+        node.elements[1].should be_a(IntLiteral)
+      end
+
+      it "parses an endless range as a case/when pattern, followed by then" do
+        node = parse_expr("case 20\nwhen 18.. then :adult\nend").as(CaseNode)
+        pattern = node.whens.first[0].first.as(RangeLiteral)
+        pattern.start_node.should be_a(IntLiteral)
+        pattern.end_node.should be_nil
+      end
+
+      it "parses an endless range as a call argument (in parens)" do
+        node = parse_expr("f(2..)")
+        node.should be_a(Call)
+        arg = node.as(Call).args.first.as(RangeLiteral)
+        arg.start_node.should be_a(IntLiteral)
+        arg.end_node.should be_nil
+      end
+
       it "parses an interpolated string" do
         node = parse_expr("\"hello \#{name}!\"")
         node.should be_a(InterpString)

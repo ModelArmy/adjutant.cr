@@ -607,8 +607,24 @@ module Adjutant
     end
 
     private def compile_range(node : RangeLiteral) : Nil
-      compile_node(node.start_node)
-      compile_node(node.end_node)
+      # A missing bound (endless/beginless range) compiles to a plain
+      # `nil` literal on the stack — Op::MakeRange/make_range_object
+      # already accept and store a nil Value unconditionally (the same
+      # path `Range.new(nil, x)` already used before this syntax
+      # parsed at all; see builtins/range.cr's own comment on that
+      # constructor). No VM/opcode change needed for construction
+      # itself — only #each/#step/#to_a and to_s/#inspect still need
+      # real nil-bound handling, tracked separately in SCOPE.md.
+      if start_node = node.start_node
+        compile_node(start_node)
+      else
+        emit_nil(node.line)
+      end
+      if end_node = node.end_node
+        compile_node(end_node)
+      else
+        emit_nil(node.line)
+      end
       @chunk.emit(Op::MakeRange, node.line, a: node.exclusive? ? 1_u8 : 0_u8)
     end
 

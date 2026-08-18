@@ -608,7 +608,7 @@ module Adjutant
 
         if op_tok.kind == TokenKind::RangeIncl || op_tok.kind == TokenKind::RangeExcl
           advance
-          right = parse_expression(prec)
+          right = range_end_omitted? ? nil : parse_expression(prec)
           left = RangeLiteral.new(left, right, op_tok.kind == TokenKind::RangeExcl, op_tok.line, op_tok.column)
           next
         end
@@ -619,6 +619,25 @@ module Adjutant
         left = Binary.new(op_tok.kind, left, right, op_tok.line, op_tok.column)
       end
       left
+    end
+
+    # True when nothing that could start an expression follows `..`/
+    # `...` — the range's end bound was omitted (an endless range,
+    # `1..`). Blocklist style (terminators), matching the same
+    # convention `parse_break`/`parse_yield`'s own optional-value
+    # checks already use, rather than an allowlist of every possible
+    # expression-start token — the realistic contexts this needs to
+    # cover are all closing/separator tokens: `arr[2..]` (RBracket),
+    # `case age when 18.. then` (KwThen), `f(2..)` (RParen), `[2.., 3]`
+    # (Comma), `{2..}` (RBrace, a block-literal default's own close),
+    # `2.. do |x| ... end`-shaped bare calls (KwDo), plus the ordinary
+    # statement terminators (Newline, Semi, EOF, KwEnd).
+    private def range_end_omitted? : Bool
+      at_any?(
+        TokenKind::Newline, TokenKind::Semi, TokenKind::EOF, TokenKind::KwEnd,
+        TokenKind::RParen, TokenKind::RBracket, TokenKind::RBrace,
+        TokenKind::Comma, TokenKind::KwThen, TokenKind::KwDo
+      )
     end
 
     private def parse_unary : Node
@@ -732,6 +751,26 @@ module Adjutant
     private def parse_primary : Node
       l, c = line, col
       case current_kind
+      when TokenKind::RangeIncl, TokenKind::RangeExcl
+        # Beginless range (`..10`, `...10`) — the ONLY place `..`/
+        # `...` is ever consumed as the START of an expression rather
+        # than an infix operator on an already-parsed left operand.
+        # Reachable here because parse_unary falls through to
+        # parse_primary for anything that isn't a prefix operator
+        # (Bang/Minus/Plus/Tilde/KwNot) — RangeIncl/RangeExcl was
+        # previously absent from every `when` branch in this method,
+        # so `..10` had no valid parse at all (P002). Same
+        # `range_end_omitted?` check the infix (endless) case uses —
+        # a bare `..`/`...` with nothing meaningful on either side
+        # isn't valid Ruby (a range needs at least one real bound),
+        # but this method doesn't need to reject that itself: an
+        # omitted end here still returns SOME node, and whatever
+        # follows (or doesn't) fails on its own merits same as any
+        # other malformed expression.
+        op_tok = @current
+        advance
+        right = range_end_omitted? ? nil : parse_expression(token_precedence(op_tok.kind))
+        RangeLiteral.new(nil, right, op_tok.kind == TokenKind::RangeExcl, l, c)
       when TokenKind::ColonColon
         advance
         name_tok = @current
