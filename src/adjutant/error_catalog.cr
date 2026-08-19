@@ -337,9 +337,9 @@ module Adjutant
       "R031" => Entry.new(
         code: "R031",
         summary: "negative array size",
-        why: "`#first(n)` builds an Array of the first `n` elements — a " \
+        why: "`#first(n)`/`#last(n)` build an Array of `n` elements — a " \
              "negative `n` isn't a valid size to build one at.",
-        help: "Pass a non-negative count to `#first`."
+        help: "Pass a non-negative count to `#first`/`#last`."
       ),
 
       # --- L: limits reached ----------------------------------------

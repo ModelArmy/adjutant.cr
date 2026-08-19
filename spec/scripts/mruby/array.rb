@@ -214,17 +214,24 @@ assert('Array#empty?', '15.2.12.5.12') do
   assert_false([1].empty?)
 end
 
-# --- Original ISO test needs Array#first(n) (arg form), out-of-range
-# ArgumentError, and multiple-arguments ArgumentError — none of which
-# are implemented (Array#first here is no-arg only, matching the
-# Must Fix survey's minimal scope). Trimmed to the two assertions the
-# no-arg form actually supports; the arg-taking form is a real,
-# separate gap worth its own future entry if wanted.
+# --- Original ISO test's out-of-range (Bignum) ArgumentError and
+# multiple-arguments ArgumentError aren't implemented — native
+# methods here don't arity-check their own argument count, so passing
+# extra args is silently ignored rather than raising, and there's no
+# Bignum type to construct an out-of-range count with in the first
+# place. The count-argument form itself now works for real
+# (`array.cr`, 2026-08-19 — see SCOPE.md/git history), so those
+# assertions are uncommented below; the two ArgumentError cases stay
+# out, a real, separate gap if ever wanted.
 assert('Array#first', '15.2.12.5.13') do
   assert_nil([].first)
 
   b = [1,2,3]
   assert_equal(1, b.first)
+  assert_equal([1,2], b.first(2))
+  assert_equal([1,2,3], b.first(10))
+  assert_equal([], b.first(0))
+  assert_equal([], [].first(2))
 end
 
 # --- BLOCKED: Array#index doesn't exist.
@@ -310,14 +317,22 @@ end
 #   assert_equal('', a.join)
 # end
 
-# --- Original ISO test needs Array#last(n) (arg form), and an
-# ArgumentError/TypeError on a bad argument — none implemented (same
-# no-arg-only scope as #first above). Trimmed to what the no-arg form
-# supports.
+# --- Original ISO test needs a bad-argument ArgumentError/TypeError
+# (a non-Integer count) — not validated here, same as Range#step's own
+# convention (native_call_context.cr) for its `n` argument; a
+# non-Integer count isn't checked and would fail differently (a raw
+# Crystal cast error) rather than a clean ArgumentError/TypeError.
+# The count-argument form itself now works for real (`array.cr`,
+# 2026-08-19 — see SCOPE.md/git history), so those assertions are
+# uncommented below.
 assert('Array#last', '15.2.12.5.18') do
   a = [1,2,3]
   assert_equal(3, a.last)
   assert_nil([].last)
+  assert_equal([2,3], a.last(2))
+  assert_equal([1,2,3], a.last(10))
+  assert_equal([], a.last(0))
+  assert_equal([], [].last(2))
 end
 
 assert('Array#length', '15.2.12.5.19') do

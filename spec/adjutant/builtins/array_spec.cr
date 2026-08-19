@@ -442,6 +442,29 @@ module Adjutant
       it "returns nil on an empty array" do
         eval("[].first").null?.should be_true
       end
+
+      describe "with a count argument" do
+        it "returns an Array of the first n elements" do
+          eval("[1, 2, 3, 4, 5].first(3)").as_array.map(&.as_int).should eq [1_i64, 2_i64, 3_i64]
+        end
+
+        it "returns fewer than n elements when the array itself is shorter" do
+          eval("[1, 2, 3].first(10)").as_array.map(&.as_int).should eq [1_i64, 2_i64, 3_i64]
+        end
+
+        it "returns an empty Array for n == 0" do
+          eval("[1, 2, 3].first(0)").as_array.should be_empty
+        end
+
+        it "returns an empty Array on an empty receiver" do
+          eval("[].first(3)").as_array.should be_empty
+        end
+
+        it "raises ArgumentError (R031) for a negative count" do
+          error = expect_raises(RuntimeError) { eval("[1, 2, 3].first(-1)") }
+          error.diagnostic.not_nil!.code.should eq("R031")
+        end
+      end
     end
 
     describe "#last" do
@@ -451,6 +474,29 @@ module Adjutant
 
       it "returns nil on an empty array" do
         eval("[].last").null?.should be_true
+      end
+
+      describe "with a count argument" do
+        it "returns an Array of the last n elements" do
+          eval("[1, 2, 3, 4, 5].last(3)").as_array.map(&.as_int).should eq [3_i64, 4_i64, 5_i64]
+        end
+
+        it "returns fewer than n elements when the array itself is shorter" do
+          eval("[1, 2, 3].last(10)").as_array.map(&.as_int).should eq [1_i64, 2_i64, 3_i64]
+        end
+
+        it "returns an empty Array for n == 0" do
+          eval("[1, 2, 3].last(0)").as_array.should be_empty
+        end
+
+        it "returns an empty Array on an empty receiver" do
+          eval("[].last(3)").as_array.should be_empty
+        end
+
+        it "raises ArgumentError (R031) for a negative count" do
+          error = expect_raises(RuntimeError) { eval("[1, 2, 3].last(-1)") }
+          error.diagnostic.not_nil!.code.should eq("R031")
+        end
       end
     end
 
