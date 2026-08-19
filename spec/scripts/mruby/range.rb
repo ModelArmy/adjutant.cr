@@ -3,17 +3,15 @@ require "assert"
 ##
 # Range ISO Test
 #
-# Two things worth knowing up front, since they block or shape nearly
-# every block below:
+# Endless/beginless range SYNTAX (`1..`, `..10`, `1...`, `...10`) now
+# parses and works end to end — this was the file's original blocker
+# (see git history for the fix, `endless-ranges` branch, 2026-08-18).
+# Assertions using a partial range are uncommented below wherever the
+# underlying method has real nil-bound handling; a few still-blocked
+# ones are left commented with their own specific reason, not the old
+# blanket one. Two things still worth knowing up front:
 #
-# 1. ENDLESS/BEGINLESS RANGES (`1..`, `..10`, `1...`, `...10`) DON'T
-#    PARSE AT ALL — `parse_range` (parser.cr) always calls
-#    `parse_expression` unconditionally for both sides of `..`/`...`,
-#    with no way to omit either. A real, tracked Must Fix gap (see
-#    SCOPE.md) — not fixed here. Every assertion below using a
-#    partial range is left commented for this reason specifically;
-#    said so once here rather than repeating it at every site.
-# 2. `a === b` AS A GENERAL INFIX EXPRESSION IS A DELIBERATE, PERMANENT
+# 1. `a === b` AS A GENERAL INFIX EXPRESSION IS A DELIBERATE, PERMANENT
 #    DESIGN DECISION, not a gap — `case/when` (the real caller of
 #    `Class#===`/`Range#===`) is compiler-generated dispatch, never
 #    parsed from literal `a === b` script syntax; see UNSUPPORTED.md's
@@ -23,6 +21,21 @@ require "assert"
 #    actually exercise the real underlying behavior, but that's a
 #    different test than upstream's own, so left as a clear note
 #    instead of a silent rewrite.
+# 2. `Range#last`/`Range#max` with NO argument on an ENDLESS range
+#    should raise `RangeError` in real Ruby (confirmed via Ruby's own
+#    docs/source: "cannot get the last element of endless range") —
+#    Adjutant's current implementation is a plain ivar accessor that
+#    returns `nil` instead. A real, newly-found bug (see SCOPE.md) —
+#    NOT fixed here, and NOT uncommented below: the fixture's own
+#    commented assertion (`assert_nil (1..).last`) happens to match
+#    Adjutant's current (also wrong) behavior, but is wrong relative
+#    to real Ruby, so uncommenting it as-is would pin down the wrong
+#    answer. `Range#first`/`Range#begin`/`Range#end` don't have this
+#    problem — `#first` (no args) on an ENDLESS range correctly never
+#    needs to raise (there's always a real first value), and
+#    `#begin`/`#end` are real Ruby's own plain nil-returning accessors
+#    by design, not fallible "get the actual value" methods the way
+#    `#first`/`#last` are.
 
 assert('Range', '15.2.14') do
   assert_equal Class, Range.class
@@ -30,25 +43,25 @@ end
 
 # --- Trimmed: two ranges failing to compare equal was a REAL bug,
 # now fixed (ValueOps had no Range-specific content-equality case —
-# see vm.cr's range_values_equal?) — those two lines are uncommented
-# below. Every other assertion in this block needs either a partial
-# range or Object.const_defined? (a separate, already-tracked gap) —
-# left blocked.
+# see vm.cr's range_values_equal?). Partial-range equality is
+# uncommented below too, now that the syntax parses; only the
+# Float-bound sub-case (needs Object.const_defined?, a separate,
+# already-tracked gap) stays blocked.
 assert('Range#==', '15.2.14.4.1') do
   assert_true (1..10) == (1..10)
   assert_false (1..10) == (1..100)
 end
-# assert('Range#== (partial ranges)') do
-#   assert_false (1..10) == (1..)
-#   assert_false (1..10) == (..10)
-#   assert_true (1..) == (1..nil)
-#   assert_true (1..) == (1..)
-#   assert_false (1..) == (1...)
+assert('Range#== (partial ranges)') do
+  assert_false (1..10) == (1..)
+  assert_false (1..10) == (..10)
+  assert_true (1..) == (1..nil)
+  assert_true (1..) == (1..)
+  assert_false (1..) == (1...)
 
-#   assert_true (..1) == (nil..1)
-#   assert_true (..1) == (..1)
-#   assert_false (..1) == (...1)
-# end
+  assert_true (..1) == (nil..1)
+  assert_true (..1) == (..1)
+  assert_false (..1) == (...1)
+end
 # assert('Range#== (Float bound)') do
 #   skip unless Object.const_defined?(:Float)
 #   assert_true (1..10) == Range.new(1.0, 10.0)
@@ -108,6 +121,17 @@ assert('Range#each', '15.2.14.4.4') do
   a.each {|i| b += i}
   assert_equal 6, b
 end
+# --- BLOCKED, but NOT by anything range-related — `break if cond`
+# (no explicit break value) immediately followed by a closing `}`
+# hits a separate, still-open parser bug: `parse_break` grabs its own
+# optional VALUE via `parse_expression(0)` before ever checking for a
+# trailing `KwIf` modifier, and `if` is itself a valid expression-
+# START token, so `break if c.size == 10 }` tries to parse `if
+# c.size == 10 }` as break's own value (a real if-expression) instead
+# of stopping after `if c.size == 10` and treating it as the
+# modifier. See SCOPE.md's "`break if cond; more_code`" Will Fix
+# entry for the full writeup — not fixed here, deliberately left as
+# upstream wrote it rather than rewritten to dodge an unrelated bug.
 # assert('Range#each (endless)') do
 #   c = []
 #   (1..).each { |i| c << i; break if c.size == 10 }
@@ -116,22 +140,23 @@ end
 
 # --- Trimmed: `#begin`/`#end` now exist (real Ruby names — this
 # class previously only had `#min`/`#max` under those names). The
-# endless-range sub-cases still need partial ranges.
+# endless-range sub-cases are uncommented below too, now that
+# partial-range syntax parses.
 assert('Range#begin', '15.2.14.4.3') do
   assert_equal 1, (1..10).begin
 end
-# assert('Range#begin (partial ranges)') do
-#   assert_equal 1, (1..).begin
-#   assert_nil (..1).begin
-# end
+assert('Range#begin (partial ranges)') do
+  assert_equal 1, (1..).begin
+  assert_nil (..1).begin
+end
 
 assert('Range#end', '15.2.14.4.5') do
   assert_equal 10, (1..10).end
 end
-# assert('Range#end (partial ranges)') do
-#   assert_nil (1..).end
-#   assert_equal 10, (..10).end
-# end
+assert('Range#end (partial ranges)') do
+  assert_nil (1..).end
+  assert_equal 10, (..10).end
+end
 
 # --- Trimmed: `#exclude_end?` now exists (real Ruby name — this
 # class previously only had the non-standard `#exclusive?`).
@@ -139,19 +164,19 @@ assert('Range#exclude_end?', '15.2.14.4.6') do
   assert_true (1...10).exclude_end?
   assert_false (1..10).exclude_end?
 end
-# assert('Range#exclude_end? (partial ranges)') do
-#   assert_true (1...).exclude_end?
-#   assert_false (1..).exclude_end?
-#   assert_true (...1).exclude_end?
-#   assert_false (..1).exclude_end?
-# end
+assert('Range#exclude_end? (partial ranges)') do
+  assert_true (1...).exclude_end?
+  assert_false (1..).exclude_end?
+  assert_true (...1).exclude_end?
+  assert_false (..1).exclude_end?
+end
 
 assert('Range#first', '15.2.14.4.7') do
   assert_equal 1, (1..10).first
 end
-# assert('Range#first (endless)') do
-#   assert_equal 1, (1..).first
-# end
+assert('Range#first (endless)') do
+  assert_equal 1, (1..).first
+end
 
 assert('Range#include?', '15.2.14.4.8') do
   assert_true (1..10).include?(10)
@@ -159,20 +184,27 @@ assert('Range#include?', '15.2.14.4.8') do
   assert_true (1...10).include?(9)
   assert_false (1...10).include?(10)
 end
-# assert('Range#include? (partial ranges)') do
-#   assert_true (1..).include?(10)
-#   assert_false (1..).include?(0)
-#   assert_true (..10).include?(10)
-#   assert_true (..10).include?(0)
-#   assert_true (1...).include?(10)
-#   assert_false (1...).include?(0)
-#   assert_false (...10).include?(10)
-#   assert_true (...10).include?(0)
-# end
+assert('Range#include? (partial ranges)') do
+  assert_true (1..).include?(10)
+  assert_false (1..).include?(0)
+  assert_true (..10).include?(10)
+  assert_true (..10).include?(0)
+  assert_true (1...).include?(10)
+  assert_false (1...).include?(0)
+  assert_false (...10).include?(10)
+  assert_true (...10).include?(0)
+end
 
 assert('Range#last', '15.2.14.4.10') do
   assert_equal 10, (1..10).last
 end
+# --- BLOCKED, but NOT by the parsing gap this file used to be about
+# — see this file's own header. `(1..).last` should raise RangeError
+# in real Ruby; Adjutant's `#last` is currently a plain accessor that
+# returns nil instead (a real, separate bug — see SCOPE.md). The
+# assertion as originally written (`assert_nil`) matches Adjutant's
+# CURRENT wrong behavior, not real Ruby's, so left commented rather
+# than uncommented-and-wrong.
 # assert('Range#last (endless)') do
 #   assert_nil (1..).last
 # end
@@ -183,11 +215,11 @@ assert('Range#member?', '15.2.14.4.11') do
   assert_true a.member?(5)
   assert_false a.member?(20)
 end
-# assert('Range#member? (endless)') do
-#   b = (1..)
-#   assert_true b.member?(20)
-#   assert_false b.member?(0)
-# end
+assert('Range#member? (endless)') do
+  b = (1..)
+  assert_true b.member?(20)
+  assert_false b.member?(0)
+end
 
 # --- Trimmed: to_s doesn't need partial ranges for these four (a
 # String-bounded range doesn't need String#succ just to render, only
@@ -199,30 +231,27 @@ assert('Range#to_s', '15.2.14.4.12') do
   assert_equal "a..b", ("a".."b").to_s
   assert_equal "a...b", ("a"..."b").to_s
 end
-# assert('Range#to_s (partial ranges)') do
-#   assert_equal "0..", (0..).to_s
-#   assert_equal "0...", (0...).to_s
-#   assert_equal "a..", ("a"..).to_s
-#   assert_equal "a...", ("a"...).to_s
-# end
+assert('Range#to_s (partial ranges)') do
+  assert_equal "0..", (0..).to_s
+  assert_equal "0...", (0...).to_s
+  assert_equal "a..", ("a"..).to_s
+  assert_equal "a...", ("a"...).to_s
+end
 
-# --- BLOCKED: Range#inspect isn't registered as a native method at
-# all (only #to_s exists) — blocked regardless of the partial-range
-# issue, which would ALSO block half of this block anyway.
-# assert('Range#inspect', '15.2.14.4.13') do
-#   assert_equal "0..1", (0..1).inspect
-#   assert_equal "0...1", (0...1).inspect
-#   assert_equal "\"a\"..\"b\"", ("a".."b").inspect
-#   assert_equal "\"a\"...\"b\"", ("a"..."b").inspect
-#   assert_equal "0..", (0..).inspect
-#   assert_equal "0...", (0...).inspect
-#   assert_equal "\"a\"..", ("a"..).inspect
-#   assert_equal "\"a\"...", ("a"...).inspect
-# end
+assert('Range#inspect', '15.2.14.4.13') do
+  assert_equal "0..1", (0..1).inspect
+  assert_equal "0...1", (0...1).inspect
+  assert_equal "\"a\"..\"b\"", ("a".."b").inspect
+  assert_equal "\"a\"...\"b\"", ("a"..."b").inspect
+  assert_equal "0..", (0..).inspect
+  assert_equal "0...", (0...).inspect
+  assert_equal "\"a\"..", ("a"..).inspect
+  assert_equal "\"a\"...", ("a"...).inspect
+end
 
 # --- BLOCKED: Range#eql? doesn't exist for any type yet (see
-# SCOPE.md — not Range-specific). Would ALSO need partial ranges for
-# half of this block regardless.
+# SCOPE.md — not Range-specific). Partial ranges themselves parse
+# fine now — this is the only remaining blocker.
 # assert('Range#eql?', '15.2.14.4.14') do
 #   assert_true (1..10).eql? (1..10)
 #   assert_false (1..10).eql? (1..100)
@@ -251,8 +280,9 @@ end
 # end
 
 # --- BLOCKED: #dup/#clone on a builtin-kind receiver raises
-# NoMethodError rather than copying (see SCOPE.md's Will Fix entry) —
-# would ALSO need partial ranges for the third sub-case regardless.
+# NoMethodError rather than copying (see SCOPE.md's Will Fix entry).
+# Partial ranges themselves parse fine now — this is the only
+# remaining blocker.
 # assert('Range#dup') do
 #   r = (1..3).dup
 #   assert_equal 1, r.begin
@@ -274,6 +304,6 @@ assert('Range#to_a') do
   assert_equal([1, 2, 3, 4, 5], (1..5).to_a)
   assert_equal([1, 2, 3, 4], (1...5).to_a)
 end
-# assert('Range#to_a (endless)') do
-#   assert_raise(RangeError) { (1..).to_a }
-# end
+assert('Range#to_a (endless)') do
+  assert_raise(RangeError) { (1..).to_a }
+end

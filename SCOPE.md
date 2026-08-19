@@ -39,6 +39,26 @@ currently blocking anything" no longer held. The remaining entries
 weren't re-evaluated against the promoted two on this axis, just carried
 forward.
 
+- **`Range#last`/`Range#max` with no argument don't raise on an
+  ENDLESS range — they return `nil` instead.** Found 2026-08-19
+  triaging `spec/scripts/mruby/range.rb` for assertions the endless-
+  range work now supports. Real Ruby: `(1..).last` raises
+  `RangeError: cannot get the last element of endless range`
+  (confirmed via Ruby's own docs/source, not assumed) — there IS no
+  last element to return. Adjutant's `#last`/`#max` (`range.cr`) are
+  both plain ivar accessors returning `ivars[max_sym]` directly, with
+  no nil check at all — so `(1..).last`/`(1..).max` silently return
+  `nil`, matching neither a real value NOR a real error. Distinct
+  from `#first`, which correctly needs no such check: real Ruby's
+  `#first` (no args) on an endless range never raises (there's always
+  a genuine first value — checked via the same search, not assumed),
+  so `#first`'s existing plain-accessor implementation is already
+  correct as-is. Real fix: `#last`/`#max` need the same
+  `lo.null?`/`hi.null?`-style guard already used elsewhere in
+  `range.cr` (`each`/`to_a`/`step`/`include?`), raising R026-style
+  (`RangeError`) when the relevant bound is nil, rather than falling
+  through to the plain ivar read.
+
 - **Heredocs and `%w[]`/`%i[]` literals don't exist.** Promoted from
   `Will Fix` 2026-08-15 — common enough in idiomatic Ruby (`%w[a b c]`
   for word arrays, heredocs for any string spanning more than a couple
