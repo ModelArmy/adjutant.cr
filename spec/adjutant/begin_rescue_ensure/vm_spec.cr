@@ -1221,6 +1221,139 @@ module Adjutant
     end
   end
 
+  # Sibling gap to the "break/next through begin/rescue/ensure" block
+  # above — same bug shape, one level removed: `compile_break`/
+  # `compile_next`'s NO-loop branch (used for break/next inside a
+  # BLOCK, whether that block is invoked via a native method or via
+  # `yield`) never emitted any ensure-unwind at all, only the
+  # loop-jump branch did. Found 2026-08-18 auditing `compile_break`
+  # while fixing break's value-propagation for blocks (see git
+  # history — `BlockBreakSignal`, vm.cr). Fixed via `emit_ensure_unwind`
+  # (compiler.cr), generalized from the loop-only helper this section's
+  # own specs already exercise — target depth 0 rather than a
+  # `LoopScope#ensure_depth_at_entry` snapshot, since every block/
+  # method body compiles via its own brand-new `Compiler` instance
+  # with a FRESH `@ensure_stack` (`Compiler.compile_proc`), so nothing
+  # on it can ever belong to anything outside the current body.
+  describe "break/next through begin/rescue/ensure, inside a block (no enclosing loop)" do
+    it "runs the ensure body when break exits through it, inside a native method's block" do
+      result = eval(<<-RUBY)
+        side = []
+        [1].each do
+          begin
+            break 123
+          ensure
+            side << :ensure
+          end
+        end
+        side
+      RUBY
+      result.as_array.map(&.as_sym.name).should eq ["ensure"]
+    end
+
+    it "still evaluates break's own value when its ensure runs, inside a native method's block" do
+      result = eval(<<-RUBY)
+        [1].each do
+          begin
+            break 123
+          ensure
+            1 + 1
+          end
+        end
+      RUBY
+      result.should eq Value.int(123_i64)
+    end
+
+    it "runs the ensure body when next exits through it, inside a native method's block" do
+      result = eval(<<-RUBY)
+        side = []
+        [1, 2, 3].each do |n|
+          begin
+            next
+          ensure
+            side << n
+          end
+        end
+        side
+      RUBY
+      result.as_array.map(&.as_int).should eq [1_i64, 2_i64, 3_i64]
+    end
+
+    it "runs nested ensures innermost-first when break exits through both, inside a block" do
+      result = eval(<<-RUBY)
+        side = []
+        [1].each do
+          begin
+            begin
+              break
+            ensure
+              side << :inner
+            end
+          ensure
+            side << :outer
+          end
+        end
+        side
+      RUBY
+      result.as_array.map(&.as_sym.name).should eq ["inner", "outer"]
+    end
+
+    it "does not run an ensure that encloses the block's own call, only ones opened inside it" do
+      # Mirrors the loop-based spec of the same name above — the
+      # begin/ensure here is OUTSIDE the block passed to each,
+      # already fully "current" before the block's own body starts;
+      # the block's own break should not unwind through it a second
+      # time, only through ensures opened INSIDE the block.
+      result = eval(<<-RUBY)
+        side = []
+        begin
+          [1].each do
+            break
+          end
+        ensure
+          side << :outer
+        end
+        side
+      RUBY
+      result.as_array.map(&.as_sym.name).should eq ["outer"]
+    end
+
+    it "runs the ensure body when break exits through it, inside a yielded-to block" do
+      result = eval(<<-RUBY)
+        def foo
+          yield
+        end
+        side = []
+        foo do
+          begin
+            break 99
+          ensure
+            side << :ensure
+          end
+        end
+        side
+      RUBY
+      result.as_array.map(&.as_sym.name).should eq ["ensure"]
+    end
+
+    it "the yielded block's break value still comes through correctly when its ensure runs" do
+      result = eval(<<-RUBY)
+        def foo
+          yield
+          "after"
+        end
+        foo do
+          begin
+            break 99
+          ensure
+            1 + 1
+          end
+        end
+      RUBY
+      result.should eq Value.int(99_i64)
+    end
+  end
+
   describe "method-body (implicit) rescue/else/ensure" do
     # Real Ruby treats a `def` body as an implicit `begin`. Fixed by
     # having the parser wrap the parsed body in a synthetic BeginNode

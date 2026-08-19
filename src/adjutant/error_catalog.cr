@@ -272,6 +272,75 @@ module Adjutant
         help: "Call `{method}` without a receiver, or via `self.`, " \
               "from the same object that defines it."
       ),
+      "R024" => Entry.new(
+        code: "R024",
+        summary: "can't iterate from NilClass",
+        why: "`{method}` needs a real starting value to count up from — " \
+             "a beginless range (`..5`) has no start, so there's " \
+             "nothing to begin iterating at.",
+        help: "Only an endless range (`5..`) or an ordinary bounded " \
+              "range (`1..5`) can be iterated — a beginless range can " \
+              "still be used with `include?`/`===`, just not walked."
+      ),
+      "R025" => Entry.new(
+        code: "R025",
+        summary: "`#step` iteration for beginless ranges is meaningless",
+        why: "`#step` walks forward from the range's start in fixed " \
+             "increments — a beginless range (`..5`) has no start to " \
+             "step forward from.",
+        help: "Only an endless range (`5..`) or an ordinary bounded " \
+              "range (`1..5`) supports `#step`."
+      ),
+      "R026" => Entry.new(
+        code: "R026",
+        summary: "cannot convert endless range to an array",
+        why: "`#to_a` has to materialize every value the range covers " \
+             "into a real Array — an endless range (`5..`) has no " \
+             "upper bound, so that array would never finish.",
+        help: "Use `#each`/`#step` with an explicit `break`, or `#first(n)` " \
+              "for a bounded slice, instead of `#to_a`."
+      ),
+      "R027" => Entry.new(
+        code: "R027",
+        summary: "cannot get the maximum of endless range",
+        why: "`#max` needs a real upper bound to compare against — an " \
+             "endless range (`5..`) has none.",
+        help: "Use `#begin`, or compare against a specific value with " \
+              "`#include?`/`#cover?`, instead of `#max` on an endless range."
+      ),
+      "R028" => Entry.new(
+        code: "R028",
+        summary: "cannot get the last element of endless range",
+        why: "`#last` with no argument needs a real upper bound to " \
+             "return — an endless range (`5..`) has none.",
+        help: "Use `#end` (returns `nil` rather than raising), or " \
+              "`#first(n)` for a bounded slice from the other end, " \
+              "instead of `#last` on an endless range."
+      ),
+      "R029" => Entry.new(
+        code: "R029",
+        summary: "cannot get the minimum of beginless range",
+        why: "`#min` needs a real lower bound to compare against — a " \
+             "beginless range (`..5`) has none.",
+        help: "Use `#end`, or compare against a specific value with " \
+              "`#include?`/`#cover?`, instead of `#min` on a beginless range."
+      ),
+      "R030" => Entry.new(
+        code: "R030",
+        summary: "cannot get the first element of beginless range",
+        why: "`#first` with no argument needs a real starting value to " \
+             "return — a beginless range (`..5`) has none.",
+        help: "Use `#begin` (returns `nil` rather than raising), or " \
+              "compare against a specific value with `#include?`/`#cover?`, " \
+              "instead of `#first` on a beginless range."
+      ),
+      "R031" => Entry.new(
+        code: "R031",
+        summary: "negative array size",
+        why: "`#first(n)` builds an Array of the first `n` elements — a " \
+             "negative `n` isn't a valid size to build one at.",
+        help: "Pass a non-negative count to `#first`."
+      ),
 
       # --- L: limits reached ----------------------------------------
       #

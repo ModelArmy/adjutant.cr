@@ -242,6 +242,44 @@ module Adjutant
     end
   end
 
+  # A VM-internal control-flow signal, NOT a subclass of RuntimeError
+  # and never script-visible — `execute`'s own error-handling rescue
+  # is typed `rescue ex : RuntimeError` specifically, so this passes
+  # straight through it untouched, exactly as intended: a script-level
+  # `rescue` (any class, including `rescue => e`/`rescue StandardError`)
+  # must never be able to catch a `break`.
+  #
+  # Raised by Op::BlockBreak (a `break` with no enclosing loop
+  # construct at compile time — i.e. `break` inside a block, not a
+  # literal `while`/`for`/`until`/`loop`) and caught in EXACTLY ONE
+  # place, `VM#call_native` — the single choke point every native
+  # method/function call in the whole VM already funnels through (see
+  # that method's own comment). That single catch point is what makes
+  # this correct for nested native calls with no extra bookkeeping at
+  # all: the signal is an ordinary Crystal `raise`, so it unwinds the
+  # real Crystal call stack until the NEAREST enclosing `call_native`
+  # catches it — which is always the innermost currently-running
+  # native call, exactly matching real Ruby's own "break exits the
+  # nearest call that received this block" semantics, including
+  # correctly leaving an OUTER native call's own iteration undisturbed
+  # (`outer.each { inner.each { break } }` — the inner `each` alone
+  # terminates; from the outer `each`'s own Crystal loop's point of
+  # view, its `ncc.invoke` call for that one element just returned an
+  # ordinary Value, same as any other iteration). See SCOPE.md's
+  # now-resolved "`break` inside a block passed to a NATIVE method...”
+  # entry for the full bug this fixes, including why NO individual
+  # native method (range.cr, array.cr, ...) needed a single line
+  # changed — every one of them already just calls `ncc.invoke`
+  # un-rescued, which is exactly right once the ONE catch point above
+  # exists.
+  class BlockBreakSignal < Exception
+    getter value : Value
+
+    def initialize(@value)
+      super("break outside call_native — internal, should never surface to a script")
+    end
+  end
+
   # The bytecode VM.
   #
   # One VM instance per script execution. Holds the value stack,
@@ -1315,12 +1353,60 @@ module Adjutant
             end
           when Op::BlockBreak
             val = pop
-            # Unwind to the nearest non-block frame
+            # Unwind consecutive block frames, same loop as before —
+            # but now also remembering the LAST one popped (the
+            # OUTERMOST of this run, i.e. whichever block frame
+            # `Op::Yield` pushed directly atop its caller, if this
+            # chain traces back to a yield at all — see below).
+            last_popped_proc = nil.as(ScriptProc?)
             while !@frames.empty? && @frames.last.proc.is_block?
               sb = @frames.last.stack_base; (@stack.size - sb).times { @stack.pop } if @stack.size > sb
+              last_popped_proc = @frames.last.proc
               pop_frame
             end
-            push(val)
+            if @frames.empty?
+              # Landed on nothing — every frame this popped belonged
+              # to an ISOLATED array `invoke_internal` swapped in for
+              # one `ncc.invoke` call (a native method's block — see
+              # BlockBreakSignal's own comment for the full
+              # mechanism), which never contains anything but frames
+              # from that one call. Raise past it; invoke_internal's
+              # `ensure` restores the OUTER @frames/@stack regardless
+              # of raise-vs-return, so no manual restoration is needed
+              # here — caught at the nearest enclosing `call_native`.
+              raise BlockBreakSignal.new(val)
+            elsif last_popped_proc && @frames.last.block == last_popped_proc
+              # Landed on the frame that ACTUALLY yielded to this
+              # exact block chain — `Frame#block` is precisely what
+              # `Op::Yield` itself reads to find the block to invoke
+              # (`blk = f.block`), so this equality check is genuinely
+              # "is this the method call break should end," not a
+              # heuristic. Real Ruby: `break` inside a yielded-to
+              # block ends the WHOLE calling method's own call
+              # immediately, not just `yield`'s own expression — so
+              # terminate this landed frame too, exactly like
+              # Op::Ret's own logic (drain to its stack_base, pop it,
+              # push the value for whatever's now on top instead of
+              # resuming this frame's own execution past the `yield`
+              # site at all).
+              landed = @frames.last
+              (@stack.size - landed.stack_base).times { @stack.pop } if @stack.size > landed.stack_base
+              pop_frame
+              push(val) unless @frames.empty?
+            else
+              # Landed on a real frame that did NOT yield to this
+              # chain — a genuinely bare `break` with no enclosing
+              # loop OR block at all (top-level, or inside an
+              # ordinary method reached some other way — `is_block?`
+              # was false from the very start, so the loop above
+              # never popped anything and `last_popped_proc` stayed
+              # nil). Real Ruby raises LocalJumpError here; Adjutant
+              # doesn't yet (a separate, pre-existing, still-open gap
+              # — see SCOPE.md). Keeping the ORIGINAL behavior —
+              # pushing the value and continuing — rather than
+              # guessing at a case this fix isn't targeting.
+              push(val)
+            end
 
             # --- Exception handling ---------------------------------------
           when Op::Try
@@ -2190,6 +2276,18 @@ module Adjutant
       check_unknown_native_keywords!(kwargs, native.kwarg_names, name, filename, line)
       check_risk_flow(native, args, kwargs, name, filename, line)
       NativeFunctionCall.new(self, native, filename, line, name, kwargs).call(args, blk)
+    rescue ex : BlockBreakSignal
+      # `break` inside the block THIS call received (however many
+      # times, or however deep inside its own native Crystal code,
+      # `ncc.invoke` was called before it happened) — matching real
+      # Ruby, the break's value becomes this call's own overall
+      # result, ending it early. The native method itself (range.cr,
+      # array.cr, ...) needed no change at all — this is the ONE
+      # place every native call funnels through, so it's also the one
+      # place that needs to know break happened. See
+      # BlockBreakSignal's own comment for why this specific spot is
+      # correct even for nested native calls with blocks of their own.
+      ex.value
     rescue ex : RuntimeError
       raise ex
     rescue ex

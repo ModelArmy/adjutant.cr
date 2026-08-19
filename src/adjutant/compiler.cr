@@ -607,8 +607,24 @@ module Adjutant
     end
 
     private def compile_range(node : RangeLiteral) : Nil
-      compile_node(node.start_node)
-      compile_node(node.end_node)
+      # A missing bound (endless/beginless range) compiles to a plain
+      # `nil` literal on the stack — Op::MakeRange/make_range_object
+      # already accept and store a nil Value unconditionally (the same
+      # path `Range.new(nil, x)` already used before this syntax
+      # parsed at all; see builtins/range.cr's own comment on that
+      # constructor). No VM/opcode change needed for construction
+      # itself — only #each/#step/#to_a and to_s/#inspect still need
+      # real nil-bound handling, tracked separately in SCOPE.md.
+      if start_node = node.start_node
+        compile_node(start_node)
+      else
+        emit_nil(node.line)
+      end
+      if end_node = node.end_node
+        compile_node(end_node)
+      else
+        emit_nil(node.line)
+      end
       @chunk.emit(Op::MakeRange, node.line, a: node.exclusive? ? 1_u8 : 0_u8)
     end
 
@@ -1669,49 +1685,16 @@ module Adjutant
       @chunk.emit(Op::Ret, node.line)
     end
 
-    private def compile_break(node : BreakNode) : Nil
-      if v = node.value
-        compile_node(v)
-      else
-        emit_nil(node.line)
-      end
-      if !@loop_stack.empty?
-        emit_ensure_unwind_for_loop_jump(@loop_stack.last, node.line)
-        jmp = @chunk.emit_jump(Op::Jump, node.line)
-        @loop_stack.last.breaks << jmp
-      else
-        @chunk.emit(Op::BlockBreak, node.line)
-      end
-    end
-
-    private def compile_next(node : NextNode) : Nil
-      if !@loop_stack.empty?
-        if v = node.value
-          compile_node(v)
-          @chunk.emit(Op::Pop, node.line)
-        end
-        emit_ensure_unwind_for_loop_jump(@loop_stack.last, node.line)
-        @chunk.emit(Op::Jump, node.line, c: @loop_stack.last.start_pos.to_u32)
-      else
-        if v = node.value
-          compile_node(v)
-        else
-          emit_nil(node.line)
-        end
-        @chunk.emit(Op::Ret, node.line)
-      end
-    end
-
-    # A break/next/redo whose target (loop exit, loop start, or loop
-    # body restart) lies outside one or more begin/rescue/ensure
-    # regions opened since the loop itself was entered must run those
-    # regions' ensure bodies (if any) and pop their VM handler entries
-    # before the jump — otherwise the jump lands past Op::EnterEnsure,
+    # A break/next/redo whose target (loop exit, loop start, loop body
+    # restart, or — for break/next inside a BLOCK with no enclosing
+    # loop at all — the end of the block's own body) lies outside one
+    # or more begin/rescue/ensure regions must run those regions'
+    # ensure bodies (if any) and pop their VM handler entries before
+    # the jump/return — otherwise it lands past Op::EnterEnsure,
     # silently skipping the ensure body's side effects and leaving a
     # stale HandlerEntry on Frame#handlers that could wrongly intercept
-    # a later, unrelated error in the same frame. See SCOPE.md's Must
-    # Fix entry for the full bug writeup (filed for break/next; redo
-    # shares the identical shape — see compile_redo's own note).
+    # a later, unrelated error in the same frame. See SCOPE.md's now-
+    # resolved Must Fix entry for the full bug writeup.
     #
     # Innermost-first is required, not incidental: it's the same order
     # real Ruby runs nested ensures in when unwinding, and it's also
@@ -1725,8 +1708,20 @@ module Adjutant
     # ensure body pushes and pops exactly one value of its own (see
     # compile_begin's identical Pop-after-compile_body convention), so
     # the stack is balanced before and after this runs regardless.
-    private def emit_ensure_unwind_for_loop_jump(loop : LoopScope, line : Int32) : Nil
-      exiting = @ensure_stack.size - loop.ensure_depth_at_entry
+    #
+    # `target_depth` is how deep `@ensure_stack` was at the JUMP
+    # TARGET (not at the break/next/redo site itself) — the loop case
+    # passes `loop.ensure_depth_at_entry` (a loop can sit inside an
+    # ensure region opened OUTSIDE it, in the SAME Compiler instance,
+    # so that snapshot is genuinely needed). The no-loop-stack case
+    # (break/next inside a block, nothing enclosing) always passes 0
+    # — no snapshot needed there at all, because `Compiler.compile_proc`
+    # gives every block/method body its OWN brand-new `Compiler`
+    # instance with a FRESH `@ensure_stack`; nothing on it can ever
+    # belong to anything outside the current body, so "the target" is
+    # always "zero regions open" by construction.
+    private def emit_ensure_unwind(target_depth : Int32, line : Int32) : Nil
+      exiting = @ensure_stack.size - target_depth
       return if exiting <= 0
       exiting.times do |i|
         region = @ensure_stack[@ensure_stack.size - 1 - i]
@@ -1735,6 +1730,41 @@ module Adjutant
           compile_body(ensure_body)
           @chunk.emit(Op::Pop, line)
         end
+      end
+    end
+
+    private def compile_break(node : BreakNode) : Nil
+      if v = node.value
+        compile_node(v)
+      else
+        emit_nil(node.line)
+      end
+      if !@loop_stack.empty?
+        emit_ensure_unwind(@loop_stack.last.ensure_depth_at_entry, node.line)
+        jmp = @chunk.emit_jump(Op::Jump, node.line)
+        @loop_stack.last.breaks << jmp
+      else
+        emit_ensure_unwind(0, node.line)
+        @chunk.emit(Op::BlockBreak, node.line)
+      end
+    end
+
+    private def compile_next(node : NextNode) : Nil
+      if !@loop_stack.empty?
+        if v = node.value
+          compile_node(v)
+          @chunk.emit(Op::Pop, node.line)
+        end
+        emit_ensure_unwind(@loop_stack.last.ensure_depth_at_entry, node.line)
+        @chunk.emit(Op::Jump, node.line, c: @loop_stack.last.start_pos.to_u32)
+      else
+        if v = node.value
+          compile_node(v)
+        else
+          emit_nil(node.line)
+        end
+        emit_ensure_unwind(0, node.line)
+        @chunk.emit(Op::Ret, node.line)
       end
     end
 
@@ -1752,7 +1782,7 @@ module Adjutant
           )
         )
       end
-      # Same bug shape as break/next (see emit_ensure_unwind_for_loop_jump's
+      # Same bug shape as break/next (see emit_ensure_unwind's own
       # comment): body_pos is a position INSIDE the loop, before any
       # begin/rescue/ensure nested in the body was entered, so a redo
       # from inside such a region needs the same handler-draining
@@ -1760,7 +1790,7 @@ module Adjutant
       # loop-stack-empty branch, but the same "jump target is outside
       # currently-open ensure regions" territory as their loop-stack-
       # nonempty branch.
-      emit_ensure_unwind_for_loop_jump(@loop_stack.last, node.line)
+      emit_ensure_unwind(@loop_stack.last.ensure_depth_at_entry, node.line)
       @chunk.emit(Op::Jump, node.line, c: @loop_stack.last.body_pos.to_u32)
     end
 

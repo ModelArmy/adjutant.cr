@@ -236,5 +236,157 @@ module Adjutant
           .as_string.should eq("odd")
       end
     end
+
+    # `break` inside a block passed to a NATIVE method (Array#each,
+    # Range#each, any of them) — see SCOPE.md's now-resolved Must Fix
+    # entry for the full bug this covers, and BlockBreakSignal's own
+    # comment (vm.cr) for the fix's mechanism. No prior coverage
+    # existed for this shape at all — every existing break spec (see
+    # begin_rescue_ensure/vm_spec.cr's "break/next through begin/
+    # rescue/ensure") covers break inside a LITERAL loop construct
+    # (while/for), a completely different, already-correct code path
+    # (a compile-time Jump, not Op::BlockBreak) that this fix doesn't
+    # touch at all.
+    describe "break inside a block passed to a native method" do
+      it "stops the native iteration early — Array#each" do
+        result = eval(<<-RUBY)
+          seen = []
+          [1, 2, 3, 4, 5].each do |n|
+            if n > 3
+              break
+            end
+            seen << n
+          end
+          seen
+        RUBY
+        result.as_array.map(&.as_int).should eq [1, 2, 3]
+      end
+
+      it "the break's value becomes the WHOLE call's own result, matching real Ruby" do
+        result = eval(<<-RUBY)
+          [1, 2, 3].each do |n|
+            break 99 if n == 2
+          end
+        RUBY
+        result.as_int.should eq 99
+      end
+
+      it "a bare break (no value) makes the call's result nil" do
+        result = eval(<<-RUBY)
+          [1, 2, 3].each do |n|
+            if n == 2
+              break
+            end
+          end
+        RUBY
+        result.null?.should be_true
+      end
+
+      it "an inner native call's break doesn't disturb an outer one's own iteration" do
+        result = eval(<<-RUBY)
+          outer_seen = []
+          [10, 20].each do |x|
+            [1, 2, 3].each do |y|
+              if y == 2
+                break
+              end
+            end
+            outer_seen << x
+          end
+          outer_seen
+        RUBY
+        result.as_array.map(&.as_int).should eq [10, 20]
+      end
+
+      it "is script-catchable — BlockBreakSignal must never surface as an uncaught VM crash" do
+        # Not a script-rescue case (break isn't an exception a script
+        # ever sees) — this just confirms the whole call completes
+        # normally end to end, rather than a raw Crystal
+        # BlockBreakSignal escaping uncaught past `eval` itself: if it
+        # did, THIS raise (an ordinary script-level one, deliberately
+        # placed right after the break-using call) would never be
+        # reached at all, and expect_raises below would fail with
+        # "no exception raised" rather than matching this message.
+        expect_raises(RuntimeError, /nothing to see here — should not raise/) do
+          eval(<<-RUBY)
+            [1].each do
+              break
+            end
+            raise "nothing to see here — should not raise"
+          RUBY
+        end
+      end
+    end
+
+    # `break` inside a block invoked via `yield` (as opposed to via a
+    # native method's `ncc.invoke` — see the describe block above) —
+    # see SCOPE.md's now-resolved entry for the full bug and fix.
+    # `Op::Yield` shares `@frames` with its caller (no
+    # `invoke_internal` isolation), so `break` here can't use the same
+    # raise-to-`call_native` mechanism the native case does — instead,
+    # once the consecutive block-frame unwind lands on a REAL frame,
+    # `Frame#block` (exactly what `Op::Yield` itself reads to find the
+    # block to invoke) identifies whether that landed frame is
+    # genuinely the one that yielded to this chain; if so it's
+    # terminated too, Ret-style, rather than resumed past the `yield`
+    # site.
+    describe "break inside a yielded-to block" do
+      it "ends the calling method's own call immediately, matching real Ruby" do
+        result = eval(<<-RUBY)
+          def foo
+            yield
+            "after"
+          end
+          foo do
+            break
+          end
+        RUBY
+        result.null?.should be_true
+      end
+
+      it "the break's value becomes the WHOLE method call's own result" do
+        result = eval(<<-RUBY)
+          def foo
+            yield
+            "after"
+          end
+          foo do
+            break 99
+          end
+        RUBY
+        result.as_int.should eq 99
+      end
+
+      it "the method's own caller continues normally afterward" do
+        result = eval(<<-RUBY)
+          def foo
+            yield
+            "after"
+          end
+          x = foo { break 1 }
+          y = 2
+          [x, y]
+        RUBY
+        result.as_array.map(&.as_int).should eq [1, 2]
+      end
+
+      it "works when the yielding method is itself called from inside a native method's block" do
+        result = eval(<<-RUBY)
+          def foo
+            yield
+            "after"
+          end
+          seen = []
+          [1, 2].each do |x|
+            foo do
+              break
+            end
+            seen << x
+          end
+          seen
+        RUBY
+        result.as_array.map(&.as_int).should eq [1, 2]
+      end
+    end
   end
 end

@@ -39,38 +39,23 @@ currently blocking anything" no longer held. The remaining entries
 weren't re-evaluated against the promoted two on this axis, just carried
 forward.
 
-- **Endless/beginless ranges (`1..`, `..10`, `1...`, `...10`) don't
-  parse at all.** Found 2026-08-13 triaging `spec/scripts/mruby/
-  range.rb` — nearly every assertion in that file needs at least one
-  partial range, even ones otherwise testing something unrelated and
-  already-working. `parse_range` (parser.cr) always calls
-  `parse_expression` unconditionally for BOTH sides of `..`/`...`, so
-  there's no way to omit either bound — not a Range-representation
-  gap so much as a parser one: `RangeLiteral`'s AST node itself would
-  need to accept a missing `start_node`/`end_node` (today both are
-  non-nilable `Node`, not `Node?`), the parser would need to check for
-  "nothing here, an operator/closing-delimiter follows instead" on
-  each side independently (endless: no valid expression follows;
-  beginless: `..`/`...` appears in a position with no left operand at
-  all, meaning `parse_primary` — not just the infix loop — needs to
-  recognize `..`/`...` as a valid EXPRESSION START, not just an infix
-  operator), and `Op::MakeRange`/`make_range_object` would need to
-  accept and store a real nil bound. Genuinely common in idiomatic
-  Ruby (`arr[2..]`, `case age when 18.. then ...`), not just a
-  theoretical ISO-suite curiosity — ordinary-use blocking, not an edge
-  case. Once bounds CAN be nil, every iteration method
-  (`each`/`to_a`/`step`) also needs real handling for a nil bound
-  (walk forever for `each`/`step`, raise `RangeError` for `to_a` — see
-  `builtins/range.cr`'s own comment on `Range.new` accepting a nil
-  bound today via the CONSTRUCTOR path already, silently producing a
-  range that iterates zero times rather than doing either of those,
-  since `NativeCallContext#compare` returns false for any pairing it
-  can't order including anything-vs-nil). Also affects rendering: a
-  `nil` bound (already reachable today via `Range.new(nil, 5)`)
-  currently renders as `"nil..5"`, not real Ruby's special-cased
-  `"..5"` — see DEVELOPMENT.md's "to_s/inspect" writeup for the exact
-  gap; worth fixing alongside this item's own bound-representation
-  work, not in isolation.
+- **`Array#first(n)`/`Array#last(n)` (the count-argument form) don't
+  implement real Ruby's actual semantics at all — both silently
+  ignore `n` and return a single element (or `nil` for an empty
+  array), same as the no-argument form.** Real Ruby: `[1,2,3,4,5]
+  .first(3)` returns `[1, 2, 3]` (an Array of the first `n` elements),
+  not a single value — same class of gap `Range#first(n)` had before
+  its own fix (see git history, 2026-08-19), noticed while
+  implementing that one and checking `array.cr`'s own `#first`/`#last`
+  for a reusable convention to follow. Not fixed here — a different
+  receiver type, out of scope for the Range work this was found
+  during. Likely fixable the same way: an Array already HAS every
+  element in hand (no `#succ`-walking needed the way Range's own fix
+  required), so this should be simpler than Range's version was —
+  `arr.as_array.first(n)`/`.last(n)`-shaped, with the same negative-
+  count `ArgumentError` Range's fix added (`R031`, reusable as-is
+  rather than a new code, if the message and semantics line up —
+  worth checking before assuming).
 
 - **Heredocs and `%w[]`/`%i[]` literals don't exist.** Promoted from
   `Will Fix` 2026-08-15 — common enough in idiomatic Ruby (`%w[a b c]`
@@ -177,6 +162,32 @@ still roughly ordered by how cheap/independent the fix is.
 
 Small, mechanical, independent of each other — good candidates for quick
 wins.
+
+- **`break if cond; more_code` (or `next if cond; more_code`) mis-parses
+  when break/next has a modifier `if`/`unless` immediately followed by
+  more code on the same line (or block).** Found 2026-08-18 writing a
+  spec for endless-range `#each`/`#step` (a range with no `break`
+  never terminates, so the test needed one) — entirely unrelated to
+  ranges themselves, a pre-existing bug just newly exercised.
+  `parse_break` (parser.cr) grabs its own optional VALUE via
+  `at_any?(Newline, Semi, EOF) ? nil : parse_expression(0)` before
+  ever checking for a trailing `KwIf`/`KwUnless` modifier — but `if`
+  is a valid expression-START token (`parse_primary` has its own
+  `KwIf` case), so `break if n > 4; seen << n` parses `if n > 4; seen
+  << n` whole as break's VALUE (a real if-expression, greedily
+  consuming through to the enclosing block's own closing `}`/`end`
+  looking for the if's own `end`) rather than stopping after `if n >
+  4` and treating it as break's trailing modifier. Real Ruby's
+  break/next argument grammar is more restricted than a full
+  statement expression — it never starts with a bare `if`/`unless` —
+  so the fix is narrowing `parse_break`'s own "does a value follow"
+  check to also treat `KwIf`/`KwUnless` as "no value here, this is
+  the modifier" makes the code AVAILABLE to the later `case
+  current_kind when KwIf`/`KwUnless` branch already sitting right
+  below it, unchanged. Confirmed via the same real-Ruby-first
+  discipline as the rest of this session: `break if n > 4; seen << n`
+  in `irb` unambiguously executes `seen << n` unless `n > 4`, never
+  attempts to parse an if-expression as break's own value.
 
 - **`=~` (regex/string match operator) doesn't exist at all — no
   lexer token, no infix precedence entry, and no working dot-call

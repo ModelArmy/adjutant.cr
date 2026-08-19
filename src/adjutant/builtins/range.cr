@@ -69,12 +69,69 @@ module Adjutant::Builtins
       Adjutant::Value.robject(obj)
     end
 
-    define(cls, interp, "min") do |args|
-      args.first.as_robject.ivars[min_sym]
+    # Real Ruby: `#min`/`#max`/`#last`/`#first` (no block, no count
+    # argument) raise `RangeError` when the relevant bound is nil —
+    # `#min`/`#first` on a BEGINLESS range ("cannot get the
+    # minimum..."/"...the first element of beginless range" — two
+    # DIFFERENT messages for the same nil-begin condition), `#max`/
+    # `#last` on an ENDLESS range ("cannot get the maximum..."/"...the
+    # last element of endless range" — likewise two different
+    # messages for the same nil-end condition). All four confirmed via
+    # Ruby's own C source, not assumed — `#first`'s beginless check
+    # was fixed in a separate follow-up after the other three (it's a
+    # newer addition upstream than `#last`'s equivalent, added once
+    # the asymmetry was noticed there too — see git history).
+    define(cls, interp, "min") do |args, _blk, ncc|
+      obj = args.first.as_robject
+      lo = obj.ivars[min_sym]
+      ncc.raise_error("R029", {} of String => String, "RangeError") if lo.null?
+      lo
     end
 
-    define(cls, interp, "first") do |args|
-      args.first.as_robject.ivars[min_sym]
+    # `#first` doesn't need a nil check for the ENDLESS case (there's
+    # always a real first value regardless of where a range ends —
+    # already correctly unguarded above, don't add one there) but
+    # DOES need one for the BEGINLESS case, checked UNCONDITIONALLY —
+    # real Ruby's own C source (`range_first`) raises on a nil BEGIN
+    # before even looking at whether a count argument was given, so
+    # `(..5).first` and `(..5).first(3)` raise the identical
+    # RangeError either way, not just the no-argument form.
+    #
+    # `#first(n)`: an Array of the first `n` elements, walked via
+    # #succ same as #each/#to_a/#step — works on an ENDLESS range with
+    # no special-casing at all, since it stops after `n` elements
+    # regardless of whether there's a real upper bound to compare
+    # against (unlike #to_a, which needs the whole range to actually
+    # end). `n.int? &&`-guarded before `.as_int`, matching #step's own
+    # convention for its `n` argument (native_call_context.cr) — a
+    # non-Integer count isn't validated here either, same as there.
+    # Negative `n` raises ArgumentError (`"negative array size"`,
+    # matching real Ruby's own message for `Array#first(-1)` — Range's
+    # own C source builds its result array the same way, via
+    # `rb_ary_new2`, hence the identical wording).
+    define(cls, interp, "first") do |args, _blk, ncc|
+      obj = args.first.as_robject
+      lo = obj.ivars[min_sym]
+      ncc.raise_error("R030", {} of String => String, "RangeError") if lo.null?
+      if n_val = args[1]?
+        if n_val.int? && n_val.as_int < 0
+          ncc.raise_error("R031", {} of String => String, "ArgumentError")
+        end
+        n = n_val.as_int.to_i
+        hi = obj.ivars[max_sym]
+        exclusive = obj.ivars[excl_sym].as_bool
+        elements = [] of Adjutant::Value
+        current = lo
+        while elements.size < n
+          in_bounds = hi.null? || (exclusive ? ncc.compare(current, hi, :<) : ncc.compare(current, hi, :<=))
+          break unless in_bounds
+          elements << current
+          current = ncc.call_method(current, "succ", [] of Adjutant::Value)
+        end
+        Adjutant::Value.new(Adjutant::LabeledArray.new(elements, joined_label(elements, args.first.label)), nil)
+      else
+        lo
+      end
     end
 
     # Real Ruby's #begin/#end — the raw ivar accessors, distinct from
@@ -82,11 +139,9 @@ module Adjutant::Builtins
     # beginless range that don't apply to #begin/#end at all: #first
     # additionally accepts a count argument for "first N elements",
     # and #last with NO argument raises on an endless range while
-    # #end just returns nil). Adjutant has no endless/beginless ranges
-    # yet (see SCOPE.md), so #begin/#first and #end/#last are
-    # currently indistinguishable in practice — added as real,
-    # separate methods anyway, matching real Ruby's own names exactly
-    # rather than relying on #first/#last as informal aliases.
+    # #end just returns nil). #begin/#end never raise regardless of a
+    # nil bound — confirmed via search, not assumed — so no guard
+    # needed here, only on #first/#last/#min/#max above/below.
     define(cls, interp, "begin") do |args|
       args.first.as_robject.ivars[min_sym]
     end
@@ -95,12 +150,18 @@ module Adjutant::Builtins
       args.first.as_robject.ivars[max_sym]
     end
 
-    define(cls, interp, "max") do |args|
-      args.first.as_robject.ivars[max_sym]
+    define(cls, interp, "max") do |args, _blk, ncc|
+      obj = args.first.as_robject
+      hi = obj.ivars[max_sym]
+      ncc.raise_error("R027", {} of String => String, "RangeError") if hi.null?
+      hi
     end
 
-    define(cls, interp, "last") do |args|
-      args.first.as_robject.ivars[max_sym]
+    define(cls, interp, "last") do |args, _blk, ncc|
+      obj = args.first.as_robject
+      hi = obj.ivars[max_sym]
+      ncc.raise_error("R028", {} of String => String, "RangeError") if hi.null?
+      hi
     end
 
     # `exclusive?` was this class's own (non-standard) name for real
@@ -139,29 +200,31 @@ module Adjutant::Builtins
     # dispatch (`ncc.call_method`) either way, so a custom bound
     # type's own `to_s`/`inspect` override is respected for both.
     #
-    # KNOWN, DELIBERATELY OUT-OF-SCOPE EDGE CASE: a `nil` bound (only
-    # reachable today via explicit `Range.new(nil, 5)` — endless/
-    # beginless range SYNTAX isn't parseable yet, a separate, already-
-    # tracked SCOPE.md item) renders here via real dispatch same as
-    # any other bound, producing `"nil..5"`. Real Ruby specially
-    # OMITS a nil bound entirely (`Range.new(nil, 5).inspect =>
-    # "..5"`). Not fixed here — Range's bound representation itself
-    # is the separate item's concern, not this step's; revisit
-    # alongside that work rather than as a special case bolted on
-    # here.
+    # A `nil` bound (endless/beginless ranges, now real parseable
+    # syntax — see SCOPE.md's resolved entry — plus the pre-existing
+    # `Range.new(nil, 5)` constructor path) is specially OMITTED
+    # entirely here, matching real Ruby (`(..5).inspect => "..5"`,
+    # NOT `"nil..5"`) — checked via `Value#null?` before dispatching
+    # `to_s`/`inspect` on that bound at all, since dispatching on a
+    # nil Value would call NilClass#to_s/#inspect and render the
+    # literal string "nil", not an empty string.
     define(cls, interp, "to_s") do |args, _blk, ncc|
       obj = args.first.as_robject
       sep = obj.ivars[excl_sym].as_bool ? "..." : ".."
-      min_str = ncc.call_method(obj.ivars[min_sym], "to_s", [] of Adjutant::Value).as_string
-      max_str = ncc.call_method(obj.ivars[max_sym], "to_s", [] of Adjutant::Value).as_string
+      min_v = obj.ivars[min_sym]
+      max_v = obj.ivars[max_sym]
+      min_str = min_v.null? ? "" : ncc.call_method(min_v, "to_s", [] of Adjutant::Value).as_string
+      max_str = max_v.null? ? "" : ncc.call_method(max_v, "to_s", [] of Adjutant::Value).as_string
       Adjutant::Value.string("#{min_str}#{sep}#{max_str}")
     end
 
     define(cls, interp, "inspect") do |args, _blk, ncc|
       obj = args.first.as_robject
       sep = obj.ivars[excl_sym].as_bool ? "..." : ".."
-      min_str = ncc.call_method(obj.ivars[min_sym], "inspect", [] of Adjutant::Value).as_string
-      max_str = ncc.call_method(obj.ivars[max_sym], "inspect", [] of Adjutant::Value).as_string
+      min_v = obj.ivars[min_sym]
+      max_v = obj.ivars[max_sym]
+      min_str = min_v.null? ? "" : ncc.call_method(min_v, "inspect", [] of Adjutant::Value).as_string
+      max_str = max_v.null? ? "" : ncc.call_method(max_v, "inspect", [] of Adjutant::Value).as_string
       Adjutant::Value.string("#{min_str}#{sep}#{max_str}")
     end
 
@@ -180,15 +243,26 @@ module Adjutant::Builtins
     # including) `max` via #succ, yielding each value to the block —
     # #succ is itself dispatched as a real method call so any type
     # that defines it (not just Integer) works without changes here.
+    #
+    # Nil-bound handling (confirmed against real Ruby via `irb`
+    # before writing this, not assumed): a nil START (beginless,
+    # `..5`) raises TypeError (R024) — there's nothing to count up
+    # FROM, so unlike the endless case below this isn't really
+    # "iterate forever," it's "can't begin at all," same as real
+    # Ruby's own `can't iterate from NilClass`. A nil END (endless,
+    # `5..`) has no upper-bound check at all — walks forever, exactly
+    # like real Ruby; the caller is expected to `break`.
     define(cls, interp, "each") do |args, blk, ncc|
       recv = args.first
       obj = recv.as_robject
       exclusive = obj.ivars[excl_sym].as_bool
+      lo = obj.ivars[min_sym]
       hi = obj.ivars[max_sym]
+      ncc.raise_error("R024", {"method" => "each"}, "TypeError") if lo.null?
       if blk
-        current = obj.ivars[min_sym]
+        current = lo
         loop do
-          in_bounds = exclusive ? ncc.compare(current, hi, :<) : ncc.compare(current, hi, :<=)
+          in_bounds = hi.null? || (exclusive ? ncc.compare(current, hi, :<) : ncc.compare(current, hi, :<=))
           break unless in_bounds
           ncc.invoke(blk, [current])
           current = ncc.call_method(current, "succ", [] of Adjutant::Value)
@@ -207,13 +281,23 @@ module Adjutant::Builtins
     # own) joined with each yielded element's own label, same
     # principle as array.cr's select/reject/sort/reverse/map and
     # hash.cr's to_a/merge.
+    #
+    # Nil-bound handling, confirmed against real Ruby first: a nil
+    # start raises TypeError (R024), same as #each — there's nothing
+    # to begin at. A nil end raises RangeError (R026) — unlike #each,
+    # which can walk an endless range forever because the CALLER
+    # controls termination via `break`, #to_a has no such escape: it
+    # must finish on its own, and an endless range never would.
     define(cls, interp, "to_a") do |args, _blk, ncc|
       recv = args.first
       obj = recv.as_robject
       exclusive = obj.ivars[excl_sym].as_bool
+      lo = obj.ivars[min_sym]
       hi = obj.ivars[max_sym]
+      ncc.raise_error("R024", {"method" => "to_a"}, "TypeError") if lo.null?
+      ncc.raise_error("R026", {} of String => String, "RangeError") if hi.null?
       elements = [] of Adjutant::Value
-      current = obj.ivars[min_sym]
+      current = lo
       loop do
         in_bounds = exclusive ? ncc.compare(current, hi, :<) : ncc.compare(current, hi, :<=)
         break unless in_bounds
@@ -237,19 +321,28 @@ module Adjutant::Builtins
     # Blockless call returns the receiver (Enumerator-less, same
     # convention as every other Enumerable-less method in this
     # codebase).
+    #
+    # Nil-bound handling, confirmed against real Ruby first: a nil
+    # start raises ArgumentError (R025) with real Ruby's own exact
+    # wording ("#step iteration for beginless ranges is meaningless")
+    # — a DIFFERENT error class than #each's TypeError (R024) for the
+    # same nil-start situation; not a typo, real Ruby genuinely picks
+    # a different class here. A nil end walks forever, same as #each.
     define(cls, interp, "step") do |args, blk, ncc|
       recv = args.first
       obj = recv.as_robject
       exclusive = obj.ivars[excl_sym].as_bool
+      lo = obj.ivars[min_sym]
       hi = obj.ivars[max_sym]
       n = args[1]? || Adjutant::Value.int(1_i64)
       if n.int? && n.as_int == 0
         ncc.raise_error("R020", {} of String => String, "ArgumentError")
       end
+      ncc.raise_error("R025", {} of String => String, "ArgumentError") if lo.null?
       if blk
-        current = obj.ivars[min_sym]
+        current = lo
         loop do
-          in_bounds = exclusive ? ncc.compare(current, hi, :<) : ncc.compare(current, hi, :<=)
+          in_bounds = hi.null? || (exclusive ? ncc.compare(current, hi, :<) : ncc.compare(current, hi, :<=))
           break unless in_bounds
           ncc.invoke(blk, [current])
           current = ncc.add(current, n)
@@ -264,6 +357,16 @@ module Adjutant::Builtins
   # Shared by #include?/#member? (real Ruby aliases of the same
   # check) — separate module-level method rather than duplicating the
   # body in both `define` blocks.
+  #
+  # A nil bound means "no constraint on this side" (an endless range
+  # includes everything above its start; a beginless range includes
+  # everything below its end) — NOT "nothing satisfies this side,"
+  # which is what `NativeCallContext#compare`'s own nil handling would
+  # otherwise produce (see its comment: any pairing it can't order,
+  # including anything-vs-nil, returns false). Inferred from ordinary
+  # Ruby range semantics rather than independently `irb`-checked the
+  # way #each/#step/#to_a's own nil-bound behavior was above — worth
+  # a real confirmation pass if this turns out wrong.
   private def self.range_includes?(args : Array(Adjutant::Value), ncc : Adjutant::NativeCallContext,
                                    min_sym : Int32, max_sym : Int32, excl_sym : Int32) : Adjutant::Value
     obj = args.first.as_robject
@@ -272,8 +375,8 @@ module Adjutant::Builtins
     lo = obj.ivars[min_sym]
     hi = obj.ivars[max_sym]
     exclusive = obj.ivars[excl_sym].as_bool
-    above_min = ncc.compare(needle, lo, :>=)
-    below_max = exclusive ? ncc.compare(needle, hi, :<) : ncc.compare(needle, hi, :<=)
+    above_min = lo.null? || ncc.compare(needle, lo, :>=)
+    below_max = hi.null? || (exclusive ? ncc.compare(needle, hi, :<) : ncc.compare(needle, hi, :<=))
     Adjutant::Value.bool(above_min && below_max)
   end
 end
