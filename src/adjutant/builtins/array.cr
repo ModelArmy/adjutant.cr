@@ -140,13 +140,40 @@ module Adjutant::Builtins
       end
     end
 
-    define(cls, interp, "first") do |args|
-      args.first.as_array[0]? || Adjutant::Value.nil_value
+    # `#first(n)`/`#last(n)` (the count-argument form): real Ruby
+    # returns an Array of the first/last `n` elements, not a single
+    # value — same class of gap `Range#first(n)` had before its own
+    # fix (see SCOPE.md/git history, 2026-08-19). Simpler here than
+    # Range's version was: an Array already has every element in
+    # hand, so this is a plain slice, no `#succ`-walking needed.
+    # Negative `n` raises ArgumentError, reusing R031 as-is — same
+    # message real Ruby gives for `Array#first(-1)`, which is in fact
+    # what R031's wording was written against in the first place (see
+    # its own comment in error_catalog.cr).
+    define(cls, interp, "first") do |args, _blk, ncc|
+      recv = args.first
+      arr = recv.as_array
+      if n_val = args[1]?
+        n = n_val.as_int.to_i
+        ncc.raise_error("R031", {} of String => String, "ArgumentError") if n < 0
+        elements = arr.to_a.first(n)
+        Adjutant::Value.new(Adjutant::LabeledArray.new(elements, joined_label(elements, recv.label)), nil)
+      else
+        arr[0]? || Adjutant::Value.nil_value
+      end
     end
 
-    define(cls, interp, "last") do |args|
-      arr = args.first.as_array
-      arr.empty? ? Adjutant::Value.nil_value : arr[arr.size - 1]
+    define(cls, interp, "last") do |args, _blk, ncc|
+      recv = args.first
+      arr = recv.as_array
+      if n_val = args[1]?
+        n = n_val.as_int.to_i
+        ncc.raise_error("R031", {} of String => String, "ArgumentError") if n < 0
+        elements = arr.to_a.last(n)
+        Adjutant::Value.new(Adjutant::LabeledArray.new(elements, joined_label(elements, recv.label)), nil)
+      else
+        arr.empty? ? Adjutant::Value.nil_value : arr[arr.size - 1]
+      end
     end
 
     define(cls, interp, "select") do |args, blk, ncc|

@@ -124,7 +124,7 @@ R027|`Range#max` called on an endless range                            |—
 R028|`Range#last` called on an endless range                           |—                       
 R029|`Range#min` called on a beginless range                           |—                       
 R030|`Range#first` called on a beginless range                         |—                       
-R031|`Range#first` given a negative count                              |—                       
+R031|`#first(n)`/`#last(n)` given a negative count (Range, Array)      |—                       
 
 Scripts can `rescue` these. R008 raises a `NameError`, matching Ruby;
 R011, R012, R015, and R018 raise `ArgumentError`, also matching Ruby;
