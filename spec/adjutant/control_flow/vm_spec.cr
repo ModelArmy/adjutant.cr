@@ -318,22 +318,20 @@ module Adjutant
       end
     end
 
-    # Deliberately UNCHANGED by the break-propagation fix above — a
-    # separate, pre-existing, still-open gap (see SCOPE.md). `yield`
-    # invokes its block by sharing @frames with the CALLING method
-    # (Op::Yield → call_script_proc, no invoke_internal isolation),
-    # unlike a native method's `ncc.invoke` — so `break` here lands on
-    # a REAL frame still in that shared array (the calling method's
-    # own) rather than emptying an isolated one, and takes the
-    # ORIGINAL push-the-value-and-keep-going path, not the new raise.
-    # Real Ruby: `break` inside a yielded-to block ends the WHOLE
-    # calling method's own call immediately; Adjutant currently just
-    # resumes that method's execution right after the `yield` site
-    # instead — this spec pins down the CURRENT (wrong) behavior so a
-    # future fix for it is a deliberate, visible change, not a silent
-    # one.
-    describe "break inside a yielded-to block (separate, still-open gap)" do
-      it "currently resumes the calling method after yield, rather than ending its call" do
+    # `break` inside a block invoked via `yield` (as opposed to via a
+    # native method's `ncc.invoke` — see the describe block above) —
+    # see SCOPE.md's now-resolved entry for the full bug and fix.
+    # `Op::Yield` shares `@frames` with its caller (no
+    # `invoke_internal` isolation), so `break` here can't use the same
+    # raise-to-`call_native` mechanism the native case does — instead,
+    # once the consecutive block-frame unwind lands on a REAL frame,
+    # `Frame#block` (exactly what `Op::Yield` itself reads to find the
+    # block to invoke) identifies whether that landed frame is
+    # genuinely the one that yielded to this chain; if so it's
+    # terminated too, Ret-style, rather than resumed past the `yield`
+    # site.
+    describe "break inside a yielded-to block" do
+      it "ends the calling method's own call immediately, matching real Ruby" do
         result = eval(<<-RUBY)
           def foo
             yield
@@ -343,7 +341,51 @@ module Adjutant
             break
           end
         RUBY
-        result.as_string.should eq "after"
+        result.null?.should be_true
+      end
+
+      it "the break's value becomes the WHOLE method call's own result" do
+        result = eval(<<-RUBY)
+          def foo
+            yield
+            "after"
+          end
+          foo do
+            break 99
+          end
+        RUBY
+        result.as_int.should eq 99
+      end
+
+      it "the method's own caller continues normally afterward" do
+        result = eval(<<-RUBY)
+          def foo
+            yield
+            "after"
+          end
+          x = foo { break 1 }
+          y = 2
+          [x, y]
+        RUBY
+        result.as_array.map(&.as_int).should eq [1, 2]
+      end
+
+      it "works when the yielding method is itself called from inside a native method's block" do
+        result = eval(<<-RUBY)
+          def foo
+            yield
+            "after"
+          end
+          seen = []
+          [1, 2].each do |x|
+            foo do
+              break
+            end
+            seen << x
+          end
+          seen
+        RUBY
+        result.as_array.map(&.as_int).should eq [1, 2]
       end
     end
   end

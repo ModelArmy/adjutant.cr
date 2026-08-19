@@ -1353,11 +1353,15 @@ module Adjutant
             end
           when Op::BlockBreak
             val = pop
-            # Unwind consecutive block frames — same loop as before
-            # this fix, unchanged. What differs is what happens once
-            # it's done (see below).
+            # Unwind consecutive block frames, same loop as before —
+            # but now also remembering the LAST one popped (the
+            # OUTERMOST of this run, i.e. whichever block frame
+            # `Op::Yield` pushed directly atop its caller, if this
+            # chain traces back to a yield at all — see below).
+            last_popped_proc = nil.as(ScriptProc?)
             while !@frames.empty? && @frames.last.proc.is_block?
               sb = @frames.last.stack_base; (@stack.size - sb).times { @stack.pop } if @stack.size > sb
+              last_popped_proc = @frames.last.proc
               pop_frame
             end
             if @frames.empty?
@@ -1371,27 +1375,36 @@ module Adjutant
               # of raise-vs-return, so no manual restoration is needed
               # here — caught at the nearest enclosing `call_native`.
               raise BlockBreakSignal.new(val)
+            elsif last_popped_proc && @frames.last.block == last_popped_proc
+              # Landed on the frame that ACTUALLY yielded to this
+              # exact block chain — `Frame#block` is precisely what
+              # `Op::Yield` itself reads to find the block to invoke
+              # (`blk = f.block`), so this equality check is genuinely
+              # "is this the method call break should end," not a
+              # heuristic. Real Ruby: `break` inside a yielded-to
+              # block ends the WHOLE calling method's own call
+              # immediately, not just `yield`'s own expression — so
+              # terminate this landed frame too, exactly like
+              # Op::Ret's own logic (drain to its stack_base, pop it,
+              # push the value for whatever's now on top instead of
+              # resuming this frame's own execution past the `yield`
+              # site at all).
+              landed = @frames.last
+              (@stack.size - landed.stack_base).times { @stack.pop } if @stack.size > landed.stack_base
+              pop_frame
+              push(val) unless @frames.empty?
             else
-              # Landed on a REAL frame still in this same (non-
-              # isolated) array — covers two different cases the same
-              # way, deliberately: a `yield`-invoked block (this is
-              # the calling method's OWN frame — `Op::Yield` shares
-              # `@frames` with its caller, unlike a native method's
-              # `ncc.invoke`), and a genuinely bare `break` with no
-              # enclosing loop OR block at all (top-level, or inside
-              # an ordinary method — `is_block?` was false from the
-              # start, so the loop above never popped anything).
-              # Neither is this fix's target: real Ruby's `yield`+
-              # `break` interaction has its own separate, pre-existing
-              # gap (continues the calling method's execution past
-              # the `yield` site instead of ending that call entirely
-              # — see SCOPE.md), and a bare break should raise
-              # LocalJumpError but doesn't yet (also pre-existing).
-              # Keeping the ORIGINAL behavior for both — pushing the
-              # value and continuing — rather than letting a raise
-              # escape past frames that are still legitimately part
-              # of the live call stack. Deliberately not widening this
-              # fix's scope to also touch either.
+              # Landed on a real frame that did NOT yield to this
+              # chain — a genuinely bare `break` with no enclosing
+              # loop OR block at all (top-level, or inside an
+              # ordinary method reached some other way — `is_block?`
+              # was false from the very start, so the loop above
+              # never popped anything and `last_popped_proc` stayed
+              # nil). Real Ruby raises LocalJumpError here; Adjutant
+              # doesn't yet (a separate, pre-existing, still-open gap
+              # — see SCOPE.md). Keeping the ORIGINAL behavior —
+              # pushing the value and continuing — rather than
+              # guessing at a case this fix isn't targeting.
               push(val)
             end
 

@@ -39,39 +39,37 @@ currently blocking anything" no longer held. The remaining entries
 weren't re-evaluated against the promoted two on this axis, just carried
 forward.
 
-- **`break` inside a block invoked via `yield` doesn't end the
-  calling method's own call — it just resumes that method's execution
-  right after the `yield` site, as if `yield` had simply returned the
-  break's value.** Found and left deliberately unfixed 2026-08-18
-  while fixing the sibling bug this list used to have here (`break`
-  inside a block passed to a NATIVE method — see git history; that
-  one's now fixed via `BlockBreakSignal`, vm.cr). Real Ruby: `def foo;
-  yield; "after"; end; foo { break }` returns `nil` (the break's
-  value) — `"after"` never runs, the WHOLE `foo` call ends
-  immediately. Adjutant currently returns `"after"` — confirmed as
-  the actual (not merely suspected) current behavior via a pinning
-  regression spec, `control_flow/vm_spec.cr`'s "break inside a
-  yielded-to block" — deliberately titled as a still-open gap, not a
-  passing "this works" spec, so a future fix changes it visibly rather
-  than silently. Root cause: `Op::Yield` invokes its block by sharing
-  `@frames` with the CALLING method (`call_script_proc` pushes the
-  block's frame directly onto the same array `foo`'s own frame is
-  already sitting in) — unlike a native method's `ncc.invoke`, which
-  runs the block in an ISOLATED `@frames`/`@stack` swap
-  (`invoke_internal`). `Op::BlockBreak`'s fixed handler distinguishes
-  these two shapes by what's left after unwinding consecutive block
-  frames: landing on nothing (an isolated array fully unwound) raises
-  `BlockBreakSignal`, caught at `call_native`; landing on a REAL frame
-  still present in a shared array (yield's case) takes the ORIGINAL,
-  unfixed push-value-and-continue path, since a raise there would
-  wrongly escape past `foo`'s own frame, which is still legitimately
-  live. Real fix, not attempted here: needs a way to identify — from
-  wherever `foo` itself was called — that `foo`'s OWN call should end
-  early with a given value once `break` fires inside a block IT
-  received via `yield`, plausibly the same `BlockBreakSignal`
-  mechanism but caught one layer further out (wherever `foo` was
-  dispatched from) rather than at `call_native`, which never sees a
-  script-to-script call like this at all.
+- **`break` inside a block (whether reached via a native method or
+  `yield`) skips any `ensure` it unwinds through, and leaves that
+  construct's `HandlerEntry` stale on the frame instead of popping
+  it** — the exact same class of bug `DEVELOPMENT.md`'s "break/next/
+  redo through begin/rescue/ensure" fix (2026-08-05) already closed
+  for LITERAL loops, just never extended to this sibling case. Found
+  2026-08-18 auditing `compile_break` (compiler.cr) while fixing
+  `break`'s value-propagation for blocks (see git history —
+  `BlockBreakSignal`, vm.cr, and the `yield`-target-frame-termination
+  follow-up): `compile_break` calls `emit_ensure_unwind_for_loop_jump`
+  ONLY in its `@loop_stack`-nonempty branch (a literal `while`/`for`)
+  — the `else` branch, used for every `break` inside a block
+  regardless of how that block was invoked, just emits bare
+  `Op::BlockBreak` with no ensure-unwind emission at all. Concretely:
+  `arr.each { begin; break; ensure; puts "x" end }` never runs `"x"`,
+  and leaves that `begin`'s handler entry on the block frame's own
+  `.handlers` — mostly harmless there specifically ONLY because the
+  whole frame gets discarded immediately after (either via
+  `BlockBreakSignal`'s raise, or the `yield`-target termination), but
+  the skipped `ensure` body itself is a real, silent correctness gap
+  either way — a resource-cleanup ensure (closing a file, releasing a
+  lock) simply wouldn't run. Real fix: `compile_break`'s `else` branch
+  needs its own version of the same unwind — but unlike a loop jump
+  (a fixed compile-time target `emit_ensure_unwind_for_loop_jump`
+  already knows), a block-break's ensure regions aren't bounded by
+  anything the COMPILER can see (the block might be invoked from
+  anywhere) — likely needs walking `@ensure_stack` INSIDE the
+  block's own body only (same boundary compile_begin already respects
+  for its own body/rescue/ensure split) and inline-compiling each
+  region's ensure body before `Op::BlockBreak`, same mechanism, just
+  triggered from a different branch.
 
 - **Heredocs and `%w[]`/`%i[]` literals don't exist.** Promoted from
   `Will Fix` 2026-08-15 — common enough in idiomatic Ruby (`%w[a b c]`
