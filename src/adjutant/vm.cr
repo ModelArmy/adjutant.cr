@@ -242,6 +242,44 @@ module Adjutant
     end
   end
 
+  # A VM-internal control-flow signal, NOT a subclass of RuntimeError
+  # and never script-visible — `execute`'s own error-handling rescue
+  # is typed `rescue ex : RuntimeError` specifically, so this passes
+  # straight through it untouched, exactly as intended: a script-level
+  # `rescue` (any class, including `rescue => e`/`rescue StandardError`)
+  # must never be able to catch a `break`.
+  #
+  # Raised by Op::BlockBreak (a `break` with no enclosing loop
+  # construct at compile time — i.e. `break` inside a block, not a
+  # literal `while`/`for`/`until`/`loop`) and caught in EXACTLY ONE
+  # place, `VM#call_native` — the single choke point every native
+  # method/function call in the whole VM already funnels through (see
+  # that method's own comment). That single catch point is what makes
+  # this correct for nested native calls with no extra bookkeeping at
+  # all: the signal is an ordinary Crystal `raise`, so it unwinds the
+  # real Crystal call stack until the NEAREST enclosing `call_native`
+  # catches it — which is always the innermost currently-running
+  # native call, exactly matching real Ruby's own "break exits the
+  # nearest call that received this block" semantics, including
+  # correctly leaving an OUTER native call's own iteration undisturbed
+  # (`outer.each { inner.each { break } }` — the inner `each` alone
+  # terminates; from the outer `each`'s own Crystal loop's point of
+  # view, its `ncc.invoke` call for that one element just returned an
+  # ordinary Value, same as any other iteration). See SCOPE.md's
+  # now-resolved "`break` inside a block passed to a NATIVE method...”
+  # entry for the full bug this fixes, including why NO individual
+  # native method (range.cr, array.cr, ...) needed a single line
+  # changed — every one of them already just calls `ncc.invoke`
+  # un-rescued, which is exactly right once the ONE catch point above
+  # exists.
+  class BlockBreakSignal < Exception
+    getter value : Value
+
+    def initialize(@value)
+      super("break outside call_native — internal, should never surface to a script")
+    end
+  end
+
   # The bytecode VM.
   #
   # One VM instance per script execution. Holds the value stack,
@@ -1315,12 +1353,47 @@ module Adjutant
             end
           when Op::BlockBreak
             val = pop
-            # Unwind to the nearest non-block frame
+            # Unwind consecutive block frames — same loop as before
+            # this fix, unchanged. What differs is what happens once
+            # it's done (see below).
             while !@frames.empty? && @frames.last.proc.is_block?
               sb = @frames.last.stack_base; (@stack.size - sb).times { @stack.pop } if @stack.size > sb
               pop_frame
             end
-            push(val)
+            if @frames.empty?
+              # Landed on nothing — every frame this popped belonged
+              # to an ISOLATED array `invoke_internal` swapped in for
+              # one `ncc.invoke` call (a native method's block — see
+              # BlockBreakSignal's own comment for the full
+              # mechanism), which never contains anything but frames
+              # from that one call. Raise past it; invoke_internal's
+              # `ensure` restores the OUTER @frames/@stack regardless
+              # of raise-vs-return, so no manual restoration is needed
+              # here — caught at the nearest enclosing `call_native`.
+              raise BlockBreakSignal.new(val)
+            else
+              # Landed on a REAL frame still in this same (non-
+              # isolated) array — covers two different cases the same
+              # way, deliberately: a `yield`-invoked block (this is
+              # the calling method's OWN frame — `Op::Yield` shares
+              # `@frames` with its caller, unlike a native method's
+              # `ncc.invoke`), and a genuinely bare `break` with no
+              # enclosing loop OR block at all (top-level, or inside
+              # an ordinary method — `is_block?` was false from the
+              # start, so the loop above never popped anything).
+              # Neither is this fix's target: real Ruby's `yield`+
+              # `break` interaction has its own separate, pre-existing
+              # gap (continues the calling method's execution past
+              # the `yield` site instead of ending that call entirely
+              # — see SCOPE.md), and a bare break should raise
+              # LocalJumpError but doesn't yet (also pre-existing).
+              # Keeping the ORIGINAL behavior for both — pushing the
+              # value and continuing — rather than letting a raise
+              # escape past frames that are still legitimately part
+              # of the live call stack. Deliberately not widening this
+              # fix's scope to also touch either.
+              push(val)
+            end
 
             # --- Exception handling ---------------------------------------
           when Op::Try
@@ -2190,6 +2263,18 @@ module Adjutant
       check_unknown_native_keywords!(kwargs, native.kwarg_names, name, filename, line)
       check_risk_flow(native, args, kwargs, name, filename, line)
       NativeFunctionCall.new(self, native, filename, line, name, kwargs).call(args, blk)
+    rescue ex : BlockBreakSignal
+      # `break` inside the block THIS call received (however many
+      # times, or however deep inside its own native Crystal code,
+      # `ncc.invoke` was called before it happened) — matching real
+      # Ruby, the break's value becomes this call's own overall
+      # result, ending it early. The native method itself (range.cr,
+      # array.cr, ...) needed no change at all — this is the ONE
+      # place every native call funnels through, so it's also the one
+      # place that needs to know break happened. See
+      # BlockBreakSignal's own comment for why this specific spot is
+      # correct even for nested native calls with blocks of their own.
+      ex.value
     rescue ex : RuntimeError
       raise ex
     rescue ex

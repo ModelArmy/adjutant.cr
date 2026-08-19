@@ -241,22 +241,12 @@ module Adjutant
       # assumed: a nil END walks forever (the caller `break`s); a nil
       # START raises TypeError, since there's nothing to begin at.
       #
-      # PENDING, not just failing: `break` inside a block passed to a
-      # NATIVE method (this one, or any other — Array#each has the
-      # identical gap) doesn't actually stop the native Crystal loop
-      # driving it. `Op::BlockBreak` only unwinds the isolated VM
-      # frame/stack `ncc.invoke` set up for that one block call and
-      # returns the break's value as an ordinary return — there's
-      # nothing telling the native method's own Crystal `loop do`
-      # a break happened at all, so it just calls the block again.
-      # Harmless-but-wrong for a finite collection (break silently
-      # doesn't happen early); for this endless range, the only thing
-      # that was ever going to stop the loop was that break, so it's a
-      # genuine, VM-locking-up hang — running this normally would
-      # never terminate the test suite, hence `pending` instead of a
-      # regular failing `it`. See SCOPE.md's new Must Fix entry for
-      # the real fix (own branch, not this one).
-      pending "an endless range walks forever — the caller is expected to break" do
+      # Was `pending` (see git history) — `break` inside a block
+      # passed to a NATIVE method didn't actually stop the native
+      # Crystal loop driving it, so this genuinely hung the VM rather
+      # than just failing. Fixed via BlockBreakSignal (vm.cr) — see
+      # SCOPE.md's now-resolved entry for the full mechanism.
+      it "an endless range walks forever — the caller is expected to break" do
         result = eval(<<-RUBY)
           seen = []
           (1..).each do |n|
@@ -475,12 +465,9 @@ module Adjutant
       # TypeError (R024) for the same nil-start situation; real Ruby
       # genuinely picks a different class here, not a typo.
       #
-      # PENDING, not just failing — same reason as #each's own
-      # identical spec above: `break` doesn't actually propagate out
-      # of a block passed to a native method today, so this hangs the
-      # VM rather than failing an assertion. See that spec's comment
-      # and SCOPE.md's new Must Fix entry.
-      pending "an endless range walks forever — the caller is expected to break" do
+      # Was `pending` (see git history and #each's identical spec
+      # above) — fixed via BlockBreakSignal (vm.cr).
+      it "an endless range walks forever — the caller is expected to break" do
         interp, _ = make_interp
         result = interp.eval(<<-RUBY)
           seen = []

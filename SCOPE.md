@@ -39,44 +39,39 @@ currently blocking anything" no longer held. The remaining entries
 weren't re-evaluated against the promoted two on this axis, just carried
 forward.
 
-- **`break` inside a block passed to a NATIVE method (`Array#each`,
-  `Range#each`, any of them) doesn't actually stop the native
-  iteration.** Found 2026-08-18 writing specs for endless-range
-  `#each`/`#step` (see the now-removed endless/beginless-ranges entry
-  that used to sit here) — a hang, not a failure: those two specs are
-  `pending` in `range_spec.cr` rather than committed as regular
-  failing tests, since running them for real never returns. Traced
-  cause: a literal `while`/`for` loop compiles `break` as a bytecode
-  `Jump` straight to the loop's own end (works fine, one frame, no
-  issue). `break` inside a BLOCK with no enclosing loop construct at
-  compile time compiles to `Op::BlockBreak` instead (compiler.cr's
-  `compile_break`) — its VM handler (vm.cr) unwinds the block-call
-  frames `ncc.invoke`'s own isolated `@frames`/`@stack` swap set up
-  (see `invoke_internal`'s own comment on why that swap exists) and
-  pushes the break's value, which correctly becomes `ncc.invoke`'s
-  own return value... but that's ALL it does. Nothing tells the
-  NATIVE method's own Crystal loop (`recv.as_array.each { |elem|
-  ncc.invoke(blk, [elem]) }` in array.cr, the equivalent `loop do`
-  in range.cr, and every other native iterator) that a break
-  happened at all — it just gets back an ordinary `Value`, as if the
-  block returned normally, and keeps calling it on the next element.
-  Harmless-looking on a FINITE collection (`[1,2,3].each { |n| break
-  if n == 2 }` silently runs the whole array instead of stopping
-  early — genuinely wrong, but doesn't hang) — only became visible as
-  an actual hang once something with no natural termination
-  (endless-range `#each`/`#step`) depended on `break` being the ONLY
-  way out. Real fix, not yet attempted: `Op::BlockBreak` likely needs
-  to signal PAST `ncc.invoke`'s own return — most plausibly by
-  raising a real Crystal exception instead of only pushing a stack
-  value, letting it unwind through the native method's own Crystal
-  loop/each call naturally (any exception raised inside a Crystal
-  block propagates out and stops that Crystal-level iteration on its
-  own), then getting caught at whatever VM-level call site originally
-  dispatched INTO the native method, with the break's value becoming
-  the whole call's result — matching real Ruby (`x = [1, 2].each {
-  break 9 }; x #=> 9`). Deliberately its own branch, not bundled into
-  the endless-ranges branch that surfaced it — the fix touches
-  `Op::BlockBreak`'s VM-wide semantics, not anything Range-specific.
+- **`break` inside a block invoked via `yield` doesn't end the
+  calling method's own call — it just resumes that method's execution
+  right after the `yield` site, as if `yield` had simply returned the
+  break's value.** Found and left deliberately unfixed 2026-08-18
+  while fixing the sibling bug this list used to have here (`break`
+  inside a block passed to a NATIVE method — see git history; that
+  one's now fixed via `BlockBreakSignal`, vm.cr). Real Ruby: `def foo;
+  yield; "after"; end; foo { break }` returns `nil` (the break's
+  value) — `"after"` never runs, the WHOLE `foo` call ends
+  immediately. Adjutant currently returns `"after"` — confirmed as
+  the actual (not merely suspected) current behavior via a pinning
+  regression spec, `control_flow/vm_spec.cr`'s "break inside a
+  yielded-to block" — deliberately titled as a still-open gap, not a
+  passing "this works" spec, so a future fix changes it visibly rather
+  than silently. Root cause: `Op::Yield` invokes its block by sharing
+  `@frames` with the CALLING method (`call_script_proc` pushes the
+  block's frame directly onto the same array `foo`'s own frame is
+  already sitting in) — unlike a native method's `ncc.invoke`, which
+  runs the block in an ISOLATED `@frames`/`@stack` swap
+  (`invoke_internal`). `Op::BlockBreak`'s fixed handler distinguishes
+  these two shapes by what's left after unwinding consecutive block
+  frames: landing on nothing (an isolated array fully unwound) raises
+  `BlockBreakSignal`, caught at `call_native`; landing on a REAL frame
+  still present in a shared array (yield's case) takes the ORIGINAL,
+  unfixed push-value-and-continue path, since a raise there would
+  wrongly escape past `foo`'s own frame, which is still legitimately
+  live. Real fix, not attempted here: needs a way to identify — from
+  wherever `foo` itself was called — that `foo`'s OWN call should end
+  early with a given value once `break` fires inside a block IT
+  received via `yield`, plausibly the same `BlockBreakSignal`
+  mechanism but caught one layer further out (wherever `foo` was
+  dispatched from) rather than at `call_native`, which never sees a
+  script-to-script call like this at all.
 
 - **Heredocs and `%w[]`/`%i[]` literals don't exist.** Promoted from
   `Will Fix` 2026-08-15 — common enough in idiomatic Ruby (`%w[a b c]`
