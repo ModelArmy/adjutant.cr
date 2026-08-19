@@ -59,6 +59,11 @@ module Adjutant
         eval("(1..).first").as_int.should eq 1
       end
 
+      it "#first raises RangeError (R030) on a beginless range, a different message than #min's" do
+        error = expect_raises(RuntimeError) { eval("(..5).first") }
+        error.diagnostic.not_nil!.code.should eq("R030")
+      end
+
       it "#begin/#end never raise regardless of a nil bound, unlike #first/#last/#min/#max" do
         result = eval("[(1..).begin, (1..).end, (..5).begin, (..5).end]")
         arr = result.as_array

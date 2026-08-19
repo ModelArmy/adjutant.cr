@@ -325,6 +325,15 @@ module Adjutant
         help: "Use `#end`, or compare against a specific value with " \
               "`#include?`/`#cover?`, instead of `#min` on a beginless range."
       ),
+      "R030" => Entry.new(
+        code: "R030",
+        summary: "cannot get the first element of beginless range",
+        why: "`#first` with no argument needs a real starting value to " \
+             "return — a beginless range (`..5`) has none.",
+        help: "Use `#begin` (returns `nil` rather than raising), or " \
+              "compare against a specific value with `#include?`/`#cover?`, " \
+              "instead of `#first` on a beginless range."
+      ),
 
       # --- L: limits reached ----------------------------------------
       #

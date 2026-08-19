@@ -69,22 +69,18 @@ module Adjutant::Builtins
       Adjutant::Value.robject(obj)
     end
 
-    # Real Ruby: `#min`/`#max`/`#last` (all three, no block, no count
+    # Real Ruby: `#min`/`#max`/`#last`/`#first` (no block, no count
     # argument) raise `RangeError` when the relevant bound is nil —
-    # `#min` on a BEGINLESS range ("cannot get the minimum of
-    # beginless range"), `#max`/`#last` on an ENDLESS range
-    # ("cannot get the maximum..."/"...the last element of endless
-    # range" — two DIFFERENT messages for the same nil-end condition,
-    # confirmed via Ruby's own C source, not assumed). `#first` is
-    # the one exception in this group that does NOT need a nil check
-    # for the endless case — there's always a real first value
-    # regardless of where the range ends — but DOES need one for a
-    # BEGINLESS range in modern Ruby (raises "cannot get the first
-    # element of beginless range", added as its own feature after
-    # `#last`'s equivalent already existed — also confirmed via
-    # search, not assumed). That beginless-`#first` gap is NOT fixed
-    # here — found while fixing this sibling set, but not part of the
-    # originally-tracked SCOPE.md item; logged separately.
+    # `#min`/`#first` on a BEGINLESS range ("cannot get the
+    # minimum..."/"...the first element of beginless range" — two
+    # DIFFERENT messages for the same nil-begin condition), `#max`/
+    # `#last` on an ENDLESS range ("cannot get the maximum..."/"...the
+    # last element of endless range" — likewise two different
+    # messages for the same nil-end condition). All four confirmed via
+    # Ruby's own C source, not assumed — `#first`'s beginless check
+    # was fixed in a separate follow-up after the other three (it's a
+    # newer addition upstream than `#last`'s equivalent, added once
+    # the asymmetry was noticed there too — see git history).
     define(cls, interp, "min") do |args, _blk, ncc|
       obj = args.first.as_robject
       lo = obj.ivars[min_sym]
@@ -92,8 +88,23 @@ module Adjutant::Builtins
       lo
     end
 
-    define(cls, interp, "first") do |args|
-      args.first.as_robject.ivars[min_sym]
+    # `#first` doesn't need a nil check for the ENDLESS case (there's
+    # always a real first value regardless of where a range ends —
+    # already correctly unguarded above, don't add one there) but
+    # DOES need one for the BEGINLESS case, checked UNCONDITIONALLY —
+    # real Ruby's own C source (`range_first`) raises on a nil BEGIN
+    # before even looking at whether a count argument was given, so
+    # `(..5).first` and `(..5).first(3)` raise the identical
+    # RangeError either way, not just the no-argument form. Adjutant
+    # doesn't implement the count-argument form's real semantics at
+    # all yet (returning the first N elements as an Array) — a
+    # separate, not-yet-tracked gap, out of scope here; this fix only
+    # adds the nil check `#first` was missing regardless of that.
+    define(cls, interp, "first") do |args, _blk, ncc|
+      obj = args.first.as_robject
+      lo = obj.ivars[min_sym]
+      ncc.raise_error("R030", {} of String => String, "RangeError") if lo.null?
+      lo
     end
 
     # Real Ruby's #begin/#end — the raw ivar accessors, distinct from

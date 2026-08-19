@@ -123,6 +123,7 @@ R026|`Range#to_a` called on an endless range                           |—
 R027|`Range#max` called on an endless range                            |—                       
 R028|`Range#last` called on an endless range                           |—                       
 R029|`Range#min` called on a beginless range                           |—                       
+R030|`Range#first` called on a beginless range                         |—                       
 
 Scripts can `rescue` these. R008 raises a `NameError`, matching Ruby;
 R011, R012, R015, and R018 raise `ArgumentError`, also matching Ruby;
@@ -130,7 +131,7 @@ R014 and R023 raise a `NoMethodError`, also matching Ruby; R016 raises a
 `FloatDomainError`, also matching Ruby; R017, R019, and R024 raise a
 `TypeError`, also matching Ruby; R020, R022, and R025 raise an
 `ArgumentError`, also matching Ruby; R021 raises a `RegexpError`, also
-matching Ruby; R026, R027, R028, and R029 raise a `RangeError`, also
+matching Ruby; R026, R027, R028, R029, and R030 raise a `RangeError`, also
 matching Ruby; the rest raise `RuntimeError`.
 
 Adjutant's constants are assign-once, which Ruby only warns about. R001 is

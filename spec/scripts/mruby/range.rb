@@ -21,19 +21,19 @@ require "assert"
 #    actually exercise the real underlying behavior, but that's a
 #    different test than upstream's own, so left as a clear note
 #    instead of a silent rewrite.
-# 2. `Range#last`/`Range#max`/`Range#min` with no argument correctly
-#    raise `RangeError` on the relevant nil bound as of 2026-08-19
-#    (three DISTINCT messages, confirmed via Ruby's own C source, not
-#    assumed — `#max`/`#last` both fire on a nil END but word it
-#    differently from each other; `#min` fires on a nil BEGIN). Found
-#    and fixed triaging this very file. `Range#first`, though, still
-#    has ONE remaining gap of the same shape: real Ruby raises on a
-#    BEGINLESS range (`(..5).first`) — a newer, separate feature
-#    addition upstream than `#last`'s own check — but Adjutant's
-#    `#first` doesn't yet (see SCOPE.md). Endless `#first` was never
-#    the problem either way — real Ruby correctly never raises there
-#    (there's always a genuine first value regardless of where a
-#    range ends), so that direction needed no fix and has none.
+# 2. `Range#last`/`Range#max`/`Range#min`/`Range#first` (no argument)
+#    all correctly raise `RangeError` on the relevant nil bound as of
+#    2026-08-19 (four DISTINCT messages, confirmed via Ruby's own C
+#    source, not assumed — `#max`/`#last` both fire on a nil END but
+#    word it differently; `#min`/`#first` both fire on a nil BEGIN,
+#    likewise worded differently from each other). `#first` was fixed
+#    in a separate follow-up after the other three, since real Ruby
+#    added its beginless check later, as its own feature request,
+#    once the `#last`/`#first` inconsistency was noticed upstream.
+#    Endless `#first` was never the problem either way — real Ruby
+#    correctly never raises there (there's always a genuine first
+#    value regardless of where a range ends), so that direction
+#    needed no fix and has none.
 
 assert('Range', '15.2.14') do
   assert_equal Class, Range.class
