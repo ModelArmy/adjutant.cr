@@ -64,6 +64,38 @@ module Adjutant
         error.diagnostic.not_nil!.code.should eq("R030")
       end
 
+      describe "#first(n)" do
+        it "returns an Array of the first n elements" do
+          eval("(1..10).first(3)").as_array.map(&.as_int).should eq [1, 2, 3]
+        end
+
+        it "returns fewer than n elements when the range itself is shorter" do
+          eval("(1..3).first(10)").as_array.map(&.as_int).should eq [1, 2, 3]
+        end
+
+        it "respects exclusivity, same as #each/#to_a" do
+          eval("(1...3).first(10)").as_array.map(&.as_int).should eq [1, 2]
+        end
+
+        it "returns an empty Array for n == 0" do
+          eval("(1..10).first(0)").as_array.should be_empty
+        end
+
+        it "works on an endless range — stops after n regardless of the (missing) upper bound" do
+          eval("(1..).first(3)").as_array.map(&.as_int).should eq [1, 2, 3]
+        end
+
+        it "raises ArgumentError (R031) for a negative count, matching Array#first's own message" do
+          error = expect_raises(RuntimeError) { eval("(1..10).first(-1)") }
+          error.diagnostic.not_nil!.code.should eq("R031")
+        end
+
+        it "still raises RangeError (R030) on a beginless range, same as the no-argument form" do
+          error = expect_raises(RuntimeError) { eval("(..5).first(3)") }
+          error.diagnostic.not_nil!.code.should eq("R030")
+        end
+      end
+
       it "#begin/#end never raise regardless of a nil bound, unlike #first/#last/#min/#max" do
         result = eval("[(1..).begin, (1..).end, (..5).begin, (..5).end]")
         arr = result.as_array

@@ -39,14 +39,23 @@ currently blocking anything" no longer held. The remaining entries
 weren't re-evaluated against the promoted two on this axis, just carried
 forward.
 
-- **`Range#first(n)` (the count-argument form) doesn't implement real
-  Ruby's actual semantics at all — it silently ignores `n` and
-  returns the single first element, same as the no-argument form.**
-  Real Ruby: `(1..5).first(3)` returns `[1, 2, 3]` (an Array of the
-  first `n` elements), not a single value. Noticed 2026-08-19 fixing
-  `#first`'s separate beginless-range nil-check bug (see git history)
-  — this is a different, NOT-yet-fixed gap found along the way, not
-  touched by that fix. Not investigated further than noticing it.
+- **`Array#first(n)`/`Array#last(n)` (the count-argument form) don't
+  implement real Ruby's actual semantics at all — both silently
+  ignore `n` and return a single element (or `nil` for an empty
+  array), same as the no-argument form.** Real Ruby: `[1,2,3,4,5]
+  .first(3)` returns `[1, 2, 3]` (an Array of the first `n` elements),
+  not a single value — same class of gap `Range#first(n)` had before
+  its own fix (see git history, 2026-08-19), noticed while
+  implementing that one and checking `array.cr`'s own `#first`/`#last`
+  for a reusable convention to follow. Not fixed here — a different
+  receiver type, out of scope for the Range work this was found
+  during. Likely fixable the same way: an Array already HAS every
+  element in hand (no `#succ`-walking needed the way Range's own fix
+  required), so this should be simpler than Range's version was —
+  `arr.as_array.first(n)`/`.last(n)`-shaped, with the same negative-
+  count `ArgumentError` Range's fix added (`R031`, reusable as-is
+  rather than a new code, if the message and semantics line up —
+  worth checking before assuming).
 
 - **Heredocs and `%w[]`/`%i[]` literals don't exist.** Promoted from
   `Will Fix` 2026-08-15 — common enough in idiomatic Ruby (`%w[a b c]`

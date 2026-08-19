@@ -334,6 +334,13 @@ module Adjutant
               "compare against a specific value with `#include?`/`#cover?`, " \
               "instead of `#first` on a beginless range."
       ),
+      "R031" => Entry.new(
+        code: "R031",
+        summary: "negative array size",
+        why: "`#first(n)` builds an Array of the first `n` elements — a " \
+             "negative `n` isn't a valid size to build one at.",
+        help: "Pass a non-negative count to `#first`."
+      ),
 
       # --- L: limits reached ----------------------------------------
       #

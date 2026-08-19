@@ -95,16 +95,43 @@ module Adjutant::Builtins
     # real Ruby's own C source (`range_first`) raises on a nil BEGIN
     # before even looking at whether a count argument was given, so
     # `(..5).first` and `(..5).first(3)` raise the identical
-    # RangeError either way, not just the no-argument form. Adjutant
-    # doesn't implement the count-argument form's real semantics at
-    # all yet (returning the first N elements as an Array) — a
-    # separate, not-yet-tracked gap, out of scope here; this fix only
-    # adds the nil check `#first` was missing regardless of that.
+    # RangeError either way, not just the no-argument form.
+    #
+    # `#first(n)`: an Array of the first `n` elements, walked via
+    # #succ same as #each/#to_a/#step — works on an ENDLESS range with
+    # no special-casing at all, since it stops after `n` elements
+    # regardless of whether there's a real upper bound to compare
+    # against (unlike #to_a, which needs the whole range to actually
+    # end). `n.int? &&`-guarded before `.as_int`, matching #step's own
+    # convention for its `n` argument (native_call_context.cr) — a
+    # non-Integer count isn't validated here either, same as there.
+    # Negative `n` raises ArgumentError (`"negative array size"`,
+    # matching real Ruby's own message for `Array#first(-1)` — Range's
+    # own C source builds its result array the same way, via
+    # `rb_ary_new2`, hence the identical wording).
     define(cls, interp, "first") do |args, _blk, ncc|
       obj = args.first.as_robject
       lo = obj.ivars[min_sym]
       ncc.raise_error("R030", {} of String => String, "RangeError") if lo.null?
-      lo
+      if n_val = args[1]?
+        if n_val.int? && n_val.as_int < 0
+          ncc.raise_error("R031", {} of String => String, "ArgumentError")
+        end
+        n = n_val.as_int.to_i
+        hi = obj.ivars[max_sym]
+        exclusive = obj.ivars[excl_sym].as_bool
+        elements = [] of Adjutant::Value
+        current = lo
+        while elements.size < n
+          in_bounds = hi.null? || (exclusive ? ncc.compare(current, hi, :<) : ncc.compare(current, hi, :<=))
+          break unless in_bounds
+          elements << current
+          current = ncc.call_method(current, "succ", [] of Adjutant::Value)
+        end
+        Adjutant::Value.new(Adjutant::LabeledArray.new(elements, joined_label(elements, args.first.label)), nil)
+      else
+        lo
+      end
     end
 
     # Real Ruby's #begin/#end — the raw ivar accessors, distinct from
