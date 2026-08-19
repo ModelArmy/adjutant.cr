@@ -39,38 +39,6 @@ currently blocking anything" no longer held. The remaining entries
 weren't re-evaluated against the promoted two on this axis, just carried
 forward.
 
-- **`break` inside a block (whether reached via a native method or
-  `yield`) skips any `ensure` it unwinds through, and leaves that
-  construct's `HandlerEntry` stale on the frame instead of popping
-  it** — the exact same class of bug `DEVELOPMENT.md`'s "break/next/
-  redo through begin/rescue/ensure" fix (2026-08-05) already closed
-  for LITERAL loops, just never extended to this sibling case. Found
-  2026-08-18 auditing `compile_break` (compiler.cr) while fixing
-  `break`'s value-propagation for blocks (see git history —
-  `BlockBreakSignal`, vm.cr, and the `yield`-target-frame-termination
-  follow-up): `compile_break` calls `emit_ensure_unwind_for_loop_jump`
-  ONLY in its `@loop_stack`-nonempty branch (a literal `while`/`for`)
-  — the `else` branch, used for every `break` inside a block
-  regardless of how that block was invoked, just emits bare
-  `Op::BlockBreak` with no ensure-unwind emission at all. Concretely:
-  `arr.each { begin; break; ensure; puts "x" end }` never runs `"x"`,
-  and leaves that `begin`'s handler entry on the block frame's own
-  `.handlers` — mostly harmless there specifically ONLY because the
-  whole frame gets discarded immediately after (either via
-  `BlockBreakSignal`'s raise, or the `yield`-target termination), but
-  the skipped `ensure` body itself is a real, silent correctness gap
-  either way — a resource-cleanup ensure (closing a file, releasing a
-  lock) simply wouldn't run. Real fix: `compile_break`'s `else` branch
-  needs its own version of the same unwind — but unlike a loop jump
-  (a fixed compile-time target `emit_ensure_unwind_for_loop_jump`
-  already knows), a block-break's ensure regions aren't bounded by
-  anything the COMPILER can see (the block might be invoked from
-  anywhere) — likely needs walking `@ensure_stack` INSIDE the
-  block's own body only (same boundary compile_begin already respects
-  for its own body/rescue/ensure split) and inline-compiling each
-  region's ensure body before `Op::BlockBreak`, same mechanism, just
-  triggered from a different branch.
-
 - **Heredocs and `%w[]`/`%i[]` literals don't exist.** Promoted from
   `Will Fix` 2026-08-15 — common enough in idiomatic Ruby (`%w[a b c]`
   for word arrays, heredocs for any string spanning more than a couple
