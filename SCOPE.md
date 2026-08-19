@@ -39,28 +39,14 @@ currently blocking anything" no longer held. The remaining entries
 weren't re-evaluated against the promoted two on this axis, just carried
 forward.
 
-- **`Range#first` with no argument doesn't raise on a BEGINLESS
-  range — it returns `nil` instead.** Found 2026-08-19 fixing the
-  sibling `#last`/`#max`/`#min` bug this list used to describe here
-  (see git history — all three now correctly raise `RangeError` on
-  the appropriate nil bound). Real Ruby: `(..5).first` raises
-  `RangeError: cannot get the first element of beginless range`
-  (confirmed via Ruby's own C source, not assumed) — a NEWER
-  addition than `#last`'s equivalent check (added as its own,
-  separate feature request once the inconsistency was noticed
-  upstream), which is exactly why it was easy to miss here too:
-  `#first` genuinely does NOT need a check for the ENDLESS case
-  (there's always a real first value regardless of where a range
-  ends — already correctly unguarded, don't add one there), but DOES
-  need one for the BEGINLESS case, which is the opposite bound from
-  what `#last`/`#max`/`#min`'s own fix touched. Adjutant's `#first`
-  (`range.cr`) is still a plain ivar accessor with no nil check at
-  all. Real fix: same `lo.null?`-style guard the sibling fix just
-  added to `#min`, raising a new R0xx-style `RangeError` (`"cannot
-  get the first element of beginless range"` — a fourth, DISTINCT
-  message from `#min`'s own, despite both firing on the same nil-
-  begin condition, matching the established pattern that `#max`/
-  `#last` already show for the nil-end side).
+- **`Range#first(n)` (the count-argument form) doesn't implement real
+  Ruby's actual semantics at all — it silently ignores `n` and
+  returns the single first element, same as the no-argument form.**
+  Real Ruby: `(1..5).first(3)` returns `[1, 2, 3]` (an Array of the
+  first `n` elements), not a single value. Noticed 2026-08-19 fixing
+  `#first`'s separate beginless-range nil-check bug (see git history)
+  — this is a different, NOT-yet-fixed gap found along the way, not
+  touched by that fix. Not investigated further than noticing it.
 
 - **Heredocs and `%w[]`/`%i[]` literals don't exist.** Promoted from
   `Will Fix` 2026-08-15 — common enough in idiomatic Ruby (`%w[a b c]`
