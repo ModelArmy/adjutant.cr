@@ -21,21 +21,19 @@ require "assert"
 #    actually exercise the real underlying behavior, but that's a
 #    different test than upstream's own, so left as a clear note
 #    instead of a silent rewrite.
-# 2. `Range#last`/`Range#max` with NO argument on an ENDLESS range
-#    should raise `RangeError` in real Ruby (confirmed via Ruby's own
-#    docs/source: "cannot get the last element of endless range") —
-#    Adjutant's current implementation is a plain ivar accessor that
-#    returns `nil` instead. A real, newly-found bug (see SCOPE.md) —
-#    NOT fixed here, and NOT uncommented below: the fixture's own
-#    commented assertion (`assert_nil (1..).last`) happens to match
-#    Adjutant's current (also wrong) behavior, but is wrong relative
-#    to real Ruby, so uncommenting it as-is would pin down the wrong
-#    answer. `Range#first`/`Range#begin`/`Range#end` don't have this
-#    problem — `#first` (no args) on an ENDLESS range correctly never
-#    needs to raise (there's always a real first value), and
-#    `#begin`/`#end` are real Ruby's own plain nil-returning accessors
-#    by design, not fallible "get the actual value" methods the way
-#    `#first`/`#last` are.
+# 2. `Range#last`/`Range#max`/`Range#min` with no argument correctly
+#    raise `RangeError` on the relevant nil bound as of 2026-08-19
+#    (three DISTINCT messages, confirmed via Ruby's own C source, not
+#    assumed — `#max`/`#last` both fire on a nil END but word it
+#    differently from each other; `#min` fires on a nil BEGIN). Found
+#    and fixed triaging this very file. `Range#first`, though, still
+#    has ONE remaining gap of the same shape: real Ruby raises on a
+#    BEGINLESS range (`(..5).first`) — a newer, separate feature
+#    addition upstream than `#last`'s own check — but Adjutant's
+#    `#first` doesn't yet (see SCOPE.md). Endless `#first` was never
+#    the problem either way — real Ruby correctly never raises there
+#    (there's always a genuine first value regardless of where a
+#    range ends), so that direction needed no fix and has none.
 
 assert('Range', '15.2.14') do
   assert_equal Class, Range.class
@@ -198,16 +196,15 @@ end
 assert('Range#last', '15.2.14.4.10') do
   assert_equal 10, (1..10).last
 end
-# --- BLOCKED, but NOT by the parsing gap this file used to be about
-# — see this file's own header. `(1..).last` should raise RangeError
-# in real Ruby; Adjutant's `#last` is currently a plain accessor that
-# returns nil instead (a real, separate bug — see SCOPE.md). The
-# assertion as originally written (`assert_nil`) matches Adjutant's
-# CURRENT wrong behavior, not real Ruby's, so left commented rather
-# than uncommented-and-wrong.
-# assert('Range#last (endless)') do
-#   assert_nil (1..).last
-# end
+assert('Range#last (endless)') do
+  # Rewritten from upstream's own `assert_nil (1..).last` — that
+  # assertion was already wrong relative to real Ruby (confirmed via
+  # Ruby's own C source: raises RangeError, doesn't return nil), not
+  # just relative to Adjutant's old (also wrong, in the same way)
+  # implementation. Fixed on both sides now, so this asserts the
+  # real answer rather than perpetuating upstream's own mistake.
+  assert_raise(RangeError) { (1..).last }
+end
 
 assert('Range#member?', '15.2.14.4.11') do
   a = (1..10)

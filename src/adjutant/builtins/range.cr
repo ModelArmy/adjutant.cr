@@ -69,8 +69,27 @@ module Adjutant::Builtins
       Adjutant::Value.robject(obj)
     end
 
-    define(cls, interp, "min") do |args|
-      args.first.as_robject.ivars[min_sym]
+    # Real Ruby: `#min`/`#max`/`#last` (all three, no block, no count
+    # argument) raise `RangeError` when the relevant bound is nil —
+    # `#min` on a BEGINLESS range ("cannot get the minimum of
+    # beginless range"), `#max`/`#last` on an ENDLESS range
+    # ("cannot get the maximum..."/"...the last element of endless
+    # range" — two DIFFERENT messages for the same nil-end condition,
+    # confirmed via Ruby's own C source, not assumed). `#first` is
+    # the one exception in this group that does NOT need a nil check
+    # for the endless case — there's always a real first value
+    # regardless of where the range ends — but DOES need one for a
+    # BEGINLESS range in modern Ruby (raises "cannot get the first
+    # element of beginless range", added as its own feature after
+    # `#last`'s equivalent already existed — also confirmed via
+    # search, not assumed). That beginless-`#first` gap is NOT fixed
+    # here — found while fixing this sibling set, but not part of the
+    # originally-tracked SCOPE.md item; logged separately.
+    define(cls, interp, "min") do |args, _blk, ncc|
+      obj = args.first.as_robject
+      lo = obj.ivars[min_sym]
+      ncc.raise_error("R029", {} of String => String, "RangeError") if lo.null?
+      lo
     end
 
     define(cls, interp, "first") do |args|
@@ -82,11 +101,9 @@ module Adjutant::Builtins
     # beginless range that don't apply to #begin/#end at all: #first
     # additionally accepts a count argument for "first N elements",
     # and #last with NO argument raises on an endless range while
-    # #end just returns nil). Adjutant has no endless/beginless ranges
-    # yet (see SCOPE.md), so #begin/#first and #end/#last are
-    # currently indistinguishable in practice — added as real,
-    # separate methods anyway, matching real Ruby's own names exactly
-    # rather than relying on #first/#last as informal aliases.
+    # #end just returns nil). #begin/#end never raise regardless of a
+    # nil bound — confirmed via search, not assumed — so no guard
+    # needed here, only on #first/#last/#min/#max above/below.
     define(cls, interp, "begin") do |args|
       args.first.as_robject.ivars[min_sym]
     end
@@ -95,12 +112,18 @@ module Adjutant::Builtins
       args.first.as_robject.ivars[max_sym]
     end
 
-    define(cls, interp, "max") do |args|
-      args.first.as_robject.ivars[max_sym]
+    define(cls, interp, "max") do |args, _blk, ncc|
+      obj = args.first.as_robject
+      hi = obj.ivars[max_sym]
+      ncc.raise_error("R027", {} of String => String, "RangeError") if hi.null?
+      hi
     end
 
-    define(cls, interp, "last") do |args|
-      args.first.as_robject.ivars[max_sym]
+    define(cls, interp, "last") do |args, _blk, ncc|
+      obj = args.first.as_robject
+      hi = obj.ivars[max_sym]
+      ncc.raise_error("R028", {} of String => String, "RangeError") if hi.null?
+      hi
     end
 
     # `exclusive?` was this class's own (non-standard) name for real

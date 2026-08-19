@@ -39,25 +39,28 @@ currently blocking anything" no longer held. The remaining entries
 weren't re-evaluated against the promoted two on this axis, just carried
 forward.
 
-- **`Range#last`/`Range#max` with no argument don't raise on an
-  ENDLESS range — they return `nil` instead.** Found 2026-08-19
-  triaging `spec/scripts/mruby/range.rb` for assertions the endless-
-  range work now supports. Real Ruby: `(1..).last` raises
-  `RangeError: cannot get the last element of endless range`
-  (confirmed via Ruby's own docs/source, not assumed) — there IS no
-  last element to return. Adjutant's `#last`/`#max` (`range.cr`) are
-  both plain ivar accessors returning `ivars[max_sym]` directly, with
-  no nil check at all — so `(1..).last`/`(1..).max` silently return
-  `nil`, matching neither a real value NOR a real error. Distinct
-  from `#first`, which correctly needs no such check: real Ruby's
-  `#first` (no args) on an endless range never raises (there's always
-  a genuine first value — checked via the same search, not assumed),
-  so `#first`'s existing plain-accessor implementation is already
-  correct as-is. Real fix: `#last`/`#max` need the same
-  `lo.null?`/`hi.null?`-style guard already used elsewhere in
-  `range.cr` (`each`/`to_a`/`step`/`include?`), raising R026-style
-  (`RangeError`) when the relevant bound is nil, rather than falling
-  through to the plain ivar read.
+- **`Range#first` with no argument doesn't raise on a BEGINLESS
+  range — it returns `nil` instead.** Found 2026-08-19 fixing the
+  sibling `#last`/`#max`/`#min` bug this list used to describe here
+  (see git history — all three now correctly raise `RangeError` on
+  the appropriate nil bound). Real Ruby: `(..5).first` raises
+  `RangeError: cannot get the first element of beginless range`
+  (confirmed via Ruby's own C source, not assumed) — a NEWER
+  addition than `#last`'s equivalent check (added as its own,
+  separate feature request once the inconsistency was noticed
+  upstream), which is exactly why it was easy to miss here too:
+  `#first` genuinely does NOT need a check for the ENDLESS case
+  (there's always a real first value regardless of where a range
+  ends — already correctly unguarded, don't add one there), but DOES
+  need one for the BEGINLESS case, which is the opposite bound from
+  what `#last`/`#max`/`#min`'s own fix touched. Adjutant's `#first`
+  (`range.cr`) is still a plain ivar accessor with no nil check at
+  all. Real fix: same `lo.null?`-style guard the sibling fix just
+  added to `#min`, raising a new R0xx-style `RangeError` (`"cannot
+  get the first element of beginless range"` — a fourth, DISTINCT
+  message from `#min`'s own, despite both firing on the same nil-
+  begin condition, matching the established pattern that `#max`/
+  `#last` already show for the nil-end side).
 
 - **Heredocs and `%w[]`/`%i[]` literals don't exist.** Promoted from
   `Will Fix` 2026-08-15 — common enough in idiomatic Ruby (`%w[a b c]`

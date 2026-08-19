@@ -35,6 +35,38 @@ module Adjutant
         result = eval("[(2..7).min, (2..7).max, (2..7).first, (2..7).last]")
         result.as_array.map(&.as_int).should eq [2, 7, 2, 7]
       end
+
+      # Confirmed against real Ruby's own C source first, not assumed
+      # — three DIFFERENT RangeError messages for what looks like the
+      # same underlying "nil bound" condition twice over (#max and
+      # #last both fire on a nil END, but with distinct wording).
+      it "#max raises RangeError (R027) on an endless range" do
+        error = expect_raises(RuntimeError) { eval("(1..).max") }
+        error.diagnostic.not_nil!.code.should eq("R027")
+      end
+
+      it "#last raises RangeError (R028) on an endless range, a different message than #max's" do
+        error = expect_raises(RuntimeError) { eval("(1..).last") }
+        error.diagnostic.not_nil!.code.should eq("R028")
+      end
+
+      it "#min raises RangeError (R029) on a beginless range" do
+        error = expect_raises(RuntimeError) { eval("(..5).min") }
+        error.diagnostic.not_nil!.code.should eq("R029")
+      end
+
+      it "#first does NOT raise on an endless range — there's always a real first value" do
+        eval("(1..).first").as_int.should eq 1
+      end
+
+      it "#begin/#end never raise regardless of a nil bound, unlike #first/#last/#min/#max" do
+        result = eval("[(1..).begin, (1..).end, (..5).begin, (..5).end]")
+        arr = result.as_array
+        arr[0].as_int.should eq 1
+        arr[1].null?.should be_true
+        arr[2].null?.should be_true
+        arr[3].as_int.should eq 5
+      end
     end
 
     describe "#exclusive?" do

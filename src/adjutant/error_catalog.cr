@@ -300,6 +300,31 @@ module Adjutant
         help: "Use `#each`/`#step` with an explicit `break`, or `#first(n)` " \
               "for a bounded slice, instead of `#to_a`."
       ),
+      "R027" => Entry.new(
+        code: "R027",
+        summary: "cannot get the maximum of endless range",
+        why: "`#max` needs a real upper bound to compare against — an " \
+             "endless range (`5..`) has none.",
+        help: "Use `#begin`, or compare against a specific value with " \
+              "`#include?`/`#cover?`, instead of `#max` on an endless range."
+      ),
+      "R028" => Entry.new(
+        code: "R028",
+        summary: "cannot get the last element of endless range",
+        why: "`#last` with no argument needs a real upper bound to " \
+             "return — an endless range (`5..`) has none.",
+        help: "Use `#end` (returns `nil` rather than raising), or " \
+              "`#first(n)` for a bounded slice from the other end, " \
+              "instead of `#last` on an endless range."
+      ),
+      "R029" => Entry.new(
+        code: "R029",
+        summary: "cannot get the minimum of beginless range",
+        why: "`#min` needs a real lower bound to compare against — a " \
+             "beginless range (`..5`) has none.",
+        help: "Use `#end`, or compare against a specific value with " \
+              "`#include?`/`#cover?`, instead of `#min` on a beginless range."
+      ),
 
       # --- L: limits reached ----------------------------------------
       #
