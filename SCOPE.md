@@ -39,22 +39,6 @@ currently blocking anything" no longer held. The remaining entries
 weren't re-evaluated against the promoted two on this axis, just carried
 forward.
 
-- **Heredocs and `%w[]`/`%i[]` literals don't exist.** Promoted from
-  `Will Fix` 2026-08-15 — common enough in idiomatic Ruby (`%w[a b c]`
-  for word arrays, heredocs for any string spanning more than a couple
-  of lines) that "not currently blocking" no longer held; reasoning
-  below is unchanged from the original entry. Long-standing,
-  untriaged since the original 2026-07-14 handoff bundle — split out
-  and confirmed still missing 2026-08-10 on review (no `Heredoc`/`%w`
-  handling found anywhere in `lexer.cr`/`token.cr`). Both fail loudly
-  at parse time (unrecognized syntax), not silently — genuinely
-  independent, mechanical lexer/parser additions rather than
-  something touching the compiler or VM: a heredoc is just a
-  string literal with a different opening/closing spelling, and
-  `%w[a b c]` desugars to an ordinary array-of-strings literal once
-  lexed. Good candidate for whoever wants a self-contained,
-  low-risk pickup.
-
 - **`lambda { ... }`/`proc { ... }` (the `Kernel`-method spelling)
   don't exist — only `-> { ... }` (stabby lambda) works.** Promoted
   from `Will Fix` 2026-08-15 — the more common spelling in ordinary
@@ -144,6 +128,37 @@ still roughly ordered by how cheap/independent the fix is.
 
 Small, mechanical, independent of each other — good candidates for quick
 wins.
+
+- **`%W[]`/`%I[]` (interpolating word/symbol arrays) and `%q`/`%Q`/`%r`
+  (the general delimited-literal forms) aren't supported — only plain
+  `%w[]`/`%i[]` are.** Added 2026-08-19 alongside `%w[]`/`%i[]` itself
+  going in for the first time (see `DEVELOPMENT.md`'s "The Lexer"
+  writeup) — a deliberate scoping decision, not a later-discovered
+  gap: `%w[]`/`%i[]` cover the common "word array"/"symbol array"
+  idiom the Must Fix entry was written against, and the interpolating/
+  general forms are rare enough in practice to leave for whoever wants
+  a follow-up. Mechanically similar to add: `%W`/`%I` would need the
+  word-splitting step to also watch for `#{...}` per word (closer to
+  the heredoc interpolation path than the plain `%w` one), and `%q`/
+  `%Q`/`%r` are just `'...'`/`"..."`/`/.../ ` with an arbitrary
+  delimiter instead of the fixed one.
+
+- **Heredocs support only ONE opener per physical line** — real Ruby
+  allows stacking several (`foo(<<~A, <<~B)`), each consuming its own
+  body block in order below the line, in sequence. Added 2026-08-19
+  alongside `%w[]`/`%i[]`/heredocs going in for the first time (see
+  `DEVELOPMENT.md`'s "The Lexer" writeup for the full mechanism) — a
+  deliberate scoping decision at the time, not something later found
+  broken: the lexer's eager single-opener resolution (`Lexer#scan_heredoc_opener`
+  jumps straight to extracting/tokenizing the ONE pending heredoc's
+  body the moment its opener is scanned) doesn't extend to a second
+  opener appearing before the first's body has even been reached. A
+  second opener on the same line currently just scans as ordinary
+  (almost certainly nonsensical) `<<` tokens instead of failing
+  loudly — worth tightening to a clean parse error at minimum, even
+  before real multi-heredoc support lands. Rare enough in ordinary
+  scripts (a single heredoc per line covers the vast majority of real
+  usage) that it wasn't worth blocking the rest of the pickup on.
 
 - **`break if cond; more_code` (or `next if cond; more_code`) mis-parses
   when break/next has a modifier `if`/`unless` immediately followed by

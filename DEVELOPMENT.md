@@ -125,6 +125,23 @@ The `Interpreter` is long-lived and intended to span a full agent session. The `
 
 This one field replaced several bespoke, ad-hoc reconstructions of the same fact the parser had been doing after the fact via column arithmetic — see "Adjacency, lexer state, and `Token#space_before?`" under The Parser below for the design conversation and what it replaced.
 
+#### `%w[]`/`%i[]` and heredocs
+
+Added 2026-08-19 (SCOPE.md's top Must Fix entry at the time) — before this, neither existed anywhere in `lexer.cr`/`token.cr`.
+
+`%w[...]`/`%i[...]` are a single lexer-level scan (`scan_percent_literal`): the raw body between the delimiters becomes one `TokenKind::PercentWords`/`PercentSymbols` token, with bracket-pair delimiters (`()`, `[]`, `{}`, `<>`) nesting and any other same-char delimiter (`%w|a b|`) not, matching real Ruby. The parser (`split_percent_literal`) splits that raw body into words on whitespace, honoring a backslash as "keep the next character literally, don't split here" — the only escaping real `%w`/`%i` recognize — and builds an ordinary `ArrayLiteral` of `StringLiteral`/`SymbolLiteral`. Only `%w`/`%i` are supported; the interpolating `%W`/`%I` forms and the general `%q`/`%Q`/`%r` forms are a real, separate gap.
+
+Heredocs (`<<ID`, `<<-ID`, `<<~ID`, each optionally `'ID'`/`"ID"`-quoted) are resolved **eagerly**, in full, the moment the opener is scanned (`scan_heredoc_opener`) — header, body, and terminator all in one call — because the STRING token they produce belongs at the opener's own grammatical position even though its body text sits physically later in `@source`. Concretely:
+
+- The opener's own header (`<<`/`~`/`-`/quote/identifier) is consumed normally, advancing `@pos` as usual.
+- The body and terminator are located via **pure `@source` indexing** — no cursor movement — so the caller (the outer `scan()` dispatch) can go on to scan the *rest of the current physical line* completely normally once `scan_heredoc_opener` returns (e.g. `foo(<<~ID, x)` scans `, x)` the ordinary way).
+- The extracted body (dedented, for `<<~`) becomes either a single literal `String` token (single-quoted heredocs — wrapped in synthetic `'...'` so the parser's existing `decode_single_quoted_escapes` applies unchanged) or, for an interpolating body, is handed to a **throwaway sub-`Lexer` instance** (`Lexer#heredoc_body_tokens`) whose entire `@source` *is* that body text — this reuses the exact same `StringPart`/`InterpEnd`/`StringEnd` interpolation machinery `"..."` strings already use (a new `InterpKind::Heredoc` + `continue_interp_heredoc`, differing only in that end-of-source is the terminator instead of a closing `"`). Because the result is the same token shape `parse_interp_string` already consumes, **no parser changes were needed for heredoc content itself**.
+- Since the physical body+terminator block has already been fully consumed this way, it must not be lexed again as ordinary top-level code once the cursor naturally reaches it. `@pending_heredoc_skip_at`/`_to_pos`/`_to_line` record where to jump: when `next_token_inner` consumes the newline that starts that block, it jumps straight past it instead of continuing into it. `@pending_tokens` queues the rest of a multi-token (interpolating) heredoc body for `next_token_inner` to drain before scanning anything else.
+
+`<<~`/`<<-` are unambiguous heredoc openers (real Ruby has no other meaning for `<<~`/`<<-`); bare `<<ID` additionally requires an uppercase-or-quoted identifier AND the same "previous token can't end an expression" condition `regex_starts_here?` already uses for `/` — the same scoped, previous-token-only approximation of real Ruby's expr-beg parser state, not full tracking.
+
+**Scoped limitation, not yet lifted:** only one heredoc opener is supported per physical line. Real Ruby allows stacking several (`foo(<<~A, <<~B)`), each consuming its own body block in order; this design's eager single-opener resolution doesn't extend to that case. Rare enough in practice that it wasn't blocking — see `SCOPE.md` if a script ever needs it.
+
 ### The Parser
 
 `Parser` is a hand-written recursive descent parser with a Pratt loop for expression precedence. It consumes tokens from a `Lexer` and produces an `Body` — the root of the AST. AST nodes are Crystal classes rooted at `abstract class Node`, each carrying source position. The parser handles the full Ruby-like grammar including interpolated strings, blocks, modifier forms (`x if cond`), multi-assignment, and keyword arguments.

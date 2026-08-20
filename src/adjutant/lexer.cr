@@ -13,6 +13,7 @@ module Adjutant
     enum InterpKind
       Str
       Regex
+      Heredoc
     end
 
     getter filename : String
@@ -44,6 +45,28 @@ module Adjutant
       # first token of the source, which is itself a "start of
       # expression" position (same bucket as Newline).
       @prev_kind = nil.as(TokenKind?)
+      # Heredoc support: `<<~ID`/`<<-ID`/`<<ID` are resolved eagerly
+      # the moment the opener is scanned (see `scan_heredoc_opener`),
+      # since the STRING token they produce belongs at the opener's
+      # own position in the token stream even though its body text
+      # sits physically later in `@source`. That eager resolution
+      # produces the heredoc's full token sequence (one token, or a
+      # StringPart/.../StringEnd chain for an interpolating body) all
+      # at once; `@pending_tokens` queues everything after the first
+      # for `next_token_inner` to drain before scanning anything else.
+      # The physical body+terminator block, once already consumed
+      # this way, must NOT be lexed again as ordinary top-level code
+      # when the cursor naturally reaches it — `@pending_heredoc_skip_at`
+      # (the position of the newline that starts that block) tells
+      # `next_token_inner` to jump straight past it (to
+      # `@pending_heredoc_skip_to_pos`/`_line`) once that exact
+      # newline is consumed. Only one heredoc opener per physical line
+      # is supported (see `heredoc_starts_here?`'s own comment) so a
+      # single set of these ivars, not a stack, is sufficient.
+      @pending_tokens = [] of Token
+      @pending_heredoc_skip_at = nil.as(Int32?)
+      @pending_heredoc_skip_to_pos = 0
+      @pending_heredoc_skip_to_line = 0
     end
 
     # Convenience constructor for string literals and tests.
@@ -69,6 +92,8 @@ module Adjutant
     end
 
     private def next_token_inner : Token
+      return @pending_tokens.shift unless @pending_tokens.empty?
+
       if @in_interp && @interp_brace_depth == 0
         return continue_interp
       end
@@ -90,7 +115,20 @@ module Adjutant
       return make_token(TokenKind::EOF, "", line, col) if at_end?
 
       c = advance
-      return make_token(TokenKind::Newline, "\n", line, col) if c == '\n'
+      if c == '\n'
+        # A pending heredoc body physically follows THIS exact newline
+        # (recorded when its opener was scanned — see
+        # `scan_heredoc_opener`); jump straight past the already-
+        # tokenized body+terminator block instead of re-lexing it as
+        # ordinary top-level code.
+        if (skip_at = @pending_heredoc_skip_at) && skip_at == start
+          @pos = @pending_heredoc_skip_to_pos
+          @line = @pending_heredoc_skip_to_line
+          @column = 1
+          @pending_heredoc_skip_at = nil
+        end
+        return make_token(TokenKind::Newline, "\n", line, col)
+      end
 
       scan(c, start, line, col)
     end
@@ -181,6 +219,8 @@ module Adjutant
       case @interp_kind
       when InterpKind::Regex
         continue_interp_regex
+      when InterpKind::Heredoc
+        continue_interp_heredoc
       else
         continue_interp_string
       end
@@ -221,6 +261,42 @@ module Adjutant
         advance
       end
       make_token(TokenKind::Error, "unterminated string", line, col)
+    end
+
+    # Mirrors `continue_interp_string` above, for the interpolating
+    # body of a heredoc — only ever runs on a throwaway Lexer instance
+    # whose entire `@source` IS the heredoc's own (already extracted,
+    # already dedented) body text, produced by `Lexer.heredoc_body_tokens`.
+    # No closing-quote character exists to watch for (unlike
+    # `continue_interp_string`'s `"`), so a heredoc body containing a
+    # literal `"` is handled correctly for free — end-of-source is the
+    # only terminator.
+    private def continue_interp_heredoc : Token
+      @in_interp = false
+      @space_before = false
+      line = @line
+      col = @column
+      start = @pos
+
+      while !at_end?
+        c = current_char
+        if c == '\\'
+          advance
+          advance unless at_end?
+          next
+        end
+        if c == '#' && peek_next == '{'
+          content = @source[start, @pos - start]
+          advance # #
+          advance # {
+          @in_interp = true
+          @interp_brace_depth = 1
+          return make_token(TokenKind::StringPart, content, line, col)
+        end
+        advance
+      end
+      content = @source[start, @pos - start]
+      make_token(TokenKind::StringEnd, content, line, col)
     end
 
     private def continue_interp_regex : Token
@@ -279,7 +355,11 @@ module Adjutant
       when '!'
         match('=') ? make_token(TokenKind::NEq, "!=", line, col) : make_token(TokenKind::Bang, "!", line, col)
       when '<'
-        scan_lt(start, line, col)
+        if heredoc_starts_here?
+          scan_heredoc_opener(start, line, col)
+        else
+          scan_lt(start, line, col)
+        end
       when '>'
         scan_gt(start, line, col)
       when '&'
@@ -309,7 +389,11 @@ module Adjutant
           match('=') ? make_token(TokenKind::SlashEq, "/=", line, col) : make_token(TokenKind::Slash, "/", line, col)
         end
       when '%'
-        match('=') ? make_token(TokenKind::PercentEq, "%=", line, col) : make_token(TokenKind::Percent, "%", line, col)
+        if percent_literal_starts_here?
+          scan_percent_literal(start, line, col)
+        else
+          match('=') ? make_token(TokenKind::PercentEq, "%=", line, col) : make_token(TokenKind::Percent, "%", line, col)
+        end
       when '^' then make_token(TokenKind::Caret, "^", line, col)
       when '~' then make_token(TokenKind::Tilde, "~", line, col)
       when '?' then make_token(TokenKind::Question, "?", line, col)
@@ -734,6 +818,284 @@ module Adjutant
         return make_token(TokenKind::SafeNav, "&.", line, col)
       end
       make_token(TokenKind::Amp, "&", line, col)
+    end
+
+    # `%w[...]`/`%i[...]` word/symbol array literals — deliberately the
+    # ONLY `%`-literal forms supported (no `%W`/`%I` interpolating
+    # variants, no `%q`/`%Q`/`%r` general string/regex forms — those
+    # are a real, separate gap, not attempted here). Real Ruby allows
+    # ANY non-alphanumeric character as the delimiter, with the four
+    # bracket pairs nesting and every other character (same char both
+    # sides) not — both forms supported below via PERCENT_CLOSERS.
+    PERCENT_CLOSERS = {'(' => ')', '[' => ']', '{' => '}', '<' => '>'} of Char => Char
+
+    private def percent_literal_starts_here? : Bool
+      c = current_char
+      return false unless c == 'w' || c == 'i'
+      delim = peek_next
+      return false if delim == '\0' || delim.ascii_alphanumeric? || delim == '_' || delim.ascii_whitespace?
+      true
+    end
+
+    # Scans the raw body between a `%w`/`%i` literal's delimiters,
+    # tracking nesting depth for bracket-pair delimiters (a same-char
+    # delimiter like `%w|a b|` never nests, matching real Ruby). A
+    # backslash escapes the next character unconditionally at the
+    # lexer level — the parser's own word-splitting (see
+    # `split_percent_literal` in parser.cr) is what actually
+    # interprets `\ ` as a literal space rather than a word
+    # separator; no other escape sequence (`\n`, `\t`, etc.) is
+    # processed, matching real Ruby's own minimal `%w`/`%i` escaping
+    # (just the delimiter, backslash, and whitespace).
+    private def scan_percent_literal(start : Int32, line : Int32, col : Int32) : Token
+      kind_char = advance # 'w' or 'i'
+      open_delim = advance
+      close_delim = PERCENT_CLOSERS[open_delim]? || open_delim
+      nesting = PERCENT_CLOSERS.has_key?(open_delim)
+      depth = 1
+      body_start = @pos
+      while !at_end?
+        c = current_char
+        if c == '\\'
+          advance
+          advance unless at_end?
+          next
+        end
+        if nesting && c == open_delim
+          depth += 1
+          advance
+          next
+        end
+        if c == close_delim
+          depth -= 1
+          if depth == 0
+            content = @source[body_start, @pos - body_start]
+            advance # closing delimiter
+            kind = kind_char == 'w' ? TokenKind::PercentWords : TokenKind::PercentSymbols
+            return make_token(kind, content, line, col)
+          end
+          advance
+          next
+        end
+        advance
+      end
+      make_token(TokenKind::Error, "unterminated %#{kind_char}#{open_delim}...", line, col)
+    end
+
+    # Disambiguates a heredoc opener from ordinary `<<`/left-shift.
+    # `<<~ID`/`<<-ID` are unambiguous (neither `~` nor `-` immediately
+    # after `<<` means anything else in real Ruby) and are always
+    # treated as heredoc openers once a valid identifier or quote
+    # follows the modifier. Bare `<<ID` is genuinely ambiguous with
+    # `x << SomeConstant` (left-shift), so it additionally requires
+    # the same "previous token can't end an expression" condition
+    # `regex_starts_here?` uses for `/` — real Ruby resolves this via
+    # expr-beg parser state; this is the same scoped approximation
+    # already accepted for regex/division. `<<lowercase_id` is never
+    # treated as a heredoc (matches real Ruby convention — heredoc
+    # identifiers are effectively always uppercase in practice) so it
+    # falls through to left-shift, avoiding the far more common `x <<
+    # y` case ever being misread.
+    #
+    # NOTE — scoped limitation: only ONE heredoc opener per physical
+    # line is supported. Real Ruby allows stacking several
+    # (`foo(<<~A, <<~B)`), each consuming its own body block in
+    # order; this lexer's eager single-opener resolution (see
+    # `scan_heredoc_opener`) doesn't extend to that case and a second
+    # opener on the same line will scan as ordinary (likely
+    # nonsensical) `<<` tokens instead. Rare enough in practice not to
+    # block this pickup — worth a SCOPE.md line if a real script ever
+    # needs it.
+    private def heredoc_starts_here? : Bool
+      return false unless current_char == '<'
+      third = peek_at(1)
+      case third
+      when '~', '-'
+        id_start = peek_at(2)
+        id_start.ascii_uppercase? || id_start == '"' || id_start == '\''
+      when '"', '\''
+        !EXPR_END_KINDS.includes?(@prev_kind)
+      else
+        third.ascii_uppercase? && !EXPR_END_KINDS.includes?(@prev_kind)
+      end
+    end
+
+    # Scans a heredoc opener (`<<~ID`, `<<-ID`, `<<ID`, each optionally
+    # `'ID'`/`"ID"`-quoted) and eagerly resolves the ENTIRE heredoc —
+    # header, body, and terminator — in one call, since the STRING
+    # token it produces belongs at the opener's own position in the
+    # token stream (see the `@pending_tokens`/`@pending_heredoc_skip_*`
+    # comment on those ivars for why). Scanning the body/terminator
+    # only ever reads `@source` via direct indexing (never touches
+    # `@pos`/`@line`/`@column`), so the caller resumes scanning the
+    # REST of the current physical line completely normally once this
+    # returns — only the later newline that actually starts the body
+    # block triggers the recorded skip.
+    # ameba:disable Metrics/CyclomaticComplexity
+    private def scan_heredoc_opener(start : Int32, line : Int32, col : Int32) : Token
+      advance # second '<'
+      squiggly = false
+      dash = false
+      if current_char == '~'
+        squiggly = true
+        advance
+      elsif current_char == '-'
+        dash = true
+        advance
+      end
+      quote = current_char == '"' || current_char == '\'' ? current_char : nil
+      advance if quote
+      id_start = @pos
+      while !at_end? && ident_continue?(current_char)
+        advance
+      end
+      id = lexeme_from(id_start)
+      if quote
+        return make_token(TokenKind::Error, "unterminated heredoc identifier", line, col) unless current_char == quote
+        advance
+      end
+      interpolate = quote != '\''
+      allow_indented_terminator = squiggly || dash
+
+      header_line = @line
+      line_end = @source.index('\n', @pos) || @source.size
+      body_start = line_end + 1 > @source.size ? @source.size : line_end + 1
+
+      cursor = body_start
+      terminator_at = nil.as(Int32?)
+      after_terminator = @source.size
+      loop do
+        this_line_nl = @source.index('\n', cursor)
+        this_line_end = this_line_nl || @source.size
+        candidate = @source[cursor, this_line_end - cursor]
+        check = allow_indented_terminator ? candidate.strip : candidate
+        if check == id
+          terminator_at = cursor
+          after_terminator = this_line_nl ? this_line_nl + 1 : @source.size
+          break
+        end
+        break if this_line_nl.nil? # ran off the end, never found it
+        cursor = this_line_nl + 1
+      end
+
+      term_at = terminator_at
+      if term_at.nil?
+        return make_token(TokenKind::Error, "unterminated heredoc: no closing `#{id}`", line, col)
+      end
+
+      body_raw = @source[body_start, term_at - body_start]
+      body_end_pos = after_terminator
+      body = squiggly ? dedent_heredoc_body(body_raw) : body_raw
+
+      @pending_heredoc_skip_at = line_end
+      @pending_heredoc_skip_to_pos = body_end_pos
+      @pending_heredoc_skip_to_line = header_line + 1 + body_raw.each_char.count { |char| char == '\n' } + 1
+
+      if interpolate
+        tokens = Lexer.new(body, @filename).heredoc_body_tokens(header_line + 1)
+        first = tokens[0]
+        fixed_first = Token.new(first.kind, first.lexeme, line, col, @space_before, first.regex_flags)
+        @pending_tokens.concat(tokens[1..])
+        fixed_first
+      else
+        Token.new(TokenKind::String, "'" + escape_single_quoted(body) + "'", line, col, @space_before)
+      end
+    end
+
+    # Entry point for the throwaway sub-Lexer `scan_heredoc_opener`
+    # constructs over an interpolating heredoc's own (already
+    # extracted, already dedented) body text — its `@source` IS that
+    # body, in full. Returns the same StringPart/.../StringEnd (or
+    # single String, if no `#{}` occurs) token shape `parse_interp_string`
+    # already knows how to consume, so no parser changes are needed
+    # for heredoc content itself. `start_line` seeds `@line` so any
+    # diagnostics pointing into the interpolated code read correctly.
+    def heredoc_body_tokens(start_line : Int32) : Array(Token)
+      @line = start_line
+      tokens = [] of Token
+      tok = scan_heredoc_first_chunk
+      tokens << tok
+      until tok.kind.in?(TokenKind::String, TokenKind::StringEnd, TokenKind::EOF, TokenKind::Error)
+        tok = next_token
+        tokens << tok
+      end
+      tokens
+    end
+
+    # First chunk of an interpolating heredoc body — mirrors
+    # `scan_string`'s own opening scan (which also emits either a
+    # whole `String` token or the first `StringPart` up to `#{`), just
+    # bounded by end-of-source instead of a closing quote character,
+    # and wrapping a no-interpolation result in synthetic `"` quotes
+    # so the parser's existing `is_double`/`strip_quotes` handling
+    # (which expects `TokenKind::String`'s lexeme to include its
+    # delimiters) applies unchanged.
+    private def scan_heredoc_first_chunk : Token
+      line = @line
+      col = @column
+      start = @pos
+      while !at_end?
+        c = current_char
+        if c == '\\'
+          advance
+          advance unless at_end?
+          next
+        end
+        if c == '#' && peek_next == '{'
+          content = @source[start, @pos - start]
+          advance # #
+          advance # {
+          @in_interp = true
+          @interp_brace_depth = 1
+          @interp_kind = InterpKind::Heredoc
+          return make_token(TokenKind::StringPart, content, line, col)
+        end
+        advance
+      end
+      content = @source[start, @pos - start]
+      make_token(TokenKind::String, "\"" + content + "\"", line, col)
+    end
+
+    # Squiggly (`<<~ID`) dedent: strips the minimum common leading
+    # whitespace found across every non-blank body line. A blank
+    # (whitespace-only) line never participates in that minimum and is
+    # dedented by whatever amount the real lines settled on, same as
+    # real Ruby.
+    private def dedent_heredoc_body(text : String) : String
+      lines = text.split('\n')
+      min_indent = nil.as(Int32?)
+      lines.each do |line_text|
+        next if line_text.strip.empty?
+        indent = 0
+        line_text.each_char do |char|
+          break unless char == ' ' || char == '\t'
+          indent += 1
+        end
+        current_min = min_indent
+        min_indent = indent if current_min.nil? || indent < current_min
+      end
+      mi = min_indent
+      return text if mi.nil? || mi == 0
+      String.build do |io|
+        lines.each_with_index do |line_text, idx|
+          io << (line_text.size >= mi ? line_text[mi..] : line_text.lstrip(" \t"))
+          io << '\n' unless idx == lines.size - 1
+        end
+      end
+    end
+
+    # Escapes a literal (single-quoted-heredoc) body for embedding in
+    # a synthetic `'...'` token lexeme — the parser's existing
+    # `decode_single_quoted_escapes` only ever un-escapes `\\` and
+    # `\'`, so those are the only two characters that need protecting
+    # here for the round-trip to reproduce the original body exactly.
+    private def escape_single_quoted(text : String) : String
+      String.build do |io|
+        text.each_char do |char|
+          io << '\\' if char == '\\' || char == '\''
+          io << char
+        end
+      end
     end
   end
 end

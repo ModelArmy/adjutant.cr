@@ -19,9 +19,11 @@ module Adjutant
     InterpStart # #{
     InterpEnd   # } closing an interpolation
     Symbol
-    Regex     # /pattern/flags with no interpolation
-    RegexPart # segment before/between #{} interpolations, inside /.../
-    RegexEnd  # final segment after last interpolation, /.../flags
+    Regex          # /pattern/flags with no interpolation
+    RegexPart      # segment before/between #{} interpolations, inside /.../
+    RegexEnd       # final segment after last interpolation, /.../flags
+    PercentWords   # %w[...] raw body — parser splits into an ArrayLiteral of StringLiteral
+    PercentSymbols # %i[...] raw body — parser splits into an ArrayLiteral of SymbolLiteral
 
     # Keywords
     KwClass
