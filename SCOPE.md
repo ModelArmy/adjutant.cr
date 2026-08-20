@@ -39,25 +39,6 @@ currently blocking anything" no longer held. The remaining entries
 weren't re-evaluated against the promoted two on this axis, just carried
 forward.
 
-- **`lambda { ... }`/`proc { ... }` (the `Kernel`-method spelling)
-  don't exist — only `-> { ... }` (stabby lambda) works.** Promoted
-  from `Will Fix` 2026-08-15 — the more common spelling in ordinary
-  Ruby, reasonable to expect an idiomatic script to reach for it
-  first; reasoning below is unchanged from the original entry. Found
-  2026-08-10, while preparing a multi-level-closures test script —
-  reached for `lambda { x + 1 }` first, the more common spelling in
-  ordinary Ruby, and it doesn't parse/resolve at all. `Arrow` (`->`)
-  is a real token with real parser support (`parser.cr`);
-  `lambda`/`proc` are `Kernel` methods in real Ruby, not keywords, so
-  — same reasoning as `catch`/`throw` (see `Will Fix`) — nothing about
-  the grammar needs to change. Confirmed no trace of either name
-  anywhere in the codebase (`grep -rn '"lambda"'` and `'"proc"'` both
-  empty), so today `lambda { ... }` just fails loudly as an ordinary
-  undefined-method call (`R008`) with a block attached, not silently.
-  Likely a small native-function addition once a `->`-built
-  `ScriptProc`/lambda object already exists to return — wrapping the
-  given block as that same object shape, not a new construct.
-
 - **Runtime diagnostics have no carets** (`Frame` records a line but no
   column). Promoted from Error reporting 2026-08-05 on a
   turn-churn argument specific to this use case: the cost of an

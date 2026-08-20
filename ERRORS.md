@@ -125,6 +125,7 @@ R028|`Range#last` called on an endless range                           |—
 R029|`Range#min` called on a beginless range                           |—                       
 R030|`Range#first` called on a beginless range                         |—                       
 R031|`#first(n)`/`#last(n)` given a negative count (Range, Array)      |—                       
+R032|`lambda` called with no block                                     |—                       
 
 Scripts can `rescue` these. R008 raises a `NameError`, matching Ruby;
 R011, R012, R015, and R018 raise `ArgumentError`, also matching Ruby;
@@ -133,7 +134,8 @@ R014 and R023 raise a `NoMethodError`, also matching Ruby; R016 raises a
 `TypeError`, also matching Ruby; R020, R022, R025, and R031 raise an
 `ArgumentError`, also matching Ruby; R021 raises a `RegexpError`, also
 matching Ruby; R026, R027, R028, R029, and R030 raise a `RangeError`, also
-matching Ruby; the rest raise `RuntimeError`.
+matching Ruby; R032 raises an `ArgumentError`, also matching Ruby; the rest
+raise `RuntimeError`.
 
 Adjutant's constants are assign-once, which Ruby only warns about. R001 is
 that rule firing on an ordinary constant; reopening a class or module is
@@ -186,6 +188,7 @@ U015|`undef` / method-added hooks                    |`construct`
 U016|`begin...end while`/`until` (do-while)          |—                
 U017|Operator-method overloading (`def ==`, ...)     |`operator`       
 U018|`extend`/`include` via an explicit receiver     |`construct`      
+U019|`proc { ... }`                                  |`construct`      
 
 U005 and U006 are reported when a name that would resolve to one of them
 resolves to nothing else. A script is still free to define its own method

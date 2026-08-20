@@ -456,6 +456,25 @@ module Adjutant
       invoke_internal(sproc, args, self_val, outer_locals: proc_obj.outer_locals)
     end
 
+    # Wraps a live call-site block into a real `Proc` RubyObject — see
+    # `NativeCallContext#wrap_block_as_proc`'s own comment for the
+    # full reasoning (`lambda`/`proc`, builtins/proc.cr, are the only
+    # callers). `current_frame` here IS the call-site frame `lambda`/
+    # `proc` was itself called from, unchanged, because a native call
+    # never pushes a VM frame of its own — exactly the same frame
+    # `Op::MakeProc`'s own a=1 branch captures from for an ordinary
+    # `->(){}` literal (see that opcode's comment), so this reuses
+    # `make_lambda_object` directly rather than a parallel
+    # implementation. `label` is passed as `nil` — the returned Proc
+    # object gets no risk-flow label of its own; nothing about
+    # wrapping an existing block into a Proc constitutes a new
+    # sensitive value in its own right, unlike, say, a value actually
+    # read from an argument.
+    protected def wrap_block_as_proc(blk : ScriptProc, filename : String, line : Int32) : Value
+      f = current_frame
+      make_lambda_object(blk, nil, [f.locals] + (f.outer_locals || [] of Array(Value)), filename, line)
+    end
+
     # Shared machinery for both `invoke` and `invoke_proc` above —
     # never called directly from outside this file. `outer_locals`,
     # when given, overrides the outer/closure scope the invoked proc
