@@ -187,6 +187,52 @@ module Adjutant
         node.as(ArrayLiteral).elements.should be_empty
       end
 
+      describe "%w[] / %i[] literals" do
+        it "parses %w[] as an ArrayLiteral of StringLiteral" do
+          node = parse_expr("%w[a b c]").as(ArrayLiteral)
+          node.elements.size.should eq 3
+          node.elements.map { |e| e.as(StringLiteral).value }.should eq ["a", "b", "c"]
+        end
+
+        it "parses %i[] as an ArrayLiteral of SymbolLiteral" do
+          node = parse_expr("%i[a b c]").as(ArrayLiteral)
+          node.elements.size.should eq 3
+          node.elements.map { |e| e.as(SymbolLiteral).value }.should eq ["a", "b", "c"]
+        end
+
+        it "parses an empty %w[] as an empty ArrayLiteral" do
+          parse_expr("%w[]").as(ArrayLiteral).elements.should be_empty
+        end
+      end
+
+      describe "heredocs" do
+        it "parses a plain <<ID heredoc as a StringLiteral" do
+          node = parse_expr("<<HERE\nhello\nHERE\n")
+          node.should be_a(StringLiteral)
+          node.as(StringLiteral).value.should eq "hello\n"
+        end
+
+        it "parses an interpolating heredoc as an InterpString" do
+          node = parse_expr("<<HERE\nx=\#{y}\nHERE\n")
+          node.should be_a(InterpString)
+        end
+
+        it "parses a single-quoted heredoc as a literal StringLiteral, \#{} uninterpreted" do
+          node = parse_expr("<<'HERE'\nx=\#{y}\nHERE\n")
+          node.should be_a(StringLiteral)
+          node.as(StringLiteral).value.should eq "x=\#{y}\n"
+        end
+
+        it "dedents a squiggly <<~ID heredoc to its least-indented line" do
+          node = parse_expr("x = <<~HERE\n    first\n      second\n    HERE\n")
+          # `x = ...` makes this an assignment; unwrap to the RHS
+          node.should be_a(Assign)
+          rhs = node.as(Assign).value
+          rhs.should be_a(StringLiteral)
+          rhs.as(StringLiteral).value.should eq "first\n  second\n"
+        end
+      end
+
       it "parses a hash literal" do
         node = parse_expr(%({ "a" => 1 }))
         node.should be_a(HashLiteral)

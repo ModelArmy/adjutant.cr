@@ -356,6 +356,111 @@ module Adjutant
       end
     end
 
+    describe "%w[] / %i[] literals" do
+      it "scans a %w[] literal as one PercentWords token, raw body in lexeme" do
+        pairs("%w[a b c]").should eq [{TokenKind::PercentWords, "a b c"}]
+      end
+
+      it "scans a %i[] literal as one PercentSymbols token" do
+        pairs("%i[a b c]").should eq [{TokenKind::PercentSymbols, "a b c"}]
+      end
+
+      it "supports paren delimiters" do
+        pairs("%w(a b)").should eq [{TokenKind::PercentWords, "a b"}]
+      end
+
+      it "supports a same-char delimiter" do
+        pairs("%w|a b|").should eq [{TokenKind::PercentWords, "a b"}]
+      end
+
+      it "tracks nesting depth for bracket-pair delimiters" do
+        pairs("%w[a [b] c]").should eq [{TokenKind::PercentWords, "a [b] c"}]
+      end
+
+      it "does not treat a same-char delimiter as nesting" do
+        # the middle `|` closes the literal; `c|` is left for the
+        # next token entirely, same as real Ruby's non-nesting rule
+        kinds("%w|a b|c|").should eq [
+          TokenKind::PercentWords, TokenKind::Identifier, TokenKind::Pipe,
+        ]
+      end
+
+      it "does not start a %w literal without a valid delimiter" do
+        # %w followed by a letter (not a delimiter) — ordinary
+        # modulo/identifier tokens instead
+        kinds("x %wide").should eq [TokenKind::Identifier, TokenKind::Percent, TokenKind::Identifier]
+      end
+    end
+
+    describe "heredocs" do
+      it "scans a plain <<ID heredoc as a single String token" do
+        pairs("<<HERE\nabc\nHERE\n").should eq [
+          {TokenKind::String, "\"abc\n\""},
+          {TokenKind::Newline, "\n"},
+        ]
+      end
+
+      it "supports code on the same line after the opener" do
+        kinds("x = <<HERE + 1\nabc\nHERE\n").should eq [
+          TokenKind::Identifier, TokenKind::Eq, TokenKind::String,
+          TokenKind::Plus, TokenKind::Integer, TokenKind::Newline,
+        ]
+      end
+
+      it "resumes normal scanning on the line after the terminator" do
+        kinds("<<HERE\nabc\nHERE\ny\n").should eq [
+          TokenKind::String, TokenKind::Newline,
+          TokenKind::Identifier, TokenKind::Newline,
+        ]
+      end
+
+      it "splits an interpolating heredoc into StringPart/.../StringEnd" do
+        kinds("<<HERE\nx=\#{y}\nHERE\n").should eq [
+          TokenKind::StringPart, TokenKind::Identifier, TokenKind::InterpEnd,
+          TokenKind::StringEnd, TokenKind::Newline,
+        ]
+      end
+
+      it "does not interpolate a single-quoted heredoc" do
+        pairs("<<'HERE'\nx=\#{y}\nHERE\n").should eq [
+          {TokenKind::String, "'x=\#{y}\n'"},
+          {TokenKind::Newline, "\n"},
+        ]
+      end
+
+      it "requires the terminator flush-left without '~'/'-'" do
+        # `tokenize` only stops at EOF, not Error — scanning continues
+        # normally past it (the lookahead that failed to find a
+        # terminator never touched the cursor), so only the FIRST
+        # token is asserted here, not the whole stream.
+        kinds("<<HERE\nabc\n  HERE\n").first.should eq TokenKind::Error
+      end
+
+      it "<<-ID allows an indented terminator" do
+        pairs("<<-HERE\nabc\n  HERE\ny\n").should eq [
+          {TokenKind::String, "\"abc\n\""},
+          {TokenKind::Newline, "\n"},
+          {TokenKind::Identifier, "y"},
+          {TokenKind::Newline, "\n"},
+        ]
+      end
+
+      it "does not treat bare << as a heredoc after an expression-ending token" do
+        # `1 <<Y` — an Integer literal ends an expression the same
+        # way it would for regex/division disambiguation, so this is
+        # left-shift, not a heredoc opener (no space before `Y`, so
+        # this genuinely exercises the EXPR_END_KINDS check rather
+        # than accidentally passing because of the space alone)
+        kinds("1 <<Y").should eq [
+          TokenKind::Integer, TokenKind::Shl, TokenKind::Constant,
+        ]
+      end
+
+      it "errors on an unterminated heredoc" do
+        kinds("<<HERE\nabc\n").first.should eq TokenKind::Error
+      end
+    end
+
     describe "regex literals" do
       it "scans a simple regex literal, pattern in lexeme" do
         pairs("/abc/").should eq [{TokenKind::Regex, "abc"}]

@@ -811,6 +811,12 @@ module Adjutant
       when TokenKind::Symbol
         tok = advance
         SymbolLiteral.new(tok.lexeme.lstrip(':').strip('"').strip('\''), l, c)
+      when TokenKind::PercentWords
+        tok = advance
+        ArrayLiteral.new(split_percent_literal(tok.lexeme).map { |word| StringLiteral.new(word, tok.line, tok.column).as(Node) }, l, c)
+      when TokenKind::PercentSymbols
+        tok = advance
+        ArrayLiteral.new(split_percent_literal(tok.lexeme).map { |word| SymbolLiteral.new(word, tok.line, tok.column).as(Node) }, l, c)
       when TokenKind::Identifier
         parse_identifier_or_call(l, c)
       when TokenKind::Constant
@@ -2065,6 +2071,46 @@ module Adjutant
     private def strip_quotes(s : String) : String
       return s[1..-2] if s.size >= 2 && (s.starts_with?('"') || s.starts_with?('\''))
       s
+    end
+
+    # Splits a `%w[...]`/`%i[...]` literal's raw body (lexer-scanned,
+    # backslash-escaping already respected as "escape the next char
+    # unconditionally") into its individual words. Runs of whitespace
+    # separate words; a backslash-escaped whitespace character is kept
+    # as a literal character in the current word instead of splitting
+    # there, and a backslash-escaped backslash decodes to one
+    # backslash — the only two escapes real Ruby recognizes inside
+    # `%w`/`%i` (no `\n`/`\t`/etc., unlike a double-quoted string).
+    # Leading/trailing whitespace in the body produces no empty words.
+    private def split_percent_literal(raw : String) : Array(String)
+      words = [] of String
+      current = String::Builder.new
+      has_content = false
+      i = 0
+      n = raw.size
+      while i < n
+        ch = raw[i]
+        if ch == '\\' && i + 1 < n
+          current << raw[i + 1]
+          has_content = true
+          i += 2
+          next
+        end
+        if ch.ascii_whitespace?
+          if has_content
+            words << current.to_s
+            current = String::Builder.new
+            has_content = false
+          end
+          i += 1
+          next
+        end
+        current << ch
+        has_content = true
+        i += 1
+      end
+      words << current.to_s if has_content
+      words
     end
 
     # Decodes real Ruby's backslash escape sequences in a string
