@@ -50,6 +50,16 @@ module Adjutant
         (inst.b & 0b10_u16).should_not eq(0_u16)
       end
 
+      it "compiles =~ as a real receiver call on the left operand" do
+        # Same shape as <=> just above (compile_match mirrors
+        # compile_spaceship exactly) — `a =~ b` desugars to `a.=~(b)`,
+        # dispatching on `a`, not on whatever frame happens to be
+        # compiling the match.
+        chunk = compile("a =~ b")
+        inst = chunk.code.find { |i| i.op == Op::Call }.not_nil!
+        (inst.b & 0b10_u16).should_not eq(0_u16)
+      end
+
       it "compiles short-circuit || with Dup and JumpIfFalse" do
         o = ops("a || b")
         o.should contain(Op::Dup)

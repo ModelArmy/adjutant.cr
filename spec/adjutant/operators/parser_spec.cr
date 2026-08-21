@@ -32,6 +32,30 @@ module Adjutant
         node = parse_expr("a || b")
         node.as(Binary).op.should eq TokenKind::OrOr
       end
+
+      it "parses =~ as a Binary node" do
+        node = parse_expr("a =~ b")
+        node.should be_a(Binary)
+        node.as(Binary).op.should eq TokenKind::EqTilde
+      end
+
+      it "parses a.=~(b) as an ordinary dot-call, same mechanism as a.===(b)" do
+        # No special-casing needed in parse_postfix — EqTilde being a
+        # single token (not separate Eq/Tilde) is the whole fix, same
+        # as TripleEq's own dot-call spelling already working for free.
+        node = parse_expr("a.=~(b)")
+        node.should be_a(Call)
+        node.as(Call).method.should eq "=~"
+      end
+
+      it "respects precedence: =~ binds looser than +" do
+        node = parse_expr("a =~ b + c")
+        node.should be_a(Binary)
+        top = node.as(Binary)
+        top.op.should eq TokenKind::EqTilde
+        top.right.should be_a(Binary)
+        top.right.as(Binary).op.should eq TokenKind::Plus
+      end
     end
 
     describe "unary expressions" do

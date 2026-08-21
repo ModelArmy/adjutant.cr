@@ -235,6 +235,40 @@ module Adjutant
       end
     end
 
+    describe "#=~" do
+      # Real infix `=~` support — added 2026-08-20 alongside the
+      # `EqTilde` lexer token and its `PRECEDENCE` entry, unlike
+      # `===` just below (which stays dot-call-only, deliberately —
+      # see that describe block's own comment). Returns the match's
+      # START INDEX, not a MatchData and not a Bool — real Ruby's
+      # actual `=~` return value.
+      it "returns the match start index via bare infix syntax" do
+        eval(%(/b./ =~ "abc")).as_int.should eq 1
+      end
+
+      it "returns the match start index via dot-call syntax too" do
+        eval(%(/b./.=~("abc"))).as_int.should eq 1
+      end
+
+      it "returns nil on no match" do
+        eval(%(/xyz/ =~ "abc")).null?.should be_true
+      end
+
+      it "returns 0 when the match starts at the beginning" do
+        eval(%(/abc/ =~ "abcdef")).as_int.should eq 0
+      end
+
+      it "raises R022 (ArgumentError) when no string argument is given" do
+        error = expect_raises(RuntimeError) { eval("/abc/.=~") }
+        error.diagnostic.not_nil!.code.should eq("R022")
+      end
+
+      it "raises R022 for a non-String right-hand side" do
+        error = expect_raises(RuntimeError) { eval("/abc/ =~ 5") }
+        error.diagnostic.not_nil!.code.should eq("R022")
+      end
+    end
+
     describe "#===" do
       # No infix `a === b` support in Adjutant at all (see
       # UNSUPPORTED.md's U017 — TripleEq is a real token wherever

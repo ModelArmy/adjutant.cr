@@ -24,15 +24,21 @@ require "assert"
 # 2. `$~`/`$1`.. GLOBALS DON'T EXIST AT ALL — no `$`-global plumbing in
 #    Adjutant yet (see SCOPE.md's Regexp/MatchData entry). Blocks every
 #    upstream assertion that reads or writes one.
-# 3. INFIX `a =~ b` AND `a === b` DON'T PARSE — `=~` has no lexer
-#    token at all (a real, tracked gap — see SCOPE.md's own `=~` entry,
-#    filed the same session this file was written); `a === b` is a
-#    DELIBERATE, permanent non-goal (UNSUPPORTED.md), not a gap —
-#    `.===(x)` dot-call and `case/when` both work today and are NOT
-#    blocked by this. Every upstream assertion using bare infix `=~`
-#    or `===` is blocked for this reason; `.===`/`case`/`when` coverage
-#    already exists at the Crystal-spec level (regexp_spec.cr) and
-#    isn't re-proven here just to route around this gap.
+# 3. INFIX `a === b` DOESN'T PARSE — a DELIBERATE, permanent non-goal
+#    (UNSUPPORTED.md), not a gap — `.===(x)` dot-call and `case/when`
+#    both work today and are NOT blocked by this. Infix `a =~ b` DOES
+#    parse now (added 2026-08-20 — real `EqTilde` lexer token and
+#    `PRECEDENCE` entry, `Regexp#=~`/`String#=~` wired up for real);
+#    every upstream assertion using bare infix `=~` that was blocked
+#    for this reason alone is now active below — anything still
+#    commented out near `=~` is blocked for a DIFFERENT, specific
+#    reason given at that site (usually `$~`, a Symbol argument, or
+#    the ArgumentError/TypeError error-class divergence — Adjutant
+#    raises ArgumentError for a non-String/non-Regexp match argument,
+#    real Ruby raises TypeError). Every upstream assertion using bare infix `===`
+#    stays blocked; `.===`/`case`/`when` coverage already exists at
+#    the Crystal-spec level (regexp_spec.cr) and isn't re-proven here
+#    just to route around this gap.
 #
 # Beyond those three, several methods genuinely don't exist yet at
 # all: `Regexp.escape`, `#inspect`/`#to_s` (the same to_s/inspect
@@ -124,13 +130,26 @@ end
 #   assert_equal "matched", $~[0]
 # end
 
-# --- BLOCKED: infix `=~` doesn't parse at all (file header, point 3).
-# assert("Regexp#=~") do
-#   re = Regexp.new("bc")
-#   assert_equal 1, re =~ "abcd"
-#   assert_nil re =~ "xyz"
-#   assert_equal __ENCODING__ == "UTF-8" ? 1 : 3, /い/ =~ "あい"
-# end
+assert("Regexp#=~") do
+  re = Regexp.new("bc")
+  assert_equal 1, re =~ "abcd"
+  assert_nil re =~ "xyz"
+end
+# --- Still BLOCKED (the multibyte case only): upstream's third
+# assertion here checks a match position against multi-byte UTF-8
+# text (`/い/ =~ "あい"`, expecting the CHARACTER index 1, gated
+# upstream on `__ENCODING__ == "UTF-8"` — not a real token here, see
+# string.rb's own note on that exact gate). Whether Crystal's
+# `::Regex::MatchData#begin` returns a character offset or a byte
+# offset for non-ASCII text isn't independently verified here (no
+# local Crystal toolchain to check against) — left out rather than
+# asserted as a guess, unlike the ASCII-only assertions just above.
+# assert_equal 1, /い/ =~ "あい"
+
+# --- Still BLOCKED: `$~` doesn't exist (file header, point 2) AND
+# Adjutant raises ArgumentError/R022 for a nil match argument rather
+# than returning nil — same divergence noted at "Regexp#match - nil
+# argument" above, not a consequence of infix `=~` itself.
 # assert("Regexp#=~ - nil argument clears last match") do
 #   $~ = /abc/.match("abc")
 #   assert_nil(/abc/ =~ nil)
@@ -227,10 +246,11 @@ end
 # --- BLOCKED, real finding worth keeping visible: real Ruby raises
 # TypeError for a non-String/non-Regexp #match/#match?/=~ argument;
 # Adjutant raises ArgumentError/R022 instead (see file header) — a
-# genuine error-class divergence, not just a missing feature. The
-# last three lines are additionally blocked by infix `===`/`=~` not
-# parsing at all (point 3 in the header) regardless of the error-class
-# question.
+# genuine error-class divergence, not a missing feature. Infix `=~`
+# itself parses fine now (2026-08-20) — `/a/ =~ 1` reaches the same
+# ArgumentError/TypeError mismatch as the `#match`/`#match?` lines,
+# not a parse failure. The `#===` lines stay blocked for the
+# separate, permanent reason (bare infix `===` — UNSUPPORTED.md).
 # assert("Regexp - match operand rejects other types") do
 #   assert_raise(TypeError) { /a/.match(1) }
 #   assert_raise(TypeError) { /a/.match?(1) }

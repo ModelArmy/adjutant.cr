@@ -111,6 +111,7 @@ module Adjutant
     Caret
     Bang
     Tilde
+    EqTilde # =~, regex/string match — see scan_eq's own comment
     Eq
     EqEq
     TripleEq # ===, def-name position only — see scan_eq's own comment

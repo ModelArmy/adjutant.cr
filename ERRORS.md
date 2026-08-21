@@ -126,11 +126,12 @@ R029|`Range#min` called on a beginless range                           |—
 R030|`Range#first` called on a beginless range                         |—                       
 R031|`#first(n)`/`#last(n)` given a negative count (Range, Array)      |—                       
 R032|`lambda` called with no block                                     |—                       
+R033|`String#=~` given a missing or non-Regexp pattern                 |—                       
 
 Scripts can `rescue` these. R008 raises a `NameError`, matching Ruby;
 R011, R012, R015, and R018 raise `ArgumentError`, also matching Ruby;
 R014 and R023 raise a `NoMethodError`, also matching Ruby; R016 raises a
-`FloatDomainError`, also matching Ruby; R017, R019, and R024 raise a
+`FloatDomainError`, also matching Ruby; R017, R019, R024, and R033 raise a
 `TypeError`, also matching Ruby; R020, R022, R025, and R031 raise an
 `ArgumentError`, also matching Ruby; R021 raises a `RegexpError`, also
 matching Ruby; R026, R027, R028, R029, and R030 raise a `RangeError`, also

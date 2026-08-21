@@ -582,5 +582,46 @@ module Adjutant
         result.null?.should be_true
       end
     end
+
+    describe "#=~" do
+      # Real infix `=~` support — added 2026-08-20 alongside the
+      # `EqTilde` lexer token and its `PRECEDENCE` entry. Unlike
+      # `#match` just above, this does NOT coerce a String pattern
+      # into a regex — real Ruby's `String#=~` only accepts a Regexp.
+      # Returns the match's START INDEX, not a MatchData.
+      it "returns the match start index via bare infix syntax" do
+        eval(%("hello world" =~ /wor/)).as_int.should eq 6
+      end
+
+      it "returns the match start index via dot-call syntax too" do
+        eval(%("hello world".=~(/wor/))).as_int.should eq 6
+      end
+
+      it "returns nil on no match" do
+        eval(%("hello" =~ /z/)).null?.should be_true
+      end
+
+      it "raises R033 (TypeError) for a String pattern — no coercion, unlike #match" do
+        error = expect_raises(RuntimeError) { eval(%("hello" =~ "l+")) }
+        error.diagnostic.not_nil!.code.should eq("R033")
+      end
+
+      it "raises R033 (TypeError) when no argument is given" do
+        error = expect_raises(RuntimeError) { eval(%("hello".=~)) }
+        error.diagnostic.not_nil!.code.should eq("R033")
+      end
+
+      it "the ArgumentError-equivalent TypeError is rescuable from script" do
+        result = eval(<<-RUBY)
+          begin
+            "hello" =~ "not a regex"
+            false
+          rescue TypeError
+            true
+          end
+        RUBY
+        result.as_bool.should be_true
+      end
+    end
   end
 end

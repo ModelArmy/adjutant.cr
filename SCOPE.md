@@ -110,6 +110,19 @@ still roughly ordered by how cheap/independent the fix is.
 Small, mechanical, independent of each other — good candidates for quick
 wins.
 
+- **`!~` (negated match) doesn't exist — only `=~` does.** Scoped out
+  2026-08-20 while implementing `=~` itself (see `lexer.cr`'s
+  `scan_eq`, `parser.cr`'s `PRECEDENCE` table, `compiler.cr`'s
+  `compile_match`, and `Regexp#=~`/`String#=~` in
+  `builtins/regexp.cr`/`builtins/string.cr`) — real Ruby defines
+  `Object#!~` generically as `!(self =~ other)`, so once `=~` itself
+  works this is mechanically small (a `BangTilde` lexer token, a
+  `PRECEDENCE` entry at the same level as `=~`, and a
+  `compile_not_match` mirroring `compile_match` but with a trailing
+  `Op::Not`), just a separate piece of work from what was asked for
+  this pickup. `!(x =~ y)` already covers the same thing today, just
+  with the parens spelled out.
+
 - **`%W[]`/`%I[]` (interpolating word/symbol arrays) and `%q`/`%Q`/`%r`
   (the general delimited-literal forms) aren't supported — only plain
   `%w[]`/`%i[]` are.** Added 2026-08-19 alongside `%w[]`/`%i[]` itself
@@ -167,53 +180,24 @@ wins.
   in `irb` unambiguously executes `seen << n` unless `n > 4`, never
   attempts to parse an if-expression as break's own value.
 
-- **`=~` (regex/string match operator) doesn't exist at all — no
-  lexer token, no infix precedence entry, and no working dot-call
-  spelling either.** Found 2026-08-14 while wiring `Regexp#=~` as
-  part of the Regexp/MatchData work — ended up NOT defining that
-  native method at all (see its own comment in `builtins/regexp.cr`),
-  since there's currently no script syntax that could ever reach it:
-  `x =~ y` doesn't parse (no `PRECEDENCE` entry, and the lexer has no
-  combined `=~` token — it splits into separate `Eq`/`Tilde` tokens),
-  and `x.=~(y)` doesn't work either, since `parse_postfix`'s dot-call
-  handling grabs only the very next token's lexeme as the method name
-  (see `===`'s own dot-call case, which works precisely because
-  `TripleEq` IS a single token) — for `=~` that's just the bare `=`,
-  leaving a stray `~` to break the rest of the parse. This is a
-  genuinely common, idiomatic Ruby pattern (`if line =~ /pattern/`,
-  `text =~ /foo/`) — worth real support, not just leaving the
-  dot-call form broken. Fix is two independent pieces: (1) a real
-  `EqTilde`/`Match` lexer token (`lexer.cr`'s `scan_eq`, alongside how
-  `TripleEq` already handles `===`'s maximal-munch) so `.=~(x)`
-  parses at all, and (2) a `PRECEDENCE` table entry (matching
-  `<=>`'s existing infix support — see `operators/compiler_spec.cr`
-  — not `===`'s deliberate infix exclusion) so `x =~ y` parses as an
-  ordinary receiver call `x.=~(y)`. Once both land, `Regexp#=~` (and
-  `String#=~`, which doesn't exist yet either) can be added for real —
-  as a match-position return value only, same as `#match?`. Real
-  Ruby's own `$~`/`$1`.. side effects on `=~` are NOT part of this:
-  match globals were decided against entirely, 2026-08-14, not
-  deferred pending this — see `UNSUPPORTED.md`'s U011 entry (now
-  enforced) for the full reasoning.
-
 - **`a === b` as general infix script syntax doesn't parse — a
-  narrower, DELIBERATE gap, not an oversight; do not conflate with
-  the `=~` item above.** `TripleEq` is a real lexer token wherever
-  `===` appears in source, but it's intentionally absent from the
-  `PRECEDENCE` table (see `UNSUPPORTED.md`'s U017 and
+  narrower, DELIBERATE gap, not an oversight.** `TripleEq` is a real
+  lexer token wherever `===` appears in source, but it's intentionally
+  absent from the `PRECEDENCE` table (see `UNSUPPORTED.md`'s U017 and
   `Lexer#scan_eq`'s own comment) — `case/when` is real Ruby's actual
   caller for `===`, and that's compiler-generated dispatch
   (`Compiler#compile_case`, an ordinary `Op::Call`), not something
   parsed from `a === b` script syntax. The dot-call spelling
   (`a.===(b)`) DOES already work today, for any class defining
   `===` (confirmed 2026-08-14 for `Regexp#===`, see
-  `builtins/regexp_spec.cr`) — since `TripleEq`, unlike `=~`, is a
-  single token, `parse_postfix`'s dot-call handling picks up its
-  lexeme correctly with no changes needed. Whether bare infix `===`
-  is worth adding on top of that is a real open question (unlike
-  `=~` above, `case/when` and `.===(x)` between them already cover
-  the pattern's real-world uses reasonably well) — flagging here
-  rather than deciding it.
+  `builtins/regexp_spec.cr`) — since `TripleEq` is a single token
+  (same reasoning `=~`'s own `EqTilde` token needed, once added —
+  see `Lexer#scan_eq`), `parse_postfix`'s dot-call handling picks up
+  its lexeme correctly with no changes needed. Whether bare infix
+  `===` is worth adding on top of that is a real open question
+  (`case/when` and `.===(x)` between them already cover the pattern's
+  real-world uses reasonably well) — flagging here rather than
+  deciding it.
 
 - **Do `class`/`module` bodies want the same implicit `rescue`/`else`/
   `ensure` treatment `def` bodies just got?** Open question, not a
