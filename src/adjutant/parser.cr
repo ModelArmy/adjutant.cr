@@ -438,8 +438,17 @@ module Adjutant
       # multi-target assignment's target list (`a, b = ...`), not some
       # other comma-bearing construct. Committing on sight (no
       # backtracking) mirrors `parse_multi_rhs` below doing the same
-      # thing on the rhs side.
-      result = at_kind?(TokenKind::Comma) ? parse_multi_assign(expr) : maybe_assignment(expr)
+      # thing on the rhs side. Note `expr` may ALREADY be a fully-built
+      # assignment node here (`Assign`/`OpAssign`/`CondAssign`/
+      # `AttrAssign`) — `parse_expression` itself now resolves `=`/
+      # compound-assign as soon as it parses a bare lvalue immediately
+      # followed by one (see `parse_expression`'s own comment for why
+      # that's unconditional, not `min_prec`-gated), so there's no
+      # separate assignment step needed at the statement level
+      # anymore, only the multi-target case, which stays here since it
+      # needs the not-yet-assignment-resolved first target to decide
+      # whether a `,` follows it.
+      result = at_kind?(TokenKind::Comma) ? parse_multi_assign(expr) : expr
       l, c = result.line, result.column
       case current_kind
       when TokenKind::KwIf
@@ -459,7 +468,20 @@ module Adjutant
       end
     end
 
-    # Resolve assignment if expr is a valid lvalue and = follows.
+    # Resolve assignment if expr is a valid lvalue and = follows. Called
+    # from `parse_expression` itself, immediately after the primary is
+    # parsed (see there for why that's unconditional, not gated on
+    # `min_prec`) rather than only at the statement level, so
+    # assignment can now appear anywhere a sub-expression is parsed:
+    # inside `()`, as a call/index argument, an array/hash element, a
+    # ternary branch, as an operator's own right-hand side, etc. —
+    # matching real Ruby, where assignment is a real, right-associative
+    # expression recognized locally at the lvalue, not a statement-only
+    # construct or an ordinary precedence-climbing operator. Right-
+    # associativity (`c = b = 5`) falls out for free: `rhs =
+    # parse_multi_rhs` below recurses into `parse_expression(0)`, which
+    # will itself resolve a further `=` if one follows, same mechanism,
+    # not a special case.
     private def maybe_assignment(lhs : Node) : Node
       l, c = lhs.line, lhs.column
       case current_kind
@@ -514,12 +536,22 @@ module Adjutant
     # to `emit_store` at compile time (C001), so `1, 2 = 3, 4` fails
     # there rather than here, consistent with how `1 = 2` already
     # behaves.
+    #
+    # `resolve_assignment: false` on each target's own parse — a target
+    # here always ends at the next `,` or the multi-assign's own `=`;
+    # that `=` belongs to THIS construct (`expect(TokenKind::Eq)` right
+    # below), not to a nested assignment on the target itself. Without
+    # this, `a, b = 1, 2` would have `b`'s own `parse_expression(0)`
+    # greedily consume `= 1, 2` as ITS assignment (now that
+    # `parse_expression` resolves `=` generally — see that method's own
+    # comment), leaving nothing for `expect(TokenKind::Eq)` below to
+    # find.
     private def parse_multi_assign(first : Node) : Node
       l, c = first.line, first.column
       targets = [first] of Node
       while match(TokenKind::Comma)
         skip_newlines
-        targets << parse_expression(0)
+        targets << parse_expression(0, resolve_assignment: false)
       end
       expect(TokenKind::Eq)
       rhs = parse_multi_rhs
@@ -596,8 +628,63 @@ module Adjutant
       PRECEDENCE[kind]? || 0
     end
 
-    private def parse_expression(min_prec : Int32) : Node
+    # Assignment tokens (`=`, `+=`/`-=`/.../`||=`/`&&=`) — checked
+    # separately from `PRECEDENCE` below, since assignment sits at its
+    # own lowest, right-associative tier rather than the ordinary
+    # left-associative Pratt chain the ones in that table share.
+    private def assignment_token?(kind : TokenKind) : Bool
+      kind.in?(
+        TokenKind::Eq, TokenKind::PlusEq, TokenKind::MinusEq, TokenKind::StarEq,
+        TokenKind::SlashEq, TokenKind::PercentEq, TokenKind::OrAssign, TokenKind::AndAssign
+      )
+    end
+
+    private def parse_expression(min_prec : Int32, resolve_assignment : Bool = true) : Node
       left = parse_unary
+      # Assignment is checked HERE — immediately after the primary is
+      # parsed, before the binary-operator loop below even starts —
+      # deliberately NOT gated on `min_prec`. Confirmed against real
+      # Ruby (docs.ruby-lang.org/en/master/syntax/precedence_rdoc.html
+      # lists `=` below `==` in the precedence TABLE, which reads as
+      # "assignment binds looser," but that's not how the grammar
+      # actually behaves): `7 == tot = sum(3, 4)` parses as `7 == (tot
+      # = sum(3, 4))`, not as an attempt to assign into `(7 == tot)`.
+      # An identifier immediately followed by `=` commits to being an
+      # assignment target the moment it's reduced to a primary,
+      # regardless of what precedence level the surrounding recursive
+      # `parse_expression` call was invoked at — real Ruby's grammar
+      # has assignment as its own production keyed off the lhs shape,
+      # not a generic Pratt-chain operator competing on precedence
+      # alone. A first attempt gated this on `min_prec == 0` (checked
+      # only once, after the loop below had already fully run) —
+      # WRONG, caught by `spec/scripts/expressions.rb`'s "Assignment as
+      # expression" case (`7 == tot = sum(3, 4)`, expected to evaluate
+      # true): that version reduced `7 == tot` FIRST (since `==` sits
+      # in the ordinary `PRECEDENCE` table and the loop runs before the
+      # end-of-method check), then tried to assign into the resulting
+      # `Binary` node, raising C001. Checking immediately after
+      # `parse_unary` instead — before `==`'s own loop iteration ever
+      # combines `7` and `tot` — means `tot`'s assignment resolves
+      # first, consuming `sum(3, 4)` as its value via the same
+      # `maybe_assignment` → `parse_multi_rhs` → `parse_expression(0)`
+      # chain as ever; the resulting `Assign` node then becomes `==`'s
+      # right operand instead of `tot` alone. `a + b = 1` similarly now
+      # parses as `a + (b = 1)`, not a compile-time C001 — also
+      # confirmed as real Ruby's actual behavior (assignment operators
+      # "evaluate expressions to the right of them first"), not a
+      # regression.
+      #
+      # `resolve_assignment: false` (default true) is the one
+      # deliberate opt-out: `parse_multi_assign`'s own target-list loop
+      # parses each subsequent target (`b` in `a, b = 1, 2`) via this
+      # same method, and a trailing `=` there means "end of target
+      # list, multi-assign starts," NOT "this target has its own
+      # nested assignment" — with the default, `b`'s own parse would
+      # have greedily consumed `= 1, 2` as its own assignment before
+      # `parse_multi_assign` ever got a chance to see the `=` it's
+      # looking for (see `trailing_command_newline_spec.cr`'s
+      # multi-assign case for the regression this guards).
+      left = maybe_assignment(left) if resolve_assignment && assignment_token?(current_kind)
       loop do
         # See @no_pipe's own comment — while armed, a `Pipe` here is
         # the closing delimiter of an enclosing block-param list, not

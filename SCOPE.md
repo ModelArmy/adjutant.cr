@@ -202,41 +202,6 @@ wins.
   `parse_rescue_else_ensure` helper, reusing the identical
   compile/runtime path with no new compiler or VM work either.
 
-- **Assignment isn't a real expression — promoted 2026-08-08 out of
-  the old "Long-standing language gaps" bundle (since fully dispersed
-  into individual entries throughout this file, 2026-08-10), where it
-  had sat as a single untriaged line (`assignment-as-real-expression`)
-  since the original 2026-07-14 handoff.** Two concrete manifestations, both
-  the SAME root cause, found on different dates:
-  - **Chained assignment** (`c = b = 5` doesn't parse) — the original
-    2026-07-14 finding.
-  - **Parenthesized/nested assignment** (`x = (w.attr = 5)` doesn't
-    parse either) — found 2026-08-08 while spec'ing the new
-    `AttrAssign` work (`assignment/vm_spec.cr`): a test wanted to
-    capture an attribute-assignment's own expression VALUE the
-    natural way, `result = (w.value = 5)`, and hit `P001` ("expected
-    `)`, found `=`") instead. Reworked that spec to check the same
-    contract via `eval`'s own return value instead of depending on
-    this — see that spec's own comment for why it doesn't need to
-    wait on this fix.
-
-  Root cause, confirmed by tracing both: assignment is built ONLY at
-  the STATEMENT level. `Parser#parse_expr_statement` calls
-  `parse_expression(0)` for a bare expression, THEN checks for `=`/
-  compound-assign tokens itself and calls `maybe_assignment` — but
-  `parse_expression`'s own precedence chain never invokes
-  `maybe_assignment` anywhere inside it. So an assignment can only
-  ever be the OUTERMOST node of a top-level statement; anything that
-  parses a sub-expression via `parse_expression` (a parenthesized
-  group in `parse_primary`, an argument in a call, either side of a
-  chained `=`, ...) structurally cannot contain one. A real fix
-  likely means giving `=` its own (low-precedence, right-associative,
-  matching real Ruby) level INSIDE `parse_expression`'s own chain,
-  rather than handling it as a bolted-on statement-level afterthought
-  the way `maybe_assignment` currently does — worth scoping BOTH
-  manifestations together, since whatever mechanism fixes one fixes
-  the other for free; they're one gap, not two.
-
 - **`obj.attr += 1` / `obj.attr ||= x` / `obj.attr &&= x`** — compound
   and conditional assignment through an attribute-setter call. Found
   2026-08-08 landing plain `recv.attr = value` (the new `AttrAssign`

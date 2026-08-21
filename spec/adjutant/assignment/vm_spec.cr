@@ -22,6 +22,14 @@ module Adjutant
       it "evaluates ||= when already set" do
         eval("x = 1\nx ||= 99\nx").as_int.should eq 1_i64
       end
+
+      it "chained assignment (c = b = 5) assigns both targets, right-associatively" do
+        eval("c = b = 5\nb + c").as_int.should eq 10_i64
+      end
+
+      it "an assignment nested in parens evaluates to a real, usable value" do
+        eval("x = (y = 5) + 1\nx").as_int.should eq 6_i64
+      end
     end
 
     describe "compound/conditional assignment into an index target" do
@@ -130,14 +138,12 @@ module Adjutant
         # Ruby (and this) still evaluates a `recv.attr = value`
         # expression to `value`, not to the setter's own return
         # value. Same contract every other Set* opcode already has
-        # (Op::SetIvar/Op::SetIndex/...). Asserted via eval's own
-        # return (the value of the script's LAST top-level statement)
-        # rather than `x = (w.value = 5)` — a parenthesized/nested
-        # assignment expression is a genuinely separate, pre-existing
-        # gap (parse_primary's `(` case calls parse_expression, which
-        # never invokes maybe_assignment — that only runs at the
-        # statement level), unrelated to AttrAssign, not something
-        # this spec needs to depend on to make its actual point.
+        # (Op::SetIvar/Op::SetIndex/...). Now asserted the natural way
+        # — capturing the parenthesized/nested assignment's own value
+        # directly — since `parse_expression` resolving assignment
+        # inside its own chain (not just at the statement level) is no
+        # longer a gap; see DEVELOPMENT.md's "Assignment as a real
+        # expression" entry.
         val = eval(<<-RUBY)
           class Weird
             def value=(v)
@@ -150,7 +156,8 @@ module Adjutant
             end
           end
           w = Weird.new
-          w.value = 5
+          result = (w.value = 5)
+          result
           RUBY
         val.as_int.should eq 5_i64
       end
