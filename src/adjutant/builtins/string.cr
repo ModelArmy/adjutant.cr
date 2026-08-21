@@ -367,6 +367,38 @@ module Adjutant::Builtins
       end
     end
 
+    # `#=~` — added 2026-08-20 alongside the real `=~` lexer token and
+    # PRECEDENCE entry (lexer.cr, parser.cr). Unlike `#match` just
+    # above, this does NOT coerce a String pattern into a regex — real
+    # Ruby's `String#=~` only accepts a Regexp on the other side
+    # (`"abc" =~ "b"` raises TypeError in real Ruby; `#match`'s own
+    # String-coercion convenience is specific to `#match`, not shared
+    # by `=~`), so a missing or non-Regexp argument both raise the new
+    # R033 here rather than reusing R018/R019 (whose wording — "a
+    # String or a Regexp" — would be actively wrong for this method).
+    # Returns the match's START INDEX (an Integer), or `nil` on no
+    # match — same real-Ruby return shape as `Regexp#=~`
+    # (builtins/regexp.cr), necessarily symmetric since `x =~ y` and
+    # `y =~ x` both compile through the identical `.=~(...)` call
+    # shape (compiler.cr's `compile_match`) and only the RECEIVER's
+    # class decides which of these two methods actually runs.
+    define(cls, interp, "=~") do |args, _blk, ncc|
+      recv = args.first
+      pattern_val = args[1]?
+      regex =
+        if pattern_val && (robj = pattern_val.as_robject?) && robj.is_a?(Adjutant::RegexpObject)
+          robj.regex
+        else
+          ncc.raise_error("R033", {"method" => "=~", "class_name" => builtin_type_name(pattern_val || Adjutant::Value.nil_value)}, "TypeError")
+        end
+      if md = regex.match(recv.as_string)
+        pos = md.begin(0)
+        pos ? Adjutant::Value.int(pos.to_i64) : Adjutant::Value.nil_value
+      else
+        Adjutant::Value.nil_value
+      end
+    end
+
     cls
   end
 

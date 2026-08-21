@@ -602,6 +602,8 @@ module Adjutant
         ">"   => TokenKind::Gt,
         ">="  => TokenKind::GtE,
         "<=>" => TokenKind::Spaceship,
+        "=~"  => TokenKind::EqTilde,
+        "!~"  => TokenKind::BangTilde,
         "&&"  => TokenKind::AndAnd,
         "||"  => TokenKind::OrOr,
         "<<"  => TokenKind::Shl,
@@ -623,6 +625,37 @@ module Adjutant
         it "scans #{src.inspect}" do
           kinds(src).should eq [expected_kind]
         end
+      end
+
+      it "does not confuse `= ~x` (assignment of a unary bitwise-not) with `=~`" do
+        # `=~` requires the `~` immediately adjacent to `=`, no space
+        # between — `scan_eq` only checks the literal next character
+        # after consuming `=`, never skips whitespace mid-scan, so a
+        # space naturally falls through to plain `Eq` here, same as
+        # any other multi-char operator in this lexer.
+        kinds("x = ~5").should eq [
+          TokenKind::Identifier, TokenKind::Eq, TokenKind::Tilde, TokenKind::Integer,
+        ]
+      end
+
+      it "does not confuse `! ~x` (double unary, spaced) with `!~`" do
+        # Same reasoning as `= ~x` just above — a space between `!`
+        # and `~` falls through to separate `Bang`+`Tilde` tokens.
+        kinds("! ~x").should eq [
+          TokenKind::Bang, TokenKind::Tilde, TokenKind::Identifier,
+        ]
+      end
+
+      it "lexes adjacent `!~x` as one BangTilde token, position/meaning left to the parser" do
+        # `!~x` with NO space is always one `BangTilde` token at the
+        # lexer level, regardless of whether the parser will go on to
+        # read it as the double-unary `!(~x)` (prefix position) or
+        # negated-match's right-hand operand marker (infix position,
+        # e.g. `a !~x` — unusual spacing but still infix since `a` is
+        # a complete left operand). See operators/parser_spec.cr's own
+        # "!~x in prefix position" regression guard for the position-
+        # sensitive parse itself — this is lexer-level only.
+        kinds("!~x").should eq [TokenKind::BangTilde, TokenKind::Identifier]
       end
     end
 

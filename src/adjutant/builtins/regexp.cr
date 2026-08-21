@@ -133,6 +133,7 @@ module Adjutant
       end
     end
 
+    # ameba:disable Metrics/CyclomaticComplexity - one `define` call per native method, each a flat independent case; count comes from many methods, not tangled branching
     def self.bootstrap_regexp(interp : Interpreter) : RubyClass
       cls = RubyClass.new("Regexp")
       cls.constants[interp.symbols.intern("IGNORECASE").value] = Value.int(IGNORECASE)
@@ -299,23 +300,30 @@ module Adjutant
         Value.bool(robj.regex.matches?(str))
       end
 
-      # `#=~` is NOT defined here, deliberately, not merely deferred:
-      # unlike `#===` (real dispatch via case/when's compiler-generated
-      # `Op::Call`, or callable directly as `.===(x)` — TripleEq is a
-      # real token wherever `===` appears, so the dot-call form parses
-      # fine even though bare infix `a === b` doesn't) `=~` has no
-      # infix support (no PRECEDENCE entry, and no combined `=~` token
-      # at all — see UNSUPPORTED.md — so it lexes as separate `Eq`/
-      # `Tilde` tokens) AND no working dot-call spelling either, since
-      # `.=~(x)` would grab only the `=` as the method name and choke
-      # on the leftover `~`. A native method here would be genuinely
-      # unreachable from any script syntax today — dead surface, not a
-      # real feature — so it's left out rather than shipped unusable.
-      # Real Ruby's `#=~` also sets the `$~`/`$1`.. globals as a side
-      # effect, which is separate, real, not-yet-existing machinery
-      # anyway (no `$`-global plumbing in Adjutant at all yet). Revisit
-      # together if/when a real `=~` token and infix precedence entry
-      # are ever added.
+      # `#=~` — added 2026-08-20 alongside the real `=~` lexer token
+      # and PRECEDENCE entry (lexer.cr, parser.cr) that finally make
+      # this reachable from script syntax at all (see this entry's own
+      # prior text in SCOPE.md's git history for the "genuinely
+      # unreachable, so left out" reasoning that used to be here).
+      # Same argument handling as `#match?` just above (a missing OR
+      # non-String argument both raise R022 — no separate "wrong type"
+      # distinction, matching that method's own simpler convention).
+      # Returns the match's START INDEX (an Integer), or `nil` on no
+      # match — real Ruby's actual `=~` return value, not a MatchData
+      # and not a Bool. Real Ruby's own `$~`/`$1`.. side effects are
+      # NOT part of this — decided against entirely, see
+      # UNSUPPORTED.md's U011 entry.
+      define(cls, interp, "=~") do |args, _blk, ncc|
+        robj = args.first.as_robject.as(RegexpObject)
+        str = args[1]?.try(&.as_string?)
+        ncc.raise_error("R022", {"method" => "=~"}, "ArgumentError") unless str
+        if md = robj.regex.match(str)
+          pos = md.begin(0)
+          pos ? Value.int(pos.to_i64) : Value.nil_value
+        else
+          Value.nil_value
+        end
+      end
 
       # `#===` — case/when and Enumerable#grep dispatch through this.
       # Real Ruby returns false (not a TypeError) for a non-String

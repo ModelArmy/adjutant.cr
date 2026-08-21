@@ -721,6 +721,11 @@ module Adjutant
         compile_short_circuit_and(node)
       when TokenKind::Spaceship
         compile_spaceship(node)
+      when TokenKind::EqTilde
+        compile_match(node)
+      when TokenKind::BangTilde
+        compile_match(node)
+        @chunk.emit(Op::Not, node.line)
       when TokenKind::NEq
         compile_node(node.left)
         compile_node(node.right)
@@ -772,6 +777,31 @@ module Adjutant
       # 2026-08-06 while wiring `<`/`<=`/`>`/`>=` through `<=>` (see
       # SCOPE.md) — a real, independent bug that predates this item:
       # `a <=> b` has never actually dispatched on `a` at all.
+      @chunk.emit(Op::Call, node.line, a: 2_u8, b: 0b10_u16, c: sym_idx)
+    end
+
+    # `x =~ y` desugars to the ordinary receiver call `x.=~(y)` —
+    # identical shape to `compile_spaceship` just above (a real
+    # `Op::Call` with the receiver bit set, not a raw VM opcode), just
+    # interning `"=~"` instead of `"<=>"` and with no derived-
+    # comparison logic to also emit, since `=~`'s result (a match
+    # position or nil) IS the whole answer already.
+    #
+    # Also reused as-is for `!~` (see `compile_binary`'s own
+    # `BangTilde` case) — real Ruby's `!~` is generically
+    # `!(self =~ other)`, always via `=~` itself, never a separate
+    # `!~` method dispatch of its own (matching how `!=`/`NEq` just
+    # below reuses `==`'s own machinery rather than being its own
+    # thing) — so `BangTilde` just appends one `Op::Not` after calling
+    # this, unconditionally, rather than duplicating this whole method
+    # to intern `"!~"` instead.
+    private def compile_match(node : Binary) : Nil
+      compile_node(node.left)
+      compile_node(node.right)
+      sym_idx = intern("=~")
+      nil_idx = @chunk.add_const(Value.nil_value)
+      @chunk.emit(Op::Const, node.line, c: nil_idx)
+      @chunk.emit(Op::SetBlock, node.line)
       @chunk.emit(Op::Call, node.line, a: 2_u8, b: 0b10_u16, c: sym_idx)
     end
 

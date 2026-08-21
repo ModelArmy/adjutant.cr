@@ -351,6 +351,15 @@ module Adjutant
         help: "Attach a block: `lambda { |x| x + 1 }`."
       ),
 
+      "R033" => Entry.new(
+        code: "R033",
+        summary: "`{method}` given a non-Regexp pattern ({class_name})",
+        why: "`{method}` only accepts a Regexp on the other side of " \
+             "the match — unlike `#match`/`#sub`/`#gsub`, a String " \
+             "pattern isn't compiled into a regex here.",
+        help: "Pass a Regexp: `str =~ /pattern/`."
+      ),
+
       # --- L: limits reached ----------------------------------------
       #
       # The script is valid; it is just larger than something Adjutant

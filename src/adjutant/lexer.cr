@@ -353,7 +353,21 @@ module Adjutant
       when '='
         scan_eq(start, line, col)
       when '!'
-        match('=') ? make_token(TokenKind::NEq, "!=", line, col) : make_token(TokenKind::Bang, "!", line, col)
+        if match('=')
+          make_token(TokenKind::NEq, "!=", line, col)
+        elsif match('~')
+          # `!~` (negated match) — added 2026-08-20 alongside `=~`
+          # itself (see `EqTilde`'s own comment on `scan_eq`, and
+          # SCOPE.md's Will Fix entry this closes out). Same reasoning
+          # as `!=`/`NEq` just above: a single combined token, not
+          # separate `Bang`+`Tilde`, so it can get its own
+          # `PRECEDENCE` entry and so `.!~(x)` parses via the same
+          # generic dot-call mechanism `EqTilde` already gets for
+          # free.
+          make_token(TokenKind::BangTilde, "!~", line, col)
+        else
+          make_token(TokenKind::Bang, "!", line, col)
+        end
       when '<'
         if heredoc_starts_here?
           scan_heredoc_opener(start, line, col)
@@ -772,6 +786,23 @@ module Adjutant
           return make_token(TokenKind::TripleEq, "===", line, col)
         end
         return make_token(TokenKind::EqEq, "==", line, col)
+      end
+      if current_char == '~'
+        # `=~` — the regex/string match operator, added 2026-08-20
+        # (SCOPE.md's Must Fix list). Unlike `===` above, this DOES
+        # get a real `PRECEDENCE` table entry (`parser.cr`) — it's an
+        # ordinary infix operator in real Ruby, not something whose
+        # only real caller is compiler-generated. A single combined
+        # token (rather than separate `Eq`+`Tilde`) is needed for the
+        # SAME two reasons `TripleEq` needed one: so `x =~ y` can get
+        # its own precedence entry at all, and so `x.=~(y)` parses —
+        # `parse_postfix`'s dot-call handling just grabs the very next
+        # token's lexeme as the method name, so it works here for
+        # free once `=~` is one token, same as it already does for
+        # `===`. No `!~` counterpart yet — a real, separate, smaller
+        # follow-up (see SCOPE.md), not implemented here.
+        advance
+        return make_token(TokenKind::EqTilde, "=~", line, col)
       end
       if current_char == '>'
         advance

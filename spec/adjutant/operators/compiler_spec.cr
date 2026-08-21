@@ -50,6 +50,32 @@ module Adjutant
         (inst.b & 0b10_u16).should_not eq(0_u16)
       end
 
+      it "compiles =~ as a real receiver call on the left operand" do
+        # Same shape as <=> just above (compile_match mirrors
+        # compile_spaceship exactly) — `a =~ b` desugars to `a.=~(b)`,
+        # dispatching on `a`, not on whatever frame happens to be
+        # compiling the match.
+        chunk = compile("a =~ b")
+        inst = chunk.code.find { |i| i.op == Op::Call }.not_nil!
+        (inst.b & 0b10_u16).should_not eq(0_u16)
+      end
+
+      it "compiles !~ as the same =~ receiver call plus a trailing Not" do
+        # Real Ruby's `!~` is generically `!(self =~ other)` — always
+        # via `=~` itself, never a separate `!~` method dispatch, same
+        # as `!=`/NEq reusing `==`'s own machinery just below rather
+        # than being a distinct thing. `compile_match` is reused
+        # as-is; `BangTilde` just appends one `Op::Not` right after
+        # the `Op::Call` it emits — checking THAT adjacency (not just
+        # "a Not appears somewhere") is what actually distinguishes
+        # this from, say, a `Not` left over from some other part of
+        # the expression.
+        chunk = compile("a !~ b")
+        call_idx = chunk.code.index { |i| i.op == Op::Call }
+        call_idx.should_not be_nil
+        chunk.code[call_idx.not_nil! + 1].op.should eq Op::Not
+      end
+
       it "compiles short-circuit || with Dup and JumpIfFalse" do
         o = ops("a || b")
         o.should contain(Op::Dup)
