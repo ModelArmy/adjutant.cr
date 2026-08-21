@@ -367,35 +367,35 @@ r=begin
 end
 
 # ---- BLOCKED: Pending chained-assign statement
-# assert('Exception 19') do
-#   class Class4Exception19
-#     def a
-#       r = @e = false
-#       begin
-#         b
-#       rescue TypeError
-#         r = self.z
-#       end
-#       [ r, @e ]
-#     end
+assert('Exception 19') do
+  class Class4Exception19
+    def a
+      r = @e = false
+      begin
+        b
+      rescue TypeError
+        r = self.z
+      end
+      [ r, @e ]
+    end
 
-#     def b
-#       begin
-#         1 * "b"
-#       ensure
-#         @e = self.zz
-#       end
-#     end
+    def b
+      begin
+        1 * "b"
+      ensure
+        @e = self.zz
+      end
+    end
 
-#     def zz
-#       true
-#     end
-#     def z
-#       true
-#     end
-#   end
-#   assert_equal [true, true], Class4Exception19.new.a
-# end
+    def zz
+      true
+    end
+    def z
+      true
+    end
+  end
+  assert_equal [true, true], Class4Exception19.new.a
+end
 # ----
 
 # ---- TODO: Missing Exception methods, stdlib issue

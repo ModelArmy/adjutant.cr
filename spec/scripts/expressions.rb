@@ -1,26 +1,20 @@
 require "assert"
 
-# ---- TODO: Expression and assignment precedence issue (works in Ruby)
-# assert "Assignment as expression" do
-#   def sum(a,b); a+b; end
+assert "Assignment as expression" do
+  def sum(a,b); a+b; end
 
-#   7 == tot = sum(3, 4)
-# end
-# ----
+  7 == tot = sum(3, 4)
+end
 
-# ---- TODO: support assignment in parens
-# assert "Assignment as expression in parens" do
-#   def sum(a,b); a+b; end
-#   (tot = sum 3, 4) == 7
-# end
-# ----
+assert "Assignment as expression in parens" do
+  def sum(a,b); a+b; end
+  (tot = sum 3, 4) == 7
+end
 
-# ---- TODO: support chained assignments in a statement
-# assert "Chained assignments" do
-#   c = b = 5
-#   c == 5
-# end
-# ----
+assert "Chained assignments" do
+  c = b = 5
+  c == 5
+end
 
 assert "Self reference" do
   class A
