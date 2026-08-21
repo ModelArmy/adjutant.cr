@@ -56,6 +56,18 @@ module Adjutant
         top.right.should be_a(Binary)
         top.right.as(Binary).op.should eq TokenKind::Plus
       end
+
+      it "parses !~ as a Binary node" do
+        node = parse_expr("a !~ b")
+        node.should be_a(Binary)
+        node.as(Binary).op.should eq TokenKind::BangTilde
+      end
+
+      it "parses a.!~(b) as an ordinary dot-call" do
+        node = parse_expr("a.!~(b)")
+        node.should be_a(Call)
+        node.as(Call).method.should eq "!~"
+      end
     end
 
     describe "unary expressions" do
@@ -138,6 +150,27 @@ module Adjutant
         node = parse_expr("+x")
         node.should be_a(Unary)
         node.as(Unary).op.should eq TokenKind::Plus
+      end
+
+      # Regression guard, added 2026-08-20 alongside `!~` itself
+      # (SCOPE.md): `!~x` in PREFIX position (nothing to its left) is
+      # real Ruby's double-unary `!(~x)`, NOT the infix negated-match
+      # operator — before `!~` existed as one combined `BangTilde`
+      # token, this parsed correctly for free (separate `Bang`+
+      # `Tilde` tokens, composing via `parse_unary`'s own recursion).
+      # `parse_unary`'s new `BangTilde` case rebuilds that same
+      # composition explicitly — this test exists specifically to
+      # catch it silently regressing back to a parse error if that
+      # case is ever removed.
+      it "parses !~x in prefix position as the double-unary !(~x), not negated-match" do
+        node = parse_expr("!~x")
+        node.should be_a(Unary)
+        outer = node.as(Unary)
+        outer.op.should eq TokenKind::Bang
+        outer.expr.should be_a(Unary)
+        inner = outer.expr.as(Unary)
+        inner.op.should eq TokenKind::Tilde
+        inner.expr.should be_a(Identifier)
       end
     end
 

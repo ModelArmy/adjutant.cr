@@ -353,7 +353,21 @@ module Adjutant
       when '='
         scan_eq(start, line, col)
       when '!'
-        match('=') ? make_token(TokenKind::NEq, "!=", line, col) : make_token(TokenKind::Bang, "!", line, col)
+        if match('=')
+          make_token(TokenKind::NEq, "!=", line, col)
+        elsif match('~')
+          # `!~` (negated match) — added 2026-08-20 alongside `=~`
+          # itself (see `EqTilde`'s own comment on `scan_eq`, and
+          # SCOPE.md's Will Fix entry this closes out). Same reasoning
+          # as `!=`/`NEq` just above: a single combined token, not
+          # separate `Bang`+`Tilde`, so it can get its own
+          # `PRECEDENCE` entry and so `.!~(x)` parses via the same
+          # generic dot-call mechanism `EqTilde` already gets for
+          # free.
+          make_token(TokenKind::BangTilde, "!~", line, col)
+        else
+          make_token(TokenKind::Bang, "!", line, col)
+        end
       when '<'
         if heredoc_starts_here?
           scan_heredoc_opener(start, line, col)

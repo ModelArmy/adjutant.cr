@@ -269,6 +269,34 @@ module Adjutant
       end
     end
 
+    describe "#!~ (negated match)" do
+      # Not a separate native method — `!~` is generically
+      # `!(self =~ other)` in real Ruby (compiler.cr's `compile_binary`
+      # BangTilde case reuses `compile_match` as-is, plus a trailing
+      # `Op::Not`), so this exercises the SAME `#=~` native method just
+      # above via the negated compiled form, not a distinct code path.
+      it "true when there is no match" do
+        eval(%(/xyz/ !~ "abc")).truthy?.should be_true
+      end
+
+      it "false when there IS a match" do
+        eval(%(/b./ !~ "abc")).falsy?.should be_true
+      end
+
+      it "false even when the match starts at index 0" do
+        # Guards against a naive nil-check bug: `=~` can return 0 (a
+        # real match, at the very start), and 0 is TRUTHY in Ruby — a
+        # `!~` that mistakenly treated any falsy-looking Integer as
+        # "no match" would get this backwards.
+        eval(%(/abc/ !~ "abcdef")).falsy?.should be_true
+      end
+
+      it "raises the same R022 as #=~ for a non-String right-hand side" do
+        error = expect_raises(RuntimeError) { eval("/abc/ !~ 5") }
+        error.diagnostic.not_nil!.code.should eq("R022")
+      end
+    end
+
     describe "#===" do
       # No infix `a === b` support in Adjutant at all (see
       # UNSUPPORTED.md's U017 — TripleEq is a real token wherever

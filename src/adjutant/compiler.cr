@@ -723,6 +723,9 @@ module Adjutant
         compile_spaceship(node)
       when TokenKind::EqTilde
         compile_match(node)
+      when TokenKind::BangTilde
+        compile_match(node)
+        @chunk.emit(Op::Not, node.line)
       when TokenKind::NEq
         compile_node(node.left)
         compile_node(node.right)
@@ -783,6 +786,15 @@ module Adjutant
     # interning `"=~"` instead of `"<=>"` and with no derived-
     # comparison logic to also emit, since `=~`'s result (a match
     # position or nil) IS the whole answer already.
+    #
+    # Also reused as-is for `!~` (see `compile_binary`'s own
+    # `BangTilde` case) — real Ruby's `!~` is generically
+    # `!(self =~ other)`, always via `=~` itself, never a separate
+    # `!~` method dispatch of its own (matching how `!=`/`NEq` just
+    # below reuses `==`'s own machinery rather than being its own
+    # thing) — so `BangTilde` just appends one `Op::Not` after calling
+    # this, unconditionally, rather than duplicating this whole method
+    # to intern `"!~"` instead.
     private def compile_match(node : Binary) : Nil
       compile_node(node.left)
       compile_node(node.right)

@@ -110,19 +110,6 @@ still roughly ordered by how cheap/independent the fix is.
 Small, mechanical, independent of each other — good candidates for quick
 wins.
 
-- **`!~` (negated match) doesn't exist — only `=~` does.** Scoped out
-  2026-08-20 while implementing `=~` itself (see `lexer.cr`'s
-  `scan_eq`, `parser.cr`'s `PRECEDENCE` table, `compiler.cr`'s
-  `compile_match`, and `Regexp#=~`/`String#=~` in
-  `builtins/regexp.cr`/`builtins/string.cr`) — real Ruby defines
-  `Object#!~` generically as `!(self =~ other)`, so once `=~` itself
-  works this is mechanically small (a `BangTilde` lexer token, a
-  `PRECEDENCE` entry at the same level as `=~`, and a
-  `compile_not_match` mirroring `compile_match` but with a trailing
-  `Op::Not`), just a separate piece of work from what was asked for
-  this pickup. `!(x =~ y)` already covers the same thing today, just
-  with the parens spelled out.
-
 - **`%W[]`/`%I[]` (interpolating word/symbol arrays) and `%q`/`%Q`/`%r`
   (the general delimited-literal forms) aren't supported — only plain
   `%w[]`/`%i[]` are.** Added 2026-08-19 alongside `%w[]`/`%i[]` itself

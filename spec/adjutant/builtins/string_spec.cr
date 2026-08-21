@@ -623,5 +623,27 @@ module Adjutant
         result.as_bool.should be_true
       end
     end
+
+    describe "#!~ (negated match)" do
+      # Same reasoning as Regexp's own "#!~ (negated match)" describe
+      # block (regexp_spec.cr) — not a distinct native method, just
+      # `#=~` via the compiler's negated form.
+      it "true when there is no match" do
+        eval(%("hello" !~ /z/)).truthy?.should be_true
+      end
+
+      it "false when there IS a match" do
+        eval(%("hello world" !~ /wor/)).falsy?.should be_true
+      end
+
+      it "false even when the match starts at index 0" do
+        eval(%("hello" !~ /he/)).falsy?.should be_true
+      end
+
+      it "raises the same R033 as #=~ for a non-Regexp right-hand side" do
+        error = expect_raises(RuntimeError) { eval(%("hello" !~ "l+")) }
+        error.diagnostic.not_nil!.code.should eq("R033")
+      end
+    end
   end
 end

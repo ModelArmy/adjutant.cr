@@ -554,14 +554,15 @@ module Adjutant
 
     # --- Pratt expression parser --------------------------------------------
 
-    # `EqTilde` (`=~`) sits with `EqEq`/`NEq` at level 4, not with
-    # `Spaceship` at level 5 — real Ruby groups `<=> == === != =~ !~`
-    # at ONE precedence tier, below `< <= > >=`, which this table
-    # already splits across two tiers for `<=>` (a pre-existing
-    # simplification, not something this entry re-derives); level 4
-    # is the more faithful of the two for `=~` specifically. Doesn't
-    # change much in practice — `a =~ b == c` is a rare thing to
-    # write regardless of which side of that split it lands on.
+    # `EqTilde` (`=~`) and `BangTilde` (`!~`) sit with `EqEq`/`NEq` at
+    # level 4, not with `Spaceship` at level 5 — real Ruby groups
+    # `<=> == === != =~ !~` at ONE precedence tier, below `< <= > >=`,
+    # which this table already splits across two tiers for `<=>` (a
+    # pre-existing simplification, not something this entry
+    # re-derives); level 4 is the more faithful of the two for these
+    # two specifically. Doesn't change much in practice — `a =~ b ==
+    # c` is a rare thing to write regardless of which side of that
+    # split it lands on.
     PRECEDENCE = {
       TokenKind::Question  => 1,
       TokenKind::KwOr      => 2,
@@ -571,6 +572,7 @@ module Adjutant
       TokenKind::EqEq      => 4,
       TokenKind::NEq       => 4,
       TokenKind::EqTilde   => 4,
+      TokenKind::BangTilde => 4,
       TokenKind::Lt        => 5,
       TokenKind::LtE       => 5,
       TokenKind::Gt        => 5,
@@ -649,6 +651,7 @@ module Adjutant
       )
     end
 
+    # ameba:disable Metrics/CyclomaticComplexity
     private def parse_unary : Node
       l, c = line, col
       case current_kind
@@ -705,6 +708,29 @@ module Adjutant
       when TokenKind::Tilde
         op = advance.kind
         Unary.new(op, parse_unary, l, c)
+      when TokenKind::BangTilde
+        # `!~x` in PREFIX position (nothing to its left) is real
+        # Ruby's double-unary `!(~x)` — bitwise-not then logical-not —
+        # NOT the infix negated-match operator, which needs a LEFT
+        # operand to make sense at all (`a !~ b`). Before `!~`
+        # existed as its own combined token, this fell out for free:
+        # `!~x` lexed as separate `Bang`+`Tilde`, and the `Bang` case
+        # just above already recurses into `parse_unary` for its
+        # operand, composing the two automatically. Now that `!~` is
+        # ONE token (needed so `a !~ b` can get its own `PRECEDENCE`
+        # entry — see `scan`'s own comment on `'!'`), that composition
+        # has to be rebuilt explicitly here instead, or `!~x` in this
+        # position would be a parse error where it used to work.
+        # `a !~ b` itself is UNAFFECTED — that's parsed by
+        # `parse_expression`'s infix loop via the `PRECEDENCE` table,
+        # never reaching `parse_unary`'s prefix handling at all, since
+        # `a` is already a complete left operand by the time `!~` is
+        # seen there. Both synthesized `Unary` nodes share the SAME
+        # position (`l, c` — the one real `!~` token's own position);
+        # there's no separate `Tilde` token to give the inner one a
+        # distinct column.
+        advance
+        Unary.new(TokenKind::Bang, Unary.new(TokenKind::Tilde, parse_unary, l, c), l, c)
       when TokenKind::KwNot
         advance
         Unary.new(TokenKind::Bang, parse_unary, l, c)
