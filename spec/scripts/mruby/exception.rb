@@ -366,7 +366,6 @@ r=begin
   assert_equal 3, r
 end
 
-# ---- BLOCKED: Pending chained-assign statement
 assert('Exception 19') do
   class Class4Exception19
     def a
@@ -396,7 +395,6 @@ assert('Exception 19') do
   end
   assert_equal [true, true], Class4Exception19.new.a
 end
-# ----
 
 # ---- TODO: Missing Exception methods, stdlib issue
 # assert('Exception#inspect') do
