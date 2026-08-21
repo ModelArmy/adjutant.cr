@@ -10,9 +10,14 @@ module Adjutant::Builtins
   # (compile_lambda, Op::MakeProc with a=1 — see vm.cr) to a
   # real RubyObject of class Proc, not a bare Value.proc(sproc) as
   # before. This gives lambdas .class/is_a?/.call, matching real Ruby.
-  # Only `->(){}` — Adjutant has no Kernel `lambda { }` function; that
-  # spelling isn't valid Adjutant at all (parses as an ordinary bare
-  # call named `lambda`, fails at runtime as an undefined method).
+  # `lambda { ... }` (the `Kernel`-method spelling, added 2026-08-19 —
+  # see this file's own registration near the bottom) wraps into the
+  # SAME object shape, via `NativeCallContext#wrap_block_as_proc`
+  # rather than a second code path — everything on this page
+  # describing what a Proc IS applies equally to one built either way.
+  # `proc { ... }` is deliberately NOT given the same treatment — see
+  # UNSUPPORTED.md's U019 entry, and that registration's own comment
+  # below for a shorter pointer to it.
   #
   # The wrapped ScriptProc is stored as-is in the single ivar __sproc,
   # reusing Value's existing `proc` variant rather than inventing a new
@@ -23,11 +28,18 @@ module Adjutant::Builtins
   # capture). Proc is just the first case where that variant also gets
   # a RubyObject shell around it.
   #
-  # Scope boundary (SCOPE.md, confirmed 2026-07-18): only Lambda-node
-  # output goes through this wrapping. Call-site block literals
-  # (`{ }`/`do...end`, consumed via `yield`) and `def` bodies are
-  # unaffected — they keep using bare Value.proc(sproc), never see this
-  # class. No &blk-param capture exists or is added here.
+  # Scope boundary (SCOPE.md, confirmed 2026-07-18; widened 2026-08-19
+  # to also cover `lambda { }` — see that registration's own comment):
+  # only Lambda-node output AND the `lambda { }` native function go
+  # through this wrapping. An ordinary call-site block literal
+  # (`{ }`/`do...end`, consumed via `yield`) and a `def` body are still
+  # unaffected — they keep using bare Value.proc(sproc), never see
+  # this class, EVEN THOUGH `lambda` itself is an ordinary native
+  # function that receives a block the exact same way: the wrapping
+  # happens explicitly, inside `lambda`'s OWN body
+  # (`wrap_block_as_proc`), not as some general rule about blocks
+  # reaching a native call. No &blk-param capture exists or is added
+  # here.
   #
   # No bare `name(...)`-without-`.call` support is added (a local
   # holding a Proc is not directly callable) — real Ruby doesn't
@@ -61,9 +73,12 @@ module Adjutant::Builtins
       ncc.invoke_proc(obj, args[1..])
     end
 
-    # `lambda?` always true here: only Lambda-node output ever becomes
-    # a Proc instance (see scope boundary above), so there is currently
-    # no non-lambda Proc for this to distinguish from. Included now
+    # `lambda?` always true here: every Proc this class can produce
+    # (`->(){}` or `lambda { }`) genuinely IS a lambda — real Ruby's
+    # `proc { }` (which would report `false`) is deliberately not
+    # given this same object shape (see the `lambda`/`proc` scope
+    # decision on that registration below), so there's currently no
+    # non-lambda Proc for this to distinguish from. Included now
     # rather than left out, since real Ruby's Proc always has it and a
     # future block-capture piece (if ever added — see UNSUPPORTED.md,
     # U001) would set this to false on that path, not need to add the
@@ -82,10 +97,10 @@ module Adjutant::Builtins
     # this implementation just uses a space after `Proc`, since
     # there's no address to separate FROM here). `(lambda)` is
     # UNCONDITIONAL here, not a check against `lambda?` — same
-    # reasoning as `lambda?` itself just above: only Lambda-node
-    # output ever becomes a Proc instance at all, so there's no
-    # non-lambda case to distinguish from today. The memory address
-    # (`0x...`) is deliberately OMITTED — no debugging value here (not
+    # reasoning as `lambda?` itself just above: every Proc this class
+    # can currently produce genuinely HAS lambda semantics, so
+    # there's no non-lambda case to distinguish from today. The memory
+    # address (`0x...`) is deliberately OMITTED — no debugging value here (not
     # stable across runs, nothing script-side can correlate it
     # against, Adjutant doesn't expose real addresses to begin with),
     # the same reasoning `Object#inspect`'s own default already
@@ -110,6 +125,45 @@ module Adjutant::Builtins
 
     define(cls, interp, "inspect") do |args, _blk, ncc|
       ncc.call_method(args.first, "to_s", [] of Adjutant::Value)
+    end
+
+    # `lambda { ... }` — the `Kernel`-method spelling, promoted to
+    # Must Fix 2026-08-15 (see SCOPE.md's own reasoning: `->(){}`
+    # already produces a real Proc object, so this is "wrap the block
+    # as that same shape", not a new construct). Registered as a bare,
+    # globally-callable native function via `interp.define_native`
+    # directly — NOT the `define(cls, ...)` helper used everywhere
+    # else above, since that helper always treats `args.first` as the
+    # receiver, which would be wrong here: `lambda { }` takes no real
+    # arguments, only a block, so `args` is empty for the common case
+    # and `args.first` would be a hard crash rather than a receiver.
+    #
+    # `proc { ... }` is deliberately NOT registered alongside it,
+    # unlike an earlier version of this change — and unlike `send`/
+    # `eval`/`extend`-via-receiver/etc, it's not merely absent: calling
+    # it raises a proper `U019` ("not supported", not "undefined
+    # method") via `EXCLUDED_METHODS` (error_catalog.cr) — see
+    # UNSUPPORTED.md's U019 entry for the full reasoning, registered
+    # there because a Ruby user reaching for `proc { }` deserves that
+    # explanation, not a generic `R008`. Short version: real Ruby's
+    # `proc { }` has DIFFERENT semantics from `lambda { }` (lenient
+    # arity, and a bare `return` that escapes the ENCLOSING method
+    # rather than just the proc) — reusing `lambda`'s object shape for
+    # `proc` as well would have made `proc { }` observably diverge
+    # from real Ruby (wrong arity checking, wrong `return` behavior),
+    # not just be a smaller subset of it. `->(){}` and `lambda { }`
+    # already give a script two correct, real spellings for a lambda;
+    # there was no need to also ship a `proc { }` that quietly isn't
+    # one. If real Proc semantics are ever wanted, that's a new,
+    # separate VM feature, not a wrapper reusing this one.
+    #
+    # `is_private: true` — matching real Ruby, where `Kernel#lambda`
+    # is private (`5.lambda { }` is a NoMethodError in real Ruby, not
+    # a strange way to build an unrelated Proc).
+    interp.define_native("lambda", is_private: true) do |_args, blk, ncc|
+      given_block = blk
+      ncc.raise_error("R032", {} of String => String, "ArgumentError") unless given_block
+      ncc.wrap_block_as_proc(given_block)
     end
 
     cls

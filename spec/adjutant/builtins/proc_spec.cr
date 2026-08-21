@@ -6,18 +6,25 @@ module Adjutant
   # real RubyObject of class Proc, not a bare Value.proc(sproc) as
   # before. This gives lambdas .class/is_a?/.call, matching real Ruby.
   #
-  # Note: only `->(){}` is covered here — Adjutant has no Kernel
-  # `lambda { }` function (confirmed absent from the native-function
-  # table); `lambda{}` is not currently valid Adjutant, not merely
-  # untested.
+  # `lambda { ... }` (the `Kernel`-method spelling) wraps into this
+  # SAME shape as of 2026-08-19 — see the "lambda (Kernel spelling)"
+  # describe block below for its own coverage, and builtins/proc.cr's
+  # registration comment for the scope reasoning. `proc { ... }` is
+  # deliberately NOT given the same treatment (see that same comment,
+  # and UNSUPPORTED.md's U019 entry) — real Ruby's `proc { }` has
+  # different arity/return semantics from `lambda { }`, so reusing
+  # this shape for it would have been a silent divergence, not a
+  # smaller-but-correct subset. Calling `proc { }` raises a proper
+  # declared-exclusion error (`U019`), not a generic undefined-method
+  # one.
   #
   # Scope boundary (see SCOPE.md, builtins/proc.cr header): only
-  # Lambda-node output becomes a Proc instance. Call-site block
-  # literals (`{ }`/`do...end`) and `def` bodies keep using the bare,
-  # unwrapped Value.proc(sproc) as before — covered by the "block
-  # literals are unaffected" spec below, to guard against a future
-  # change accidentally widening Op::MakeProc's a=1 branch to those
-  # too.
+  # Lambda-node output AND `lambda { }` become a Proc
+  # instance. Call-site block literals (`{ }`/`do...end`) and `def`
+  # bodies keep using the bare, unwrapped Value.proc(sproc) as
+  # before — covered by the "block literals are unaffected" spec
+  # below, to guard against a future change accidentally widening
+  # Op::MakeProc's a=1 branch to those too.
   #
   # No bare `name(...)`-without-`.call` support exists (real Ruby
   # doesn't have it either) — not tested here since it's explicitly
@@ -227,6 +234,81 @@ module Adjutant
       %w[call lambda?].each do |name|
         sym_id = interp.symbols.lookup(name).not_nil!.value
         cls.find_native_method(sym_id).not_nil!.risk.should eq RiskProfile.none
+      end
+    end
+
+    # Kernel-spelled `lambda { }` — added 2026-08-19, SCOPE.md's Must
+    # Fix list. See builtins/proc.cr's own registration comment for
+    # why `proc { }` is NOT included alongside it (real Ruby's
+    # `proc { }` has different arity/return semantics from
+    # `lambda { }` — reusing this same object shape for it would have
+    # been a silent divergence from real Ruby, not a smaller-but-
+    # correct subset), and UNSUPPORTED.md's U019 entry for the
+    # declared-exclusion treatment `proc { }` gets instead.
+    describe "lambda (Kernel spelling)" do
+      it "lambda { }.class is Proc" do
+        eval("(lambda { |x| x }).class == Proc").truthy?.should be_true
+      end
+
+      it "lambda { }.call invokes the block and returns its value" do
+        eval("dbl = lambda { |x| x * 2 }; dbl.call(3)").as_int.should eq 6
+      end
+
+      it "lambda { } closes over an outer local, same as ->(){}" do
+        result = eval(<<-RUBY)
+          n = 10
+          incr = lambda { |x| x + n }
+          incr.call(5)
+        RUBY
+        result.as_int.should eq 15
+      end
+
+      it "lambda { } closes over its defining frame, not the calling frame, when returned and called elsewhere" do
+        result = eval(<<-RUBY)
+          def make_adder(n)
+            lambda { |x| x + n }
+          end
+
+          add5 = make_adder(5)
+          add5.call(10)
+        RUBY
+        result.as_int.should eq 15
+      end
+
+      it "lambda { }.lambda? is true" do
+        eval("(lambda { |x| x }).lambda?").truthy?.should be_true
+      end
+
+      it "lambda without a block raises ArgumentError (R032)" do
+        error = expect_raises(RuntimeError) { eval("lambda") }
+        error.diagnostic.not_nil!.code.should eq("R032")
+      end
+
+      # NOT tested here: an explicit builtin-typed receiver (`5.lambda { }`)
+      # does NOT raise, despite `is_private: true` above — a real,
+      # pre-existing, already-documented gap (vm.cr's `dispatch_call`,
+      # the "Builtin-typed receiver" branch): private-method
+      # enforcement (`raise_if_private_call`) only runs for a
+      # `RubyObject` receiver, never for a builtin-typed one like
+      # Integer. `is_private: true` is still correct to set — it's
+      # what real Ruby's own `Kernel#lambda` is, and it DOES work
+      # correctly wherever this codebase's privacy enforcement already
+      # works at all (an explicit RubyObject receiver) — this just
+      # isn't the piece to also close that separate, pre-existing gap.
+
+      it "proc { } is a declared exclusion (U019), not an undefined method" do
+        error = expect_raises(RuntimeError) { eval("proc { |x| x }") }
+        error.diagnostic.not_nil!.code.should eq("U019")
+      end
+
+      it "a script defining its own proc method is unaffected by the exclusion" do
+        result = eval(<<-RUBY)
+          def proc(x)
+            x * 10
+          end
+          proc(4)
+        RUBY
+        result.as_int.should eq 40
       end
     end
   end

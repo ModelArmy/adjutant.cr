@@ -120,6 +120,15 @@ module Adjutant
       Value.nil_value
     end
 
+    # No-op — same reasoning as `invoke`/`invoke_proc` above: this
+    # harness never has a real running frame to snapshot a closure
+    # from, so there's nothing meaningful to wrap. A spec that needs
+    # real `lambda { }` behavior should go through the real VM
+    # instead (interp.eval).
+    def wrap_block_as_proc(blk : ScriptProc) : Value
+      Value.nil_value
+    end
+
     # No-op — this direct-NativeCallable test harness never has a
     # real running frame to read self from (no VM behind it at all —
     # see the other no-op stubs below for the same reasoning). A spec

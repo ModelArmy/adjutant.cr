@@ -38,6 +38,10 @@ module Adjutant
       @vm.invoke_proc(proc_obj, args)
     end
 
+    def wrap_block_as_proc(blk : ScriptProc) : Value
+      @vm.wrap_block_as_proc(blk, filename, line)
+    end
+
     def values_equal?(a : Value, b : Value) : Bool
       @vm.values_equal?(a, b)
     end

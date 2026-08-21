@@ -342,6 +342,15 @@ module Adjutant
         help: "Pass a non-negative count to `#first`/`#last`."
       ),
 
+      "R032" => Entry.new(
+        code: "R032",
+        summary: "tried to create Proc object without a block",
+        why: "`lambda` builds a Proc by wrapping the block " \
+             "attached to the call — with no block there, there's " \
+             "nothing to wrap.",
+        help: "Attach a block: `lambda { |x| x + 1 }`."
+      ),
+
       # --- L: limits reached ----------------------------------------
       #
       # The script is valid; it is just larger than something Adjutant
@@ -427,6 +436,14 @@ module Adjutant
         help: "Write `extend`/`include` as a bare statement directly " \
               "inside the class or module body, not via an explicit " \
               "receiver."
+      ),
+      "U019" => Entry.new(
+        code: "U019",
+        summary: "`{construct}` is not supported",
+        why: "`proc { ... }`, which has different arity and `return` behavior " \
+             "from `lambda { ... }`/`->(){}` in real Ruby, is not supported. " \
+             "Excluded by design, not a missing feature.",
+        help: "Use `lambda { ... }` or `->(...) { ... }` instead."
       ),
       "U007" => Entry.new(
         code: "U007",
@@ -824,6 +841,7 @@ module Adjutant
       # misleading "undefined method" — see U018.
       "extend"  => "U018",
       "include" => "U018",
+      "proc"    => "U019",
     }
 
     # Same, for constants — a different resolution path reports these.

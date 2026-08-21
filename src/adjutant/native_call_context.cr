@@ -52,6 +52,19 @@ module Adjutant
     # forget. See VM#invoke_proc's own comment for the full reasoning.
     abstract def invoke_proc(proc_obj : RubyObject, args : Array(Value)) : Value
 
+    # Wraps a LIVE call-site block (the `blk` a native function's own
+    # `define_native`/`define` block receives) into a real `Proc`
+    # RubyObject — the same object shape a `->(){}` lambda literal
+    # produces (`compile_lambda`/`Op::MakeProc` a=1, vm.cr), so it
+    # gets `.call`/`.lambda?`/`.to_s` etc. for free via Proc's own
+    # native methods. This is what `lambda { ... }`/`proc { ... }`
+    # (builtins/proc.cr) are built from — the closure it captures is
+    # this call's OWN creation site (the frame that was running when
+    # `lambda`/`proc` itself was called), matching what a `->(){}`
+    # literal written at that exact spot would have captured, since a
+    # native call pushes no VM frame of its own to get in the way.
+    abstract def wrap_block_as_proc(blk : ScriptProc) : Value
+
     # Real Ruby `==` semantics (deep/structural for Array and Hash,
     # identity for RubyObject, value equality for scalars — see
     # VM#values_equal?, the single source of truth this delegates to).

@@ -87,8 +87,9 @@ Every entry below now reports its own code.
 ### U001 — `&blk` parameter capture
 
 Block literals are never first-class `Proc` values. Only a `Lambda` node
-(`->(){}` — Adjutant has no Kernel `lambda { }` function) becomes a real
-`Proc` object. A `{ }`/`do...end` block passed to a call stays consumable
+(`->(){}`) or the `lambda { }` Kernel-method spelling (both wrap into the
+same object shape — see `builtins/proc.cr`) become a real `Proc`
+object. A `{ }`/`do...end` block passed to a call stays consumable
 only via implicit `yield` inside that call: never bound to a named
 parameter, never returned, never stored.
 
@@ -807,6 +808,37 @@ declarative form never reaches this check at all, since it resolves
 successfully via a different path first; this table entry is only ever
 consulted once that path has already failed, which happens precisely
 for the explicit-receiver forms this entry covers.
+
+### U019 — `proc { ... }` (the `Kernel`-method spelling)
+
+`->(...) { ... }` and `lambda { ... }` (the latter added 2026-08-19,
+alongside this exclusion) both produce a real `Proc` object, correctly
+matching real Ruby. `proc { ... }` — a Ruby user's other obvious first
+reach for a Proc — is deliberately not given the same treatment.
+
+**Why:** decided 2026-08-19, while implementing `lambda { ... }`. Real
+Ruby's `proc { }` has different runtime behavior from `lambda { }`/
+`->(){}`: lenient arity (extra or missing arguments don't raise), and a
+bare `return` inside it escapes the ENCLOSING method rather than just
+returning from the proc itself. Wrapping a `proc { }` block into the
+same object `lambda`/`->(){}` already build (as an earlier version of
+this change did) would have given it `lambda`'s strict arity and
+local-only `return` instead — a script relying on either real-Ruby
+behavior would get a silently wrong answer (a spurious `ArgumentError`,
+or a `return` that stops one frame short of where it should), not
+merely a smaller, correct subset of Proc. Real Proc semantics — in
+particular the non-local `return`, which needs a `return` to unwind
+past the proc's own frame into whatever method happened to be running
+when it was called — are a genuine, separate VM feature, not something
+this pickup was scoped to build.
+
+**Instead:** use `lambda { ... }` or `->(...) { ... }`.
+
+**Enforcement — active since 2026-08-19, runtime.** Same mechanism as
+U005/U006/U018 (`EXCLUDED_METHODS`, checked after ordinary resolution
+fails). A script defining its own `proc` method is unaffected — this
+table is only ever consulted once ordinary resolution has already
+failed to find one.
 
 ---
 
