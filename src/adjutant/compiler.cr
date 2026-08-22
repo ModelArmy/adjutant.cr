@@ -731,6 +731,8 @@ module Adjutant
         compile_node(node.right)
         @chunk.emit(Op::Eq, node.line)
         @chunk.emit(Op::Not, node.line)
+      when TokenKind::TripleEq
+        compile_triple_eq(node)
       else
         compile_node(node.left)
         compile_node(node.right)
@@ -803,6 +805,42 @@ module Adjutant
       @chunk.emit(Op::Const, node.line, c: nil_idx)
       @chunk.emit(Op::SetBlock, node.line)
       @chunk.emit(Op::Call, node.line, a: 2_u8, b: 0b10_u16, c: sym_idx)
+    end
+
+    # `a === b` — deliberately NOT method dispatch, unlike `<=>`/`=~`
+    # just above (`compile_spaceship`/`compile_match`, both real
+    # `Op::Call`s with the receiver bit set). `===` joined `==` in
+    # `OVERLOADABLE_OPERATOR_NAMES` (see that set's own comment) —
+    # neither is script-overridable, both are fixed VM opcodes that
+    # never consult a class's method table, same as `+`/`-`/indexing.
+    # `Op::TripleEq` (`vm.cr`'s own comment on it) hardcodes the
+    # Class/Range/Regexp/Proc special-casing directly, mirroring what
+    # `Op::Eq` already does for plain `==` — not a receiver dispatch
+    # that HAPPENS to always resolve to the same fixed set today.
+    #
+    # Operand push order is REVERSED from the ordinary left-then-right
+    # shape every other binary op here uses (including `==`/`Op::Eq`
+    # right above `compile_binary`'s own `TripleEq` case) — deliberate,
+    # not a mistake: `compile_case`'s own per-`when`-pattern check
+    # (`compile_case`, below) shares this exact same opcode, and ITS
+    # natural stack order — push the subject once up front, `Op::Dup`
+    # it, then push each `when` pattern on top — puts subject BELOW
+    # pattern, not above. Rather than add a new stack-shuffling opcode
+    # (a `Swap`, or `compile_case`'s subject via a synthetic local
+    # instead of a stack `Dup` — SCOPE.md's now-resolved "missing
+    # receiver bit" entry considered both) just to make `compile_case`
+    # match the ordinary left-then-right convention, this method
+    # matches `compile_case`'s naturally-cheaper order instead: push
+    # `node.right` (the SUBJECT — `b` in `a === b`) first, `node.left`
+    # (the PATTERN — `a`) second. `Op::TripleEq`'s own VM handler
+    # therefore expects `(subject, pattern)` off the stack, not
+    # `(pattern, subject)` — see its own comment for the actual
+    # `Class#===`/`Range#===`/etc. matching logic, which takes the
+    # arguments in THAT order for exactly this reason.
+    private def compile_triple_eq(node : Binary) : Nil
+      compile_node(node.right)
+      compile_node(node.left)
+      @chunk.emit(Op::TripleEq, node.line)
     end
 
     # ameba:disable Metrics/CyclomaticComplexity
@@ -1233,11 +1271,16 @@ module Adjutant
     # letting `def ===` reach this check at all — before that, `"==="`
     # split into `EqEq` + a stray `Eq`, and `def ===(x)` failed with a
     # confusing, unrelated-looking `P002` partway through the method
-    # body instead of this clean, named rejection. `Class#===`/
-    # `Range#===` (see `vm.cr`'s `exec_builtin`) are unaffected — those
-    # are native, VM-internal dispatch for `case/when`, not a
-    # script-definable method, so this rejection and that feature
-    # coexist without conflict, same as every other operator here.
+    # body instead of this clean, named rejection. `===` now compiles
+    # to its own fixed opcode too (`Op::TripleEq`, `vm.cr` —
+    # `compile_triple_eq` below, plus `compile_case`'s per-`when`-
+    # pattern check, both emit it directly), same shape `Op::Eq`
+    # already has for `==`, so this rejection and bare infix `a ===
+    # b`/`case/when` support coexist without conflict, same as every
+    # other operator here — the fixed opcode's own hardcoded
+    # `Class`/`Range`/`Regexp`/`Proc` special-casing (see
+    # `triple_eq_matches?`, vm.cr) is exactly what a script-defined
+    # `def ===` would otherwise have silently never reached anyway.
     #
     # `[]`/`[]=` are the one remaining case deliberately NOT in this
     # set (see UNSUPPORTED.md) — same reason `"==="` needed a token
@@ -1677,13 +1720,19 @@ module Adjutant
         pattern_patches = [] of Int32
         patterns.each_with_index do |pat, _i|
           if node.subject
+            # Stack, right before `Op::TripleEq`: `[subject(dup), pattern]`
+            # — subject deeper, pattern on top. This is `Op::TripleEq`'s
+            # own expected `(subject, pattern)` order (see that op's
+            # comment in vm.cr, and `compile_triple_eq`'s comment on why
+            # bare-infix `a === b` pushes in this same, no-restructuring-
+            # needed order rather than the reverse) — no receiver bit,
+            # no method dispatch, no `Swap` opcode: this replaced a real
+            # `Op::Call` to a `"==="` symbol (see SCOPE.md's now-resolved
+            # "missing receiver bit" entry) now that `===` is a fixed
+            # opcode like `==`, never script-overridable.
             @chunk.emit(Op::Dup, node.line)
             compile_node(pat)
-            sym_idx = intern("===")
-            nil_idx = @chunk.add_const(Value.nil_value)
-            @chunk.emit(Op::Const, node.line, c: nil_idx)
-            @chunk.emit(Op::SetBlock, node.line)
-            @chunk.emit(Op::Call, node.line, a: 2_u8, c: sym_idx)
+            @chunk.emit(Op::TripleEq, node.line)
           else
             compile_node(pat)
           end

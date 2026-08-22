@@ -133,7 +133,6 @@ module Adjutant
       end
     end
 
-    # ameba:disable Metrics/CyclomaticComplexity - one `define` call per native method, each a flat independent case; count comes from many methods, not tangled branching
     def self.bootstrap_regexp(interp : Interpreter) : RubyClass
       cls = RubyClass.new("Regexp")
       cls.constants[interp.symbols.intern("IGNORECASE").value] = Value.int(IGNORECASE)
@@ -325,18 +324,18 @@ module Adjutant
         end
       end
 
-      # `#===` — case/when and Enumerable#grep dispatch through this.
-      # Real Ruby returns false (not a TypeError) for a non-String
-      # right-hand side, so a bad `args[1]` is a false result here too,
-      # not a raised error — case/when trying every `when` clause in
-      # turn depends on a mismatched type just not matching, not
-      # blowing up the whole case statement.
-      define(cls, interp, "===") do |args, _blk, _ncc|
-        robj = args.first.as_robject.as(RegexpObject)
-        str = args[1]?.try(&.as_string?)
-        Value.bool(str ? robj.regex.matches?(str) : false)
-      end
-
+      # No `#===` registration here (there used to be one, reachable
+      # only via `.===(x)` dot-call — `case/when` itself never
+      # consulted it, see this class's own git history). `===` joined
+      # `==` (never registered here either) in `compiler.cr`'s
+      # `OVERLOADABLE_OPERATOR_NAMES` — a fixed VM opcode
+      # (`Op::TripleEq`, `vm.cr`) that never consults a receiver's
+      # method table, for infix `a === b` AND `case/when` alike (its
+      # own doc comment hardcodes the Regexp-match branch directly,
+      # deliberately not calling back into a method here). Dot-call
+      # (`/re/.===(str)`) now raises a plain undefined-method error,
+      # matching `/re/.==(str)`'s pre-existing (and equally
+      # unsupported) behavior — consistent, not a regression.
       cls
     end
 

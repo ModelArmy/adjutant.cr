@@ -115,7 +115,7 @@ module Adjutant
     BangTilde # !~, negated match — see scan's own comment on '!'
     Eq
     EqEq
-    TripleEq # ===, def-name position only — see scan_eq's own comment
+    TripleEq # ===, def-name position AND infix (a === b) — see scan_eq's own comment
     NEq
     Lt
     LtE

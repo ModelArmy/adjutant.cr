@@ -654,12 +654,40 @@ module Adjutant
         result.label.should be_nil
       end
 
-      it "#match?/#=== stay unlabeled — a boolean fact, not extracted data" do
+      it "#match?/#begin/#end stay unlabeled — a boolean/positional fact, not extracted data" do
         interp, _ = make_tainted_interp
         match_q = interp.eval(%(/x/.match?(tainted_str("/etc/passwd"))))
-        eqeqeq = interp.eval(%(/x/.===(tainted_str("/etc/passwd"))))
         match_q.label.should be_nil
-        eqeqeq.label.should be_nil
+      end
+    end
+
+    describe "Op::TripleEq (a === b)" do
+      # `===` joined `==` as a fixed VM opcode 2026-08-21 (Op::TripleEq,
+      # dispatched via the same exec_binary helper Op::Eq/Op::Lt already
+      # use — see DEVELOPMENT.md's "Comparison operators" entry) rather
+      # than staying a native/builtin dispatch. That mechanism change
+      # has a real IFC consequence, not just a syntax one: exec_binary
+      # unconditionally joins both operands' labels onto the result
+      # (see the "joins across comparison ops"/"joins labels across
+      # equality comparison" specs just above) — a policy every fixed-
+      # opcode comparison already has, unlike a native method call
+      # (e.g. #match? just above), which does NOT auto-join by
+      # default. The OLD `.===(x)` dot-call (native/builtin dispatch,
+      # removed alongside this) stayed unlabeled for exactly that
+      # reason — an artifact of ITS dispatch mechanism, not a
+      # deliberate "=== results are never data" policy. Now that ===
+      # is architecturally a peer of ==/< rather than of #match?, it
+      # correctly inherits their propagation behavior instead.
+      it "joins labels across a === comparison, same as == and <" do
+        interp, _ = make_tainted_interp
+        result = interp.eval(%(/x/ === tainted_str("/etc/passwd")))
+        result.label.not_nil!.sensitivity.should eq Sensitivity::High
+      end
+
+      it "records a RiskFlowEvent for TripleEq" do
+        interp, _ = make_tainted_interp
+        interp.eval(%(/x/ === tainted_str("/etc/passwd")))
+        interp.risk_flow_log.events.map(&.op).should contain "TripleEq"
       end
     end
   end

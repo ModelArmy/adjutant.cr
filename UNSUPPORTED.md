@@ -702,16 +702,29 @@ stray `Eq`, and `def ===(x)` failed with a confusing, unrelated-looking
 `P002` partway through the method body (the same shape of trap this
 whole entry exists to prevent, just reached through a parse failure
 instead of a silent no-op) rather than this clean, named rejection.
-The token exists ONLY for `def`-name-position parsing — deliberately
-not added to the `PRECEDENCE` table, since `a === b` as general infix
-script syntax isn't something Adjutant supports or real Ruby scripts
-normally write either (`case/when` is the real caller, and that's
-compiler-generated dispatch, not parsed from script syntax — see
-`compile_case`). `Class#===`/`Range#===` (`vm.cr`'s `exec_builtin`) are
-unaffected by this entry: those are native, VM-internal dispatch for
-`case/when`'s own patterns, not a script-definable method, so the
-rejection and that feature coexist without conflict, same as every
-other operator here.
+
+**Bare infix `a === b` — unsupported at first (this entry originally
+said the `TripleEq` token existed ONLY for `def`-name-position
+parsing, deliberately not added to `PRECEDENCE`), added 2026-08-21**
+once `===` was decided to join `==` as a second fixed-opcode
+comparison (`Op::TripleEq`, `vm.cr` — hardcodes `Class`/`Module`
+is-instance-of, `Range` membership, `Regexp` match, and `Proc`/lambda
+call-and-check-truthy, falling back to plain `==` for everything else,
+mirroring what `Op::Eq` already does for `==`). `case/when` shares
+this exact same opcode now (`compile_case`), rather than the `Op::Call`
+to a `"==="` symbol it used before — see `DEVELOPMENT.md`'s own entry
+on this for the full reasoning, including why this is what finally
+resolves the "missing receiver bit" bug SCOPE.md used to track
+separately. `Class#===`/`Range#===`/`Regexp#===` (formerly split
+between `vm.cr`'s `exec_builtin` and, for `Regexp` alone, a real
+native method) are UNCHANGED in behavior for `case/when` and the new
+infix syntax — both now reach the same hardcoded opcode logic, not
+divergent implementations. Dot-call (`x.===(y)`) is NOT supported for
+any of these — same as `x.==(y)` never has been — since neither is
+script-overridable and neither is reachable via a receiver's method
+table anymore (`RegexpObject`'s real native `"==="` method was removed
+alongside this, `builtins/regexp.cr`, closing the one path that used
+to reach real dispatch for it).
 
 **Instead:** define `<=>` for ordering (see the `Must Fix` entry above
 — `<`/`<=`/`>`/`>=` will dispatch through it for `RubyObject`

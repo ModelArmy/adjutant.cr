@@ -586,13 +586,13 @@ module Adjutant
 
     # --- Pratt expression parser --------------------------------------------
 
-    # `EqTilde` (`=~`) and `BangTilde` (`!~`) sit with `EqEq`/`NEq` at
-    # level 4, not with `Spaceship` at level 5 — real Ruby groups
-    # `<=> == === != =~ !~` at ONE precedence tier, below `< <= > >=`,
-    # which this table already splits across two tiers for `<=>` (a
-    # pre-existing simplification, not something this entry
-    # re-derives); level 4 is the more faithful of the two for these
-    # two specifically. Doesn't change much in practice — `a =~ b ==
+    # `EqTilde` (`=~`) and `BangTilde` (`!~`) sit with `EqEq`/`NEq`/
+    # `TripleEq` at level 4, not with `Spaceship` at level 5 — real
+    # Ruby groups `<=> == === != =~ !~` at ONE precedence tier, below
+    # `< <= > >=`, which this table already splits across two tiers
+    # for `<=>` (a pre-existing simplification, not something this
+    # entry re-derives); level 4 is the more faithful of the two for
+    # these specifically. Doesn't change much in practice — `a =~ b ==
     # c` is a rare thing to write regardless of which side of that
     # split it lands on.
     PRECEDENCE = {
@@ -605,6 +605,7 @@ module Adjutant
       TokenKind::NEq       => 4,
       TokenKind::EqTilde   => 4,
       TokenKind::BangTilde => 4,
+      TokenKind::TripleEq  => 4,
       TokenKind::Lt        => 5,
       TokenKind::LtE       => 5,
       TokenKind::Gt        => 5,

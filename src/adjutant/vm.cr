@@ -583,7 +583,7 @@ module Adjutant
       false
     end
 
-    # Shared by the "===" exec_builtin case's Range branch (above).
+    # Shared by `triple_eq_matches?`'s Range branch (below).
     # `true` only for a genuine Range instance — every other robject
     # (including one that happens to define its own ivars named
     # `__min` etc., unlikely but not impossible) must NOT match, so
@@ -603,13 +603,112 @@ module Adjutant
     # Ivar names/lookup mirror make_range_object's own (vm.cr, further
     # down) and builtins/range.cr's accessors — all three must stay in
     # sync on the `__min`/`__max`/`__exclusive` naming.
+    #
+    # `min`/`max` explicit `null?` checks — a beginless/endless range
+    # (`compile_range`'s own comment: a missing bound compiles to a
+    # real `Value.nil_value`, stored as-is) has NO bound to check on
+    # that side at all, and `nil` isn't a value `compare`/
+    # `ValueOps.compare` know how to pair against anything — every one
+    # of `ValueOps.compare`'s type-pair branches requires both sides
+    # to be a real Int/Float/String, so a `nil` operand falls through
+    # to that `case`'s own `else -> false`, silently answering "not
+    # included" for EVERY `x`, regardless of whether `x` actually
+    # satisfies the range's one real bound. Found 2026-08-22 (SCOPE.md,
+    # now-resolved Must Fix entry) while uncommenting `spec/scripts/
+    # mruby/range.rb`'s own `Range#===` test — `(..10) === 5` answered
+    # `false` instead of `true`, no error, silent. A missing bound
+    # means "always satisfied on this side," checked directly here
+    # rather than routed through `compare` at all — there's no
+    # principled way for `compare`/`ValueOps.compare` to special-case
+    # "this side doesn't apply" from a bare `nil` alone, so the check
+    # belongs at this caller, which already knows which ivar is
+    # missing and what that means.
     private def range_include?(range : Value, x : Value) : Bool
       obj = range.as_robject
       min = obj.ivars[@symbols.intern("__min").value]
       max = obj.ivars[@symbols.intern("__max").value]
       exclusive = obj.ivars[@symbols.intern("__exclusive").value].as_bool
-      return false unless compare(x, min, :>=)
+      return false unless min.null? || compare(x, min, :>=)
+      return true if max.null?
       exclusive ? compare(x, max, :<) : compare(x, max, :<=)
+    end
+
+    # `true` only for a genuine Proc instance (a real lambda, or
+    # `lambda { }` — see builtins/proc.cr's own doc comment on what
+    # can reach this shape) — same identity-not-duck-typing check
+    # `range_receiver?` just above uses for Range, for the same
+    # reason: an ordinary robject that happens to carry an ivar named
+    # `__sproc` (unlikely, but not impossible) must not match.
+    private def proc_receiver?(v : Value) : Bool
+      obj = v.as_robject?
+      !!(obj && obj.rclass == builtin_class_by_name("Proc"))
+    end
+
+    # `Op::TripleEq`'s actual matching logic — real Ruby's `pattern ===
+    # subject`, called (in THIS argument order) from both `Op::TripleEq`'s
+    # own VM handler (bare infix `a === b`) and `compile_case`'s
+    # per-`when`-pattern check, the two and ONLY two ways to reach this
+    # opcode (see `compile_triple_eq`'s own comment on why the two call
+    # sites' stack orders differ but both resolve to this same
+    # `(pattern, subject)` parameter order before calling here).
+    #
+    # Deliberately NOT method dispatch — `===` joined `==` in
+    # `OVERLOADABLE_OPERATOR_NAMES` (compiler.cr), so unlike `<=>`/`=~`
+    # (real receiver-based `Op::Call`s, `compile_spaceship`/
+    # `compile_match`), no script class can define its own `===` for
+    # this to ever consult, and this hardcoded set is deliberately
+    # closed, not extensible via a method table the way, say, `#to_s`
+    # is — same reasoning `Op::Eq`'s `values_equal?` already commits to
+    # for `==`. A future native type wanting its own `===` semantics
+    # here needs a new branch added directly, not a `native_methods`
+    # registration.
+    #
+    # This IS the sole source of truth for Regexp matching under
+    # `===`/`case-when` — deliberately NOT calling through to
+    # `RegexpObject`'s own genuine native `#===`/`#match?` method
+    # (builtins/regexp.cr had one; removed alongside this — see
+    # SCOPE.md). Real Ruby's Regexp#=== dispatches through a real,
+    # overridable method; Adjutant's doesn't, matching the "no
+    # overloading" decision this whole opcode exists to enforce. A
+    # `Regexp` pattern used via dot-call (`/re/.===(str)`) now raises
+    # a plain undefined-method error instead — consistent with `a.==
+    # (b)`, `a.+(b)`, etc., which have never worked either (no
+    # `exec_builtin` case for `"=="` at all).
+    private def triple_eq_matches?(pattern : Value, subject : Value) : Bool
+      if cls = pattern.as_rclass?
+        # `Class#===`/`Module#===` — is-instance-of. Real Ruby:
+        # `SomeClass === x` and `x.is_a?(SomeClass)` ask the exact same
+        # question, just with the receiver/target roles swapped —
+        # reuse `is_a_target?` rather than re-deriving the same
+        # three-receiver-shape walk it already does.
+        is_a_target?(subject, cls)
+      elsif range_receiver?(pattern)
+        # `Range#===` — is-member-of. Bound check goes through
+        # `compare` (this file, above — the same dispatch `<=>`'s own
+        # item wired up), not `ValueOps` directly, so a
+        # Comparable-style custom bound type works here for free,
+        # exactly like Range#each already gets for #succ.
+        range_include?(pattern, subject)
+      elsif (robj = pattern.as_robject?) && robj.is_a?(RegexpObject)
+        # `Regexp#===` — real match test, hardcoded here (see this
+        # method's own doc comment on why, above).
+        str = subject.as_string?
+        str ? robj.regex.matches?(str) : false
+      elsif proc_receiver?(pattern)
+        # `Proc#===` — call the proc/lambda with `subject`, truthiness
+        # of the result is the match. Real Ruby's own `Proc#===`,
+        # exactly this: `->(x) { x.even? } === 4`. `case n; when
+        # ->(x) { x.even? }` is the idiomatic use — added here rather
+        # than left for later, since Adjutant already has real,
+        # working lambdas (builtins/proc.cr) for this to be reachable
+        # through today, not a stub for a future feature.
+        invoke_proc(pattern.as_robject, [subject]).truthy?
+      else
+        # Every other pattern: real Ruby's own default `Object#===`
+        # genuinely is `==` — not a fallback standing in for a missing
+        # feature, the actually-correct behavior here.
+        values_equal?(subject, pattern)
+      end
     end
 
     # String#[range] — real Ruby's own substring-slicing rules:
@@ -1103,10 +1202,11 @@ module Adjutant
             result = Value.bool(values_equal?(a, b), RiskFlowLabel.join(a.label, b.label))
             @risk_flow_log.record("Eq", [a.label, b.label], result.label, f.line)
             push(result)
-          when Op::Lt  then exec_binary(inst) { |lhs, rhs| Value.bool(compare(lhs, rhs, :<)) }
-          when Op::Lte then exec_binary(inst) { |lhs, rhs| Value.bool(compare(lhs, rhs, :<=)) }
-          when Op::Gt  then exec_binary(inst) { |lhs, rhs| Value.bool(compare(lhs, rhs, :>)) }
-          when Op::Gte then exec_binary(inst) { |lhs, rhs| Value.bool(compare(lhs, rhs, :>=)) }
+          when Op::TripleEq then exec_binary(inst) { |subject, pattern| Value.bool(triple_eq_matches?(pattern, subject)) }
+          when Op::Lt       then exec_binary(inst) { |lhs, rhs| Value.bool(compare(lhs, rhs, :<)) }
+          when Op::Lte      then exec_binary(inst) { |lhs, rhs| Value.bool(compare(lhs, rhs, :<=)) }
+          when Op::Gt       then exec_binary(inst) { |lhs, rhs| Value.bool(compare(lhs, rhs, :>)) }
+          when Op::Gte      then exec_binary(inst) { |lhs, rhs| Value.bool(compare(lhs, rhs, :>=)) }
             # --- Unary ----------------------------------------------------------
 
           when Op::Not
@@ -2848,57 +2948,6 @@ module Adjutant
                   end
         # wrap it in our Runtime error
         raise RuntimeError.new(msg, filename, line, error_value: err_val)
-      when "==="
-        # compile_case pushes [subject, pattern] (Op::Dup subject,
-        # then compile_node(pat)) with no receiver bit — see
-        # SCOPE.md's note on why that's deliberately not fixed here —
-        # so these arrive as plain positional args in PUSH order:
-        # args[0] is the subject being tested, args[1] is the `when`
-        # pattern itself. Real Ruby's own `pattern === subject` reads
-        # the OPPOSITE way once you think of `pattern` as a receiver,
-        # which is exactly the confusion worth a comment: `subject`
-        # and `pattern` below are named for what they ARE, not for
-        # their arg-list position, to keep that straight.
-        subject = args[0]? || Value.nil_value
-        pattern = args[1]? || Value.nil_value
-        if cls = pattern.as_rclass?
-          # `Class#===` — is-instance-of. Real Ruby: `SomeClass ===
-          # x` and `x.is_a?(SomeClass)` ask the exact same question,
-          # just with the receiver/target roles swapped — reuse
-          # is_a_target? rather than re-deriving the same
-          # three-receiver-shape walk it already does.
-          Value.bool(is_a_target?(subject, cls))
-        elsif range_receiver?(pattern)
-          # `Range#===` — is-member-of. Bound check goes through
-          # `compare` (this file, above — the same dispatch `<=>`'s
-          # own item wired up), not `ValueOps` directly, so a
-          # Comparable-style custom bound type works here for free,
-          # exactly like Range#each already gets for #succ.
-          Value.bool(range_include?(pattern, subject))
-        elsif (robj = pattern.as_robject?) && robj.is_a?(RegexpObject)
-          # `Regexp#===` — real match test. Found 2026-08-14: this
-          # hardcoded case/when dispatch predates Regexp entirely, and
-          # (like Class/Range above) never consults a receiver's own
-          # native `===` method table at all — `Regexp#===` IS
-          # registered as a real native method (builtins/regexp.cr)
-          # and IS reachable via ordinary `.===(x)` dot-call dispatch,
-          # but `case/when` itself doesn't route through that: it
-          # calls this fixed case statement directly, with no receiver
-          # bit set (see this case's own comment above on
-          # subject/pattern arg order) — so without this branch,
-          # `when /pattern/` would silently fall through to the
-          # `values_equal?` catch-all below and almost never match.
-          # Same fix shape as the exec_get_index_fallback found the
-          # same day for MatchData#[] — a hardcoded per-type dispatch
-          # table not yet knowing about a newly added builtin type.
-          str = subject.as_string?
-          Value.bool(str ? robj.regex.matches?(str) : false)
-        else
-          # Every other receiver: real Ruby's own default `Object#===`
-          # genuinely is `==` — not a fallback standing in for a
-          # missing feature, the actually-correct behavior here.
-          Value.bool(values_equal?(subject, pattern))
-        end
       when "<=>"
         a = args[0]? || Value.nil_value
         b = args[1]? || Value.nil_value

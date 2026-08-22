@@ -145,6 +145,7 @@ module Adjutant
 
     # Comparison
     Eq
+    TripleEq # `a === b`; also compile_case's per-`when`-pattern check — see this op's own VM handler for the Class/Range/Regexp/Proc special-casing
     Lt
     Lte
     Gt

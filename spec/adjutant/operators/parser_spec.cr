@@ -39,10 +39,18 @@ module Adjutant
         node.as(Binary).op.should eq TokenKind::EqTilde
       end
 
-      it "parses a.=~(b) as an ordinary dot-call, same mechanism as a.===(b)" do
+      it "parses a.=~(b) as an ordinary dot-call — no runtime equivalent yet, unlike a.===(b) before 2026-08-21" do
         # No special-casing needed in parse_postfix — EqTilde being a
-        # single token (not separate Eq/Tilde) is the whole fix, same
-        # as TripleEq's own dot-call spelling already working for free.
+        # single token (not separate Eq/Tilde) is the whole fix.
+        # `a.===(b)` still parses the identical way (any single token's
+        # lexeme works as a dot-call method name) but no longer
+        # EVALUATES — `===` is a fixed opcode now (Op::TripleEq,
+        # vm.cr), consulted only via bare infix `a === b` or
+        # `case/when`, never through a receiver's method table; a
+        # parsed `a.===(b)` Call node reaches the VM and raises
+        # undefined-method (R008), same as `a.==(b)` always has. See
+        # this describe block's own "===" tests below for the
+        # PARSING side of that distinction.
         node = parse_expr("a.=~(b)")
         node.should be_a(Call)
         node.as(Call).method.should eq "=~"
@@ -67,6 +75,39 @@ module Adjutant
         node = parse_expr("a.!~(b)")
         node.should be_a(Call)
         node.as(Call).method.should eq "!~"
+      end
+
+      it "parses a === b as a Binary node (added 2026-08-21)" do
+        # Previously the one operator token deliberately excluded from
+        # PRECEDENCE (see UNSUPPORTED.md's U017, pre-2026-08-21
+        # wording) — `===` joined `==` as a second fixed-opcode
+        # comparison instead of gaining ordinary receiver dispatch
+        # (see DEVELOPMENT.md), so this now parses exactly like `==`
+        # does, just a different token/opcode.
+        node = parse_expr("a === b")
+        node.should be_a(Binary)
+        node.as(Binary).op.should eq TokenKind::TripleEq
+      end
+
+      it "respects precedence: === binds looser than +, same tier as ==" do
+        node = parse_expr("a === b + c")
+        node.should be_a(Binary)
+        top = node.as(Binary)
+        top.op.should eq TokenKind::TripleEq
+        top.right.should be_a(Binary)
+        top.right.as(Binary).op.should eq TokenKind::Plus
+      end
+
+      it "parses a.===(b) as an ordinary dot-call at the PARSER level — see operators/vm_spec.cr for why this no longer evaluates" do
+        # Parsing is unaffected by === becoming a fixed opcode: any
+        # single token's lexeme still works as a dot-call method name
+        # (parse_postfix, unchanged), so `a.===(b)` still produces an
+        # ordinary Call node here. It's only the VM that now rejects
+        # it (undefined method, same as `a.==(b)`) — a runtime
+        # distinction, not a parser one, so this spec still passes.
+        node = parse_expr("a.===(b)")
+        node.should be_a(Call)
+        node.as(Call).method.should eq "==="
       end
     end
 

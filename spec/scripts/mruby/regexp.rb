@@ -24,21 +24,28 @@ require "assert"
 # 2. `$~`/`$1`.. GLOBALS DON'T EXIST AT ALL — no `$`-global plumbing in
 #    Adjutant yet (see SCOPE.md's Regexp/MatchData entry). Blocks every
 #    upstream assertion that reads or writes one.
-# 3. INFIX `a === b` DOESN'T PARSE — a DELIBERATE, permanent non-goal
-#    (UNSUPPORTED.md), not a gap — `.===(x)` dot-call and `case/when`
-#    both work today and are NOT blocked by this. Infix `a =~ b` DOES
-#    parse now (added 2026-08-20 — real `EqTilde` lexer token and
-#    `PRECEDENCE` entry, `Regexp#=~`/`String#=~` wired up for real);
-#    every upstream assertion using bare infix `=~` that was blocked
-#    for this reason alone is now active below — anything still
-#    commented out near `=~` is blocked for a DIFFERENT, specific
-#    reason given at that site (usually `$~`, a Symbol argument, or
-#    the ArgumentError/TypeError error-class divergence — Adjutant
-#    raises ArgumentError for a non-String/non-Regexp match argument,
-#    real Ruby raises TypeError). Every upstream assertion using bare infix `===`
-#    stays blocked; `.===`/`case`/`when` coverage already exists at
-#    the Crystal-spec level (regexp_spec.cr) and isn't re-proven here
-#    just to route around this gap.
+# 3. INFIX `a === b` NOW PARSES AND WORKS (added 2026-08-21 — `===`
+#    joined `==` as a fixed VM opcode, `Op::TripleEq`; see
+#    DEVELOPMENT.md's "Comparison operators" entry). Dot-call
+#    (`.===(x)`) went the OPPOSITE direction in that same change —
+#    it no longer works at all (undefined-method, same as `.==(x)`
+#    has always raised), since `===` is a fixed opcode consulted only
+#    via bare infix or `case/when`, never through a receiver's method
+#    table. Every upstream assertion using bare infix `===` below is
+#    reassessed on its own merits now — several are still blocked, but
+#    each for its OWN separate reason (usually `$1`, a Symbol
+#    argument, `Enumerable#grep`, or the ArgumentError/TypeError
+#    divergence noted in point 2 above), not the old blanket "=== is a
+#    non-goal" one. `.===(x)` dot-call coverage that used to exist at
+#    the Crystal-spec level (`regexp_spec.cr`) was removed in that
+#    same change, replaced with a regression confirming it now raises.
+# 4. INFIX `a =~ b` ALSO PARSES (added 2026-08-20 — real `EqTilde`
+#    lexer token and `PRECEDENCE` entry, `Regexp#=~`/`String#=~` wired
+#    up for real); every upstream assertion using bare infix `=~` that
+#    was blocked for this reason alone is now active below — anything
+#    still commented out near `=~` is blocked for a DIFFERENT,
+#    specific reason given at that site (usually `$~`, a Symbol
+#    argument, or the ArgumentError/TypeError divergence from point 2).
 #
 # Beyond those three, several methods genuinely don't exist yet at
 # all: `Regexp.escape`, `#inspect`/`#to_s` (the same to_s/inspect
@@ -156,14 +163,17 @@ end
 #   assert_nil $~
 # end
 
-# --- BLOCKED: infix `===` is a deliberate non-goal, and `$1` doesn't
-# exist either (file header, points 2 and 3). `.===(x)` dot-call and
-# case/when coverage already exists at the Crystal-spec level
-# (regexp_spec.cr) rather than re-proven here as a rewrite.
-# assert("Regexp#===") do
-#   re = Regexp.new("abc")
-#   assert_true re === "abc"
-#   assert_false re === "xyz"
+assert("Regexp#===") do
+  re = Regexp.new("abc")
+  assert_true re === "abc"
+  assert_false re === "xyz"
+end
+
+# --- BLOCKED: `$1` doesn't exist (file header, point 2) — the rest of
+# upstream's own assertion (the `re === "abc"`/`re === "xyz"` checks)
+# is uncommented just above; only the capture-group portion below,
+# which needs `$1`, stays blocked.
+# assert("Regexp#=== (capture group via $1)") do
 #   re = Regexp.new("hello (theo)")
 #   assert_true re === "hello theo"
 #   assert_equal "theo", $1
@@ -249,17 +259,24 @@ end
 # genuine error-class divergence, not a missing feature. Infix `=~`
 # itself parses fine now (2026-08-20) — `/a/ =~ 1` reaches the same
 # ArgumentError/TypeError mismatch as the `#match`/`#match?` lines,
-# not a parse failure. The `#===` lines stay blocked for the
-# separate, permanent reason (bare infix `===` — UNSUPPORTED.md).
+# not a parse failure.
 # assert("Regexp - match operand rejects other types") do
 #   assert_raise(TypeError) { /a/.match(1) }
 #   assert_raise(TypeError) { /a/.match?(1) }
 #   assert_raise(TypeError) { /a/ =~ 1 }
-#   # #=== answers false rather than raising, for symbols and everything else
-#   assert_false(/a/ === 1)
-#   assert_false(/a/ === Object.new)
-#   assert_false(/a/ === nil)
 # end
+
+# `#===` genuinely does answer false rather than raising for a
+# non-String pattern-check subject — no TypeError-vs-ArgumentError
+# divergence here at all (`triple_eq_matches?`'s Regexp branch, vm.cr,
+# already returns `false` when the subject isn't a String, never
+# raises), so this portion of upstream's own assertion is uncommented
+# on its own rather than left blocked alongside the three above.
+assert("Regexp#=== answers false rather than raising, for non-String subjects") do
+  assert_false(/a/ === 1)
+  assert_false(/a/ === Object.new)
+  assert_false(/a/ === nil)
+end
 
 # --- BLOCKED: `Regexp.escape` isn't implemented — no such class
 # method registered at all. A real, worthwhile SCOPE.md candidate
