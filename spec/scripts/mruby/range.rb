@@ -13,21 +13,15 @@ require "assert"
 #
 # 1. INFIX `a === b` NOW PARSES AND WORKS (added 2026-08-21 — `===`
 #    joined `==` as a fixed VM opcode, `Op::TripleEq`; see
-#    DEVELOPMENT.md's "Comparison operators" entry). This file's
-#    `Range#===` block below stays commented anyway — NOT for the old
-#    "=== is a deliberate non-goal" reason, but because `range_include?`
-#    (`vm.cr`) has no nil-bound handling: for a beginless/endless range,
-#    the missing bound is `Value.nil_value`, and `ValueOps.compare`'s
-#    type-pair `case` has no branch matching `nil` against anything, so
-#    it falls to that `case`'s own `else -> false`. `range_include?`'s
-#    `return false unless compare(x, min, :>=)` then short-circuits
-#    immediately, so a beginless range's `===` always answers `false`
-#    even for a genuinely included value — confirmed by tracing (not
-#    yet exercised by a live test), a separate, real, still-open gap
-#    the file's own `Range#===` block (below) already flagged needing
-#    ("partial ranges for two of its three receivers") before this
-#    session even started. Leaving it commented, not uncommenting it
-#    incorrectly.
+#    DEVELOPMENT.md's "Comparison operators" entry), AND `Range#===`
+#    now has real nil-bound handling too (added 2026-08-22, fixing the
+#    SCOPE.md Must Fix entry this file's own `Range#===` block flagged
+#    the same day — `range_include?`, `vm.cr`, previously fell through
+#    `ValueOps.compare`'s `nil`-has-no-matching-branch `else -> false`
+#    for a beginless/endless range's missing bound, silently answering
+#    `false` for a genuinely included value on that side). The
+#    `Range#===` block below is fully active now, partial ranges
+#    included — no longer split or partially blocked.
 # 2. `Range#last`/`Range#max`/`Range#min`/`Range#first` (no argument)
 #    all correctly raise `RangeError` on the relevant nil bound as of
 #    2026-08-19 (four DISTINCT messages, confirmed via Ruby's own C
@@ -72,30 +66,18 @@ end
 #   assert_true (1..10) == Range.new(1.0, 10.0)
 # end
 
-assert('Range#===', '15.2.14.4.2 (full range only — see below for partial)') do
+assert('Range#===', '15.2.14.4.2') do
   a = (1..10)
+  b = (1..)
+  c = (..10)
 
   assert_true a === 5
   assert_false a === 20
+  assert_true b === 20
+  assert_false b === 0
+  assert_false c === 20
+  assert_true c === 0
 end
-
-# --- BLOCKED: partial-range `Range#===` — NOT the old infix-=== reason
-# (see file header point 1), a separate, real gap: `range_include?`
-# (vm.cr) has no nil-bound handling, so a beginless/endless range's
-# `===` always answers false, even for a genuinely included value
-# (traced, not yet exercised by a live test — see file header for the
-# exact mechanism). The full-range portion of upstream's own assertion
-# is uncommented just above; only the partial-range portion stays
-# blocked here.
-# assert('Range#=== (partial ranges)', '15.2.14.4.2') do
-#   b = (1..)
-#   c = (..10)
-
-#   assert_true b === 20
-#   assert_false b === 0
-#   assert_false c === 20
-#   assert_true c === 0
-# end
 
 # --- Trimmed: `Range.new(1, 10, true)` (no __send__ involved) DOES
 # work now — a native `Range.new` singleton didn't exist before

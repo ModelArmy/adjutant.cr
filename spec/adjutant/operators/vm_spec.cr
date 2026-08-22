@@ -194,6 +194,19 @@ module Adjutant
         eval("(1..10) === 20").as_bool.should be_false
       end
 
+      it "matches by membership with a beginless/endless Range pattern (fixed 2026-08-22)" do
+        # SCOPE.md's now-resolved Must Fix entry: range_include?
+        # (vm.cr) had no nil-bound handling, so a beginless/endless
+        # range's === silently answered false for a genuinely included
+        # value — the missing bound (a real Value.nil_value) fell
+        # through ValueOps.compare's type-pair case to its own
+        # else -> false, short-circuiting range_include? immediately.
+        eval("(..10) === 5").as_bool.should be_true
+        eval("(..10) === 20").as_bool.should be_false
+        eval("(1..) === 20").as_bool.should be_true
+        eval("(1..) === 0").as_bool.should be_false
+      end
+
       it "matches a Regexp pattern against a String" do
         eval(%(/^h/ === "hello")).as_bool.should be_true
         eval(%(/^z/ === "hello")).as_bool.should be_false

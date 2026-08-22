@@ -97,33 +97,6 @@ forward.
   fallback-only names `exec_builtin` handles, rather than a full
   lookup-table rewrite.
 
-- **`Range#===` gives a silently wrong answer for a beginless/endless
-  range.** Found 2026-08-22 while uncommenting `spec/scripts/mruby/
-  range.rb`'s own `Range#===` block (blocked at the time for an
-  unrelated, now-resolved reason — see DEVELOPMENT.md's "Comparison
-  operators" entry, `===` joining `==` as a fixed opcode). Traced, not
-  yet fixed: `VM#range_include?` calls `compare(x, min, :>=)`
-  unconditionally, but a beginless range's `min` ivar is
-  `Value.nil_value` — `ValueOps.compare`'s type-pair `case` has no
-  branch matching `nil` against anything, so it falls to that `case`'s
-  own `else -> false`, and `range_include?`'s `return false unless
-  compare(x, min, :>=)` short-circuits immediately. `(..10) === 5`
-  (or, via bare infix, `Op::TripleEq`/`triple_eq_matches?`'s Range
-  branch, which calls the same `range_include?`) answers `false`
-  when it should answer `true` — silent, no error, exactly the
-  "returns a wrong answer, not an error" category this list already
-  sorts first (see the 2026-08-15 reorder note above) — an endless
-  range has the identical problem on its `max` bound. Fix shape: give
-  `range_include?` an explicit nil check on each bound before calling
-  `compare` — a nil `min` means "no lower bound, always satisfied";
-  a nil `max` means the same for the upper one — rather than routing
-  a sentinel through `compare`/`ValueOps.compare`, which have no
-  principled way to special-case "this comparison side doesn't apply"
-  from a bare `nil` value alone. `spec/scripts/mruby/range.rb`'s own
-  `Range#=== (partial ranges)` block (currently commented, with this
-  exact reasoning) is the fix's ready-made regression test — uncomment
-  it once this lands, rather than writing a new one from scratch.
-
 ## Will Fix
 
 Real gaps, not currently blocking anything, no active design conversation

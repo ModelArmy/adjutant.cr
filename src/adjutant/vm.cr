@@ -603,12 +603,33 @@ module Adjutant
     # Ivar names/lookup mirror make_range_object's own (vm.cr, further
     # down) and builtins/range.cr's accessors — all three must stay in
     # sync on the `__min`/`__max`/`__exclusive` naming.
+    #
+    # `min`/`max` explicit `null?` checks — a beginless/endless range
+    # (`compile_range`'s own comment: a missing bound compiles to a
+    # real `Value.nil_value`, stored as-is) has NO bound to check on
+    # that side at all, and `nil` isn't a value `compare`/
+    # `ValueOps.compare` know how to pair against anything — every one
+    # of `ValueOps.compare`'s type-pair branches requires both sides
+    # to be a real Int/Float/String, so a `nil` operand falls through
+    # to that `case`'s own `else -> false`, silently answering "not
+    # included" for EVERY `x`, regardless of whether `x` actually
+    # satisfies the range's one real bound. Found 2026-08-22 (SCOPE.md,
+    # now-resolved Must Fix entry) while uncommenting `spec/scripts/
+    # mruby/range.rb`'s own `Range#===` test — `(..10) === 5` answered
+    # `false` instead of `true`, no error, silent. A missing bound
+    # means "always satisfied on this side," checked directly here
+    # rather than routed through `compare` at all — there's no
+    # principled way for `compare`/`ValueOps.compare` to special-case
+    # "this side doesn't apply" from a bare `nil` alone, so the check
+    # belongs at this caller, which already knows which ivar is
+    # missing and what that means.
     private def range_include?(range : Value, x : Value) : Bool
       obj = range.as_robject
       min = obj.ivars[@symbols.intern("__min").value]
       max = obj.ivars[@symbols.intern("__max").value]
       exclusive = obj.ivars[@symbols.intern("__exclusive").value].as_bool
-      return false unless compare(x, min, :>=)
+      return false unless min.null? || compare(x, min, :>=)
+      return true if max.null?
       exclusive ? compare(x, max, :<) : compare(x, max, :<=)
     end
 
