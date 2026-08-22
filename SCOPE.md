@@ -97,6 +97,33 @@ forward.
   fallback-only names `exec_builtin` handles, rather than a full
   lookup-table rewrite.
 
+- **`Range#===` gives a silently wrong answer for a beginless/endless
+  range.** Found 2026-08-22 while uncommenting `spec/scripts/mruby/
+  range.rb`'s own `Range#===` block (blocked at the time for an
+  unrelated, now-resolved reason — see DEVELOPMENT.md's "Comparison
+  operators" entry, `===` joining `==` as a fixed opcode). Traced, not
+  yet fixed: `VM#range_include?` calls `compare(x, min, :>=)`
+  unconditionally, but a beginless range's `min` ivar is
+  `Value.nil_value` — `ValueOps.compare`'s type-pair `case` has no
+  branch matching `nil` against anything, so it falls to that `case`'s
+  own `else -> false`, and `range_include?`'s `return false unless
+  compare(x, min, :>=)` short-circuits immediately. `(..10) === 5`
+  (or, via bare infix, `Op::TripleEq`/`triple_eq_matches?`'s Range
+  branch, which calls the same `range_include?`) answers `false`
+  when it should answer `true` — silent, no error, exactly the
+  "returns a wrong answer, not an error" category this list already
+  sorts first (see the 2026-08-15 reorder note above) — an endless
+  range has the identical problem on its `max` bound. Fix shape: give
+  `range_include?` an explicit nil check on each bound before calling
+  `compare` — a nil `min` means "no lower bound, always satisfied";
+  a nil `max` means the same for the upper one — rather than routing
+  a sentinel through `compare`/`ValueOps.compare`, which have no
+  principled way to special-case "this comparison side doesn't apply"
+  from a bare `nil` value alone. `spec/scripts/mruby/range.rb`'s own
+  `Range#=== (partial ranges)` block (currently commented, with this
+  exact reasoning) is the fix's ready-made regression test — uncomment
+  it once this lands, rather than writing a new one from scratch.
+
 ## Will Fix
 
 Real gaps, not currently blocking anything, no active design conversation
@@ -167,25 +194,6 @@ wins.
   in `irb` unambiguously executes `seen << n` unless `n > 4`, never
   attempts to parse an if-expression as break's own value.
 
-- **`a === b` as general infix script syntax doesn't parse — a
-  narrower, DELIBERATE gap, not an oversight.** `TripleEq` is a real
-  lexer token wherever `===` appears in source, but it's intentionally
-  absent from the `PRECEDENCE` table (see `UNSUPPORTED.md`'s U017 and
-  `Lexer#scan_eq`'s own comment) — `case/when` is real Ruby's actual
-  caller for `===`, and that's compiler-generated dispatch
-  (`Compiler#compile_case`, an ordinary `Op::Call`), not something
-  parsed from `a === b` script syntax. The dot-call spelling
-  (`a.===(b)`) DOES already work today, for any class defining
-  `===` (confirmed 2026-08-14 for `Regexp#===`, see
-  `builtins/regexp_spec.cr`) — since `TripleEq` is a single token
-  (same reasoning `=~`'s own `EqTilde` token needed, once added —
-  see `Lexer#scan_eq`), `parse_postfix`'s dot-call handling picks up
-  its lexeme correctly with no changes needed. Whether bare infix
-  `===` is worth adding on top of that is a real open question
-  (`case/when` and `.===(x)` between them already cover the pattern's
-  real-world uses reasonably well) — flagging here rather than
-  deciding it.
-
 - **Do `class`/`module` bodies want the same implicit `rescue`/`else`/
   `ensure` treatment `def` bodies just got?** Open question, not a
   confirmed gap — flagged 2026-08-10 when `def`'s own version shipped
@@ -226,31 +234,6 @@ wins.
   off a stack-held copy, computes the op, then calls the setter off
   the SAME copy) — a genuinely different shape from `AttrAssign`, not
   a small extension to it.
-
-- **`compile_case`'s missing receiver bit on its `"==="` `Op::Call`.**
-  Found 2026-08-06 while implementing the (now-done) `Class#===`/
-  `Range#===` fix — same shape of bug `compile_spaceship` had for
-  `<=>`, but NOT the same cheap fix: real Ruby's `case/when` calls
-  `pattern === subject` (pattern is the receiver), while
-  `compile_case` currently pushes subject-then-pattern, the reverse
-  of what a receiver-based call needs (the receiver must be pushed
-  first, matching `compile_call`'s own convention) — so a real fix
-  needs a new `Swap` opcode or a synthetic local to hold the subject
-  across the `when` chain, not a one-line flag addition like
-  `compile_spaceship`'s was.
-
-  Deliberately left unfixed when the `Class`/`Range` item shipped, not
-  an oversight: nothing today can register a real `"==="` for this bit
-  to matter to — no script class can (`"==="` gained a real lexer
-  token 2026-08-07, specifically so `def ===` reaches `U017`'s
-  rejection rather than becoming definable; see `UNSUPPORTED.md`), and
-  `Class#===`/`Range#===` are implemented directly in `exec_builtin`,
-  not as `native_methods` entries, specifically so they don't depend
-  on this bit either. Worth reopening if either of those ever changes
-  — a future native module registering its own `"==="`
-  `native_methods` entry would silently never be reached without this
-  fix, the exact shape of bug this whole family (`compile_spaceship`,
-  `compile_case`) keeps producing.
 
 - **Call-site splat/double-splat expansion (`foo(*args)`,
   `foo(**opts)`), and `def foo(...); bar(...); end` argument-forwarding

@@ -175,6 +175,54 @@ module Adjutant
       end
     end
 
+    describe "a === b (bare infix, added 2026-08-21)" do
+      # `===` joined `==` as a fixed VM opcode (Op::TripleEq, vm.cr's
+      # triple_eq_matches?) rather than gaining ordinary receiver
+      # dispatch — see DEVELOPMENT.md's own entry for the full
+      # reasoning. Shares its implementation (not just its behavior)
+      # with case/when's per-`when`-pattern check — see
+      # control_flow/vm_spec.cr's "case/when" describe block for that
+      # side, which exercises the exact same hardcoded branches.
+
+      it "matches by type with a Class pattern" do
+        eval("Integer === 5").as_bool.should be_true
+        eval("Integer === \"x\"").as_bool.should be_false
+      end
+
+      it "matches by membership with a Range pattern" do
+        eval("(1..10) === 5").as_bool.should be_true
+        eval("(1..10) === 20").as_bool.should be_false
+      end
+
+      it "matches a Regexp pattern against a String" do
+        eval(%(/^h/ === "hello")).as_bool.should be_true
+        eval(%(/^z/ === "hello")).as_bool.should be_false
+      end
+
+      it "matches by calling a Proc/lambda pattern and checking truthiness" do
+        eval("->(x) { x.even? } === 4").as_bool.should be_true
+        eval("->(x) { x.even? } === 5").as_bool.should be_false
+      end
+
+      it "falls back to == for an ordinary value pattern" do
+        eval("5 === 5").as_bool.should be_true
+        eval("5 === 6").as_bool.should be_false
+      end
+
+      it "gives === the same precedence tier as ==, not <=>'s" do
+        # a === b + c should parse (and therefore evaluate) as
+        # a === (b + c), same as a == b + c would — confirmed at the
+        # parser level too (operators/parser_spec.cr), this is the
+        # end-to-end version.
+        eval("7 === 3 + 4").as_bool.should be_true
+      end
+
+      it "dot-call raises undefined-method, same as a.==(b) always has" do
+        error = expect_raises(RuntimeError) { eval("Integer.===(5)") }
+        error.diagnostic.not_nil!.code.should eq("R008")
+      end
+    end
+
     describe "<=> and comparisons on script objects" do
       # SCOPE.md's `<=>` item: real Ruby's own answer to "how do
       # </<=/>/>= work for a custom object" is the Comparable mixin,

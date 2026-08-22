@@ -771,16 +771,19 @@ module Adjutant
     private def scan_eq(start : Int32, line : Int32, col : Int32) : Token
       if current_char == '='
         advance
-        # A third `=` makes `===` — checked here, not given its own
-        # PRECEDENCE table entry: `"==="` has no meaning as a general
-        # infix expression in Adjutant (case/when's real dispatch is
-        # compiler-generated, not parsed from `a === b` script syntax
-        # — see compile_case), so this token exists ONLY so `def
-        # ===(x)` can parse far enough to reach U017's clean, named
-        # rejection instead of splitting into EqEq + a stray Eq and
-        # failing with a confusing, unrelated-looking P002 partway
-        # through the method body. See SCOPE.md's Will Fix entry for
-        # the full reasoning.
+        # A third `=` makes `===`. Originally checked here purely so
+        # `def ===(x)` could parse far enough to reach U017's clean,
+        # named rejection (rather than splitting into `EqEq` + a
+        # stray `Eq` and failing with a confusing, unrelated-looking
+        # `P002` partway through the method body) — `"==="` had no
+        # `PRECEDENCE` table entry at all at first, since case/when's
+        # real dispatch was compiler-generated, not parsed from
+        # `a === b` script syntax. `TripleEq` gained a real
+        # `PRECEDENCE` entry 2026-08-21, once `===` joined `==` as a
+        # second fixed VM opcode (`Op::TripleEq`, `vm.cr`) rather than
+        # gaining ordinary receiver dispatch — see `DEVELOPMENT.md`'s
+        # own entry on this for the full reasoning. This token's
+        # def-name-position role is unchanged either way.
         if current_char == '='
           advance
           return make_token(TokenKind::TripleEq, "===", line, col)

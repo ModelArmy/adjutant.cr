@@ -12,9 +12,15 @@ module Adjutant
   # defined at all (see the comment above its would-be definition
   # site in regexp.cr): no infix `=~` support and no working dot-call
   # spelling either, so a native method there would be unreachable
-  # from any script syntax. `#===` IS covered, but only via `.===(x)`
-  # dot-call and `case/when` — bare infix `a === b` doesn't parse in
-  # Adjutant either (see UNSUPPORTED.md's U017). Nor is
+  # from any script syntax. `#===` — real Ruby's own dispatch target
+  # for `case/when` — is covered instead by `spec/adjutant/operators/
+  # vm_spec.cr` (bare infix `a === b`, added 2026-08-21) and
+  # `control_flow/vm_spec.cr` (`case/when`), not here: `===` joined
+  # `==` as a fixed VM opcode that never consults a receiver's method
+  # table (see UNSUPPORTED.md's U017), so there is no more
+  # Regexp-specific `#===` method to test — dot-call (`/re/.===(x)`)
+  # now raises a plain undefined-method error, same as `/re/.==(x)`
+  # always has. Nor is
   # String#gsub/#sub/#index/#rindex/#split accepting a Regexp pattern
   # — String's own pattern-taking methods still only accept String
   # (see string_pattern_arg in string.cr); that integration is a
@@ -298,23 +304,21 @@ module Adjutant
     end
 
     describe "#===" do
-      # No infix `a === b` support in Adjutant at all (see
-      # UNSUPPORTED.md's U017 — TripleEq is a real token wherever
-      # `===` appears, but it's deliberately absent from the
-      # PRECEDENCE table). `.===(x)` DOES work, though — parse_postfix's
-      # dot-call handling accepts any token's lexeme as the method
-      # name, TripleEq included, so this reaches the same native
-      # method case/when itself dispatches to. Both are covered here.
-      it "true on match, called directly via dot syntax" do
-        eval(%(/^b/.===("bar"))).truthy?.should be_true
-      end
-
-      it "false on no match" do
-        eval(%(/^z/.===("bar"))).falsy?.should be_true
-      end
-
-      it "false (not a raised error) for a non-String right-hand side" do
-        eval(%(/abc/.===(5))).falsy?.should be_true
+      # No native "===" method registered on Regexp anymore (there
+      # used to be one, reachable only via `.===(x)` dot-call —
+      # `case/when` itself never consulted it) — removed 2026-08-21
+      # alongside `===` joining `==` as a fixed VM opcode
+      # (`Op::TripleEq`, `vm.cr`) that never consults a receiver's
+      # method table. See `spec/adjutant/operators/vm_spec.cr` for the
+      # new bare-infix `a === b` coverage (Class/Range/Regexp/Proc
+      # patterns, including regex matching) and this file's own dot-
+      # call regression just below — `case/when` regex-pattern
+      # coverage stays here, unaffected in behavior, just now running
+      # through the shared opcode instead of a `Regexp`-specific
+      # native method.
+      it "dot-call now raises undefined-method, same as .==(x) always has" do
+        error = expect_raises(RuntimeError) { eval(%(/^b/.===("bar"))) }
+        error.diagnostic.not_nil!.code.should eq("R008")
       end
 
       it "drives a case/when statement" do
@@ -327,6 +331,18 @@ module Adjutant
           end
         RUBY
         result.as_string.should eq "matched"
+      end
+
+      it "falls through to else on no match in a case/when statement" do
+        result = eval(<<-RUBY)
+          case "hello"
+          when /^z/
+            "matched"
+          else
+            "no match"
+          end
+        RUBY
+        result.as_string.should eq "no match"
       end
     end
 
@@ -358,7 +374,7 @@ module Adjutant
     it "every builtin Regexp method defaults to RiskProfile.none" do
       interp, _ = make_interp
       cls = interp.get_global("Regexp").as_rclass
-      %w[source options casefold? match match? ===].each do |name|
+      %w[source options casefold? match match?].each do |name|
         sym_id = interp.symbols.lookup(name).not_nil!.value
         cls.find_native_method(sym_id).not_nil!.risk.should eq RiskProfile.none
       end

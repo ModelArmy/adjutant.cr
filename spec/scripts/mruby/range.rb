@@ -11,16 +11,23 @@ require "assert"
 # ones are left commented with their own specific reason, not the old
 # blanket one. Two things still worth knowing up front:
 #
-# 1. `a === b` AS A GENERAL INFIX EXPRESSION IS A DELIBERATE, PERMANENT
-#    DESIGN DECISION, not a gap — `case/when` (the real caller of
-#    `Class#===`/`Range#===`) is compiler-generated dispatch, never
-#    parsed from literal `a === b` script syntax; see UNSUPPORTED.md's
-#    entry on `===`/other operator methods for the full reasoning.
-#    `Range#===`'s own block below is blocked for this reason, not a
-#    missing-feature one — rewriting it as `case`/`when` would
-#    actually exercise the real underlying behavior, but that's a
-#    different test than upstream's own, so left as a clear note
-#    instead of a silent rewrite.
+# 1. INFIX `a === b` NOW PARSES AND WORKS (added 2026-08-21 — `===`
+#    joined `==` as a fixed VM opcode, `Op::TripleEq`; see
+#    DEVELOPMENT.md's "Comparison operators" entry). This file's
+#    `Range#===` block below stays commented anyway — NOT for the old
+#    "=== is a deliberate non-goal" reason, but because `range_include?`
+#    (`vm.cr`) has no nil-bound handling: for a beginless/endless range,
+#    the missing bound is `Value.nil_value`, and `ValueOps.compare`'s
+#    type-pair `case` has no branch matching `nil` against anything, so
+#    it falls to that `case`'s own `else -> false`. `range_include?`'s
+#    `return false unless compare(x, min, :>=)` then short-circuits
+#    immediately, so a beginless range's `===` always answers `false`
+#    even for a genuinely included value — confirmed by tracing (not
+#    yet exercised by a live test), a separate, real, still-open gap
+#    the file's own `Range#===` block (below) already flagged needing
+#    ("partial ranges for two of its three receivers") before this
+#    session even started. Leaving it commented, not uncommenting it
+#    incorrectly.
 # 2. `Range#last`/`Range#max`/`Range#min`/`Range#first` (no argument)
 #    all correctly raise `RangeError` on the relevant nil bound as of
 #    2026-08-19 (four DISTINCT messages, confirmed via Ruby's own C
@@ -65,18 +72,25 @@ end
 #   assert_true (1..10) == Range.new(1.0, 10.0)
 # end
 
-# --- BLOCKED: `a === b` as literal infix syntax is a deliberate
-# non-goal (see file header) — not reachable via case/when's own
-# compiler-generated dispatch either, since that's a different test
-# shape than what's written here. Also needs partial ranges for two
-# of its three receivers.
-# assert('Range#===', '15.2.14.4.2') do
-#   a = (1..10)
+assert('Range#===', '15.2.14.4.2 (full range only — see below for partial)') do
+  a = (1..10)
+
+  assert_true a === 5
+  assert_false a === 20
+end
+
+# --- BLOCKED: partial-range `Range#===` — NOT the old infix-=== reason
+# (see file header point 1), a separate, real gap: `range_include?`
+# (vm.cr) has no nil-bound handling, so a beginless/endless range's
+# `===` always answers false, even for a genuinely included value
+# (traced, not yet exercised by a live test — see file header for the
+# exact mechanism). The full-range portion of upstream's own assertion
+# is uncommented just above; only the partial-range portion stays
+# blocked here.
+# assert('Range#=== (partial ranges)', '15.2.14.4.2') do
 #   b = (1..)
 #   c = (..10)
 
-#   assert_true a === 5
-#   assert_false a === 20
 #   assert_true b === 20
 #   assert_false b === 0
 #   assert_false c === 20

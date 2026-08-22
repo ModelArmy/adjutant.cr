@@ -76,6 +76,28 @@ module Adjutant
         chunk.code[call_idx.not_nil! + 1].op.should eq Op::Not
       end
 
+      it "compiles === as a fixed opcode, NOT a receiver call like <=>/=~ (added 2026-08-21)" do
+        # Deliberately the opposite shape from the <=> and =~ specs
+        # just above: === joined == in OVERLOADABLE_OPERATOR_NAMES
+        # (compiler.cr) rather than gaining ordinary dispatch, so
+        # unlike those two, this emits NO Op::Call at all — see
+        # DEVELOPMENT.md for the full reasoning.
+        o = ops("a === b")
+        o.should contain(Op::TripleEq)
+        o.should_not contain(Op::Call)
+      end
+
+      it "compile_case emits Op::TripleEq per when-pattern, not Op::Call" do
+        # compile_case used to build a real Op::Call to a "===" symbol
+        # (see SCOPE.md's now-resolved "missing receiver bit" entry) —
+        # now shares the exact same fixed opcode bare infix === uses,
+        # so this and the spec just above should look structurally
+        # identical on this point.
+        o = ops("case 5\nwhen 1\n  \"a\"\nend")
+        o.should contain(Op::TripleEq)
+        o.should_not contain(Op::Call)
+      end
+
       it "compiles short-circuit || with Dup and JumpIfFalse" do
         o = ops("a || b")
         o.should contain(Op::Dup)

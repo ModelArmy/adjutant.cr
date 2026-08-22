@@ -199,11 +199,14 @@ module Adjutant
         eval("case 5\nwhen 1\n  \"one\"\nelse\n  \"other\"\nend").as_string.should eq("other")
       end
 
-      # SCOPE.md's === item: exec_builtin's "===" fallback used to be
-      # plain values_equal? (==) for every receiver, so `when
-      # Integer`/`when a_range` compiled and ran with no error but
-      # never matched — a silent wrong answer, not a crash, which is
-      # exactly why it went unnoticed without a VM-level test.
+      # SCOPE.md's === item (now resolved — see DEVELOPMENT.md): the
+      # old exec_builtin "===" fallback used to be plain values_equal?
+      # (==) for every receiver, so `when Integer`/`when a_range`
+      # compiled and ran with no error but never matched — a silent
+      # wrong answer, not a crash, which is exactly why it went
+      # unnoticed without a VM-level test. Now runs through
+      # Op::TripleEq (vm.cr's triple_eq_matches?), shared with bare
+      # infix `a === b` (see spec/adjutant/operators/vm_spec.cr).
       it "matches by type with a Class pattern (Class#===)" do
         eval("case 5\nwhen Integer\n  \"matched\"\nelse\n  \"no match\"\nend")
           .as_string.should eq("matched")
@@ -229,9 +232,23 @@ module Adjutant
           .as_string.should eq("out of range")
       end
 
+      it "matches by calling a Proc/lambda pattern and checking truthiness (Proc#===)" do
+        # Added alongside the 2026-08-21 Op::TripleEq work — not in
+        # the original === fix, but a real, reachable pattern (Proc#
+        # call already works) worth covering from the start rather
+        # than left as a future gap.
+        eval("case 4\nwhen ->(x) { x.even? }\n  \"matched\"\nelse\n  \"no match\"\nend")
+          .as_string.should eq("matched")
+      end
+
+      it "does not match a Proc/lambda pattern whose call returns falsy" do
+        eval("case 5\nwhen ->(x) { x.even? }\n  \"matched\"\nelse\n  \"no match\"\nend")
+          .as_string.should eq("no match")
+      end
+
       it "still falls back to == for an ordinary literal pattern" do
-        # Regression check: the Class/Range special-casing in
-        # exec_builtin's "===" must not touch the plain-value path.
+        # Regression check: the Class/Range/Proc special-casing in
+        # Op::TripleEq must not touch the plain-value path.
         eval("case 5\nwhen 3, 5, 7\n  \"odd\"\nelse\n  \"other\"\nend")
           .as_string.should eq("odd")
       end
