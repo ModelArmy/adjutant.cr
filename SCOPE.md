@@ -655,7 +655,28 @@ individually.
   touch, how they interact with `RiskFlowPolicy`) before implementation
   is meaningful — carried forward from the original 2026-07-14 handoff
   as "no IO," refiled here now that the real blocker (undecided scope,
-  not undecided design mechanics) is clearer.
+  not undecided design mechanics) is clearer. Superseded by the
+  `Legate` design work (see `LEGATE.md`) — this entry can be removed
+  once `Legate` implementation lands.
+
+### Legate
+
+- **No terse, agent-facing reference doc for Legate (and Adjutant's
+  Ruby subset generally) exists yet.** `LEGATE.md`/`ERRORS.md`/
+  `SCOPE.md` are correctness/completeness documents for a human
+  implementer, not what a small model (target: 16K+ context) should
+  read to learn what to write — different audience, different job,
+  and padding a small model's context with design rationale it can't
+  act on costs it real task room. Deliberately deferred, not
+  overlooked: nothing about the verb surface is stable yet, so
+  anything written now would describe intent rather than real
+  signatures/errors/edge cases, and the actual hard-to-infer-from-
+  Ruby-subset-syntax spots won't be known until scripts are written
+  against a real implementation. Revisit once `Legate` verbs exist and
+  are being dogfooded — likely worth generating this doc from
+  `LEGATE.md` (e.g. via a machine-extractable annotation convention on
+  verb signatures) rather than hand-authoring a parallel prose doc, so
+  the two can't silently drift apart.
 
 ## Deliberate non-goals
 

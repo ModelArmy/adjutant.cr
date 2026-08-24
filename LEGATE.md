@@ -1,12 +1,7 @@
 # Legate — External API Specification
 
-**Version** 0.3 (draft)
 **Status** Design document. Normative where it says MUST; advisory elsewhere.
 **Audience** Two readers: the model writing Legate scripts (§2–§7 are the schema it needs) and the implementer building the runtime (§8–§11 are the obligations).
-
-**Changes from 0.2.** Execution model specified: the script root is an instance of a per-script anonymous class, so top-level `def`, `include`, `extend` and constants behave exactly as in ordinary Ruby (§1.3). Verbs are available qualified by default; grant-mirroring submodules and the `include` manifest are optional sugar, not a requirement (§2.8). `Legate::Delete` split out of `Legate::Write` as a separate grant (§4.4, §7). Removed-construct diagnostics specified (§8.7).
-
-**Changes from 0.1.** Error handling moved from return values to exceptions, on the grounds that a mixed regime is worse than either pure one (§2.1). Exceptions are split into a recoverable tier and a fatal tier by rescuability (§9). Nilable variants specified (§2.5). Analyser obligations extended with raise-set inference and rescue restrictions (§10).
 
 ---
 
@@ -128,7 +123,7 @@ flowchart TB
 
 **Legate raises.** There is no result-value convention, no `err?`, no `.or`, no `.must`.
 
-The reasoning is worth stating because 0.1 chose otherwise. Error values are better for static analysis, but Legate scripts are written by models fluent in ordinary Ruby, where `Hash#fetch`, `Integer()` and `JSON.parse` all raise. A surface where the core language raises and the capability layer returns values forces the author to track two regimes, and its priors will win: it will write `rescue` around Legate calls and omit the value checks. Consistency with the host language is worth more than the analytical convenience, and §10 recovers most of the latter anyway.
+Error values are better suited to static analysis in isolation, but Legate scripts are written by models fluent in ordinary Ruby, where `Hash#fetch`, `Integer()` and `JSON.parse` all raise. A surface where the core language raises and the capability layer returns values forces the author to track two regimes, and its priors will win: it will write `rescue` around Legate calls and omit the value checks. Consistency with the host language is worth more than the analytical convenience, and §10 recovers most of the latter anyway.
 
 ```ruby
 config = Legate.read("config.json")          # raises Legate::NotFound if absent
@@ -230,7 +225,7 @@ Two constraints apply when a manifest is used, both statically checked (§10.4):
 - Includes MUST precede any executable statement. Ruby's `include` mutates the ancestor chain where it executes, so a mid-script include changes the meaning of the lines above it on a second reading.
 - No local variable, method definition, parameter or block parameter may shadow an imported verb name. Ruby resolves the script's own definitions ahead of an included module, so a stray `def read` silently displaces a capability with a lookalike.
 
-`Legate::Exec` and `Legate::Delete` are importable like the rest. An earlier draft kept `run`, `fetch` and `rm` permanently qualified as a warning label; that was withdrawn because an asymmetric rule is one more thing to misremember, and because `include Legate::Exec` on line 1 is a louder, policy-checkable warning than a `Legate.` prefix on line 140.
+`Legate::Exec` and `Legate::Delete` are importable like the rest, rather than permanently qualified as a warning label — an asymmetric rule is one more thing to misremember, and `include Legate::Exec` on line 1 is a louder, policy-checkable warning than a `Legate.` prefix on line 140.
 
 ### 2.8 Determinism
 
