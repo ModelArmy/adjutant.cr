@@ -15,6 +15,16 @@ module Adjutant
     # here exposes a script-visible `.new` at all, matching every
     # other value type's "returned by verbs, never built by scripts"
     # shape.
+    #
+    # IFC: `label` (what the broker will pass — typically derived from
+    # the queried Path's own taint) seeds `__size` (actual DATA about
+    # the file) and the outer object; `__type`/`__mode` stay unlabeled
+    # (a classification symbol and a permission bitmask are METADATA,
+    # not extracted data — same rule `Legate::Path`'s own top comment
+    # documents, following `regexp.cr`'s `__options` precedent).
+    # `mtime` is passed through as-given — whatever label the CALLER
+    # already put on that `Time` Value is this method's problem to
+    # preserve, not recompute.
     module Stat
       def self.bootstrap(interp : Interpreter, legate : RubyClass) : Nil
         cls = Helpers.nest(legate, interp, "Stat")
@@ -37,13 +47,13 @@ module Adjutant
       # real `Time` Value (builtins/time.cr) — the whole reason that
       # type had to exist before this file could.
       def self.build(interp : Interpreter, rclass : RubyClass, type : Symbol,
-                     size : Int64, mtime : Value, mode : Int32) : Value
+                     size : Int64, mtime : Value, mode : Int32, label : RiskFlowLabel? = nil) : Value
         obj = RubyObject.new(rclass)
         obj.ivars[interp.symbols.intern("__type").value] = Value.symbol(interp.symbols.intern(type.to_s))
-        obj.ivars[interp.symbols.intern("__size").value] = Value.int(size)
+        obj.ivars[interp.symbols.intern("__size").value] = Value.int(size, label)
         obj.ivars[interp.symbols.intern("__mtime").value] = mtime
         obj.ivars[interp.symbols.intern("__mode").value] = Value.int(mode)
-        Value.robject(obj)
+        Value.robject(obj, label)
       end
     end
   end

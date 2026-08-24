@@ -10,6 +10,14 @@ module Adjutant
     # `Legate::Response` — LEGATE.md §5.5. Broker-manufactured only —
     # see Stat's own comment for why (no public constructor; plain
     # `RubyObject` + `__`-prefixed ivars).
+    #
+    # IFC: `headers` VALUES (actual response data) and `body` (passed
+    # through as-given — whatever label the caller already assigned)
+    # carry the label; `status`/`url`/header KEY names stay unlabeled
+    # — metadata about the response, not extracted content, same rule
+    # as every other Legate value type's own comment. `#json`
+    # propagates `body`'s own label onto every piece of the decoded
+    # structure — see `json_to_value`'s own comment.
     module Response
       def self.bootstrap(interp : Interpreter, legate : RubyClass) : Nil
         cls = Helpers.nest(legate, interp, "Response")
@@ -38,7 +46,7 @@ module Adjutant
           body = args.first.as_robject.ivars[body_sym]
           str = body.as_string? || ncc.raise_error_class("Legate::Response#json — body is not a String", malformed)
           begin
-            json_to_value(interp, ::JSON.parse(str))
+            json_to_value(interp, ::JSON.parse(str), body.label)
           rescue ex : ::JSON::ParseException
             ncc.raise_error_class("Legate::Response#json — invalid JSON: #{ex.message}", malformed)
           end
@@ -69,37 +77,57 @@ module Adjutant
       # script from mutating it, matching every other "frozen" claim
       # in LEGATE.md today). `body` is whatever Value the broker
       # already has (a String today; a `Legate::Bytes` stream once
-      # streams exist — §6, not built yet).
+      # streams exist — §6, not built yet) — passed through UNCHANGED,
+      # including its own label; this method never overrides it.
+      # `label` seeds the header VALUES and the outer object — see
+      # this module's own top comment for the data-vs-metadata split.
       def self.build(interp : Interpreter, rclass : RubyClass, status : Int32,
-                     headers : Hash(String, String), body : Value, url : String) : Value
+                     headers : Hash(String, String), body : Value, url : String,
+                     label : RiskFlowLabel? = nil) : Value
         obj = RubyObject.new(rclass)
         obj.ivars[interp.symbols.intern("__status").value] = Value.int(status)
         entries = {} of Value => Value
-        headers.each { |key, value| entries[Value.string(key.downcase)] = Value.string(value) }
-        obj.ivars[interp.symbols.intern("__headers").value] = Value.new(LabeledHash.new(entries), nil)
+        headers.each { |key, value| entries[Value.string(key.downcase)] = Value.string(value, label) }
+        obj.ivars[interp.symbols.intern("__headers").value] = Value.new(LabeledHash.new(entries, label), label)
         obj.ivars[interp.symbols.intern("__body").value] = body
         obj.ivars[interp.symbols.intern("__url").value] = Value.string(url)
-        Value.robject(obj)
+        Value.robject(obj, RiskFlowLabel.join(body.label, label))
       end
 
-      # Crystal's `JSON::Any` -> Adjutant `Value`, recursively.
-      # `JSON::Any#raw` is the underlying Crystal value; each variant
-      # maps onto the ordinary Value constructor for that shape —
-      # Hash keys are always JSON strings, matching how Adjutant's
-      # own Hash already uses String-keyed Value pairs elsewhere.
-      private def self.json_to_value(interp : Interpreter, json : ::JSON::Any) : Value
+      # Crystal's `JSON::Any` -> Adjutant `Value`, recursively —
+      # `label` (the source `body`'s own label) is applied to EVERY
+      # constructed piece, leaves and containers alike: decoding JSON
+      # doesn't create new information, only reshapes existing tainted
+      # text, so every part of the result carries the SAME taint the
+      # whole body string already had (unlike `Legate::Path`'s `/`,
+      # there's no second operand here to join against). `JSON::Any#raw`
+      # is the underlying Crystal value; each variant maps onto the
+      # ordinary Value constructor for that shape — Hash keys are
+      # always JSON strings, matching how Adjutant's own Hash already
+      # uses String-keyed Value pairs elsewhere.
+      private def self.json_to_value(interp : Interpreter, json : ::JSON::Any, label : RiskFlowLabel?) : Value
         case raw = json.raw
         when Nil     then Value.nil_value
         when Bool    then Value.bool(raw)
-        when Int64   then Value.int(raw)
-        when Float64 then Value.float(raw)
-        when String  then Value.string(raw)
+        when Int64   then Value.int(raw, label)
+        when Float64 then Value.float(raw, label)
+        when String  then Value.string(raw, label)
         when Array(::JSON::Any)
-          Value.new(LabeledArray.new(raw.map { |item| json_to_value(interp, item) }), nil)
+          Value.new(LabeledArray.new(raw.map { |item| json_to_value(interp, item, label) }, label), label)
         when Hash(String, ::JSON::Any)
           entries = {} of Value => Value
-          raw.each { |key, value| entries[Value.string(key)] = json_to_value(interp, value) }
-          Value.new(LabeledHash.new(entries), nil)
+          # Key stays unlabeled — no longer structurally required
+          # (`Value#==`/`#hash`, value.cr, now ignore `@label` for
+          # exactly this reason), but still the right convention: a
+          # Hash key is metadata identifying WHICH piece of data this
+          # is, not itself extracted data, same "data vs metadata"
+          # rule this module's own top comment documents for
+          # everything else. An earlier version of this exact line DID
+          # label the key, back when that was a real correctness bug,
+          # not just a style choice — see `Value`'s own comment for
+          # that history.
+          raw.each { |key, value| entries[Value.string(key)] = json_to_value(interp, value, label) }
+          Value.new(LabeledHash.new(entries, label), label)
         else
           Value.nil_value
         end

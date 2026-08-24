@@ -140,7 +140,16 @@ module Adjutant
             end
             items << val
           end
-          Value.new(LabeledArray.new(items), nil)
+          # Container label = join of every collected element's own
+          # label — same `joined_label` convention `Array#map`
+          # already establishes (array.cr) for "materializing a new
+          # container from elements that may individually be
+          # tainted." IFC gap found/fixed 2026-08-24 alongside the
+          # rest of Legate's own propagation audit — `to_a` previously
+          # always returned a flatly unlabeled Array regardless of
+          # what it collected.
+          label = Builtins.joined_label(items)
+          Value.new(LabeledArray.new(items, label), label)
         end
 
         Builtins.define(cls, interp, "sum") do |args, _blk, ncc|
@@ -239,11 +248,19 @@ module Adjutant
         {false, halt}
       end
 
+      # Result carries the JOIN of every summed element's own label —
+      # same "combine across every operand" rule
+      # `risk_flow_propagation_spec.cr` already establishes for
+      # ordinary arithmetic (`tainted(...) + tainted(...)` joins both
+      # tags). IFC gap found/fixed 2026-08-24 alongside the rest of
+      # Legate's own propagation audit.
       private def self.sum(obj : StreamObject, ncc : NativeCallContext) : Value
         int_total = 0_i64
         float_total = 0.0
         saw_float = false
+        labels = [] of Value
         walk(obj, ncc) do |val|
+          labels << val
           if val.float?
             saw_float = true
             float_total += val.as_float
@@ -251,12 +268,15 @@ module Adjutant
             int_total += val.as_int
           end
         end
-        saw_float ? Value.float(float_total + int_total) : Value.int(int_total)
+        label = Builtins.joined_label(labels)
+        saw_float ? Value.float(float_total + int_total, label) : Value.int(int_total, label)
       end
 
-      # `first` (no arg) -> single element or nil; `first(n)` -> an
-      # Array of up to n elements — real Ruby's own two-arity shape
-      # for this method, not two different names.
+      # `first` (no arg) -> single element or nil (already carries
+      # whatever label THAT element had — nothing to fix, no new
+      # Value constructed); `first(n)` -> an Array of up to n
+      # elements, whose CONTAINER label needs the same `joined_label`
+      # treatment `to_a` gets, above, for the identical reason.
       private def self.first(obj : StreamObject, ncc : NativeCallContext, count_arg : Value?) : Value
         if count_arg
           n = count_arg.as_int.to_i32
@@ -267,7 +287,8 @@ module Adjutant
             seen += 1
             break if seen >= n
           end
-          Value.new(LabeledArray.new(items), nil)
+          label = Builtins.joined_label(items)
+          Value.new(LabeledArray.new(items, label), label)
         else
           result = Value.nil_value
           walk(obj, ncc) do |val|
