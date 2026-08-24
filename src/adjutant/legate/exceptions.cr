@@ -39,7 +39,7 @@ module Adjutant
 
     module Exceptions
       # Builds the `Legate` module and its recoverable exception tier
-      # (`Legate::Error < StandardError` and its seven subclasses per
+      # (`Legate::Error < StandardError` and its eight subclasses per
       # LEGATE.md §9.1), and returns the `Legate` module itself —
       # NOT each error class individually — for the caller to register
       # into globals.
@@ -84,7 +84,7 @@ module Adjutant
         legate.rclass = interp.class_class
 
         error = nest(legate, interp, "Error", standard_error)
-        %w[NotFound Malformed TooLarge TooMany Timeout Transport Conflict].each do |name|
+        %w[NotFound Malformed TooLarge TooMany Timeout Transport Conflict NonZeroExit].each do |name|
           nest(legate, interp, name, error)
         end
 

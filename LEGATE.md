@@ -526,7 +526,7 @@ exit.out         -> String
 exit.err         -> String
 exit.truncated?  -> Boolean
 exit.duration    -> Float
-exit.raise!      -> self      # raises Legate::Transport unless ok?
+exit.raise!      -> self      # raises Legate::NonZeroExit unless ok?
 ```
 
 ---
@@ -702,6 +702,7 @@ flowchart TB
         TO["Legate::Timeout<br/>per-call wall clock"]
         TR["Legate::Transport<br/>DNS, TLS, connection"]
         CF["Legate::Conflict<br/>exists, non-empty dir"]
+        NZ["Legate::NonZeroExit<br/>Legate::Exit#raise! on a non-zero exit code"]
         TL["Legate::TooLarge<br/>per-call cap — message names the streaming verb"]
         TM["Legate::TooMany<br/>per-call cardinality cap"]
     end
@@ -745,15 +746,16 @@ flowchart TB
 
 Caught by an ordinary `rescue => e`. These are expected conditions a script should handle.
 
-Class              |Meaning                                      |Message MUST hint at              
--------------------|---------------------------------------------|----------------------------------
-`Legate::NotFound` |path or binary absent                        |—                                 
-`Legate::Malformed`|bad JSON, CSV, encoding, or path construction|—                                 
-`Legate::TooLarge` |per-call byte or memory cap                  |the streaming verb or `each_slice`
-`Legate::TooMany`  |per-call cardinality cap                     |`limit:` or `each_slice`          
-`Legate::Timeout`  |per-call wall clock                          |—                                 
-`Legate::Transport`|DNS, TLS, connection, redirect loop          |—                                 
-`Legate::Conflict` |destination exists, non-empty directory      |`recursive:`                      
+Class                |Meaning                                      |Message MUST hint at              
+---------------------|---------------------------------------------|----------------------------------
+`Legate::NotFound`   |path or binary absent                        |—                                 
+`Legate::Malformed`  |bad JSON, CSV, encoding, or path construction|—                                 
+`Legate::TooLarge`   |per-call byte or memory cap                  |the streaming verb or `each_slice`
+`Legate::TooMany`    |per-call cardinality cap                     |`limit:` or `each_slice`          
+`Legate::Timeout`    |per-call wall clock                          |—                                 
+`Legate::Transport`  |DNS, TLS, connection, redirect loop          |—                                 
+`Legate::Conflict`   |destination exists, non-empty directory      |`recursive:`                      
+`Legate::NonZeroExit`|`Legate::Exit#raise!` on a non-zero exit code|the exit code and truncated `err` 
 
 A `TooLarge` message MUST read like: *"config.json is 1.4 GB, over the 8 MiB read limit — use `Legate.lines(path)` to stream."* Models reliably read exception messages and unreliably read specifications; this is the cheapest documentation channel available.
 
