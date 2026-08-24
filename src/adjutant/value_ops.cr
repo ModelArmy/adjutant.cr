@@ -240,12 +240,17 @@ module Adjutant
         # not a placeholder pending a real override.
         a.as_rclass == b.as_rclass
       when a.robject? && b.robject?
-        # Reference identity too, for now — real Ruby lets a class
-        # override `==` for value-style comparison (two Points with
-        # the same x/y), but Adjutant has no user-defined `==`
-        # dispatch yet. Matches default Ruby Object#== (identity)
-        # before any override, so this is the correct default, not a
-        # simplification silently diverging from Ruby.
+        # Reference identity — the correct DEFAULT for a plain
+        # RubyObject, matching real Ruby's own Object#== before any
+        # override. A RubyObject whose class defines `<=>` gets `==`
+        # derived from it instead (Comparable-style, `(a <=> b) == 0`)
+        # — but that dispatch needs VM access (call_method,
+        # script_responds_to?) ValueOps deliberately never has, so it
+        # lives one layer up: VM#values_equal? checks for a `<=>`
+        # first and only falls through to this plain identity case
+        # when none is defined. See VM#values_equal?/
+        # #robject_equal_via_spaceship? (vm.cr) for the full mechanism
+        # — this line itself is still exactly identity, unchanged.
         a.as_robject == b.as_robject
       when a.array? && b.array?
         # Deep, element-wise equality — real Ruby's Array#== compares

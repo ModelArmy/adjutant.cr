@@ -3289,19 +3289,58 @@ module Adjutant
     protected def values_equal?(a : Value, b : Value) : Bool
       if range_receiver?(a) && range_receiver?(b)
         range_values_equal?(a, b)
+      elsif a.robject? && b.robject? && script_responds_to?(a, "<=>")
+        # Real Ruby: `Object#==` is identity by default, but a class
+        # that mixes in `Comparable` gets `==` DERIVED from `<=>`
+        # instead — `(a <=> b) == 0`, with `<=>` returning anything
+        # other than an Integer (including nil, for a genuinely
+        # unorderable pair) or raising treated as simply "not equal"
+        # rather than propagating, matching Comparable#=='s own
+        # non-raising contract (confirmed against MRI: `<`/`<=`/`>`/
+        # `>=` DO raise ArgumentError on a bad `<=>` result — see
+        # compare_via_spaceship above — but `==` never does; only
+        # identity-vs-value differs, this asymmetry is real Ruby
+        # behavior, not an Adjutant simplification). Adjutant has no
+        # mixin system to hang this off an actual `Comparable`
+        # inclusion, so — same as compare_via_spaceship already does
+        # for `<`/`<=`/`>`/`>=` — this is the fixed VM rule standing
+        # in for it: ANY RubyObject with its own `<=>` gets `==`
+        # derived from it for free, without needing `include
+        # Comparable` to opt in. `script_responds_to?` gates this on
+        # `<=>` genuinely being defined (native or script), so a
+        # plain RubyObject with no `<=>` still falls through to
+        # ordinary identity below, unchanged from before this existed.
+        robject_equal_via_spaceship?(a, b)
       else
         ValueOps.equal?(a, b)
       end
     end
 
+    # See values_equal?'s own comment for the full reasoning — this is
+    # just the "call `<=>`, swallow anything that isn't a clean zero
+    # result" mechanics, split out to keep values_equal? itself
+    # readable. Deliberately rescues RuntimeError (a script-level
+    # `raise` inside the `<=>` method itself, e.g. comparing against
+    # an incompatible type) into `false` rather than letting it
+    # propagate — the one place in this codebase a script-raised
+    # error is intentionally swallowed rather than surfaced, because
+    # that's genuinely how Comparable#== behaves in real Ruby, not an
+    # Adjutant-specific leniency.
+    private def robject_equal_via_spaceship?(a : Value, b : Value) : Bool
+      sign_val = call_method(a, "<=>", [b])
+      sign_val.int? && sign_val.as_int == 0
+    rescue RuntimeError
+      false
+    end
+
     # Real Ruby's Range#== (and #eql?, defined identically for Range)
-    # compares by CONTENT — same min/max/exclusive — not identity.
-    # `ValueOps.equal?`'s own `a.robject? && b.robject?` case is
-    # correctly documented as reference identity (Adjutant has no
-    # user-defined `==` dispatch yet) — but that's the right default
-    # for a USER class with no override, not for a BUILTIN class like
-    # Range that has real equality semantics baked in, the same
-    # exception Array/Hash already get in that same case statement.
+    # compares by CONTENT — same min/max/exclusive — not identity, and
+    # NOT via `<=>` either (Range has no `<=>` of its own). checked
+    # ahead of the `<=>`-derivation branch above (values_equal?) since
+    # Range predates that mechanism and would need its own `<=>` to
+    # use it anyway — this stays a direct special case, the same
+    # exception Array/Hash already get in ValueOps.equal?'s own case
+    # statement.
     # Lives here rather than in ValueOps itself because identifying
     # "is this specifically a Range" needs `range_receiver?`
     # (`builtin_class_by_name`, VM-only), and reading the ivars needs
