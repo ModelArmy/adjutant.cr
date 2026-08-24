@@ -13,6 +13,7 @@ require "./native_callable"
 require "./native_call_context"
 require "./native_function_call"
 require "./builtins"
+require "./legate/exceptions"
 
 module Adjutant
   # Top-level entry point for the Adjutant interpreter.
@@ -403,9 +404,31 @@ module Adjutant
     # implemented — this hierarchy exists so `raise`/`.message` work
     # and so that filtering has real classes to check against later.
     private def bootstrap_error_classes : Nil
+      standard_error = nil
       Builtins.bootstrap_exception_and_subclasses(self) do |cls|
+        standard_error = cls if cls.name == "StandardError"
         register_builtin_class(cls)
       end
+
+      # Legate's recoverable exception tier (LEGATE.md §9.1) hangs off
+      # the same StandardError just registered above — see
+      # Legate::Exceptions.bootstrap's own comment for why it's threaded
+      # through directly rather than looked up by name, and for why only
+      # the `Legate` module itself (not each nested error class) gets
+      # registered as a top-level global here — matching how a
+      # script-written `class A; class B; end; end` only ever puts `A`
+      # in globals, with `B` reachable solely as `A::B`. The fatal tier
+      # (Denied/Exhausted/Aborted) deliberately has no RubyClass and so
+      # nothing to register here — see FatalSignal (legate/exceptions.cr).
+      # Uses `define_global_class` directly, NOT `register_builtin_class`
+      # — the latter defaults an unset `superclass` to `Object`, correct
+      # for a builtin CLASS but wrong for a module (a script-written
+      # `module M; end`, Op::MakeModule, never touches superclass at
+      # all; Legate must not either).
+      unless standard_error
+        raise InternalError.new("StandardError not bootstrapped before Legate::Exceptions.bootstrap ran")
+      end
+      define_global_class(Legate::Exceptions.bootstrap(self, standard_error))
     end
 
     # Bootstraps every builtin type's RubyClass into `interp`'s globals,
