@@ -207,5 +207,22 @@ module Adjutant
     # code, rather than each one inventing its own ad hoc raise.
     abstract def raise_error(code : String, data : Hash(String, String) = {} of String => String,
                              error_class : String = "RuntimeError") : NoReturn
+
+    # Same as `raise_error`, but for raising a real, dynamically-
+    # computed message against a class that can't be resolved by name
+    # — a NESTED class like `Legate::Malformed`, which is deliberately
+    # never registered as a flat global (see Legate::Helpers.nest — it
+    # resolves only via real `ConstPath` lookup, the same as any
+    # script-defined `class A; class B; end; end`'s `A::B`), so
+    # `raise_error`'s name-based `builtin_class_by_name` lookup can
+    # never find it. Also deliberately NOT ErrorCatalog/Diagnostic-
+    # coded like `raise_error` — that system is for ADJUTANT's OWN
+    # fixed-template diagnostics; a caller needing this method
+    # (Legate's own error messages: a path, a byte count, LEGATE.md
+    # §9.1's "message MUST hint at" column) already has a real,
+    # specific message computed and just needs it turned into a
+    # real, catchable error object of the right class — the same
+    # thing `raise ClassName, "msg"` does at the script level.
+    abstract def raise_error_class(message : String, error_class : RubyClass) : NoReturn
   end
 end

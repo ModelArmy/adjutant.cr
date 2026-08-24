@@ -198,5 +198,11 @@ module Adjutant
                     error_class : String = "RuntimeError") : NoReturn
       raise "#{error_class} (#{code}): #{data}"
     end
+
+    # No-op raise, matching raise_error's own reasoning above — this
+    # harness has no real VM to build a real error object through.
+    def raise_error_class(message : String, error_class : RubyClass) : NoReturn
+      raise "#{error_class.name}: #{message}"
+    end
   end
 end

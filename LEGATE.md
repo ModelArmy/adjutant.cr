@@ -459,7 +459,7 @@ Legate.fail(message)          -> no return    # raises Legate::Aborted (fatal)
 Pure. Constructing, joining and inspecting a path requires no grant; only passing one to a verb does.
 
 ```ruby
-Legate::Path["logs"] / "app.log"  -> Legate::Path   # `/` joins
+Legate::Path.new("logs") / "app.log"   -> Legate::Path   # `/` joins
 path.parent                    -> Legate::Path
 path.basename                  -> String
 path.ext                       -> String      # ".log", or ""

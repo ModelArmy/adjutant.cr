@@ -13,7 +13,14 @@ require "./native_callable"
 require "./native_call_context"
 require "./native_function_call"
 require "./builtins"
+require "./legate/helpers"
 require "./legate/exceptions"
+require "./legate/path"
+require "./legate/stat"
+require "./legate/entry"
+require "./legate/match"
+require "./legate/response"
+require "./legate/exit"
 
 module Adjutant
   # Top-level entry point for the Adjutant interpreter.
@@ -409,26 +416,33 @@ module Adjutant
         standard_error = cls if cls.name == "StandardError"
         register_builtin_class(cls)
       end
-
-      # Legate's recoverable exception tier (LEGATE.md §9.1) hangs off
-      # the same StandardError just registered above — see
-      # Legate::Exceptions.bootstrap's own comment for why it's threaded
-      # through directly rather than looked up by name, and for why only
-      # the `Legate` module itself (not each nested error class) gets
-      # registered as a top-level global here — matching how a
-      # script-written `class A; class B; end; end` only ever puts `A`
-      # in globals, with `B` reachable solely as `A::B`. The fatal tier
-      # (Denied/Exhausted/Aborted) deliberately has no RubyClass and so
-      # nothing to register here — see FatalSignal (legate/exceptions.cr).
-      # Uses `define_global_class` directly, NOT `register_builtin_class`
-      # — the latter defaults an unset `superclass` to `Object`, correct
-      # for a builtin CLASS but wrong for a module (a script-written
-      # `module M; end`, Op::MakeModule, never touches superclass at
-      # all; Legate must not either).
       unless standard_error
         raise InternalError.new("StandardError not bootstrapped before Legate::Exceptions.bootstrap ran")
       end
-      define_global_class(Legate::Exceptions.bootstrap(self, standard_error))
+      bootstrap_legate(standard_error)
+    end
+
+    # Builds the `Legate` module once (Legate::Helpers.build_module)
+    # and populates it — exception tier first (needs `standard_error`,
+    # just built above), then every value type. Each submodule nests
+    # its own classes into the SAME shared `legate` instance via
+    # `Legate::Helpers.nest`, rather than each building a competing
+    # "Legate" module of its own — see that helper's own comment for
+    # the full ConstPath-resolution reasoning. Only `legate` itself
+    # gets registered as a top-level global (via `define_global_class`,
+    # NOT `register_builtin_class` — the latter defaults an unset
+    # `superclass` to `Object`, correct for a builtin CLASS but wrong
+    # for a module).
+    private def bootstrap_legate(standard_error : RubyClass) : Nil
+      legate = Legate::Helpers.build_module(self)
+      Legate::Exceptions.bootstrap(self, legate, standard_error)
+      Legate::Path.bootstrap(self, legate)
+      Legate::Stat.bootstrap(self, legate)
+      Legate::Entry.bootstrap(self, legate)
+      Legate::Match.bootstrap(self, legate)
+      Legate::Response.bootstrap(self, legate)
+      Legate::Exit.bootstrap(self, legate)
+      define_global_class(legate)
     end
 
     # Bootstraps every builtin type's RubyClass into `interp`'s globals,

@@ -1189,7 +1189,7 @@ module Adjutant
           when Op::Add    then exec_binary(inst) { |lhs, rhs| exec_add(lhs, rhs, f) }
           when Op::Sub    then exec_binary(inst) { |lhs, rhs| exec_sub(lhs, rhs, f) }
           when Op::Mul    then exec_binary(inst) { |lhs, rhs| ValueOps.op(lhs, rhs, :*, error_raiser(f)) }
-          when Op::Div    then exec_binary(inst) { |lhs, rhs| ValueOps.div(lhs, rhs, error_raiser(f)) }
+          when Op::Div    then exec_binary(inst) { |lhs, rhs| exec_div(lhs, rhs, f) }
           when Op::Mod    then exec_binary(inst) { |lhs, rhs| ValueOps.mod(lhs, rhs, error_raiser(f)) }
           when Op::BitAnd then exec_binary(inst) { |lhs, rhs| ValueOps.int_op(lhs, rhs, :&, error_raiser(f)) }
           when Op::BitOr  then exec_binary(inst) { |lhs, rhs| ValueOps.int_op(lhs, rhs, :|, error_raiser(f)) }
@@ -3352,9 +3352,12 @@ module Adjutant
     # this open: "no equivalent yet exists for -/*/, since nothing
     # native has needed them generically yet — follow the same
     # pattern... if one does"). `Time` is that first real need for
-    # `+`/`-` specifically; `*`/`/` are deliberately NOT touched here,
-    # since nothing needs them yet either — same "don't build ahead of
-    # a real user" convention, not an oversight.
+    # `+`/`-`; `Legate::Path#/` (`legate/path.cr`) is the first real
+    # need for `/` too (see `exec_div`, below) — `*` alone remains
+    # untouched, since nothing needs it yet either — same "don't build
+    # ahead of a real user" convention, not an oversight. SCOPE.md's
+    # Will Fix entry for this updated accordingly (`/` moved from
+    # "still a gap" to "closed", only `*`/`%` remain).
     private def exec_add(lhs : Value, rhs : Value, f : Frame) : Value
       if lhs.robject? && script_responds_to?(lhs, "+")
         call_method(lhs, "+", [rhs], f.filename, f.line)
@@ -3368,6 +3371,17 @@ module Adjutant
         call_method(lhs, "-", [rhs], f.filename, f.line)
       else
         ValueOps.op(lhs, rhs, :-, error_raiser(f))
+      end
+    end
+
+    # See exec_add's own comment — same dispatch shape, for `/`.
+    # `Legate::Path#/` (LEGATE.md §5.1) is what made this a real,
+    # not speculative, need.
+    private def exec_div(lhs : Value, rhs : Value, f : Frame) : Value
+      if lhs.robject? && script_responds_to?(lhs, "/")
+        call_method(lhs, "/", [rhs], f.filename, f.line)
+      else
+        ValueOps.div(lhs, rhs, error_raiser(f))
       end
     end
 
@@ -3543,6 +3557,30 @@ module Adjutant
         current_frame,
         error_class: error_class
       )
+    end
+
+    # Same as raise_native_error, but for a target class that can't be
+    # resolved by name (see NativeCallContext#raise_error_class's own
+    # comment — a nested class like Legate::Malformed has no flat
+    # global entry for builtin_class_by_name to find) AND for a
+    # dynamically-COMPUTED message rather than an ErrorCatalog-coded
+    # one — Legate's own error messages are built per-call (a path, a
+    # byte count, LEGATE.md §9.1's "message MUST hint at" column), not
+    # fixed templates, so routing them through Diagnostic/ErrorCatalog
+    # (which requires a REGISTERED catalog entry per code, and exists
+    # for ADJUTANT'S OWN coded diagnostics — parse/compile/core-
+    # runtime errors) would be the wrong fit entirely, not just an
+    # awkward one. Mirrors exec_builtin's own "raise" case (the
+    # `raise ClassName, "msg"` script-level path) instead: build the
+    # error object directly from the given class and a plain message
+    # string, no Diagnostic/code involved at all — `code` here is
+    # NOT an ErrorCatalog key, just a label for whoever reads
+    # `RuntimeError#message`/logs, matching how a script's own
+    # `raise Foo, "msg"` carries no code either.
+    protected def raise_native_error_class(message : String, error_class : RubyClass,
+                                           filename : String, line : Int32) : NoReturn
+      err_val = make_error_object(error_class, message)
+      raise RuntimeError.new(message, filename, line, error_value: err_val)
     end
 
     # An unresolved constant. Reports a deliberately excluded name as

@@ -71,5 +71,9 @@ module Adjutant
                     error_class : String = "RuntimeError") : NoReturn
       @vm.raise_native_error(code, data, error_class, filename, line)
     end
+
+    def raise_error_class(message : String, error_class : RubyClass) : NoReturn
+      @vm.raise_native_error_class(message, error_class, filename, line)
+    end
   end
 end

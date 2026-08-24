@@ -140,6 +140,20 @@ still roughly ordered by how cheap/independent the fix is.
 Small, mechanical, independent of each other — good candidates for quick
 wins.
 
+- **No octal/hex/binary integer literal prefixes (`0o`/`0x`/`0b`) —
+  and, worse, a LEADING-ZERO decimal like `0644` silently parses as
+  plain decimal 644, not octal, with no error.** Found 2026-08-24
+  writing a spec for `Legate::Stat#mode` (a real Unix permission bit
+  value) — `s.mode == 0644` in a script silently compares against the
+  wrong number, no parse error or warning at all, exactly the "ran,
+  looked plausible, was wrong" bug shape worth staying alert for.
+  Low practical urgency (permission-bit-style literals are rare
+  outside exactly this kind of use), but worth fixing before any
+  Legate verb that surfaces a real mode value (`Legate.mkdir`,
+  anything touching `Stat#mode`) ships, since a script author's first
+  instinct for "check the mode" would reach for exactly this syntax
+  and get a silently wrong answer rather than a loud one.
+
 - **`%W[]`/`%I[]` (interpolating word/symbol arrays) and `%q`/`%Q`/`%r`
   (the general delimited-literal forms) aren't supported — only plain
   `%w[]`/`%i[]` are.** Added 2026-08-19 alongside `%w[]`/`%i[]` itself
@@ -440,22 +454,25 @@ Quality-of-diagnostic gaps in the `Diagnostic`/`ErrorCatalog` system
   the exact same shape of gap and was NOT touched by this fix — flagged
   here rather than silently assumed fixed alongside the read side.
 
-- **`Op::Mul`/`Op::Div` (and `%`) still don't dispatch to a
-  `RubyObject`'s own `*`/`/` — only `+`/`-` do.** Added 2026-08-23
-  alongside a real `Time` builtin (`builtins/time.cr`) that needed
-  `t + 60`/`t - 60` to work via ordinary infix syntax: `VM#exec_add`/
-  `#exec_sub` (`vm.cr`) now check whether the LEFT operand is a
-  `RubyObject` with its own `+`/`-` (native or script) before falling
-  through to `ValueOps`'s base-type handling — the same "left
-  receiver's method wins when it has one" shape `<=>`-derived `<`/
-  `<=`/`>`/`>=`/`==` already established. Deliberately scoped to just
-  `+`/`-` — DEVELOPMENT.md's own "Some operators are overloaded across
-  base types" section already anticipated this exact gap for `-`/`*`/
-  `/` and explicitly said to close it "if [something] does" need it;
-  `Time` was that something, but only for `+`/`-`. Not currently
-  blocking anything (nothing in Legate's own spec needs `*`/`/` on a
-  `RubyObject`), so this stays Will Fix rather than Must Fix — promote
-  if a future type needs it.
+- **`Op::Mul` (and `%`) still doesn't dispatch to a `RubyObject`'s
+  own `*` — only `+`/`-`/`/` do now.** Added 2026-08-23 alongside a
+  real `Time` builtin (`builtins/time.cr`) that needed `t + 60`/
+  `t - 60` to work via ordinary infix syntax: `VM#exec_add`/`#exec_sub`
+  (`vm.cr`) check whether the LEFT operand is a `RubyObject` with its
+  own `+`/`-` (native or script) before falling through to
+  `ValueOps`'s base-type handling — the same "left receiver's method
+  wins when it has one" shape `<=>`-derived `<`/`<=`/`>`/`>=`/`==`
+  already established. Widened same-day to `/` too (`VM#exec_div`) —
+  `Legate::Path#/` (`legate/path.cr`, LEGATE.md §5.1) needed real
+  infix `/` to work the moment Path's own spec was implemented, not
+  just theoretically anticipated the way `*`/`%` still are.
+  DEVELOPMENT.md's own "Some operators are overloaded across base
+  types" section originally anticipated this whole gap for `-`/`*`/
+  `/` and explicitly said to close each "if [something] does" need
+  it; `Time` was that something for `+`/`-`, `Legate::Path` for `/`.
+  `*`/`%` remain untouched — nothing needs them yet either — so this
+  stays Will Fix rather than Must Fix; promote if a future type needs
+  one.
 
 - **No `Numeric` ancestor class in the `RubyClass` hierarchy, so
   `5.is_a?(Numeric)` fails rather than returning `true`.** Long-
