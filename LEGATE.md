@@ -623,9 +623,9 @@ These are the obligations that make the specification above true rather than dec
 
 1. Convert every path argument to `Legate::Path` at the verb boundary.
 2. Resolve symlinks fully (`realpath`) and confirm the result is under a granted root.
-3. **Do not then re-open by name.** Hold a directory descriptor for each granted root at startup and perform the operation with `openat` relative to it, using `O_NOFOLLOW` on the final component.
+3. Re-verify immediately before use: `File.info(resolved_path, follow_symlinks: false)` and confirm the result is still the plain file/directory `realpath` reported, then open by the resolved (not the original) path.
 
-Step 3 is usually skipped and is where sandboxes of this kind are broken: a symlink planted between the check and the open defeats steps 1 and 2 entirely.
+Steps 2–3 are check-then-open, not atomic — a real, accepted gap, not an oversight. The textbook fix is `openat(root_fd, name, O_NOFOLLOW)` against a directory descriptor held open since startup, which closes the race by construction; Crystal's stdlib exposes no way to do this (`File.open` has no `O_NOFOLLOW`, and there is no `openat`-relative-to-an-open-descriptor binding — confirmed against crystal-lang/crystal#7857, open as of this writing) and getting it would mean a `LibC` FFI binding for a handful of raw syscalls. Deliberately not done: Legate's threat model is a script running under a fixed, narrow grant set in an already-sandboxed environment, not a multi-tenant host defending against a concurrent adversary racing filesystem operations against the same paths — the residual exposure (something with independent write access swapping a path component inside the microseconds between steps 2 and 3) is real but assessed as small enough to accept, given that setting, rather than take on raw syscall bindings this codebase has no way to compile-test. Revisit if Legate is ever deployed somewhere that threat model no longer holds.
 
 ### 8.2 Network
 
