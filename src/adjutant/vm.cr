@@ -579,6 +579,17 @@ module Adjutant
       cls = start_cls.as(RubyClass?)
       while cls
         return true if cls == target
+        # `included_modules` — found missing while building
+        # Legate::Stream (a real `include`d module, not simulated;
+        # `find_native_method` already correctly walks this same list
+        # for METHOD RESOLUTION, confirmed earlier — `is_a?` simply
+        # never got the equivalent check). Direct includes only, not
+        # a module's own nested includes expanded transitively — real
+        # Ruby's `ancestors` does expand those, but nothing in
+        # Adjutant includes-a-module-that-itself-includes-a-module yet
+        # for that gap to matter in practice; worth revisiting if one
+        # ever does.
+        return true if cls.included_modules.includes?(target)
         cls = cls.superclass
       end
       false

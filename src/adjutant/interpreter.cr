@@ -21,6 +21,7 @@ require "./legate/entry"
 require "./legate/match"
 require "./legate/response"
 require "./legate/exit"
+require "./legate/stream"
 
 module Adjutant
   # Top-level entry point for the Adjutant interpreter.
@@ -442,6 +443,7 @@ module Adjutant
       Legate::Match.bootstrap(self, legate)
       Legate::Response.bootstrap(self, legate)
       Legate::Exit.bootstrap(self, legate)
+      Legate::Stream.bootstrap(self, legate)
       define_global_class(legate)
     end
 
