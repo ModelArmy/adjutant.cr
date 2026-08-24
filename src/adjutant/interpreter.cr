@@ -458,6 +458,7 @@ module Adjutant
       register_builtin_class(Builtins.bootstrap_regexp(self))
       register_builtin_class(Builtins.bootstrap_match_data(self))
       register_builtin_class(Builtins.bootstrap_proc(self))
+      register_builtin_class(Builtins.bootstrap_time(self))
       Builtins.register_module_methods(module_class, self)
     end
 

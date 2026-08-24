@@ -97,6 +97,36 @@ forward.
   fallback-only names `exec_builtin` handles, rather than a full
   lookup-table rewrite.
 
+- **`dup`/`clone` on a `RubyObject` SUBCLASS with real typed state
+  outside `ivars` silently produces a wrong-typed object, then
+  crashes on first use.** Found 2026-08-23 porting mruby-time's own
+  `Time#initialize_copy` test (`spec/scripts/mruby/time.rb`) — not
+  specific to `Time`. `exec_builtin`'s `"dup", "clone"` case (`vm.cr`)
+  always allocates a plain `RubyObject.new(obj.rclass)` and shallow-
+  copies `ivars`, correct for an ordinary class but wrong for any
+  subclass carrying real fields outside `ivars` — `TimeObject`'s
+  `@time` (`builtins/time.cr`), and equally `RegexpObject`'s `@regex`/
+  `MatchDataObject`'s `@md` (`builtins/regexp.cr`), simply hadn't been
+  caught yet (nothing in the existing suite calls `.dup`/`.clone` on a
+  `Regexp`/`MatchData`). The clone comes back as a plain `RubyObject`,
+  not the real subclass, so any method touching the actual typed field
+  (`.year`, `.to_i`, a `Regexp` match call, ...) hits a raw Crystal
+  cast failure (`Cast from Adjutant::RubyObject to
+  Adjutant::TimeObject failed`) on first use — an ugly internal crash,
+  not a clean Ruby-level error, and reachable in completely ordinary
+  script usage (any `.dup`/`.clone` on one of these three types).
+  Must Fix rather than Will Fix specifically because of that failure
+  shape — silent wrong object followed by a confusing crash is exactly
+  the "actively causing incorrect behavior in normal use" bar this
+  section is for, not a missing-feature gap. Fix shape: give
+  `RubyObject` (or each subclass) a virtual `#copy_state_into(other)`-
+  style hook the `"dup"`/`"clone"` case calls after allocating the
+  correctly-typed instance (needs a way to allocate the RIGHT Crystal
+  class, not always a bare `RubyObject.new` — possibly a
+  `RubyObject#shallow_copy : RubyObject` virtual method every subclass
+  overrides, mirroring the pattern `RegexpObject`/`MatchDataObject`/
+  `TimeObject` already use for their own typed-state constructors).
+
 ## Will Fix
 
 Real gaps, not currently blocking anything, no active design conversation
@@ -409,6 +439,23 @@ Quality-of-diagnostic gaps in the `Diagnostic`/`ErrorCatalog` system
   `Op::SetIndex`/`exec_set_index` (the `obj[i] = v` write side) has
   the exact same shape of gap and was NOT touched by this fix — flagged
   here rather than silently assumed fixed alongside the read side.
+
+- **`Op::Mul`/`Op::Div` (and `%`) still don't dispatch to a
+  `RubyObject`'s own `*`/`/` — only `+`/`-` do.** Added 2026-08-23
+  alongside a real `Time` builtin (`builtins/time.cr`) that needed
+  `t + 60`/`t - 60` to work via ordinary infix syntax: `VM#exec_add`/
+  `#exec_sub` (`vm.cr`) now check whether the LEFT operand is a
+  `RubyObject` with its own `+`/`-` (native or script) before falling
+  through to `ValueOps`'s base-type handling — the same "left
+  receiver's method wins when it has one" shape `<=>`-derived `<`/
+  `<=`/`>`/`>=`/`==` already established. Deliberately scoped to just
+  `+`/`-` — DEVELOPMENT.md's own "Some operators are overloaded across
+  base types" section already anticipated this exact gap for `-`/`*`/
+  `/` and explicitly said to close it "if [something] does" need it;
+  `Time` was that something, but only for `+`/`-`. Not currently
+  blocking anything (nothing in Legate's own spec needs `*`/`/` on a
+  `RubyObject`), so this stays Will Fix rather than Must Fix — promote
+  if a future type needs it.
 
 - **No `Numeric` ancestor class in the `RubyClass` hierarchy, so
   `5.is_a?(Numeric)` fails rather than returning `true`.** Long-

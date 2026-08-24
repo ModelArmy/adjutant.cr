@@ -1186,8 +1186,8 @@ module Adjutant
             push(result) unless @frames.empty?
 
             # --- Arithmetic -----------------------------------------------------
-          when Op::Add    then exec_binary(inst) { |lhs, rhs| ValueOps.add(lhs, rhs, error_raiser(f)) }
-          when Op::Sub    then exec_binary(inst) { |lhs, rhs| ValueOps.op(lhs, rhs, :-, error_raiser(f)) }
+          when Op::Add    then exec_binary(inst) { |lhs, rhs| exec_add(lhs, rhs, f) }
+          when Op::Sub    then exec_binary(inst) { |lhs, rhs| exec_sub(lhs, rhs, f) }
           when Op::Mul    then exec_binary(inst) { |lhs, rhs| ValueOps.op(lhs, rhs, :*, error_raiser(f)) }
           when Op::Div    then exec_binary(inst) { |lhs, rhs| ValueOps.div(lhs, rhs, error_raiser(f)) }
           when Op::Mod    then exec_binary(inst) { |lhs, rhs| ValueOps.mod(lhs, rhs, error_raiser(f)) }
@@ -3226,8 +3226,7 @@ module Adjutant
       end
     end
 
-    # NativeCallContext#add's own implementation — the same
-    # `error_raiser` wiring Op::Add itself uses (see this file's own
+    # NativeCallContext#add's own implementation — the same    # `error_raiser` wiring Op::Add itself uses (see this file's own
     # `when Op::Add` case), just reachable from native code. Doesn't
     # attempt a RubyObject `+` dispatch the way `compare`/`compare_via_spaceship`
     # does for `<=>` — no current native caller needs a user-defined
@@ -3331,6 +3330,45 @@ module Adjutant
       sign_val.int? && sign_val.as_int == 0
     rescue RuntimeError
       false
+    end
+
+    # `Op::Add`/`Op::Sub`'s own dispatch — mirrors compare/
+    # values_equal?'s "left receiver's own method wins when it has
+    # one" rule, but for `+`/`-` specifically. Unlike `<=>` (dispatched
+    # unconditionally, per SCOPE.md's decision — an absent `<=>` fails
+    # like any other undefined method call) and unlike `==` (silently
+    # falls back to identity when no `<=>` exists), `+`/`-` fall back
+    # to `ValueOps`'s own base-type handling whenever the LEFT operand
+    # isn't a `RubyObject` with its own defined `+`/`-` — this is
+    # additive to the base-type arithmetic already there, not a
+    # replacement for it, so `1 + 2` and `"a" + "b"` are completely
+    # unaffected and never even reach `script_responds_to?`.
+    #
+    # Found necessary while building a real `Time` builtin (`t + 60`)
+    # — before this, arithmetic operators were opcode-only with no
+    # method-table consultation for ANY receiver, base type or
+    # RubyObject alike (see DEVELOPMENT.md's "Some operators are
+    # overloaded across base types" section, which explicitly left
+    # this open: "no equivalent yet exists for -/*/, since nothing
+    # native has needed them generically yet — follow the same
+    # pattern... if one does"). `Time` is that first real need for
+    # `+`/`-` specifically; `*`/`/` are deliberately NOT touched here,
+    # since nothing needs them yet either — same "don't build ahead of
+    # a real user" convention, not an oversight.
+    private def exec_add(lhs : Value, rhs : Value, f : Frame) : Value
+      if lhs.robject? && script_responds_to?(lhs, "+")
+        call_method(lhs, "+", [rhs], f.filename, f.line)
+      else
+        ValueOps.add(lhs, rhs, error_raiser(f))
+      end
+    end
+
+    private def exec_sub(lhs : Value, rhs : Value, f : Frame) : Value
+      if lhs.robject? && script_responds_to?(lhs, "-")
+        call_method(lhs, "-", [rhs], f.filename, f.line)
+      else
+        ValueOps.op(lhs, rhs, :-, error_raiser(f))
+      end
     end
 
     # Real Ruby's Range#== (and #eql?, defined identically for Range)
