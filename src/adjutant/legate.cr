@@ -1,0 +1,18 @@
+require "./legate/helpers"
+require "./legate/exceptions"
+require "./legate/path"
+require "./legate/stat"
+require "./legate/entry"
+require "./legate/match"
+require "./legate/response"
+require "./legate/exit"
+require "./legate/stream"
+require "./legate/grants"
+require "./legate/authorization"
+require "./legate/budget"
+require "./legate/audit_log"
+require "./legate/broker"
+require "./legate/verbs/stat"
+
+module Adjutant::Legate
+end

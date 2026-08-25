@@ -75,6 +75,42 @@ module Adjutant
         under_root ? Decision.allow : Decision.deny("#{path} (resolved: #{real_path}) is not under any granted root")
       end
 
+      # The maybe-missing sibling of `check_root` above — same
+      # containment question, but for a path that is EXPECTED to
+      # possibly not exist yet (LEGATE.md §2.3's "nil for a
+      # non-existent path" verbs, e.g. `Legate.stat`; also the write-
+      # target gap `check_root`'s own comment flagged as deferred
+      # here). Walks up from `path` to its deepest EXISTING ancestor
+      # directory, realpath's *that*, then reconstructs a prospective
+      # full path by re-appending the not-yet-resolved trailing
+      # components — containment is checked against THAT prospective
+      # path, so "outside every granted root" is still a real denial
+      # regardless of whether `path` itself happens to exist, while
+      # "inside a granted root but missing" is a plain allow, leaving
+      # the caller to make its own existence check afterward. The
+      # trailing components are compared as literal strings, not
+      # further realpath'd (they can't be — they don't exist yet), so
+      # a component that turns out to itself be a symlink once
+      # created is a gap this method doesn't and can't close; that
+      # residual is the same "small enough to accept, given Legate's
+      # threat model" reasoning §8.1's own TOCTOU note already makes,
+      # not a new exposure this method introduces.
+      def check_root_maybe_missing(path : String, roots : Array(String)) : Decision
+        return Decision.deny("no roots granted for this operation") if roots.empty?
+
+        ancestor = deepest_existing_ancestor(path)
+        return Decision.deny("#{path} has no resolvable ancestor directory") unless ancestor
+        real_ancestor, trailing = ancestor
+        prospective = trailing.empty? ? real_ancestor : File.join(real_ancestor, File.join(trailing))
+
+        under_root = roots.any? do |root|
+          real_root = resolve(root)
+          real_root && (prospective == real_root || prospective.starts_with?(real_root.chomp('/') + "/"))
+        end
+
+        under_root ? Decision.allow : Decision.deny("#{path} (prospective: #{prospective}) is not under any granted root")
+      end
+
       # Allowlist membership only — exact string match against
       # `net_hosts`. No wildcard/subdomain matching (§7's own example
       # lists exact hostnames, not patterns) and no SSRF/DNS-resolved-
@@ -118,6 +154,29 @@ module Adjutant
         File.realpath(path)
       rescue
         nil
+      end
+
+      # Walks `path` upward (via `File.dirname`) until it finds a
+      # component that actually exists, then returns that ancestor's
+      # OWN realpath alongside the trailing path components (in
+      # original order) that were stripped off to get there — the two
+      # pieces `check_root_maybe_missing` needs to reconstruct a
+      # prospective full path without requiring `path` itself to
+      # exist. Returns nil only in the pathological case of no
+      # existing ancestor at all (a bogus root, or a relative path
+      # climbing past the current working directory's own root).
+      private def deepest_existing_ancestor(path : String) : {String, Array(String)}?
+        trailing = [] of String
+        current = path
+        loop do
+          if real = resolve(current)
+            return {real, trailing}
+          end
+          parent = File.dirname(current)
+          return nil if parent == current
+          trailing.unshift(File.basename(current))
+          current = parent
+        end
       end
 
       # `binary` with no `/` is a bare command name — searched across

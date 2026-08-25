@@ -73,9 +73,16 @@ module Adjutant
       # "every path argument becomes a Legate::Path at the boundary"
       # requirement), not this broker's; the broker only ever sees the
       # resolved string it needs to check.
-      def authorize_read(path : String, ncc : NativeCallContext) : Nil
+      #
+      # `allow_missing` switches to `check_root_maybe_missing` instead
+      # of plain `check_root` — for a verb like `Legate.stat` where a
+      # non-existent path is a documented, non-exceptional `nil`
+      # result (§2.3), not a denial; see that method's own comment
+      # (authorization.cr). Defaults false, matching every OTHER
+      # read-grant verb, where a missing path really is just missing.
+      def authorize_read(path : String, ncc : NativeCallContext, allow_missing : Bool = false) : Nil
         authorize(:read, "read", path, RiskTag::ReadsFiles, ProvenanceKind::File, ncc) do
-          @grants.check_root(path, @grants.read_roots)
+          allow_missing ? @grants.check_root_maybe_missing(path, @grants.read_roots) : @grants.check_root(path, @grants.read_roots)
         end
       end
 

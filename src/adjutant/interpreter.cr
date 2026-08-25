@@ -13,20 +13,7 @@ require "./native_callable"
 require "./native_call_context"
 require "./native_function_call"
 require "./builtins"
-require "./legate/helpers"
-require "./legate/exceptions"
-require "./legate/path"
-require "./legate/stat"
-require "./legate/entry"
-require "./legate/match"
-require "./legate/response"
-require "./legate/exit"
-require "./legate/stream"
-require "./legate/grants"
-require "./legate/authorization"
-require "./legate/budget"
-require "./legate/audit_log"
-require "./legate/broker"
+require "./legate"
 
 module Adjutant
   # Top-level entry point for the Adjutant interpreter.
@@ -66,6 +53,23 @@ module Adjutant
     getter risk_flow_policy : RiskFlowPolicy
     getter on_risk_flow_decision : RiskFlowDecisionRequest -> RiskFlowDecision
 
+    # Legate's own policy/enforcement pair, threaded through the same
+    # way risk_flow_policy is (a safe, explicit default rather than an
+    # implicit allow-everything one) — `grants` is fixed at
+    # construction (LEGATE.md §7's "fixed before execution, never
+    # escalatable"), and `broker` is the ONE Broker instance every
+    # Legate verb bootstrap (Legate::Verbs::*) closes over, so budget/
+    # audit state genuinely accumulates across the whole run rather
+    # than resetting per call. Unlike risk_flow_policy, `grants`
+    # DOES have a default (`Grants.deny_all`) rather than being
+    # required — an embedder not using Legate's effectful verbs at
+    # all (many scripts won't) shouldn't have to think about grants
+    # to construct an Interpreter; the default is still the fully
+    # closed policy, not a silent allow-everything one, so nothing
+    # about "safe by default" is lost.
+    getter grants : Legate::Grants
+    getter broker : Legate::Broker
+
     # Source of every script this interpreter has parsed, keyed by
     # filename. Populated by `eval`/`compile`, including files pulled
     # in by `require`, whose diagnostics name a different file than
@@ -98,11 +102,13 @@ module Adjutant
       @effect : EffectHandler? = nil,
       @limits : ExecutionLimits = ExecutionLimits.new,
       risk_flow_tracking : Bool = false,
+      @grants : Legate::Grants = Legate::Grants.deny_all,
     )
       @symbols = SymbolTable.new
       @modules = ModuleRegistry.new
       @globals = {} of Int32 => Value
       @risk_flow_log = RiskFlowLog.new(enabled: risk_flow_tracking)
+      @broker = Legate::Broker.new(@grants)
       bootstrap_core_hierarchy
       # @main must be assigned here, right after object_class first
       # becomes valid — NOT after bootstrap_error_classes/
@@ -449,6 +455,7 @@ module Adjutant
       Legate::Response.bootstrap(self, legate)
       Legate::Exit.bootstrap(self, legate)
       Legate::Stream.bootstrap(self, legate)
+      Legate::Verbs::Stat.bootstrap(self, legate, @broker)
       define_global_class(legate)
     end
 

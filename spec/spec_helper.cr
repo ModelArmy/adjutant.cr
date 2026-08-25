@@ -20,6 +20,7 @@ module Adjutant
     limits : ExecutionLimits = ExecutionLimits.new,
     risk_flow_policy : RiskFlowPolicy = TEST_REJECT_ALL_POLICY,
     on_risk_flow_decision : RiskFlowDecisionRequest -> RiskFlowDecision = TEST_UNEXPECTED_ASK_CALLBACK,
+    grants : Legate::Grants = Legate::Grants.deny_all,
   ) : {Interpreter, TestEffectHandler}
     ef = TestEffectHandler.new
     interp = Interpreter.new(
@@ -27,6 +28,7 @@ module Adjutant
       on_risk_flow_decision: on_risk_flow_decision,
       effect: ef,
       limits: limits,
+      grants: grants,
     )
     {interp, ef}
   end
