@@ -168,14 +168,37 @@ module Adjutant
     end
 
     describe "single-pass (LEGATE.md §6.1)" do
-      it "iterating a stream twice sees nothing the second time — the underlying source is genuinely exhausted" do
+      it "iterating an already-exhausted stream again raises Legate::EOF (amended LEGATE.md §6.1) rather than silently returning nothing" do
         interp = interp_with_test_stream
-        interp.eval(<<-RUBY).as_bool.should eq true
+        eval = interp.eval(<<-RUBY)
         s = stream_of(1, 2, 3)
         first_pass = s.to_a
-        second_pass = s.to_a
-        first_pass == [1, 2, 3] && second_pass == []
+        second_pass = begin
+          s.to_a
+          "no error raised"
+        rescue Legate::EOF => e
+          "eof: \#{e.message}"
+        end
+        [first_pass, second_pass]
         RUBY
+        arr = eval.as_array.to_a
+        arr[0].as_array.to_a.map(&.as_int).should eq [1, 2, 3]
+        arr[1].as_string.should match(/^eof: /)
+      end
+
+      it "raises Legate::EOF on .each too, not just .to_a, once the source is exhausted" do
+        interp = interp_with_test_stream
+        eval = interp.eval(<<-RUBY)
+        s = stream_of(1, 2)
+        s.to_a
+        begin
+          s.each { |x| x }
+          "no error raised"
+        rescue Legate::EOF
+          "eof"
+        end
+        RUBY
+        eval.as_string.should eq "eof"
       end
 
       it "two streams derived from a common ancestor share pull position — real Ruby's own lazy-enumerator aliasing, not a bug" do

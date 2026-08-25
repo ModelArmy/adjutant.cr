@@ -69,7 +69,21 @@ module Adjutant
       # can see.
       def self.bootstrap(interp : Interpreter, legate : RubyClass, standard_error : RubyClass) : Nil
         error = Helpers.nest(legate, interp, "Error", standard_error)
-        %w[NotFound Malformed TooLarge TooMany Timeout Transport Conflict NonZeroExit].each do |name|
+        # `EOF` — the single-pass-stream tier, added when
+        # `Legate::Stream` (stream.cr) gained real enforcement of "one
+        # terminal walk per stream lineage" (LEGATE.md §6.1, amended
+        # this session): calling a terminal a second time on an
+        # already-walked stream (or anything derived from it via
+        # `map`/`select`/`take`, which share consumption state with
+        # their ancestor) raises this rather than silently returning
+        # empty. Named for the well-known IO concept (Ruby's own
+        # `EOFError` on a second `readline` past end-of-stream) rather
+        # than anything Legate-specific, and deliberately generic
+        # enough to cover a future network stream (`Legate.fetch
+        # stream: true`, §3's own type-index diagram) the same way it
+        # covers a file — not `Legate::StreamConsumed` or similar,
+        # which would only make sense for files.
+        %w[NotFound Malformed TooLarge TooMany Timeout Transport Conflict NonZeroExit EOF].each do |name|
           Helpers.nest(legate, interp, name, error)
         end
       end
