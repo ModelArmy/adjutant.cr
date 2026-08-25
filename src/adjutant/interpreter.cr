@@ -24,6 +24,7 @@ require "./legate/exit"
 require "./legate/stream"
 require "./legate/grants"
 require "./legate/authorization"
+require "./legate/broker"
 
 module Adjutant
   # Top-level entry point for the Adjutant interpreter.
