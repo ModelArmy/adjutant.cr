@@ -67,10 +67,7 @@ module Adjutant
         real_path = resolve(path)
         return Decision.deny("#{path} does not exist or could not be resolved") unless real_path
 
-        under_root = roots.any? do |root|
-          real_root = resolve(root)
-          real_root && (real_path == real_root || real_path.starts_with?(real_root.chomp('/') + "/"))
-        end
+        under_root = roots.any? { |root| under?(real_path, root) }
 
         under_root ? Decision.allow : Decision.deny("#{path} (resolved: #{real_path}) is not under any granted root")
       end
@@ -103,10 +100,7 @@ module Adjutant
         real_ancestor, trailing = ancestor
         prospective = trailing.empty? ? real_ancestor : File.join(real_ancestor, File.join(trailing))
 
-        under_root = roots.any? do |root|
-          real_root = resolve(root)
-          real_root && (prospective == real_root || prospective.starts_with?(real_root.chomp('/') + "/"))
-        end
+        under_root = roots.any? { |root| under?(prospective, root) }
 
         under_root ? Decision.allow : Decision.deny("#{path} (prospective: #{prospective}) is not under any granted root")
       end
@@ -156,6 +150,31 @@ module Adjutant
         nil
       end
 
+      # Portable containment test — `real_path` and `root` are both
+      # already-realpath'd absolute strings; this decides whether the
+      # former sits at-or-under the latter using Crystal's own `Path`
+      # (platform-aware: POSIX `/` or Windows `\`/drive letters, per
+      # https://crystal-lang.org/api/1.21.0/Path.html), NOT hand-
+      # rolled `'/'` string concatenation — the previous version of
+      # this check assumed a POSIX separator outright and broke
+      # containment on Windows. `Path#relative_to` computes the
+      # relative path from `root` to `real_path` by pure path algebra
+      # (no filesystem access, no separator assumptions of our own);
+      # if the FIRST component of that relative path is `".."`, or the
+      # relative path is entirely `".."`-only, `real_path` fell
+      # outside `root` and climbed back up instead. NOT independently
+      # verified against a live toolchain — `Path#relative_to`'s exact
+      # return shape for an already-equal or already-descendant pair
+      # is written from the API docs, not a compiled check.
+      private def under?(real_path : String, root : String) : Bool
+        real_root = resolve(root)
+        return false unless real_root
+
+        rel = ::Path.new(real_path).relative_to(::Path.new(real_root))
+        return true if rel.to_s == "."
+        rel.parts.first? != ".."
+      end
+
       # Walks `path` upward (via `File.dirname`) until it finds a
       # component that actually exists, then returns that ancestor's
       # OWN realpath alongside the trailing path components (in
@@ -179,18 +198,26 @@ module Adjutant
         end
       end
 
-      # `binary` with no `/` is a bare command name — searched across
-      # `PATH` the way a shell resolves `argv[0]`, checking each
-      # directory in order and taking the first existing, executable
-      # match. `binary` containing `/` is treated as a path already
-      # and resolved directly, no `PATH` search. Either way the
-      # result is realpath'd before returning, so `check_binary`'s
-      # comparison above is always resolved-path-to-resolved-path.
+      # `binary` with a directory component (per `Path#parts.size > 1`
+      # — portable across POSIX `/` and Windows `\`/drive-letter
+      # paths, unlike the previous plain `binary.includes?('/')`
+      # check) is resolved directly, no `PATH` search. A BARE name
+      # (`"git"`, no directory component at all) is searched across
+      # `PATH` the way a shell resolves `argv[0]`/`CreateProcess`
+      # does, checking each directory in order and taking the first
+      # existing, executable match. Either way the result is
+      # realpath'd before returning, so `check_binary`'s comparison
+      # above is always resolved-path-to-resolved-path.
       private def resolve_binary(binary : String) : String?
-        return resolve(binary) if binary.includes?('/')
+        return resolve(binary) if ::Path.new(binary).parts.size > 1
 
         path_env = ENV["PATH"]? || ""
-        path_env.split(':').each do |dir|
+        # `Process::PATH_DELIMITER` — `:` on POSIX, `;` on Windows.
+        # NOT independently verified against a live toolchain; this
+        # constant's exact name is written from recollection of
+        # Crystal's own cross-platform PATH-search handling for
+        # Process.exec, which has the identical problem to solve.
+        path_env.split(Process::PATH_DELIMITER).each do |dir|
           next if dir.empty?
           candidate = File.join(dir, binary)
           real = resolve(candidate)
