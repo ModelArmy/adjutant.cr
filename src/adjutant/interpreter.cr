@@ -457,6 +457,7 @@ module Adjutant
       Legate::Stream.bootstrap(self, legate)
       Legate::Verbs::Stat.bootstrap(self, legate, @broker)
       Legate::Verbs::Read.bootstrap(self, legate, @broker)
+      Legate::Verbs::List.bootstrap(self, legate, @broker)
       define_global_class(legate)
     end
 
