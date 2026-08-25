@@ -55,6 +55,14 @@ module Adjutant
       getter budget : Budget
       getter audit_log : AuditLog
 
+      # Public so a VERB (step 5) can read policy limits directly
+      # (e.g. `Legate.read`'s own `limit:` kwarg has to be clamped to
+      # `grants.limits.read_limit`, never allowed to exceed it) —
+      # `Grants` itself is immutable config, so exposing it read-only
+      # here carries no risk of a verb mutating policy out from under
+      # the broker.
+      getter grants : Grants
+
       # `budget`/`audit_log` are both injectable (a real embedder, and
       # every spec below, can supply their own to inspect afterward or
       # to share a Budget across a sequence of calls) but default to a

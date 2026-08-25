@@ -13,6 +13,7 @@ require "./legate/budget"
 require "./legate/audit_log"
 require "./legate/broker"
 require "./legate/verbs/stat"
+require "./legate/verbs/read"
 
 module Adjutant::Legate
 end
