@@ -19,7 +19,7 @@ module Adjutant
         File.write(file, "hello")
         interp, _ = make_interp(grants: Legate::Grants.new(read_roots: [dir]))
         eval = interp.eval(<<-RUBY)
-        s = Legate.stat("#{file}")
+        s = Legate.stat(#{(file).inspect})
         [s.type, s.size, s.file?, s.dir?]
         RUBY
         arr = eval.as_array.to_a
@@ -33,14 +33,14 @@ module Adjutant
     it "returns a Stat with type :dir for a directory" do
       with_tmpdir do |dir|
         interp, _ = make_interp(grants: Legate::Grants.new(read_roots: [dir]))
-        interp.eval(%(Legate.stat("#{dir}").type)).as_sym.name.should eq "dir"
+        interp.eval(%(Legate.stat(#{(dir).inspect}).type)).as_sym.name.should eq "dir"
       end
     end
 
     it "returns nil for a non-existent path that IS under a granted root" do
       with_tmpdir do |dir|
         interp, _ = make_interp(grants: Legate::Grants.new(read_roots: [dir]))
-        interp.eval(%(Legate.stat("#{File.join(dir, "nope.txt")}"))).raw.nil?.should be_true
+        interp.eval(%(Legate.stat(#{(File.join(dir, "nope.txt")).inspect}))).raw.nil?.should be_true
       end
     end
 
@@ -49,7 +49,7 @@ module Adjutant
         with_tmpdir do |other|
           interp, _ = make_interp(grants: Legate::Grants.new(read_roots: [dir]))
           expect_raises(Legate::FatalSignal, /Legate\.read denied/) do
-            interp.eval(%(Legate.stat("#{File.join(other, "nope.txt")}")))
+            interp.eval(%(Legate.stat(#{(File.join(other, "nope.txt")).inspect})))
           end
         end
       end
@@ -62,7 +62,7 @@ module Adjutant
           File.write(file, "hello")
           interp, _ = make_interp(grants: Legate::Grants.new(read_roots: [dir]))
           expect_raises(Legate::FatalSignal, /Legate\.read denied/) do
-            interp.eval(%(Legate.stat("#{file}")))
+            interp.eval(%(Legate.stat(#{(file).inspect})))
           end
         end
       end
@@ -75,7 +75,7 @@ module Adjutant
         link = File.join(dir, "link.txt")
         File.symlink(target, link)
         interp, _ = make_interp(grants: Legate::Grants.new(read_roots: [dir]))
-        interp.eval(%(Legate.stat("#{link}").type)).as_sym.name.should eq "symlink"
+        interp.eval(%(Legate.stat(#{(link).inspect}).type)).as_sym.name.should eq "symlink"
       end
     end
 
@@ -85,7 +85,7 @@ module Adjutant
         File.write(file, "hello")
         interp, _ = make_interp(grants: Legate::Grants.deny_all)
         expect_raises(Legate::FatalSignal, /Legate\.read denied/) do
-          interp.eval(%(Legate.stat("#{file}")))
+          interp.eval(%(Legate.stat(#{(file).inspect})))
         end
       end
     end
@@ -95,7 +95,7 @@ module Adjutant
         file = File.join(dir, "f.txt")
         File.write(file, "hello")
         interp, _ = make_interp(grants: Legate::Grants.new(read_roots: [dir]))
-        interp.eval(%(Legate.stat(Legate::Path.new("#{file}")).size)).as_int.should eq 5
+        interp.eval(%(Legate.stat(Legate::Path.new(#{(file).inspect})).size)).as_int.should eq 5
       end
     end
 
@@ -104,7 +104,7 @@ module Adjutant
         file = File.join(dir, "f.txt")
         File.write(file, "hello")
         interp, _ = make_interp(grants: Legate::Grants.new(read_roots: [dir]))
-        interp.eval(%(Legate.stat("#{file}")))
+        interp.eval(%(Legate.stat(#{(file).inspect})))
         record = interp.broker.audit_log.records.last
         record.verb.should eq "read"
         record.grant.should eq :read

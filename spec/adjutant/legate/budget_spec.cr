@@ -119,7 +119,7 @@ module Adjutant
         File.write(file, "hello")
         broker = Legate::Broker.new(Legate::Grants.new(read_roots: [dir]))
         interp = interp_with_read_trigger(broker)
-        interp.eval(%(legate_read_trigger("#{file}")))
+        interp.eval(%(legate_read_trigger(#{(file).inspect})))
 
         record = broker.audit_log.records.last
         record.verb.should eq "read"
@@ -137,7 +137,7 @@ module Adjutant
           File.write(file, "hello")
           broker = Legate::Broker.new(Legate::Grants.new(read_roots: [dir]))
           interp = interp_with_read_trigger(broker)
-          expect_raises(Legate::FatalSignal) { interp.eval(%(legate_read_trigger("#{file}"))) }
+          expect_raises(Legate::FatalSignal) { interp.eval(%(legate_read_trigger(#{(file).inspect}))) }
 
           record = broker.audit_log.records.last
           record.decision.should eq :denied
@@ -168,7 +168,7 @@ module Adjutant
 
         interp.eval(<<-RUBY)
         begin
-          legate_read_trigger("#{file}")
+          legate_read_trigger(#{(file).inspect})
         rescue
           "swallowed"
         end
@@ -189,7 +189,7 @@ module Adjutant
         interp = interp_with_read_trigger(broker)
         sleep 10.milliseconds
         expect_raises(Legate::FatalSignal, /wall_clock/) do
-          interp.eval(%(legate_read_trigger("#{file}")))
+          interp.eval(%(legate_read_trigger(#{(file).inspect})))
         end
       end
     end
@@ -202,10 +202,10 @@ module Adjutant
         broker = Legate::Broker.new(Legate::Grants.new(read_roots: [dir]), budget: budget)
         interp = interp_with_read_trigger(broker)
 
-        interp.eval(%(legate_read_trigger("#{file}"))) # 10
-        interp.eval(%(legate_read_trigger("#{file}"))) # 20
+        interp.eval(%(legate_read_trigger(#{(file).inspect}))) # 10
+        interp.eval(%(legate_read_trigger(#{(file).inspect}))) # 20
         expect_raises(Legate::FatalSignal, /total_read budget exceeded/) do
-          interp.eval(%(legate_read_trigger("#{file}"))) # 30 > 25
+          interp.eval(%(legate_read_trigger(#{(file).inspect}))) # 30 > 25
         end
         budget.total_read.should eq 30_i64
       end

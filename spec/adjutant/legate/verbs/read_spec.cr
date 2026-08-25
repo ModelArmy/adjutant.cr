@@ -18,7 +18,7 @@ module Adjutant
         file = File.join(dir, "f.txt")
         File.write(file, "hello world")
         interp, _ = make_interp(grants: Legate::Grants.new(read_roots: [dir]))
-        interp.eval(%(Legate.read("#{file}"))).as_string.should eq "hello world"
+        interp.eval(%(Legate.read(#{(file).inspect}))).as_string.should eq "hello world"
       end
     end
 
@@ -27,7 +27,7 @@ module Adjutant
         file = File.join(dir, "f.txt")
         File.write(file, "hi")
         interp, _ = make_interp(grants: Legate::Grants.new(read_roots: [dir]))
-        interp.eval(%(Legate.read(Legate::Path.new("#{file}")))).as_string.should eq "hi"
+        interp.eval(%(Legate.read(Legate::Path.new(#{(file).inspect})))).as_string.should eq "hi"
       end
     end
 
@@ -36,7 +36,7 @@ module Adjutant
         interp, _ = make_interp(grants: Legate::Grants.new(read_roots: [dir]))
         eval = interp.eval(<<-RUBY)
         begin
-          Legate.read("#{File.join(dir, "nope.txt")}")
+          Legate.read(#{(File.join(dir, "nope.txt")).inspect})
         rescue Legate::NotFound => e
           "caught: \#{e.message}"
         end
@@ -50,7 +50,7 @@ module Adjutant
         with_tmpdir do |other|
           interp, _ = make_interp(grants: Legate::Grants.new(read_roots: [dir]))
           expect_raises(Legate::FatalSignal, /Legate\.read denied/) do
-            interp.eval(%(Legate.read("#{File.join(other, "nope.txt")}")))
+            interp.eval(%(Legate.read(#{(File.join(other, "nope.txt")).inspect})))
           end
         end
       end
@@ -60,7 +60,7 @@ module Adjutant
       it "returns nil when missing: nil is given and the path is absent" do
         with_tmpdir do |dir|
           interp, _ = make_interp(grants: Legate::Grants.new(read_roots: [dir]))
-          result = interp.eval(%(Legate.read("#{File.join(dir, "nope.txt")}", missing: nil)))
+          result = interp.eval(%(Legate.read(#{(File.join(dir, "nope.txt")).inspect}, missing: nil)))
           result.raw.nil?.should be_true
         end
       end
@@ -68,7 +68,7 @@ module Adjutant
       it "returns the given default when missing: \"{}\" is given and the path is absent" do
         with_tmpdir do |dir|
           interp, _ = make_interp(grants: Legate::Grants.new(read_roots: [dir]))
-          result = interp.eval(%(Legate.read("#{File.join(dir, "nope.txt")}", missing: "{}")))
+          result = interp.eval(%(Legate.read(#{(File.join(dir, "nope.txt")).inspect}, missing: "{}")))
           result.as_string.should eq "{}"
         end
       end
@@ -78,7 +78,7 @@ module Adjutant
           with_tmpdir do |other|
             interp, _ = make_interp(grants: Legate::Grants.new(read_roots: [dir]))
             expect_raises(Legate::FatalSignal, /denied/) do
-              interp.eval(%(Legate.read("#{File.join(other, "nope.txt")}", missing: nil)))
+              interp.eval(%(Legate.read(#{(File.join(other, "nope.txt")).inspect}, missing: nil)))
             end
           end
         end
@@ -91,7 +91,7 @@ module Adjutant
           interp, _ = make_interp(grants: Legate::Grants.new(read_roots: [dir]))
           eval = interp.eval(<<-RUBY)
           begin
-            Legate.read("#{file}", limit: 10, missing: nil)
+            Legate.read(#{(file).inspect}, limit: 10, missing: nil)
           rescue Legate::TooLarge => e
             "caught"
           end
@@ -105,7 +105,7 @@ module Adjutant
           file = File.join(dir, "f.txt")
           File.write(file, "hi")
           interp, _ = make_interp(grants: Legate::Grants.new(read_roots: [dir]))
-          interp.eval(%(Legate.read("#{file}", missing: nil))).as_string.should eq "hi"
+          interp.eval(%(Legate.read(#{(file).inspect}, missing: nil))).as_string.should eq "hi"
         end
       end
     end
@@ -119,7 +119,7 @@ module Adjutant
           interp, _ = make_interp(grants: Legate::Grants.new(read_roots: [dir], limits: limits))
           eval = interp.eval(<<-RUBY)
           begin
-            Legate.read("#{file}")
+            Legate.read(#{(file).inspect})
           rescue Legate::TooLarge => e
             e.message
           end
@@ -138,7 +138,7 @@ module Adjutant
           # Script asks for a 1_000_000-byte limit; policy caps it at 100.
           # The 50-byte file is still under BOTH, so this should succeed —
           # proving the effective limit didn't silently become unbounded.
-          interp.eval(%(Legate.read("#{file}", limit: 1_000_000))).as_string.bytesize.should eq 50
+          interp.eval(%(Legate.read(#{(file).inspect}, limit: 1_000_000))).as_string.bytesize.should eq 50
         end
       end
 
@@ -149,7 +149,7 @@ module Adjutant
           interp, _ = make_interp(grants: Legate::Grants.new(read_roots: [dir]))
           eval = interp.eval(<<-RUBY)
           begin
-            Legate.read("#{file}", limit: 10)
+            Legate.read(#{(file).inspect}, limit: 10)
           rescue Legate::TooLarge
             "caught"
           end
@@ -164,7 +164,7 @@ module Adjutant
         file = File.join(dir, "f.txt")
         File.write(file, "0123456789")
         interp, _ = make_interp(grants: Legate::Grants.new(read_roots: [dir]))
-        interp.eval(%(Legate.read("#{file}")))
+        interp.eval(%(Legate.read(#{(file).inspect})))
         interp.broker.budget.total_read.should eq 10_i64
       end
     end
@@ -175,9 +175,9 @@ module Adjutant
         File.write(file, "0123456789") # 10 bytes
         limits = Legate::Limits.new(total_read: 15_i64)
         interp, _ = make_interp(grants: Legate::Grants.new(read_roots: [dir], limits: limits))
-        interp.eval(%(Legate.read("#{file}"))) # 10, ok
+        interp.eval(%(Legate.read(#{(file).inspect}))) # 10, ok
         expect_raises(Legate::FatalSignal, /total_read budget exceeded/) do
-          interp.eval(%(Legate.read("#{file}"))) # 20 > 15
+          interp.eval(%(Legate.read(#{(file).inspect}))) # 20 > 15
         end
       end
     end
@@ -188,7 +188,7 @@ module Adjutant
         File.write(file, "hi")
         interp, _ = make_interp(grants: Legate::Grants.deny_all)
         expect_raises(Legate::FatalSignal, /Legate\.read denied/) do
-          interp.eval(%(Legate.read("#{file}")))
+          interp.eval(%(Legate.read(#{(file).inspect})))
         end
       end
     end

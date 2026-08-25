@@ -49,7 +49,7 @@ module Adjutant
           File.write(file, "hello")
           grants = Legate::Grants.new(read_roots: [dir])
           interp = interp_with_read_trigger(grants)
-          interp.eval(%(legate_read_trigger("#{file}"))).as_string.should eq "hello"
+          interp.eval(%(legate_read_trigger(#{(file).inspect}))).as_string.should eq "hello"
         end
       end
 
@@ -63,7 +63,7 @@ module Adjutant
             expect_raises(Legate::FatalSignal, /Legate\.read denied/) do
               interp.eval(<<-RUBY)
               begin
-                legate_read_trigger("#{file}")
+                legate_read_trigger(#{(file).inspect})
               rescue Exception => e
                 "swallowed"
               end
@@ -78,7 +78,7 @@ module Adjutant
           grants = Legate::Grants.new(read_roots: [dir])
           interp = interp_with_read_trigger(grants)
           begin
-            interp.eval(%(legate_read_trigger("#{File.join(dir, "missing.txt")}")))
+            interp.eval(%(legate_read_trigger(#{(File.join(dir, "missing.txt")).inspect})))
             fail "expected a FatalSignal"
           rescue ex : Legate::FatalSignal
             ex.kind.should eq :denied
@@ -92,7 +92,7 @@ module Adjutant
           File.write(file, "hello")
           interp = interp_with_read_trigger(Legate::Grants.deny_all)
           expect_raises(Legate::FatalSignal, /Legate\.read denied/) do
-            interp.eval(%(legate_read_trigger("#{file}")))
+            interp.eval(%(legate_read_trigger(#{(file).inspect})))
           end
         end
       end
@@ -110,7 +110,7 @@ module Adjutant
           # block a read Grants already approved, absent any matching
           # sensitivity rule.
           interp = interp_with_read_trigger(grants, RiskFlowPolicy.reject_all)
-          interp.eval(%(legate_read_trigger("#{file}"))).as_string.should eq "hello"
+          interp.eval(%(legate_read_trigger(#{(file).inspect}))).as_string.should eq "hello"
         end
       end
 
@@ -132,7 +132,7 @@ module Adjutant
           # this session's design conversation described.
           interp.eval(<<-RUBY).as_string.should eq "swallowed"
           begin
-            legate_read_trigger("#{file}")
+            legate_read_trigger(#{(file).inspect})
           rescue
             "swallowed"
           end
@@ -152,7 +152,7 @@ module Adjutant
             # dynamic policy.
             interp = interp_with_read_trigger(grants, RiskFlowPolicy.new)
             expect_raises(Legate::FatalSignal, /denied/) do
-              interp.eval(%(legate_read_trigger("#{file}")))
+              interp.eval(%(legate_read_trigger(#{(file).inspect})))
             end
           end
         end
