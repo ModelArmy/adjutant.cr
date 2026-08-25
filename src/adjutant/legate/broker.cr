@@ -1,5 +1,7 @@
 require "./grants"
 require "./authorization"
+require "./budget"
+require "./audit_log"
 require "./exceptions"
 require "../risk_profile"
 require "../risk_flow_label"
@@ -10,35 +12,58 @@ module Adjutant
     # Legate::Broker — LEGATE.md §8's actual enforcement authority.
     # Every effectful verb (step 5) calls exactly one of this class's
     # `authorize_*` methods at its own boundary, before doing anything
-    # to the outside world. Sequences the two checks this session's
-    # design conversation settled on, ALWAYS in this order:
+    # to the outside world. Sequences the checks this session's design
+    # conversation settled on, ALWAYS in this order:
     #
-    #   1. Grants (STATIC, this broker's own `@grants`, via 4b's
+    #   1. Wall-clock budget (§7/§8.4, `Budget#check_wall_clock!`) —
+    #      checked FIRST and unconditionally, since a script that's
+    #      overrun its run-length budget shouldn't get a fresh Grants/
+    #      RiskFlowPolicy evaluation on its way to being stopped; this
+    #      is a plain "is the run still allowed to continue at all,"
+    #      ahead of "is THIS call allowed."
+    #   2. Grants (STATIC, this broker's own `@grants`, via 4b's
     #      `check_root`/`check_host`/`check_binary`) — a structural
     #      "is this call allowed to happen at all," decided without
     #      looking at what data is flowing through it. A denial here
     #      is FATAL: `Legate::FatalSignal.new(:denied, ...)`,
     #      unrescuable by any script `rescue` (exceptions.cr) — a
     #      script must not be able to swallow a denied grant.
-    #   2. RiskFlowPolicy (DYNAMIC) — reached ONLY once step 1 passes,
-    #      via `ncc.declare_sensitivity`. This broker does not
+    #   3. RiskFlowPolicy (DYNAMIC) — reached ONLY once steps 1–2
+    #      pass, via `ncc.declare_sensitivity`. This broker does not
     #      reimplement Reject/Ask handling; `declare_sensitivity`
     #      already raises the existing SCRIPT-CATCHABLE
     #      RiskFlowRejectedError (vm.cr) on its own when policy
-    #      objects. Grants is the ceiling; RiskFlowPolicy is the
-    #      judgment underneath it — see this session's own grants-vs-
-    #      RiskFlowPolicy conversation for the fuller reasoning.
+    #      objects — this class just rescues it in Crystal terms
+    #      (typed as `RuntimeError`, the SAME `Adjutant::RuntimeError`
+    #      the dispatch loop's own `rescue ex : RuntimeError` clause
+    #      catches — resolved via Crystal's outward namespace lookup
+    #      from inside `Adjutant::Legate`, not the stdlib class of the
+    #      same name) long enough to append an audit record, then
+    #      re-raises it completely unchanged.
     #
-    # `@grants` is fixed at construction — one Broker per run, built
-    # from whatever Grants the embedder supplied, matching §7's "fixed
-    # before execution, never escalatable."
+    # Every one of the three outcomes (denied / rejected / allowed)
+    # appends exactly one §8.7 AuditRecord before returning or
+    # raising — including on the fatal path, matching §8.7's own
+    # "every fatal exception is logged before unwinding begins."
     #
-    # Budgets (per-run cumulative memory/wall-clock/total-read/write
-    # exhaustion, §7's other half) are NOT this class's job yet —
-    # deliberately deferred to step 4d, which adds the counters and
-    # wraps these same authorize_* methods rather than replacing them.
+    # `total_read`/`total_write` budget consumption is NOT checked
+    # here — the broker runs BEFORE a verb's effect, with no byte
+    # count yet to test. See Budget#record_read/#record_write's own
+    # comments: those are called BY a verb (step 5) after it moves
+    # real bytes, independently of these authorize_* calls.
     class Broker
-      def initialize(@grants : Grants)
+      getter budget : Budget
+      getter audit_log : AuditLog
+
+      # `budget`/`audit_log` are both injectable (a real embedder, and
+      # every spec below, can supply their own to inspect afterward or
+      # to share a Budget across a sequence of calls) but default to a
+      # fresh instance each — the common case of "one Broker per run"
+      # needs no caller-side wiring at all.
+      def initialize(grants : Grants, budget : Budget? = nil, audit_log : AuditLog = AuditLog.new)
+        @grants = grants
+        @budget = budget || Budget.new(grants.limits)
+        @audit_log = audit_log
       end
 
       # §4.1's `read`-grant boundary. `path` is the raw string a verb
@@ -49,7 +74,9 @@ module Adjutant
       # requirement), not this broker's; the broker only ever sees the
       # resolved string it needs to check.
       def authorize_read(path : String, ncc : NativeCallContext) : Nil
-        authorize(:read, "read", path, @grants.read_roots, RiskTag::ReadsFiles, ncc)
+        authorize(:read, "read", path, RiskTag::ReadsFiles, ProvenanceKind::File, ncc) do
+          @grants.check_root(path, @grants.read_roots)
+        end
       end
 
       # §4.3's `write`-grant boundary. Shares `check_root`'s own
@@ -63,7 +90,9 @@ module Adjutant
       # whether `path` is expected to exist yet, not this
       # general-purpose boundary method.
       def authorize_write(path : String, ncc : NativeCallContext) : Nil
-        authorize(:write, "write", path, @grants.write_roots, RiskTag::WritesFiles, ncc)
+        authorize(:write, "write", path, RiskTag::WritesFiles, ProvenanceKind::File, ncc) do
+          @grants.check_root(path, @grants.write_roots)
+        end
       end
 
       # §4.4's `delete`-grant boundary. Unlike `write`, a delete
@@ -71,7 +100,9 @@ module Adjutant
       # otherwise), so `check_root`'s exists-only assumption is a
       # non-issue here.
       def authorize_delete(path : String, ncc : NativeCallContext) : Nil
-        authorize(:delete, "delete", path, @grants.delete_roots, RiskTag::DeletesFiles, ncc)
+        authorize(:delete, "delete", path, RiskTag::DeletesFiles, ProvenanceKind::File, ncc) do
+          @grants.check_root(path, @grants.delete_roots)
+        end
       end
 
       # §4.6ish's `net`-grant boundary — allowlist membership only
@@ -82,9 +113,9 @@ module Adjutant
       # still has its own further check to make after DNS resolution,
       # same as `authorize_write`'s parent-directory case above.
       def authorize_net(host : String, ncc : NativeCallContext) : Nil
-        decision = @grants.check_host(host)
-        deny!("net", decision) unless decision.allowed?
-        ncc.declare_sensitivity(RiskTag::NetworkEgress, ProvenanceKind::Host, host)
+        authorize(:net, "net", host, RiskTag::NetworkEgress, ProvenanceKind::Host, ncc) do
+          @grants.check_host(host)
+        end
       end
 
       # §4.something's `exec`-grant boundary — binary allowlist only
@@ -101,22 +132,50 @@ module Adjutant
       # path. Worth flagging as a judgment call rather than something
       # the spec states outright.
       def authorize_exec(binary : String, ncc : NativeCallContext) : Nil
-        decision = @grants.check_binary(binary)
-        deny!("exec", decision) unless decision.allowed?
-        ncc.declare_sensitivity(RiskTag::ExecutesCode, ProvenanceKind::File, binary)
+        authorize(:exec, "exec", binary, RiskTag::ExecutesCode, ProvenanceKind::File, ncc) do
+          @grants.check_binary(binary)
+        end
       end
 
-      private def authorize(kind : Symbol, verb : String, path : String, roots : Array(String),
-                            tag : RiskTag, ncc : NativeCallContext) : Nil
-        decision = @grants.check_root(path, roots)
-        deny!(verb, decision) unless decision.allowed?
-        ncc.declare_sensitivity(tag, ProvenanceKind::File, path)
+      # The shared shape every authorize_* method above follows:
+      # wall-clock check, then the caller-supplied Grants decision
+      # (each grant category resolves its own Decision differently —
+      # `check_root` vs `check_host` vs `check_binary` — hence the
+      # block rather than a fixed argument), then RiskFlowPolicy, with
+      # exactly one AuditRecord appended per outcome. `grant` is the
+      # AuditRecord's own grant-category symbol; `verb`/`subject` are
+      # both purely descriptive (verb name, the path/host/binary
+      # string) and never affect the decision itself.
+      private def authorize(grant : Symbol, verb : String, subject : String, tag : RiskTag,
+                            provenance_kind : ProvenanceKind, ncc : NativeCallContext, & : -> Grants::Decision) : Nil
+        @budget.check_wall_clock!
+
+        decision = yield
+        unless decision.allowed?
+          @audit_log.append(AuditRecord.new(verb, subject, grant, :denied, FATAL_CLASS_NAME))
+          deny!(verb, decision)
+        end
+
+        begin
+          ncc.declare_sensitivity(tag, provenance_kind, subject)
+        rescue ex : RuntimeError
+          @audit_log.append(AuditRecord.new(verb, subject, grant, :rejected, REJECTED_CLASS_NAME))
+          raise ex
+        end
+
+        @audit_log.append(AuditRecord.new(verb, subject, grant, :allowed))
       end
 
-      # `kind` on FatalSignal is always `:denied` here — a static
-      # Grants refusal, never `:exhausted` (that's step 4d's budgets)
-      # or `:aborted` (script-initiated, LEGATE.md §9.2 — nothing this
-      # broker does).
+      # The script-visible class names a :denied/:rejected AuditRecord
+      # reports under. `FATAL_CLASS_NAME` is fixed at "Legate::Denied"
+      # here — the only fatal kind this broker itself ever raises is
+      # `:denied` (never `:exhausted`, that's Budget's own concern via
+      # a DIFFERENT raise path that doesn't go through this method at
+      # all; never `:aborted`, which is script-initiated per §9.2 and
+      # nothing this broker does).
+      FATAL_CLASS_NAME    = "Legate::Denied"
+      REJECTED_CLASS_NAME = "RiskFlowRejectedError"
+
       private def deny!(verb : String, decision : Grants::Decision) : NoReturn
         raise FatalSignal.new(:denied, "Legate.#{verb} denied: #{decision.reason}")
       end

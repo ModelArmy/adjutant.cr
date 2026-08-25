@@ -24,6 +24,8 @@ require "./legate/exit"
 require "./legate/stream"
 require "./legate/grants"
 require "./legate/authorization"
+require "./legate/budget"
+require "./legate/audit_log"
 require "./legate/broker"
 
 module Adjutant
