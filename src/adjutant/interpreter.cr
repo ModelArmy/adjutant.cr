@@ -22,6 +22,7 @@ require "./legate/match"
 require "./legate/response"
 require "./legate/exit"
 require "./legate/stream"
+require "./legate/grants"
 
 module Adjutant
   # Top-level entry point for the Adjutant interpreter.
