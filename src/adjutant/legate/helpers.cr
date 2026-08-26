@@ -1,3 +1,4 @@
+require "json"
 require "../ruby_class"
 require "../diagnostic"
 
@@ -56,6 +57,42 @@ module Adjutant
       def self.fetch(parent : RubyClass, interp : Interpreter, name : String) : RubyClass
         val = parent.constants[interp.symbols.intern(name).value]?
         val.try(&.as_rclass?) || raise InternalError.new("Legate::#{name} not yet bootstrapped when Legate::Helpers.fetch(#{name.inspect}) was called — check bootstrap_legate's ordering")
+      end
+
+      # Crystal's `JSON::Any` -> Adjutant `Value`, recursively.
+      # EXTRACTED here 2026-08-26 (was `Legate::Response`'s own private
+      # `json_to_value`, response.cr) so `Legate::Records`'s `:jsonl`
+      # format could reuse it without a second, silently-drifting copy
+      # of the same recursive-conversion logic — `Response#json` now
+      # calls this shared version too, unchanged in behavior. `label`
+      # is applied to EVERY constructed piece, leaves and containers
+      # alike — decoding JSON doesn't create new information, only
+      # reshapes existing (possibly tainted) text, so every part of
+      # the result carries the SAME taint the source string already
+      # had. `JSON::Any#raw` is the underlying Crystal value; each
+      # variant maps onto the ordinary Value constructor for that
+      # shape — Hash keys are always JSON strings, matching how
+      # Adjutant's own Hash already uses String-keyed Value pairs
+      # elsewhere. Hash KEYS stay unlabeled — metadata identifying
+      # WHICH piece of data this is, not itself extracted data, same
+      # "data vs metadata" rule every other Legate value type's own
+      # comment documents.
+      def self.json_to_value(interp : Interpreter, json : ::JSON::Any, label : RiskFlowLabel?) : Value
+        case raw = json.raw
+        when Nil     then Value.nil_value
+        when Bool    then Value.bool(raw)
+        when Int64   then Value.int(raw, label)
+        when Float64 then Value.float(raw, label)
+        when String  then Value.string(raw, label)
+        when Array(::JSON::Any)
+          Value.new(LabeledArray.new(raw.map { |item| json_to_value(interp, item, label) }, label), label)
+        when Hash(String, ::JSON::Any)
+          entries = {} of Value => Value
+          raw.each { |key, value| entries[Value.string(key)] = json_to_value(interp, value, label) }
+          Value.new(LabeledHash.new(entries, label), label)
+        else
+          Value.nil_value
+        end
       end
     end
   end

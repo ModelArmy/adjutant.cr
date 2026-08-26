@@ -46,7 +46,7 @@ module Adjutant
           body = args.first.as_robject.ivars[body_sym]
           str = body.as_string? || ncc.raise_error_class("Legate::Response#json — body is not a String", malformed)
           begin
-            json_to_value(interp, ::JSON.parse(str), body.label)
+            Helpers.json_to_value(interp, ::JSON.parse(str), body.label)
           rescue ex : ::JSON::ParseException
             ncc.raise_error_class("Legate::Response#json — invalid JSON: #{ex.message}", malformed)
           end
@@ -94,44 +94,9 @@ module Adjutant
         Value.robject(obj, RiskFlowLabel.join(body.label, label))
       end
 
-      # Crystal's `JSON::Any` -> Adjutant `Value`, recursively —
-      # `label` (the source `body`'s own label) is applied to EVERY
-      # constructed piece, leaves and containers alike: decoding JSON
-      # doesn't create new information, only reshapes existing tainted
-      # text, so every part of the result carries the SAME taint the
-      # whole body string already had (unlike `Legate::Path`'s `/`,
-      # there's no second operand here to join against). `JSON::Any#raw`
-      # is the underlying Crystal value; each variant maps onto the
-      # ordinary Value constructor for that shape — Hash keys are
-      # always JSON strings, matching how Adjutant's own Hash already
-      # uses String-keyed Value pairs elsewhere.
-      private def self.json_to_value(interp : Interpreter, json : ::JSON::Any, label : RiskFlowLabel?) : Value
-        case raw = json.raw
-        when Nil     then Value.nil_value
-        when Bool    then Value.bool(raw)
-        when Int64   then Value.int(raw, label)
-        when Float64 then Value.float(raw, label)
-        when String  then Value.string(raw, label)
-        when Array(::JSON::Any)
-          Value.new(LabeledArray.new(raw.map { |item| json_to_value(interp, item, label) }, label), label)
-        when Hash(String, ::JSON::Any)
-          entries = {} of Value => Value
-          # Key stays unlabeled — no longer structurally required
-          # (`Value#==`/`#hash`, value.cr, now ignore `@label` for
-          # exactly this reason), but still the right convention: a
-          # Hash key is metadata identifying WHICH piece of data this
-          # is, not itself extracted data, same "data vs metadata"
-          # rule this module's own top comment documents for
-          # everything else. An earlier version of this exact line DID
-          # label the key, back when that was a real correctness bug,
-          # not just a style choice — see `Value`'s own comment for
-          # that history.
-          raw.each { |key, value| entries[Value.string(key)] = json_to_value(interp, value, label) }
-          Value.new(LabeledHash.new(entries, label), label)
-        else
-          Value.nil_value
-        end
-      end
+      # Crystal's `JSON::Any` -> Adjutant `Value` conversion MOVED to
+      # `Legate::Helpers.json_to_value` 2026-08-26 — shared with
+      # `Legate::Records`'s `:jsonl` format now, unchanged behavior.
     end
   end
 end

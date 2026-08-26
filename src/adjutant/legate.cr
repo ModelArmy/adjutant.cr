@@ -18,6 +18,7 @@ require "./legate/verbs/read"
 require "./legate/verbs/list"
 require "./legate/verbs/bytes"
 require "./legate/verbs/lines"
+require "./legate/verbs/records"
 
 module Adjutant::Legate
 end

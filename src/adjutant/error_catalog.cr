@@ -360,6 +360,15 @@ module Adjutant
         help: "Pass a Regexp: `str =~ /pattern/`."
       ),
 
+      "R034" => Entry.new(
+        code: "R034",
+        summary: "Legate.records given an unknown format: {format}",
+        why: "`Legate.records(path, format:)` only knows how to parse " \
+             "`:jsonl` and `:csv` — there's no general-purpose record " \
+             "format beyond those two.",
+        help: "Pass `format: :jsonl` or `format: :csv`."
+      ),
+
       # --- L: limits reached ----------------------------------------
       #
       # The script is valid; it is just larger than something Adjutant
