@@ -50,9 +50,27 @@ module Adjutant
             # "an empty match is an empty Array, not an error"), not a
             # denial — same §2.3-flavoured reasoning as `stat`'s own
             # `allow_missing`.
-            broker.authorize_read(fixed_prefix(pattern), ncc, allow_missing: true)
+            #
+            # `Dir.glob` mandates `/`-separated patterns on every
+            # platform ("Path separator in patterns needs to be
+            # always /" — Crystal's own `Dir.glob` docs); a caller
+            # building a pattern with `File.join` gets `\`-joined
+            # text on Windows, which `Dir.glob` then reads as escape
+            # characters rather than separators (silently matching
+            # nothing) and which `fixed_prefix` (below) can't split
+            # correctly either. Normalized ONCE here via `Path#to_posix`
+            # — a no-op on POSIX, and on Windows turns `\` into `/` for
+            # BOTH the fixed-prefix authorization check and the actual
+            # glob call — matching authorization.cr's own established
+            # "use Path, not hand-rolled separator logic" convention
+            # for Windows portability. Matched file paths coming back
+            # out of `Dir.glob` are unaffected: those use system-
+            # specific separators regardless of the pattern's own, per
+            # the same docs.
+            posix_pattern = ::Path.new(pattern).to_posix.to_s
+            broker.authorize_read(fixed_prefix(posix_pattern), ncc, allow_missing: true)
 
-            matches = Dir.glob(pattern).sort
+            matches = Dir.glob(posix_pattern).sort
 
             # Defense in depth, NOT the primary enforcement — the
             # fixed-prefix check above is what a script should expect
@@ -92,9 +110,11 @@ module Adjutant
         # `"src/**/*.rb"` → `"src"`, `"/work/input/*.txt"` →
         # `"/work/input"`, a pattern that's ENTIRELY wildcard (e.g.
         # `"*.txt"`) falls back to `"."`, matching `Dir.glob`'s own
-        # implicit current-directory base. Fed only to the single
-        # `broker.authorize_read` call above — `Dir.glob` itself still
-        # receives the ORIGINAL, unmodified `pattern`.
+        # implicit current-directory base. Expects an already-`/`-
+        # normalized pattern (see `posix_pattern` in `bootstrap` above,
+        # where BOTH this method and `Dir.glob` itself now receive the
+        # same normalized string) — this method does no separator
+        # handling of its own.
         private def self.fixed_prefix(pattern : String) : String
           kept = [] of String
           pattern.split('/').each do |part|
