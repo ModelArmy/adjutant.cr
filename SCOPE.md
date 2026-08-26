@@ -221,7 +221,26 @@ wins.
   in `irb` unambiguously executes `seen << n` unless `n > 4`, never
   attempts to parse an if-expression as break's own value.
 
-- **Do `class`/`module` bodies want the same implicit `rescue`/`else`/
+- **`&:symbol` proc-shorthand (`arr.map(&:length)`) isn't supported —
+  `&` can't start an expression there at all (P002).** Found
+  2026-08-26 writing a `Legate.lines` spec, reaching for
+  `.map(&:length)` out of habit and hitting a hard parse error rather
+  than a wrong answer. Common enough to matter: it's arguably THE most
+  reached-for block shorthand in idiomatic Ruby, ahead even of a
+  one-line `{ |x| x.foo }`, for exactly the "call one method on every
+  element" shape that turns up constantly in `Legate::Stream` chains
+  (`.select { }.map(&:foo)`-style code) — an LLM writing natural Ruby
+  will reach for this by default, same "everyday syntax block" bar
+  the leading-dot-chaining entry above was promoted on. Likely lands
+  as sugar at the parser/AST level: `&:name` desugars to the same
+  shape as a literal `{ |x| x.name }` block/`Proc` (real Ruby's
+  `Symbol#to_proc`), so — depending how block-arg-passing is
+  structured today — this may be closer to "recognize `&` followed by
+  a Symbol literal and synthesize the equivalent block AST node" than
+  new runtime machinery. Not yet traced to the exact parser callsite
+  (wherever `&blockarg` is currently parsed at a call site) or
+  confirmed whether `Proc`/`Symbol#to_proc` already exist as a target
+  to desugar onto.
   `ensure` treatment `def` bodies just got?** Open question, not a
   confirmed gap — flagged 2026-08-10 when `def`'s own version shipped
   (see `DEVELOPMENT.md`'s "Method-body (implicit) rescue" section).
