@@ -454,10 +454,12 @@ module Adjutant
       Legate::Match.bootstrap(self, legate)
       Legate::Response.bootstrap(self, legate)
       Legate::Exit.bootstrap(self, legate)
+      Legate::Chunk.bootstrap(self, legate)
       Legate::Stream.bootstrap(self, legate)
       Legate::Verbs::Stat.bootstrap(self, legate, @broker)
       Legate::Verbs::Read.bootstrap(self, legate, @broker)
       Legate::Verbs::List.bootstrap(self, legate, @broker)
+      Legate::Verbs::Bytes.bootstrap(self, legate, @broker)
       define_global_class(legate)
     end
 

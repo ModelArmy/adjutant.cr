@@ -116,7 +116,7 @@ module Adjutant
         # method needs revisiting, not just a signature tweak.
         private def self.read_content(path : String, scrub : Bool, malformed : RubyClass, ncc : NativeCallContext) : String
           raw_bytes = File.open(path, "rb") do |file|
-            slice = Bytes.new(file.size)
+            slice = ::Bytes.new(file.size)
             file.read_fully(slice)
             slice
           end

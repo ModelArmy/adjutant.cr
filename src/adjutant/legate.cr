@@ -6,6 +6,7 @@ require "./legate/entry"
 require "./legate/match"
 require "./legate/response"
 require "./legate/exit"
+require "./legate/chunk"
 require "./legate/stream"
 require "./legate/grants"
 require "./legate/authorization"
@@ -15,6 +16,7 @@ require "./legate/broker"
 require "./legate/verbs/stat"
 require "./legate/verbs/read"
 require "./legate/verbs/list"
+require "./legate/verbs/bytes"
 
 module Adjutant::Legate
 end
