@@ -144,5 +144,21 @@ module Adjutant
         records.first.decision.should eq :allowed
       end
     end
+
+    it "raises TypeError (R036) for a wrong-typed limit: kwarg, not a raw Crystal crash" do
+      with_tmpdir do |dir|
+        File.write(File.join(dir, "a.txt"), "hi")
+        interp, _ = make_interp(grants: Legate::Grants.new(read_roots: [dir]))
+        eval = interp.eval(<<-RUBY)
+        begin
+          Legate.list(#{(File.join(dir, "*.txt")).inspect}, limit: "lots")
+          "no error"
+        rescue TypeError
+          "caught"
+        end
+        RUBY
+        eval.as_string.should eq "caught"
+      end
+    end
   end
 end

@@ -51,6 +51,12 @@ module Adjutant
             RiskProfile.new(tags: Set{RiskTag::ReadsFiles}), # complements declare_sensitivity — see stat.cr's own comment
             KWARG_NAMES,
           ) do |args, _blk, ncc|
+            # `chunk` validated FIRST — SCOPE.md's "kwarg-validation
+            # ordering inconsistent across the read-verb slice" entry
+            # (added 2026-08-27) — same reasoning as `read.cr`'s
+            # identical retrofit.
+            chunk_size = chunk_size_of(ncc)
+
             path_val = args[1]? || Value.nil_value
             str_val = ncc.call_method(path_val, "to_s", [] of Value)
             raw = str_val.as_string
@@ -69,7 +75,6 @@ module Adjutant
               ncc.raise_error_class("#{raw} not found", not_found)
             end
 
-            chunk_size = chunk_size_of(ncc)
             # Small, accepted TOCTOU-class race, same family §8.1
             # already normalizes for this codebase: the file could
             # vanish between the `File.info?` check above and this
@@ -87,8 +92,8 @@ module Adjutant
         end
 
         private def self.chunk_size_of(ncc : NativeCallContext) : Int32
-          given = ncc.kwargs.try(&.["chunk"]?)
-          n = given ? given.as_int.to_i32 : DEFAULT_CHUNK_SIZE
+          given = Helpers.checked_int_kwarg(ncc, "Legate.bytes", "chunk")
+          n = given ? given.to_i32 : DEFAULT_CHUNK_SIZE
           n > 0 ? n : DEFAULT_CHUNK_SIZE
         end
 

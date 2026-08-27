@@ -60,12 +60,20 @@ module Adjutant
             RiskProfile.new(tags: Set{RiskTag::ReadsFiles}),
             KWARG_NAMES,
           ) do |args, _blk, ncc|
-            # Pattern validated FIRST, before any grant/authorization
-            # work — same "a bad call-site argument is a programmer
-            # error, unrelated to the path or the grant" reasoning
-            # `records.cr`'s own `format:` validation ordering already
-            # established (that file's own comment).
+            # Pattern/paths/context/limit ALL validated FIRST, before
+            # any grant/authorization work — same "a bad call-site
+            # argument is a programmer error, unrelated to the path or
+            # the grant" reasoning `records.cr`'s own `format:`
+            # validation ordering established. `context`/`limit`
+            # weren't originally included in this — moved up here as
+            # part of SCOPE.md's "kwarg-validation ordering
+            # inconsistent across the read-verb slice" entry (added
+            # 2026-08-27): the principle was already right for
+            # `pattern`/`paths` in this same file, just not yet
+            # extended to this file's OWN two kwargs.
             pattern = pattern_arg(args[1]?, ncc)
+            context = context_of(ncc)
+            limit = limit_of(ncc)
 
             paths_val = args[2]?
             if paths_val.nil?
@@ -95,8 +103,6 @@ module Adjutant
             # `list.cr`'s own identical line.
             in_bounds = matched_files.select { |candidate| broker.grants.check_root(candidate, broker.grants.read_roots).allowed? }
 
-            context = context_of(ncc)
-            limit = limit_of(ncc)
             matches = [] of Value
 
             in_bounds.each do |file|
@@ -193,13 +199,13 @@ module Adjutant
         end
 
         private def self.context_of(ncc : NativeCallContext) : Int32
-          given = ncc.kwargs.try(&.["context"]?)
-          given ? given.as_int.to_i32 : DEFAULT_CONTEXT
+          given = Helpers.checked_int_kwarg(ncc, "Legate.grep", "context")
+          given ? given.to_i32 : DEFAULT_CONTEXT
         end
 
         private def self.limit_of(ncc : NativeCallContext) : Int32
-          given = ncc.kwargs.try(&.["limit"]?)
-          given ? given.as_int.to_i32 : DEFAULT_LIMIT
+          given = Helpers.checked_int_kwarg(ncc, "Legate.grep", "limit")
+          given ? given.to_i32 : DEFAULT_LIMIT
         end
 
         private def self.looks_binary?(path : String) : Bool

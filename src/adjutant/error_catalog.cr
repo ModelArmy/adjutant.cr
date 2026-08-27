@@ -379,6 +379,14 @@ module Adjutant
               "`Legate.grep(pattern, \"src/**/*.rb\")`."
       ),
 
+      "R036" => Entry.new(
+        code: "R036",
+        summary: "`{method}` given a non-{expected} value for {kwarg}: ({class_name})",
+        why: "`{kwarg}:` on `{method}` only accepts a {expected} — " \
+             "passing anything else can't be interpreted as one.",
+        help: "Check the value you're passing for `{kwarg}:`."
+      ),
+
       # --- L: limits reached ----------------------------------------
       #
       # The script is valid; it is just larger than something Adjutant

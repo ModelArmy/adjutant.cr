@@ -1,6 +1,8 @@
 require "json"
 require "../ruby_class"
 require "../diagnostic"
+require "../builtins/helpers"
+require "../native_call_context"
 
 module Adjutant
   module Legate
@@ -130,6 +132,57 @@ module Adjutant
         end
         prefix = kept.join('/')
         prefix.empty? ? "." : prefix
+      end
+
+      # `Value#as_int`/`#as_bool`/`#as_sym` are all unchecked Crystal
+      # casts (`@raw.as(Int64)`, value.cr) — no Adjutant-level type
+      # check runs first ANYWHERE these were called before this
+      # session's audit (every verb's own `limit_of`/`chunk_size_of`/
+      # `max_line_of`/`scrub_flag`/etc). A script passing the wrong
+      # type for a kwarg — `Legate.read(path, limit: "big")` — hit a
+      # raw Crystal `TypeCastError` instead of a clean, rescuable
+      # language-level error: the same "ugly internal crash instead of
+      # a clean error" failure shape SCOPE.md's own `dup`/`clone`
+      # entry was already judged Must-Fix for, just not caught here
+      # until this audit (see that same SCOPE.md entry, added
+      # 2026-08-27, for the fuller writeup).
+      #
+      # These three are the SHARED fix — every verb's own kwarg-reader
+      # methods should build on top of these instead of calling
+      # `given.as_int`/`as_bool`/`as_sym` directly. All three share the
+      # same shape: `nil` if the kwarg was OMITTED (the caller decides
+      # its own default, same as before — these don't know or care
+      # what a sensible default is for any given kwarg), the properly-
+      # cast value if it's the RIGHT type, and a clean R036
+      # `TypeError` — not a crash — if it's neither.
+      def self.checked_int_kwarg(ncc : NativeCallContext, method : String, kwarg : String) : Int64?
+        given = ncc.kwargs.try(&.[kwarg]?)
+        return nil unless given
+        return given.as_int if given.int?
+        raise_kwarg_type_error(ncc, method, kwarg, "Integer", given)
+      end
+
+      def self.checked_bool_kwarg(ncc : NativeCallContext, method : String, kwarg : String) : Bool?
+        given = ncc.kwargs.try(&.[kwarg]?)
+        return nil unless given
+        return given.as_bool if given.bool?
+        raise_kwarg_type_error(ncc, method, kwarg, "true or false", given)
+      end
+
+      def self.checked_symbol_kwarg(ncc : NativeCallContext, method : String, kwarg : String) : Sym?
+        given = ncc.kwargs.try(&.[kwarg]?)
+        return nil unless given
+        return given.as_sym if given.symbol?
+        raise_kwarg_type_error(ncc, method, kwarg, "Symbol", given)
+      end
+
+      private def self.raise_kwarg_type_error(ncc : NativeCallContext, method : String, kwarg : String,
+                                              expected : String, given : Value) : NoReturn
+        ncc.raise_error(
+          "R036",
+          {"method" => method, "kwarg" => kwarg, "expected" => expected, "class_name" => Builtins.builtin_type_name(given)},
+          "TypeError",
+        )
       end
     end
   end

@@ -192,5 +192,74 @@ module Adjutant
         end
       end
     end
+
+    it "logs exactly one :allowed audit record per invocation" do
+      with_tmpdir do |dir|
+        file = File.join(dir, "f.txt")
+        File.write(file, "hi")
+        interp, _ = make_interp(grants: Legate::Grants.new(read_roots: [dir]))
+        interp.eval(%(Legate.read(#{(file).inspect})))
+        records = interp.broker.audit_log.records.select { |r| r.verb == "read" }
+        records.size.should eq 1
+        records.first.decision.should eq :allowed
+      end
+    end
+
+    describe "scrub:" do
+      it "replaces invalid UTF-8 with U+FFFD by default (scrub: true)" do
+        with_tmpdir do |dir|
+          file = File.join(dir, "f.txt")
+          raw = ::Bytes[0x68, 0x69, 0xFF] # "hi" + invalid byte
+          File.write(file, raw)
+          interp, _ = make_interp(grants: Legate::Grants.new(read_roots: [dir]))
+          eval = interp.eval(%(Legate.read(#{(file).inspect})))
+          eval.as_string.should eq "hi\uFFFD"
+        end
+      end
+
+      it "raises Legate::Malformed on invalid UTF-8 when scrub: false" do
+        with_tmpdir do |dir|
+          file = File.join(dir, "f.txt")
+          raw = ::Bytes[0x68, 0x69, 0xFF]
+          File.write(file, raw)
+          interp, _ = make_interp(grants: Legate::Grants.new(read_roots: [dir]))
+          eval = interp.eval(<<-RUBY)
+          begin
+            Legate.read(#{(file).inspect}, scrub: false)
+            "no error"
+          rescue Legate::Malformed
+            "caught"
+          end
+          RUBY
+          eval.as_string.should eq "caught"
+        end
+      end
+
+      it "leaves genuinely valid UTF-8 completely unchanged" do
+        with_tmpdir do |dir|
+          file = File.join(dir, "f.txt")
+          File.write(file, "héllo")
+          interp, _ = make_interp(grants: Legate::Grants.new(read_roots: [dir]))
+          interp.eval(%(Legate.read(#{(file).inspect}))).as_string.should eq "héllo"
+        end
+      end
+    end
+
+    it "raises TypeError (R036) for a wrong-typed limit: kwarg, not a raw Crystal crash" do
+      with_tmpdir do |dir|
+        file = File.join(dir, "f.txt")
+        File.write(file, "hi")
+        interp, _ = make_interp(grants: Legate::Grants.new(read_roots: [dir]))
+        eval = interp.eval(<<-RUBY)
+        begin
+          Legate.read(#{(file).inspect}, limit: "big")
+          "no error"
+        rescue TypeError
+          "caught"
+        end
+        RUBY
+        eval.as_string.should eq "caught"
+      end
+    end
   end
 end

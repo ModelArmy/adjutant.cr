@@ -25,6 +25,18 @@ module Adjutant
             RiskProfile.new(tags: Set{RiskTag::ReadsFiles}), # complements declare_sensitivity — see stat.cr's own comment on why both are needed
             KWARG_NAMES,
           ) do |args, _blk, ncc|
+            # `limit`/`scrub` validated FIRST — SCOPE.md's "kwarg-
+            # validation ordering inconsistent across the read-verb
+            # slice" entry (added 2026-08-27, this session's own
+            # audit): a bad kwarg is a call-site programmer error,
+            # unrelated to the grant, so it shouldn't consume an
+            # `authorize_read` call/audit-log entry for something
+            # that's going to fail regardless of the path's validity —
+            # matching records.cr/grep.cr's own already-established
+            # ordering, retrofitted here.
+            limit = effective_limit(ncc, broker)
+            scrub = scrub_flag(ncc)
+
             path_val = args[1]? || Value.nil_value
             str_val = ncc.call_method(path_val, "to_s", [] of Value)
             raw = str_val.as_string
@@ -53,12 +65,11 @@ module Adjutant
             info = File.info?(raw, follow_symlinks: true)
             next missing_result(ncc, not_found, raw) unless info
 
-            limit = effective_limit(ncc, broker)
             if info.size > limit
               ncc.raise_error_class(too_large_message(size: info.size, limit: limit), too_large)
             end
 
-            content = read_content(raw, scrub_flag(ncc), malformed, ncc)
+            content = read_content(raw, scrub, malformed, ncc)
             broker.budget.record_read(info.size)
             Value.string(content, label)
           end
@@ -76,9 +87,8 @@ module Adjutant
         # text describes it as.
         private def self.effective_limit(ncc : NativeCallContext, broker : Broker) : Int64
           policy_limit = broker.grants.limits.read_limit
-          given = ncc.kwargs.try(&.["limit"]?)
-          return policy_limit unless given
-          requested = given.as_int
+          requested = Helpers.checked_int_kwarg(ncc, "Legate.read", "limit")
+          return policy_limit unless requested
           requested < policy_limit ? requested : policy_limit
         end
 
@@ -91,7 +101,10 @@ module Adjutant
         # the same distinction `declare_sensitivity`'s doc comment
         # elsewhere in this codebase calls out for Hash lookups in
         # general: Crystal nil means "key absent," never confused
-        # with a present, Ruby-nil-valued Value.
+        # with a present, Ruby-nil-valued Value. No TYPE check needed
+        # here unlike `limit`/`scrub` below — `missing:`'s value is
+        # returned as-is, whatever it is, never cast to a specific
+        # Crystal type.
         private def self.missing_result(ncc : NativeCallContext, not_found : RubyClass, raw : String) : Value
           given = ncc.kwargs.try(&.["missing"]?)
           return given if given
@@ -99,37 +112,39 @@ module Adjutant
         end
 
         private def self.scrub_flag(ncc : NativeCallContext) : Bool
-          given = ncc.kwargs.try(&.["scrub"]?)
-          given ? given.as_bool : true
+          given = Helpers.checked_bool_kwarg(ncc, "Legate.read", "scrub")
+          given.nil? ? true : given
         end
 
-        # NOT independently verified against a live toolchain: this
-        # relies on Crystal's `String.new(Bytes)` substituting invalid
-        # UTF-8 byte sequences with U+FFFD rather than raising —
-        # matching §2.6's own default (`scrub: true`) behavior for
-        # free if true, but load-bearing for `scrub: false` too, which
-        # is detected here by comparing the SCRUBBED string's own
-        # bytes back against the original raw bytes: if they differ,
-        # something was substituted, so `scrub: false` raises
-        # `Legate::Malformed`. Chosen over calling a dedicated
-        # validation API directly because it only depends on
-        # `String.new(Bytes)`'s substitution behavior and basic
-        # `Bytes` equality, both more standard/stable than guessing at
-        # a scrub-specific method name this codebase has never called
-        # before — if `ops test` shows `String.new(Bytes)` actually
-        # raises on invalid input instead of substituting, this whole
-        # method needs revisiting, not just a signature tweak.
+        # CORRECTED 2026-08-27 (SCOPE.md's own entry on this, same
+        # date) — the previous version assumed `String.new(Bytes)`
+        # substitutes invalid UTF-8 with U+FFFD; `ops test` had
+        # ALREADY disproved that exact assumption for the identical
+        # code shape in `lines.cr`, two sessions ago, but this file
+        # was never revisited to match. It does neither validation nor
+        # substitution — just wraps the raw bytes unchecked — so
+        # `scrub: true` (the default) silently returned un-scrubbed
+        # invalid bytes, and `scrub: false`'s `Malformed` detection
+        # (comparing the "scrubbed" string's bytes back against the
+        # original) could never fire, since the two were always
+        # byte-identical. Same fix `lines.cr`'s own `LineIterator#
+        # build_line` already proved out: `String#valid_encoding?` +
+        # `String#scrub` (Crystal's own analogue of Ruby's `String#
+        # scrub`) are the real validating/scrubbing API.
         private def self.read_content(path : String, scrub : Bool, malformed : RubyClass, ncc : NativeCallContext) : String
           raw_bytes = File.open(path, "rb") do |file|
             slice = ::Bytes.new(file.size)
             file.read_fully(slice)
             slice
           end
-          scrubbed = String.new(raw_bytes)
-          if !scrub && scrubbed.to_slice != raw_bytes
+          raw_str = String.new(raw_bytes)
+          return raw_str if raw_str.valid_encoding?
+
+          if scrub
+            raw_str.scrub
+          else
             ncc.raise_error_class("#{path}: invalid UTF-8 byte sequence (scrub: false)", malformed)
           end
-          scrubbed
         end
 
         # §9.1's own worked example for TooLarge's required wording —

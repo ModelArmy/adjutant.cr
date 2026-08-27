@@ -137,8 +137,8 @@ module Adjutant
         end
 
         private def self.headers_flag_of(ncc : NativeCallContext) : Bool
-          given = ncc.kwargs.try(&.["headers"]?)
-          given ? given.as_bool : true
+          given = Helpers.checked_bool_kwarg(ncc, "Legate.records", "headers")
+          given.nil? ? true : given
         end
 
         # Wraps a `Lines::LineIterator` (one raw text line per pull,

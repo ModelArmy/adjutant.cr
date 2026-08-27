@@ -46,6 +46,13 @@ module Adjutant
             RiskProfile.new(tags: Set{RiskTag::ReadsFiles}), # complements declare_sensitivity — see stat.cr's own comment
             KWARG_NAMES,
           ) do |args, _blk, ncc|
+            # `max_line`/`scrub` validated FIRST — SCOPE.md's "kwarg-
+            # validation ordering inconsistent across the read-verb
+            # slice" entry (added 2026-08-27) — same reasoning as
+            # `read.cr`'s identical retrofit.
+            max_line = max_line_of(ncc)
+            scrub = scrub_flag(ncc)
+
             path_val = args[1]? || Value.nil_value
             str_val = ncc.call_method(path_val, "to_s", [] of Value)
             raw = str_val.as_string
@@ -63,8 +70,6 @@ module Adjutant
               ncc.raise_error_class("#{raw} not found", not_found)
             end
 
-            max_line = max_line_of(ncc)
-            scrub = scrub_flag(ncc)
             # Same small, accepted TOCTOU-class race as `bytes.cr`'s
             # own `File.open` call — the file could vanish between
             # the `File.info?` check above and here; left to propagate
@@ -78,14 +83,14 @@ module Adjutant
         end
 
         private def self.max_line_of(ncc : NativeCallContext) : Int32
-          given = ncc.kwargs.try(&.["max_line"]?)
-          n = given ? given.as_int.to_i32 : DEFAULT_MAX_LINE
+          given = Helpers.checked_int_kwarg(ncc, "Legate.lines", "max_line")
+          n = given ? given.to_i32 : DEFAULT_MAX_LINE
           n > 0 ? n : DEFAULT_MAX_LINE
         end
 
         private def self.scrub_flag(ncc : NativeCallContext) : Bool
-          given = ncc.kwargs.try(&.["scrub"]?)
-          given ? given.as_bool : true
+          given = Helpers.checked_bool_kwarg(ncc, "Legate.lines", "scrub")
+          given.nil? ? true : given
         end
 
         # Owns the open `File` handle for the lifetime of one stream

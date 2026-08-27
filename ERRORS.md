@@ -92,50 +92,51 @@ C002|`redo` used outside any loop           |—
 
 Something went wrong while the script was running.
 
-Code|Meaning                                                           |Placeholders            
-----|------------------------------------------------------------------|------------------------
-R001|Constant assigned a second time                                   |`name`                  
-R002|Class variable used outside a class or module body                |—                       
-R003|Uninitialized constant                                            |`name`                  
-R004|`::` used on something that isn't a class or module               |`value`                 
-R005|Unary operator not applicable to this type                        |`operator`, `type`      
-R006|Method definition with no class or module to attach to            |`definition`            
-R007|`yield` reached, but no block was passed                          |`method`                
-R008|Undefined method or variable                                      |`name`                  
-R009|Modules cannot be instantiated                                    |`module`                
-R010|`require` cannot find the named module                            |`path`                  
-R011|Missing a required keyword argument                               |`name`, `method`        
-R012|Passed a keyword argument the method doesn't declare              |`name`, `method`        
-R013|`<=>` returned a non-integer for `<`/`<=`/`>`/`>=`                |`left`, `right`, `value`
-R014|`super` called, but no ancestor defines the method                |`method`                
-R015|`Integer#to_s` given an out-of-range base                         |`base`                  
-R016|`Float#to_i` called on Infinity or NaN                            |`value`                 
-R017|`Hash#merge` given a non-Hash argument                            |`class_name`            
-R018|A pattern-taking String method called with no pattern             |`method`                
-R019|A pattern-taking String method given neither a String nor a Regexp|`method`, `class_name`  
-R020|`Range#step` called with a step of 0                              |—                       
-R021|Invalid regex pattern                                             |`reason`                
-R022|A Regexp match method called with no string argument              |`method`                
-R023|A private method called via an explicit receiver from outside self|`method`, `target`      
-R024|`Range#each`/`#to_a` called on a beginless range                  |`method`                
-R025|`Range#step` called on a beginless range                          |—                       
-R026|`Range#to_a` called on an endless range                           |—                       
-R027|`Range#max` called on an endless range                            |—                       
-R028|`Range#last` called on an endless range                           |—                       
-R029|`Range#min` called on a beginless range                           |—                       
-R030|`Range#first` called on a beginless range                         |—                       
-R031|`#first(n)`/`#last(n)` given a negative count (Range, Array)      |—                       
-R032|`lambda` called with no block                                     |—                       
-R033|`String#=~` given a missing or non-Regexp pattern                 |—                       
-R034|`Legate.records` given an unknown `format:`                       |`format`                
-R035|`Legate.grep` called with no `paths` argument                     |—                       
+Code|Meaning                                                           |Placeholders                               
+----|------------------------------------------------------------------|-------------------------------------------
+R001|Constant assigned a second time                                   |`name`                                     
+R002|Class variable used outside a class or module body                |—                                          
+R003|Uninitialized constant                                            |`name`                                     
+R004|`::` used on something that isn't a class or module               |`value`                                    
+R005|Unary operator not applicable to this type                        |`operator`, `type`                         
+R006|Method definition with no class or module to attach to            |`definition`                               
+R007|`yield` reached, but no block was passed                          |`method`                                   
+R008|Undefined method or variable                                      |`name`                                     
+R009|Modules cannot be instantiated                                    |`module`                                   
+R010|`require` cannot find the named module                            |`path`                                     
+R011|Missing a required keyword argument                               |`name`, `method`                           
+R012|Passed a keyword argument the method doesn't declare              |`name`, `method`                           
+R013|`<=>` returned a non-integer for `<`/`<=`/`>`/`>=`                |`left`, `right`, `value`                   
+R014|`super` called, but no ancestor defines the method                |`method`                                   
+R015|`Integer#to_s` given an out-of-range base                         |`base`                                     
+R016|`Float#to_i` called on Infinity or NaN                            |`value`                                    
+R017|`Hash#merge` given a non-Hash argument                            |`class_name`                               
+R018|A pattern-taking String method called with no pattern             |`method`                                   
+R019|A pattern-taking String method given neither a String nor a Regexp|`method`, `class_name`                     
+R020|`Range#step` called with a step of 0                              |—                                          
+R021|Invalid regex pattern                                             |`reason`                                   
+R022|A Regexp match method called with no string argument              |`method`                                   
+R023|A private method called via an explicit receiver from outside self|`method`, `target`                         
+R024|`Range#each`/`#to_a` called on a beginless range                  |`method`                                   
+R025|`Range#step` called on a beginless range                          |—                                          
+R026|`Range#to_a` called on an endless range                           |—                                          
+R027|`Range#max` called on an endless range                            |—                                          
+R028|`Range#last` called on an endless range                           |—                                          
+R029|`Range#min` called on a beginless range                           |—                                          
+R030|`Range#first` called on a beginless range                         |—                                          
+R031|`#first(n)`/`#last(n)` given a negative count (Range, Array)      |—                                          
+R032|`lambda` called with no block                                     |—                                          
+R033|`String#=~` given a missing or non-Regexp pattern                 |—                                          
+R034|`Legate.records` given an unknown `format:`                       |`format`                                   
+R035|`Legate.grep` called with no `paths` argument                     |—                                          
+R036|A Legate verb's kwarg given a value of the wrong type             |`method`, `kwarg`, `expected`, `class_name`
 
 Scripts can `rescue` these. R008 raises a `NameError`, matching Ruby;
 R011, R012, R015, and R018 raise `ArgumentError`, also matching Ruby;
 R014 and R023 raise a `NoMethodError`, also matching Ruby; R016 raises a
-`FloatDomainError`, also matching Ruby; R017, R019, R024, and R033 raise a
-`TypeError`, also matching Ruby; R020, R022, R025, and R031 raise an
-`ArgumentError`, also matching Ruby; R021 raises a `RegexpError`, also
+`FloatDomainError`, also matching Ruby; R017, R019, R024, R033, and R036
+raise a `TypeError`, also matching Ruby; R020, R022, R025, and R031 raise
+an `ArgumentError`, also matching Ruby; R021 raises a `RegexpError`, also
 matching Ruby; R026, R027, R028, R029, and R030 raise a `RangeError`, also
 matching Ruby; R032, R034, and R035 raise an `ArgumentError`, also
 matching Ruby; the rest raise `RuntimeError`.

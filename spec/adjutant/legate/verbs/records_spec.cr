@@ -184,5 +184,34 @@ module Adjutant
         eval.as_string.should eq "eof"
       end
     end
+
+    it "logs exactly one :allowed audit record per invocation" do
+      with_tmpdir do |dir|
+        file = File.join(dir, "f.jsonl")
+        File.write(file, %({"a":1}\n))
+        interp, _ = make_interp(grants: Legate::Grants.new(read_roots: [dir]))
+        interp.eval(%(Legate.records(#{(file).inspect}, format: :jsonl)))
+        records = interp.broker.audit_log.records.select { |r| r.verb == "read" }
+        records.size.should eq 1
+        records.first.decision.should eq :allowed
+      end
+    end
+
+    it "raises TypeError (R036) for a wrong-typed headers: kwarg, not a raw Crystal crash" do
+      with_tmpdir do |dir|
+        file = File.join(dir, "f.csv")
+        File.write(file, "a,b\n1,2\n")
+        interp, _ = make_interp(grants: Legate::Grants.new(read_roots: [dir]))
+        eval = interp.eval(<<-RUBY)
+        begin
+          Legate.records(#{(file).inspect}, format: :csv, headers: "yes")
+          "no error"
+        rescue TypeError
+          "caught"
+        end
+        RUBY
+        eval.as_string.should eq "caught"
+      end
+    end
   end
 end

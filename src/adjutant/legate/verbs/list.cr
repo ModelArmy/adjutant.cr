@@ -28,6 +28,14 @@ module Adjutant
             RiskProfile.new(tags: Set{RiskTag::ReadsFiles}),
             KWARG_NAMES,
           ) do |args, _blk, ncc|
+            # `limit` validated FIRST — SCOPE.md's "kwarg-validation
+            # ordering inconsistent across the read-verb slice" entry
+            # (added 2026-08-27) — same reasoning as `read.cr`'s
+            # identical retrofit; only the VALIDATION moved earlier,
+            # the TooMany check itself still happens where it always
+            # did, once `in_bounds` exists.
+            limit = limit_of(ncc)
+
             pattern_val = args[1]? || Value.nil_value
             str_val = ncc.call_method(pattern_val, "to_s", [] of Value)
             pattern = str_val.as_string
@@ -87,7 +95,6 @@ module Adjutant
             # rather than raising mid-list.
             in_bounds = matches.select { |match| broker.grants.check_root(match, broker.grants.read_roots).allowed? }
 
-            limit = limit_of(ncc)
             if in_bounds.size > limit
               ncc.raise_error_class(
                 "#{pattern} matched #{in_bounds.size} entries, over the #{limit} limit — narrow the pattern or raise limit:.",
@@ -101,8 +108,8 @@ module Adjutant
         end
 
         private def self.limit_of(ncc : NativeCallContext) : Int32
-          given = ncc.kwargs.try(&.["limit"]?)
-          given ? given.as_int.to_i32 : DEFAULT_LIMIT
+          given = Helpers.checked_int_kwarg(ncc, "Legate.list", "limit")
+          given ? given.to_i32 : DEFAULT_LIMIT
         end
 
         # `File.info?` (not `File.info`) — a match `Dir.glob` returned
