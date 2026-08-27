@@ -76,7 +76,17 @@ module Adjutant
         # see list.cr's own comment — so the sensitivity pattern has
         # to match the directory, not the matched file, for this
         # verb's real call shape.
-        policy = policy_for(dir, RiskFlowAction::Allow)
+        #
+        # `::Path.new(dir).to_posix.to_s`, not bare `dir` — list.cr
+        # normalizes its pattern to `/`-separators (`Path#to_posix`)
+        # BEFORE computing `fixed_prefix` (its own Windows-portability
+        # fix, list.cr's own comment), so the string it actually checks
+        # sensitivity against is the POSIX form. On Linux/macOS `dir`
+        # already uses `/`, so this was a no-op there — a real
+        # Windows-only mismatch this exact-match pattern needs the
+        # same normalization to catch, caught by a Windows CI runner,
+        # not by inspection.
+        policy = policy_for(::Path.new(dir).to_posix.to_s, RiskFlowAction::Allow)
         interp, _ = make_interp(grants: Legate::Grants.new(read_roots: [dir]), risk_flow_policy: policy)
 
         result = interp.eval(%(Legate.list(#{File.join(dir, "*.txt").inspect})))
