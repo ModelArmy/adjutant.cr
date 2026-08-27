@@ -86,5 +86,22 @@ module Adjutant
         eval(%(x = "world"\n"hello \#{x}")).as_string.should eq "hello world"
       end
     end
+
+    describe "__FILE__ and __LINE__" do
+      it "__FILE__ evaluates to the filename eval was given" do
+        interp, _ = make_interp
+        interp.eval("__FILE__", "reading.rb").as_string.should eq "reading.rb"
+      end
+
+      it "__LINE__ evaluates to its own line, not line 1, when not on the first line" do
+        interp, _ = make_interp
+        interp.eval("x = 1\ny = 2\n__LINE__").as_int.should eq 3_i64
+      end
+
+      it "both can be combined, e.g. for a diagnostic message a script builds itself" do
+        interp, _ = make_interp
+        interp.eval(%("\#{__FILE__}:\#{__LINE__}"), "diag.rb").as_string.should eq "diag.rb:1"
+      end
+    end
   end
 end

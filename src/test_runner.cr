@@ -88,7 +88,22 @@ module Testing
       error = nil
       cause = nil
       begin
-        File.open(path) { |io| interp.eval(io, path) }
+        # `__FILE__` (parser.cr's `KwFile` case) resolves to exactly
+        # this SECOND `path` argument, verbatim — normalized to `/`
+        # via `Path#to_posix` here (a no-op on Linux/macOS) because
+        # `Dir.glob` above returns `\`-joined paths on Windows,
+        # matching `list.cr`'s own established Windows-portability
+        # fix earlier this session. Without this, any script using
+        # `__FILE__` and splitting on `/` (a script has no OTHER way
+        # to derive its own directory — there's no ambient File IO
+        # module, SCOPE.md's own noted gap) would silently get the
+        # wrong answer specifically on a Windows runner. `File.open`
+        # just below still uses the ORIGINAL, native-separator `path`
+        # — real filesystem access needs the OS's own separator
+        # convention, only the SCRIPT-VISIBLE `__FILE__` value needs
+        # normalizing.
+        eval_filename = ::Path.new(path).to_posix.to_s
+        File.open(path) { |io| interp.eval(io, eval_filename) }
       rescue e : Adjutant::ParseError
         error = describe_error(interp, e, "parse error", path)
         cause = e
