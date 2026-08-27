@@ -94,6 +94,43 @@ module Adjutant
           Value.nil_value
         end
       end
+
+      # Glob metacharacters `Dir.glob` recognises — used ONLY to find a
+      # pattern's fixed (non-wildcard) leading directory for
+      # authorization (`fixed_prefix` below), never to reimplement
+      # matching itself.
+      WILDCARD_CHARS = {'*', '?', '[', '{'}
+
+      # The longest leading run of `pattern`'s `/`-separated components
+      # containing no glob metacharacter — e.g. `"src/**/*.rb"` →
+      # `"src"`, `"/work/input/*.txt"` → `"/work/input"`, a pattern
+      # that's ENTIRELY wildcard (e.g. `"*.txt"`) falls back to `"."`,
+      # matching `Dir.glob`'s own implicit current-directory base.
+      # Expects an already-`/`-normalized pattern (a caller should
+      # `Path#to_posix` it first — see list.cr's own bootstrap for why:
+      # `Dir.glob` mandates `/`-separated patterns on every platform,
+      # but `File.join` produces `\`-joined text on Windows) — this
+      # method does no separator handling of its own.
+      #
+      # EXTRACTED here 2026-08-27 (was `Verbs::List`'s own private
+      # method) — `Verbs::Grep` needs the exact same "which directory's
+      # sensitivity gates this glob pattern" computation `list.cr`
+      # already established, and list.cr's own comment on its
+      # (previously) duplicated `type_of` helper set the precedent for
+      # when to promote a verb-local helper here: once a THIRD need
+      # arises. `Grep` computing this once PER PATTERN (it can be
+      # given several, unlike `List`'s single pattern) rather than
+      # once per invocation is that verb's own concern, not something
+      # this shared method needs to know about.
+      def self.fixed_prefix(pattern : String) : String
+        kept = [] of String
+        pattern.split('/').each do |part|
+          break if part.each_char.any? { |char| WILDCARD_CHARS.includes?(char) }
+          kept << part
+        end
+        prefix = kept.join('/')
+        prefix.empty? ? "." : prefix
+      end
     end
   end
 end

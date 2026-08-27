@@ -764,6 +764,28 @@ individually.
 
 ### Legate
 
+- **`Legate.grep`'s documented `Timeout` (LEGATE.md §4.1) doesn't
+  actually raise `Legate::Timeout`.** Found 2026-08-27 implementing
+  `grep.cr`: unlike every other §4.1 verb, grep's own Raises list
+  includes `Timeout` — the only sensible reading is that a scan across
+  a large fileset should be able to notice it's taking too long
+  MID-scan, not just at the single up-front broker call every other
+  verb makes once. What `grep.cr` actually does is call
+  `Budget#check_wall_clock!` once per file in its scan loop (real,
+  working protection against a runaway multi-file scan) — but that
+  raises the FATAL, unrescuable `Legate::FatalSignal(:exhausted, ...)`
+  (budget.cr), not the script-catchable `Legate::Timeout` RuntimeError
+  class (exceptions.cr) LEGATE.md's own text names. No kwarg or
+  default duration for a SEPARATE, grep-local, recoverable timeout is
+  documented anywhere — inventing a second, independent timer with
+  its own semantics felt like more new, unspecified design surface
+  than one verb's implementation should decide unilaterally. Needs a
+  real decision: either LEGATE.md's text is describing the existing
+  fatal wall-clock mechanism loosely (in which case the doc should
+  stop implying a script can `rescue` it), or grep genuinely needs its
+  own recoverable per-call deadline (in which case its kwarg/default
+  need designing first).
+
 - **No terse, agent-facing reference doc for Legate (and Adjutant's
   Ruby subset generally) exists yet.** `LEGATE.md`/`ERRORS.md`/
   `SCOPE.md` are correctness/completeness documents for a human

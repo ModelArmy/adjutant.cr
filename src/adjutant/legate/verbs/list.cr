@@ -18,12 +18,6 @@ module Adjutant
         KWARG_NAMES   = Set{"limit"}
         DEFAULT_LIMIT = 100_000
 
-        # Glob metacharacters `Dir.glob` recognises — used ONLY to
-        # find the pattern's fixed (non-wildcard) leading directory
-        # for authorization (see `fixed_prefix` below), never to
-        # reimplement matching itself.
-        WILDCARD_CHARS = {'*', '?', '[', '{'}
-
         def self.bootstrap(interp : Interpreter, legate : RubyClass, broker : Broker) : Nil
           too_many = Helpers.fetch(legate, interp, "TooMany")
           entry_cls = Helpers.fetch(legate, interp, "Entry")
@@ -74,7 +68,7 @@ module Adjutant
             # — matching this method's own single-call-per-invocation
             # design above: one directory's sensitivity gates (and
             # labels) the whole listing, not a per-entry lookup.
-            label = RiskFlowLabel.join(label, broker.authorize_read(fixed_prefix(posix_pattern), ncc, allow_missing: true))
+            label = RiskFlowLabel.join(label, broker.authorize_read(Helpers.fixed_prefix(posix_pattern), ncc, allow_missing: true))
 
             matches = Dir.glob(posix_pattern).sort
 
@@ -109,26 +103,6 @@ module Adjutant
         private def self.limit_of(ncc : NativeCallContext) : Int32
           given = ncc.kwargs.try(&.["limit"]?)
           given ? given.as_int.to_i32 : DEFAULT_LIMIT
-        end
-
-        # The longest leading run of `pattern`'s `/`-separated
-        # components containing no glob metacharacter — e.g.
-        # `"src/**/*.rb"` → `"src"`, `"/work/input/*.txt"` →
-        # `"/work/input"`, a pattern that's ENTIRELY wildcard (e.g.
-        # `"*.txt"`) falls back to `"."`, matching `Dir.glob`'s own
-        # implicit current-directory base. Expects an already-`/`-
-        # normalized pattern (see `posix_pattern` in `bootstrap` above,
-        # where BOTH this method and `Dir.glob` itself now receive the
-        # same normalized string) — this method does no separator
-        # handling of its own.
-        private def self.fixed_prefix(pattern : String) : String
-          kept = [] of String
-          pattern.split('/').each do |part|
-            break if part.each_char.any? { |char| WILDCARD_CHARS.includes?(char) }
-            kept << part
-          end
-          prefix = kept.join('/')
-          prefix.empty? ? "." : prefix
         end
 
         # `File.info?` (not `File.info`) — a match `Dir.glob` returned

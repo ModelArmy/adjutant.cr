@@ -369,6 +369,16 @@ module Adjutant
         help: "Pass `format: :jsonl` or `format: :csv`."
       ),
 
+      "R035" => Entry.new(
+        code: "R035",
+        summary: "Legate.grep called with no paths argument",
+        why: "`Legate.grep(pattern, paths)` needs to know WHERE to " \
+             "search — `paths` is required, not optional, even though " \
+             "`context:`/`limit:` both have defaults.",
+        help: "Pass a glob string or an Array of paths, e.g. " \
+              "`Legate.grep(pattern, \"src/**/*.rb\")`."
+      ),
+
       # --- L: limits reached ----------------------------------------
       #
       # The script is valid; it is just larger than something Adjutant
