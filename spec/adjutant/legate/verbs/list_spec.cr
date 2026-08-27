@@ -11,6 +11,17 @@ private def with_tmpdir(&)
   end
 end
 
+# `Legate::Path` renders consistently POSIX-style (`/`-separated) on
+# every platform BY DESIGN (path.cr's own comment) — a real, correct
+# behavior difference from `File.join`'s NATIVE-separator output
+# (`\`-joined on Windows). Expected values built from `File.join` for
+# comparison against a `Legate::Path#to_s` result need this same
+# normalization, or they only pass on POSIX platforms where the two
+# already happen to coincide.
+private def posix(path : String) : String
+  ::Path.new(path).to_posix.to_s
+end
+
 module Adjutant
   describe "Legate.list" do
     it "matches files with a simple glob, sorted lexically" do
@@ -23,7 +34,7 @@ module Adjutant
         Legate.list(#{(File.join(dir, "*.txt")).inspect}).map { |e| e.path.to_s }
         RUBY
         arr = eval.as_array.to_a.map(&.as_string)
-        arr.should eq [File.join(dir, "a.txt"), File.join(dir, "b.txt")]
+        arr.should eq [posix(File.join(dir, "a.txt")), posix(File.join(dir, "b.txt"))]
       end
     end
 
@@ -37,8 +48,8 @@ module Adjutant
         Legate.list(#{(File.join(dir, "**", "*.rb")).inspect}).map { |e| e.path.to_s }
         RUBY
         arr = eval.as_array.to_a.map(&.as_string)
-        arr.should contain(File.join(dir, "top.rb"))
-        arr.should contain(File.join(dir, "sub", "nested.rb"))
+        arr.should contain(posix(File.join(dir, "top.rb")))
+        arr.should contain(posix(File.join(dir, "sub", "nested.rb")))
       end
     end
 

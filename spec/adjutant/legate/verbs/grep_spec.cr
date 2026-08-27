@@ -11,6 +11,13 @@ private def with_tmpdir(&)
   end
 end
 
+# See list_spec.cr's own identical helper for the full explanation:
+# `Legate::Path` renders consistently POSIX-style on every platform by
+# design, unlike `File.join`'s native-separator output.
+private def posix(path : String) : String
+  ::Path.new(path).to_posix.to_s
+end
+
 module Adjutant
   describe "Legate.grep" do
     it "finds lines matching a literal String pattern" do
@@ -46,7 +53,7 @@ module Adjutant
         RUBY
         arr = eval.as_array.to_a
         arr[0].as_int.should eq 2_i64
-        arr[1].as_string.should eq file
+        arr[1].as_string.should eq posix(file)
       end
     end
 
