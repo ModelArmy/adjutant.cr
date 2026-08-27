@@ -26,6 +26,20 @@ module Testing
 
     def initialize(@scripts_dir); end
 
+    # A script directory that wants real `Legate.*` access — rather
+    # than the blanket `Grants.deny_all` every OTHER script under
+    # `spec/scripts/` still gets, completely unchanged — drops a
+    # sibling file by this name, in LEGATE.md §7's OWN real config
+    # shape (`Legate::Grants.from_yaml`, reused as-is rather than
+    # inventing a second parallel config format), in the SAME
+    # directory as the script(s) that need it. Not any ancestor
+    # directory — different subfolders can carry different policies
+    # over time (the actual reason for a sibling-file convention
+    # rather than one shared config) without one leaking into
+    # another. Added 2026-08-26 to unblock `spec/scripts/legate/`
+    # example/regression scripts.
+    POLICY_FILE_NAME = "_policy.yaml"
+
     def run : Int32
       files = Dir.glob(File.join(@scripts_dir, "**", "*.rb")).sort
       if files.empty?
@@ -63,6 +77,7 @@ module Testing
       limits = Adjutant::ExecutionLimits.new(instruction_limit: 500_000_u64, call_depth_limit: 256)
       interp = Adjutant::Interpreter.new(
         risk_flow_policy: Adjutant::RiskFlowPolicy.reject_all,
+        grants: grants_for(path),
         on_risk_flow_decision: ->(_req : Adjutant::RiskFlowDecisionRequest) { Adjutant::RiskFlowDecision::Reject },
         effect: ef,
         limits: limits,
@@ -94,6 +109,36 @@ module Testing
       end
 
       FileResult.new(short, mod, error, cause)
+    end
+
+    private def grants_for(script_path : String) : Adjutant::Legate::Grants
+      dir = File.expand_path(File.dirname(script_path))
+      policy_path = File.join(dir, POLICY_FILE_NAME)
+      return Adjutant::Legate::Grants.deny_all unless File.exists?(policy_path)
+
+      raw = Adjutant::Legate::Grants.from_file(policy_path)
+      # `Grants.from_yaml` stores each root string exactly as written
+      # in the YAML — a RELATIVE root like `read_roots: [fixtures]`
+      # would otherwise resolve against wherever the `crystal spec`/
+      # `ops test` PROCESS happens to be invoked from, not against
+      # `_policy.yaml`'s own directory. That's exactly the class of
+      # bug `list.cr`'s own Windows path-separator fix (earlier this
+      # session) was about — fragile across machines/CI/OS — so every
+      # path-like entry (roots, exec binaries; NOT `net_hosts`/
+      # `ambient_env`, which aren't filesystem paths at all) is
+      # expanded HERE, against `dir`, before building the real Grants
+      # a script actually runs under.
+      Adjutant::Legate::Grants.new(
+        read_roots: raw.read_roots.map { |root| File.expand_path(root, dir) },
+        write_roots: raw.write_roots.map { |root| File.expand_path(root, dir) },
+        delete_roots: raw.delete_roots.map { |root| File.expand_path(root, dir) },
+        net_hosts: raw.net_hosts,
+        net_methods: raw.net_methods,
+        exec_binaries: raw.exec_binaries.map { |root| File.expand_path(root, dir) },
+        ambient_env: raw.ambient_env,
+        ambient_now: raw.ambient_now,
+        limits: raw.limits,
+      )
     end
 
     # Prefers a rendered diagnostic (source line + carets) when the
