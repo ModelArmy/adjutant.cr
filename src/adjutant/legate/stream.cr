@@ -256,7 +256,23 @@ module Adjutant
       # any terminal run before," which would incorrectly break the
       # legitimate shared-pull-position pattern between sibling
       # derived streams).
-      private def self.walk(obj : StreamObject, ncc : NativeCallContext, eof : RubyClass, & : Value ->) : Nil
+      # PUBLIC (not `private`, unlike `apply_ops` below) — the one
+      # deliberate seam for a native VERB (not a script) to consume a
+      # stream's elements one at a time, applying its full op chain,
+      # WITHOUT going through script-level method dispatch at all.
+      # Added 2026-08-27 for `Legate.write`'s own `data` argument
+      # (LEGATE.md §4.3: "`data` is a String or any Enumerable of
+      # Strings, INCLUDING A LEGATE STREAM — so a pipeline never
+      # materialises merely to reach disk") — writing `Legate.lines(x)
+      # .select { }.map { }` straight to another file needs to pull
+      # elements ONE AT A TIME and write each as it arrives, not call
+      # the script-facing `.to_a` first (which would fully materialize
+      # the whole stream into an Array before a single byte reaches
+      # disk, exactly what that sentence rules out). Every other
+      # caller in THIS file remains internal (`first`/`each`/`to_a`/
+      # etc., all below), so this is genuinely the only public seam,
+      # not a general-purpose escape hatch.
+      def self.walk(obj : StreamObject, ncc : NativeCallContext, eof : RubyClass, & : Value ->) : Nil
         ncc.raise_error_class("Legate::Stream — source already exhausted; this stream is single-pass. Call Legate.lines/bytes/records again to re-read.", eof) if obj.state.exhausted?
 
         take_counts = Hash(Int32, Int32).new(0)

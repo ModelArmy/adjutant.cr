@@ -387,6 +387,25 @@ module Adjutant
         help: "Check the value you're passing for `{kwarg}:`."
       ),
 
+      "R037" => Entry.new(
+        code: "R037",
+        summary: "`{method}`'s data argument is neither a String nor an Enumerable ({class_name})",
+        why: "`{method}(path, data)` only accepts a String, an Array " \
+             "of Strings, or a Legate stream for `data` — nothing " \
+             "else can be written out a piece at a time.",
+        help: "Pass a String, an Array of Strings, or a Legate stream."
+      ),
+
+      "R038" => Entry.new(
+        code: "R038",
+        summary: "`{method}`'s data argument yielded a non-String element ({class_name})",
+        why: "Every element of `{method}`'s `data` — whether from an " \
+             "Array or a Legate stream — must itself be a String; " \
+             "there's no implicit `#to_s` conversion for what gets " \
+             "written to a file.",
+        help: "Make sure every element is already a String, e.g. via `.map { |x| x.to_s }`."
+      ),
+
       # --- L: limits reached ----------------------------------------
       #
       # The script is valid; it is just larger than something Adjutant

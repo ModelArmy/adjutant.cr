@@ -20,6 +20,7 @@ require "./legate/verbs/bytes"
 require "./legate/verbs/lines"
 require "./legate/verbs/records"
 require "./legate/verbs/grep"
+require "./legate/verbs/write"
 
 module Adjutant::Legate
 end

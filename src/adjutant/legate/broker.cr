@@ -107,14 +107,18 @@ module Adjutant
       # does not exist yet (the normal case for a fresh write) has
       # nothing for `File.realpath` to resolve, so `check_root` denies
       # it as "does not exist" rather than checking containment.
-      # Resolving the PARENT directory instead for a not-yet-existing
-      # write target is real, necessary work — it belongs with the
-      # `write` verb itself (step 5), which is what actually knows
-      # whether `path` is expected to exist yet, not this
-      # general-purpose boundary method.
-      def authorize_write(path : String, ncc : NativeCallContext) : RiskFlowLabel?
+      # `allow_missing` (added 2026-08-27, alongside `write.cr` itself
+      # — the "belongs with the write verb, which is what actually
+      # knows whether `path` is expected to exist yet" from this
+      # method's own comment, now that such a verb exists) mirrors
+      # `authorize_read`'s identical param exactly: `write.cr` passes
+      # `true` (the normal, expected case), `append.cr`/`mkdir.cr`
+      # will too; a hypothetical future caller that genuinely expects
+      # the target to already exist can still get the stricter
+      # existing-only check by leaving the default.
+      def authorize_write(path : String, ncc : NativeCallContext, allow_missing : Bool = false) : RiskFlowLabel?
         authorize(:write, "write", path, RiskTag::WritesFiles, ProvenanceKind::File, ncc) do
-          @grants.check_root(path, @grants.write_roots)
+          allow_missing ? @grants.check_root_maybe_missing(path, @grants.write_roots) : @grants.check_root(path, @grants.write_roots)
         end
       end
 

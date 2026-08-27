@@ -130,16 +130,19 @@ R033|`String#=~` given a missing or non-Regexp pattern                 |—
 R034|`Legate.records` given an unknown `format:`                       |`format`                                   
 R035|`Legate.grep` called with no `paths` argument                     |—                                          
 R036|A Legate verb's kwarg given a value of the wrong type             |`method`, `kwarg`, `expected`, `class_name`
+R037|A Legate write verb's `data` argument isn't String/Enumerable     |`method`, `class_name`                     
+R038|A Legate write verb's `data` yielded a non-String element         |`method`, `class_name`                     
 
 Scripts can `rescue` these. R008 raises a `NameError`, matching Ruby;
 R011, R012, R015, and R018 raise `ArgumentError`, also matching Ruby;
 R014 and R023 raise a `NoMethodError`, also matching Ruby; R016 raises a
-`FloatDomainError`, also matching Ruby; R017, R019, R024, R033, and R036
-raise a `TypeError`, also matching Ruby; R020, R022, R025, and R031 raise
-an `ArgumentError`, also matching Ruby; R021 raises a `RegexpError`, also
-matching Ruby; R026, R027, R028, R029, and R030 raise a `RangeError`, also
-matching Ruby; R032, R034, and R035 raise an `ArgumentError`, also
-matching Ruby; the rest raise `RuntimeError`.
+`FloatDomainError`, also matching Ruby; R017, R019, R024, R033, R036,
+R037, and R038 raise a `TypeError`, also matching Ruby; R020, R022,
+R025, and R031 raise an `ArgumentError`, also matching Ruby; R021
+raises a `RegexpError`, also matching Ruby; R026, R027, R028, R029, and
+R030 raise a `RangeError`, also matching Ruby; R032, R034, and R035
+raise an `ArgumentError`, also matching Ruby; the rest raise
+`RuntimeError`.
 
 Adjutant's constants are assign-once, which Ruby only warns about. R001 is
 that rule firing on an ordinary constant; reopening a class or module is
