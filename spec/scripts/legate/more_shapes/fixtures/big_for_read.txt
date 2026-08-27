@@ -1,0 +1,1 @@
+this file is used only to trigger read's own size-based TooLarge cap via a small limit: kwarg
