@@ -61,6 +61,12 @@ jobs:
 
       # ---- format and lint check on Linux only
 
+      - name: Setup ameba (Linux)
+        if: ${{ runner.os == 'Linux' }}
+        run: |
+          mkdir -p bin;
+          cp lib/ameba/bin/ameba.cr bin && crystal build -Dpreview_mt -o bin/ameba bin/ameba.cr
+
       - name: Check formatting (Linux)
         if: ${{ runner.os == 'Linux' }}
         run: crystal tool format; git diff --exit-code src

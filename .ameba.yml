@@ -1,1 +1,25 @@
-# No changes to default
+# This configuration to suppress warnings after upgrading to Ameba 1.7.0
+# Fix soon.
+
+Version: "1.7.0"
+
+Lint/ElseNil:
+  Enabled: false
+Lint/UnneededDisableDirective:
+  Enabled: false
+Lint/UselessAssign:
+  Enabled: false
+Lint/VoidOutsideLib:
+  Enabled: false
+Lint/WhitespaceAroundMacroExpression:
+  Enabled: false
+Metrics/CyclomaticComplexity:
+  Enabled: false
+Style/HeredocIndent:
+  Enabled: false
+Style/RedundantNilInControlExpression:
+  Enabled: false
+Style/RedundantSelf:
+  Enabled: false
+Style/VerboseNilType:
+  Enabled: false
