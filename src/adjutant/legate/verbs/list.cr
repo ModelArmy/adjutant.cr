@@ -132,7 +132,20 @@ module Adjutant
                                      match : String, label : RiskFlowLabel?) : Value?
           info = File.info?(match, follow_symlinks: false)
           return nil unless info
-          path_val = Legate::Path.from_string(interp, path_cls, match, label)
+          # `::Path.new(match).to_posix` — same fix, same reasoning as
+          # `grep.cr`'s own identical line (added alongside this one,
+          # once the SAME latent bug was confirmed there by a real
+          # Windows CI failure): `match` came straight out of
+          # `Dir.glob`, which returns system-specific (`\`-joined on
+          # Windows) separators regardless of the PATTERN's own —
+          # `Legate::Path` splits only on `/` by design (path.cr), so
+          # without this, `.basename`/`.dirname`/`.parts` on a
+          # Windows-built `Entry`'s `path` would silently return the
+          # whole string unchanged. This file had no test exercising
+          # `.basename` to catch it the way grep_spec.cr's own test
+          # did — see list_spec.cr's newly-added test alongside this
+          # fix.
+          path_val = Legate::Path.from_string(interp, path_cls, ::Path.new(match).to_posix.to_s, label)
           Legate::Entry.build(interp, entry_cls, path_val, type_of(info), info.size, mtime_of(interp, info), label)
         end
 

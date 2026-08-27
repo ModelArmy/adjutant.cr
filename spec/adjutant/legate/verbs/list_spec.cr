@@ -160,5 +160,14 @@ module Adjutant
         eval.as_string.should eq "caught"
       end
     end
+
+    it "each Entry's path.basename returns just the filename, not the whole path" do
+      with_tmpdir do |dir|
+        File.write(File.join(dir, "a.txt"), "hi")
+        interp, _ = make_interp(grants: Legate::Grants.new(read_roots: [dir]))
+        eval = interp.eval(%(Legate.list(#{(File.join(dir, "*.txt")).inspect}).map { |e| e.path.basename }))
+        eval.as_array.to_a.map(&.as_string).should eq ["a.txt"]
+      end
+    end
   end
 end

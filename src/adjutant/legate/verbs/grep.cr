@@ -133,7 +133,21 @@ module Adjutant
               next if looks_binary?(file)
 
               lines = read_lines(file, broker)
-              path_val = Legate::Path.from_string(interp, path_cls, file, label)
+              # `::Path.new(...).to_posix` — `Legate::Path` splits
+              # ONLY on `/` by deliberate design (path.cr's own
+              # POSIX-style abstraction, independent of the host OS —
+              # see that file's own comment), but `file` here came
+              # straight out of `Dir.glob`, which returns SYSTEM-
+              # SPECIFIC separators regardless of the pattern's own
+              # (`\`-joined on Windows) — the exact same fact this
+              # file's own `posix_patterns` normalization already
+              # accounts for on the PATTERN side, just missed here on
+              # the MATCHED-FILE side. Without this, `.basename` (and
+              # `.dirname`/`.parts`) on a Windows-built `Match`'s
+              # `path` silently finds no `/` to split on and returns
+              # the WHOLE path unchanged — caught by a Windows CI
+              # runner, not by inspection.
+              path_val = Legate::Path.from_string(interp, path_cls, ::Path.new(file).to_posix.to_s, label)
 
               lines.each_with_index do |line, idx|
                 next unless matches_pattern?(pattern, line)
