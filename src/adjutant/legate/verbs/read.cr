@@ -37,7 +37,12 @@ module Adjutant
             # `Legate::Denied` fatal. Only a path OUTSIDE every
             # granted root is a real denial, regardless of whether it
             # happens to exist.
-            broker.authorize_read(raw, ncc, allow_missing: true)
+            #
+            # `RiskFlowLabel.join` — see `stat.cr`'s own comment on the
+            # identical line for the full "why join, not overwrite"
+            # reasoning; unchanged here, just the second read-grant
+            # verb to pick it up.
+            label = RiskFlowLabel.join(label, broker.authorize_read(raw, ncc, allow_missing: true))
 
             # §8.1 step 3's "open by the resolved path" — following
             # symlinks here (unlike Legate.stat, which deliberately

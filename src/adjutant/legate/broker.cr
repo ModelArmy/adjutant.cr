@@ -39,7 +39,15 @@ module Adjutant
     #      catches — resolved via Crystal's outward namespace lookup
     #      from inside `Adjutant::Legate`, not the stdlib class of the
     #      same name) long enough to append an audit record, then
-    #      re-raises it completely unchanged.
+    #      re-raises it completely unchanged. Its RETURN VALUE (the
+    #      `RiskFlowLabel?` policy resolved for this call's subject —
+    #      added 2026-08-26, see `VM#declare_sensitivity`'s own
+    #      comment) is threaded all the way back out through every
+    #      `authorize_*` method below, so a VERB can tag its own
+    #      returned data with it — see each verb's own updated
+    #      comment for why this matters (in short: gating the READ
+    #      correctly is not the same as tainting the DATA correctly,
+    #      and this return value is what makes the latter possible).
     #
     # Every one of the three outcomes (denied / rejected / allowed)
     # appends exactly one §8.7 AuditRecord before returning or
@@ -88,7 +96,7 @@ module Adjutant
       # result (§2.3), not a denial; see that method's own comment
       # (authorization.cr). Defaults false, matching every OTHER
       # read-grant verb, where a missing path really is just missing.
-      def authorize_read(path : String, ncc : NativeCallContext, allow_missing : Bool = false) : Nil
+      def authorize_read(path : String, ncc : NativeCallContext, allow_missing : Bool = false) : RiskFlowLabel?
         authorize(:read, "read", path, RiskTag::ReadsFiles, ProvenanceKind::File, ncc) do
           allow_missing ? @grants.check_root_maybe_missing(path, @grants.read_roots) : @grants.check_root(path, @grants.read_roots)
         end
@@ -104,7 +112,7 @@ module Adjutant
       # `write` verb itself (step 5), which is what actually knows
       # whether `path` is expected to exist yet, not this
       # general-purpose boundary method.
-      def authorize_write(path : String, ncc : NativeCallContext) : Nil
+      def authorize_write(path : String, ncc : NativeCallContext) : RiskFlowLabel?
         authorize(:write, "write", path, RiskTag::WritesFiles, ProvenanceKind::File, ncc) do
           @grants.check_root(path, @grants.write_roots)
         end
@@ -114,7 +122,7 @@ module Adjutant
       # target existing is the normal case (nothing to delete
       # otherwise), so `check_root`'s exists-only assumption is a
       # non-issue here.
-      def authorize_delete(path : String, ncc : NativeCallContext) : Nil
+      def authorize_delete(path : String, ncc : NativeCallContext) : RiskFlowLabel?
         authorize(:delete, "delete", path, RiskTag::DeletesFiles, ProvenanceKind::File, ncc) do
           @grants.check_root(path, @grants.delete_roots)
         end
@@ -127,7 +135,7 @@ module Adjutant
       # NOT part of this boundary check — a verb calling this method
       # still has its own further check to make after DNS resolution,
       # same as `authorize_write`'s parent-directory case above.
-      def authorize_net(host : String, ncc : NativeCallContext) : Nil
+      def authorize_net(host : String, ncc : NativeCallContext) : RiskFlowLabel?
         authorize(:net, "net", host, RiskTag::NetworkEgress, ProvenanceKind::Host, ncc) do
           @grants.check_host(host)
         end
@@ -146,7 +154,7 @@ module Adjutant
       # path is, at the provenance-tracking level, still a filesystem
       # path. Worth flagging as a judgment call rather than something
       # the spec states outright.
-      def authorize_exec(binary : String, ncc : NativeCallContext) : Nil
+      def authorize_exec(binary : String, ncc : NativeCallContext) : RiskFlowLabel?
         authorize(:exec, "exec", binary, RiskTag::ExecutesCode, ProvenanceKind::File, ncc) do
           @grants.check_binary(binary)
         end
@@ -162,7 +170,7 @@ module Adjutant
       # both purely descriptive (verb name, the path/host/binary
       # string) and never affect the decision itself.
       private def authorize(grant : Symbol, verb : String, subject : String, tag : RiskTag,
-                            provenance_kind : ProvenanceKind, ncc : NativeCallContext, & : -> Grants::Decision) : Nil
+                            provenance_kind : ProvenanceKind, ncc : NativeCallContext, & : -> Grants::Decision) : RiskFlowLabel?
         @budget.check_wall_clock!
 
         decision = yield
@@ -171,7 +179,7 @@ module Adjutant
           deny!(verb, decision)
         end
 
-        begin
+        label = begin
           ncc.declare_sensitivity(tag, provenance_kind, subject)
         rescue ex : RuntimeError
           @audit_log.append(AuditRecord.new(verb, subject, grant, :rejected, REJECTED_CLASS_NAME))
@@ -179,6 +187,7 @@ module Adjutant
         end
 
         @audit_log.append(AuditRecord.new(verb, subject, grant, :allowed))
+        label
       end
 
       # The script-visible class names a :denied/:rejected AuditRecord

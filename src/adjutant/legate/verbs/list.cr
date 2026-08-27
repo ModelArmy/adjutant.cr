@@ -68,7 +68,13 @@ module Adjutant
             # specific separators regardless of the pattern's own, per
             # the same docs.
             posix_pattern = ::Path.new(pattern).to_posix.to_s
-            broker.authorize_read(fixed_prefix(posix_pattern), ncc, allow_missing: true)
+            # `RiskFlowLabel.join` — see `stat.cr`'s own comment for
+            # the full reasoning. Here the sensitivity check runs
+            # against `fixed_prefix`, not the full pattern/each match
+            # — matching this method's own single-call-per-invocation
+            # design above: one directory's sensitivity gates (and
+            # labels) the whole listing, not a per-entry lookup.
+            label = RiskFlowLabel.join(label, broker.authorize_read(fixed_prefix(posix_pattern), ncc, allow_missing: true))
 
             matches = Dir.glob(posix_pattern).sort
 

@@ -184,7 +184,8 @@ module Adjutant
     # risk_flow_enforcement_spec.cr for real declare_sensitivity
     # coverage, which goes through the actual VM.
     def declare_sensitivity(tag : RiskTag, kind : ProvenanceKind, origin : String,
-                            sensitivity : Sensitivity? = nil) : Nil
+                            sensitivity : Sensitivity? = nil) : RiskFlowLabel?
+      nil
     end
 
     # No-op raise — a real diagnostic needs a VM (builtin_class_by_name,

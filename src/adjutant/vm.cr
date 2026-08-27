@@ -2505,18 +2505,42 @@ module Adjutant
     # `sensitivity` lets a native function that already knows the
     # sensitivity (e.g. it just computed it) skip the lookup; when nil,
     # this method performs the lookup itself via `sensitivity_for`.
+    #
+    # RETURNS the resolved label (`nil` if `sensitivity_for` came back
+    # `None` — nothing worth tagging) — added 2026-08-26, fixing a real
+    # gap this session's audit found: this method used to just gate the
+    # CALL (Allow/Ask/Reject) and throw the resolved sensitivity away
+    # once that decision was made. Every Legate read-grant verb needs
+    # that sensitivity back to tag the DATA it's about to return (see
+    # `Legate::Broker#authorize`'s own updated comment) — otherwise
+    # policy correctly stops/gates the READ of a sensitive file, but
+    # the CONTENT it hands back carries no taint, so a later sink check
+    # (LEGATE.md's argv-taint rule, say) can never catch it. Building
+    # the label BEFORE the Allow/Ask/Reject branch below (rather than
+    # only in the `action.allow?` early-return) matters: an Ask that
+    # resolves to Allow still needs the SAME label as a direct Allow —
+    # the data's provenance doesn't change based on which branch
+    # granted the call.
     def declare_sensitivity(tag : RiskTag, kind : ProvenanceKind, origin : String, name : String,
-                            filename : String, line : Int32, sensitivity : Sensitivity? = nil) : Nil
+                            filename : String, line : Int32, sensitivity : Sensitivity? = nil) : RiskFlowLabel?
       resolved_sensitivity = sensitivity || @risk_flow_policy.sensitivity_for(kind, origin)
-      return if resolved_sensitivity.none?
+      return nil if resolved_sensitivity.none?
+
+      label = RiskFlowLabel.of(kind, origin, resolved_sensitivity)
 
       action, rule = @risk_flow_policy.action_for(tag, resolved_sensitivity)
-      return if action.allow?
+      return label if action.allow?
 
       provenance_tag = ProvenanceTag.new(kind, origin, resolved_sensitivity)
       matches = [RiskFlowMatch.new(action, rule, provenance_tag)]
       risk = RiskProfile.new(tags: Set{tag})
+      # `resolve_risk_flow_matches` either raises (Reject, or an Ask
+      # resolved to Reject — see its own comment) or returns normally
+      # (an Ask resolved to Allow) — reaching the line after it here
+      # means the latter, so returning `label` below is reachable and
+      # correct, not dead code.
       resolve_risk_flow_matches(matches, name, risk, filename, line)
+      label
     end
 
     # Shared by check_risk_flow (automatic, label-driven) and

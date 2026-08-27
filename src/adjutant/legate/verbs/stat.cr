@@ -48,7 +48,25 @@ module Adjutant
             # refusal) and "inside your roots but missing" (a plain
             # nil) into the same fatal error, exactly the distinction
             # §2.3 exists to preserve.
-            broker.authorize_read(raw, ncc, allow_missing: true)
+            #
+            # `RiskFlowLabel.join` here — added 2026-08-26, fixing a
+            # real gap this session's audit found: `broker.authorize_
+            # read` now RETURNS the label RiskFlowPolicy itself just
+            # resolved for `raw` (built from whatever `sensitivity_
+            # for(File, raw)` came back as, or `nil` if the policy
+            # doesn't consider this path sensitive at all — see
+            # `Broker#authorize`/`VM#declare_sensitivity`'s own
+            # comments). Previously this return value was silently
+            # discarded — the READ was correctly gated by policy, but
+            # the RETURNED VALUE carried no taint reflecting that,
+            # so a later sink check (e.g. LEGATE.md §7.6's argv-taint
+            # rule) could never catch a sensitive file's content
+            # flowing somewhere it shouldn't. `join`, not plain
+            # overwrite, because `label` (the PATH ARGUMENT's own,
+            # pre-existing taint — e.g. a path built from a prior
+            # tainted read) must survive too; the two are independent
+            # provenance facts, not alternatives.
+            label = RiskFlowLabel.join(label, broker.authorize_read(raw, ncc, allow_missing: true))
 
             info = File.info?(raw, follow_symlinks: false)
             next Value.nil_value unless info

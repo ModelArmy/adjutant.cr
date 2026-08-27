@@ -63,7 +63,7 @@ module Adjutant
     end
 
     def declare_sensitivity(tag : RiskTag, kind : ProvenanceKind, origin : String,
-                            sensitivity : Sensitivity? = nil) : Nil
+                            sensitivity : Sensitivity? = nil) : RiskFlowLabel?
       @vm.declare_sensitivity(tag, kind, origin, @name, filename, line, sensitivity)
     end
 

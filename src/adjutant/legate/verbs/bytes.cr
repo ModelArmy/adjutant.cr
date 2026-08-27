@@ -61,7 +61,9 @@ module Adjutant
             # a missing path under a granted root is recoverable
             # `NotFound`, not a fatal `Denied`; only a path outside
             # every granted root is a real denial.
-            broker.authorize_read(raw, ncc, allow_missing: true)
+            #
+            # `RiskFlowLabel.join` — see `stat.cr`'s own comment.
+            label = RiskFlowLabel.join(label, broker.authorize_read(raw, ncc, allow_missing: true))
 
             unless File.info?(raw)
               ncc.raise_error_class("#{raw} not found", not_found)

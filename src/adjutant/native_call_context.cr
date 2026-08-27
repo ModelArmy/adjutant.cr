@@ -185,8 +185,14 @@ module Adjutant
     # (the native function already knows it, e.g. it just computed a
     # value rather than looking one up); when nil, this method
     # performs the lookup itself.
+    #
+    # Returns the resolved `RiskFlowLabel` (`nil` if policy doesn't
+    # consider `origin` sensitive at all) — see `VM#declare_sensitivity`'s
+    # own comment for why this return value exists and matters: a
+    # caller (a Legate verb, typically) needs it to tag the DATA it's
+    # about to return, not just to have gated the call.
     abstract def declare_sensitivity(tag : RiskTag, kind : ProvenanceKind, origin : String,
-                                     sensitivity : Sensitivity? = nil) : Nil
+                                     sensitivity : Sensitivity? = nil) : RiskFlowLabel?
 
     # Lets a native method raise a real, script-catchable diagnostic —
     # the SAME kind of error a script-level construct raises (an

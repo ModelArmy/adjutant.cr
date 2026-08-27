@@ -16,7 +16,11 @@ module Adjutant
   # policy exists" (see that file's own comment, and
   # `research/IFC_DESIGN.md`) — a single File-provenance, High-
   # sensitivity label, exactly the shape a real Legate verb reading a
-  # sensitive file will eventually produce.
+  # sensitive file NOW actually produces (as of 2026-08-26 — see
+  # `sensitivity_labeling_spec.cr` for the real, end-to-end proof via
+  # actual verb calls; this file stays focused on the value TYPES'
+  # own propagation machinery, which is a separate axis from whether
+  # a verb originates the label in the first place).
   private def self.make_legate_ifc_interp : Interpreter
     interp, _ = make_interp
     interp.define_native("tainted_str") do |args|
