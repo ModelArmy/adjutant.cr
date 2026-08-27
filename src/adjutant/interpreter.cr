@@ -464,6 +464,7 @@ module Adjutant
       Legate::Verbs::Records.bootstrap(self, legate, @broker)
       Legate::Verbs::Grep.bootstrap(self, legate, @broker)
       Legate::Verbs::Write.bootstrap(self, legate, @broker)
+      Legate::Verbs::Append.bootstrap(self, legate, @broker)
       define_global_class(legate)
     end
 

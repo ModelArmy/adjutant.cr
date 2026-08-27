@@ -3,6 +3,7 @@ require "../ruby_class"
 require "../diagnostic"
 require "../builtins/helpers"
 require "../native_call_context"
+require "./stream"
 
 module Adjutant
   module Legate
@@ -183,6 +184,75 @@ module Adjutant
           {"method" => method, "kwarg" => kwarg, "expected" => expected, "class_name" => Builtins.builtin_type_name(given)},
           "TypeError",
         )
+      end
+
+      # Dispatches on `data`'s actual shape — String (single write),
+      # Array (each element, Crystal-level iteration — LEGATE.md's own
+      # "Enumerable of Strings" example is an Array, and an Array's
+      # elements are already fully materialized in memory regardless,
+      # so there's no streaming benefit to be had walking it any other
+      # way), or a Legate stream (`Legate::Stream.walk`, genuinely
+      # pulling one element at a time — see write.cr's own top comment
+      # for why THIS case is the one that actually matters for §4.3's
+      # "never materialises" requirement). Anything else raises R037.
+      # Budget accounting (`broker.budget.record_write`) happens PER
+      # PIECE as it's written, not once at the end — the same "a huge
+      # write must be able to hit budget exhaustion partway through"
+      # reasoning every streaming READ verb's own per-chunk
+      # `record_read` already established, mirrored here for the write
+      # side.
+      #
+      # EXTRACTED here 2026-08-27 (was `Verbs::Write`'s own private
+      # method) — `Verbs::Append` needs the EXACT same data-shape
+      # handling and budget accounting, byte for byte; the only thing
+      # that differs between `write`/`append` is which `IO` mode opens
+      # the destination, not how `data` itself gets turned into bytes.
+      # `method` is threaded through (not hardcoded) so `R037`/`R038`
+      # error messages correctly say "Legate.write" or "Legate.append"
+      # depending on which verb actually called this.
+      def self.write_io_data(io : IO, data_val : Value, ncc : NativeCallContext, broker : Broker,
+                             eof : RubyClass, method : String) : Int64
+        if data_val.string?
+          return write_io_piece(io, data_val, ncc, broker, method)
+        end
+
+        if arr = data_val.as_array?
+          total = 0_i64
+          arr.to_a.each { |piece| total += write_io_piece(io, piece, ncc, broker, method) }
+          return total
+        end
+
+        if (robj = data_val.as_robject?) && robj.is_a?(StreamObject)
+          total = 0_i64
+          Legate::Stream.walk(robj, ncc, eof) { |piece| total += write_io_piece(io, piece, ncc, broker, method) }
+          return total
+        end
+
+        ncc.raise_error(
+          "R037",
+          {"method" => method, "class_name" => Builtins.builtin_type_name(data_val)},
+          "TypeError",
+        )
+      end
+
+      # One element written, one element accounted for — R038 if it
+      # isn't actually a String (no implicit `#to_s`; see that catalog
+      # entry's own reasoning: writing arbitrary objects' default
+      # inspect-ish representations to a file silently would be far
+      # more surprising than requiring the caller to convert
+      # explicitly).
+      def self.write_io_piece(io : IO, piece : Value, ncc : NativeCallContext, broker : Broker, method : String) : Int64
+        unless piece.string?
+          ncc.raise_error(
+            "R038",
+            {"method" => method, "class_name" => Builtins.builtin_type_name(piece)},
+            "TypeError",
+          )
+        end
+        bytes = piece.as_string.to_slice
+        io.write(bytes)
+        broker.budget.record_write(bytes.size.to_i64)
+        bytes.size.to_i64
       end
     end
   end

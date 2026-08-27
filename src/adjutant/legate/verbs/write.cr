@@ -36,7 +36,11 @@ module Adjutant
       #      walk` (made public this session, stream.cr's own comment
       #      on why) is what makes this real: a stream's elements are
       #      written ONE AT A TIME as they're pulled, never collected
-      #      into an Array first.
+      #      into an Array first. The actual dispatch on `data`'s shape
+      #      lives in `Helpers.write_io_data`/`write_io_piece`
+      #      (extracted there, not kept here, once `append.cr` needed
+      #      the exact same logic byte for byte — see that file's own
+      #      comment).
       module Write
         def self.bootstrap(interp : Interpreter, legate : RubyClass, broker : Broker) : Nil
           conflict = Helpers.fetch(legate, interp, "Conflict")
@@ -94,7 +98,7 @@ module Adjutant
             bytes_written = 0_i64
             begin
               File.open(temp_path, "wb") do |io|
-                bytes_written = write_data(io, data_val, ncc, broker, eof)
+                bytes_written = Helpers.write_io_data(io, data_val, ncc, broker, eof, "Legate.write")
                 io.flush
                 # NOT independently verified against a live toolchain:
                 # `IO::FileDescriptor#fsync` is written from
@@ -124,65 +128,6 @@ module Adjutant
 
             Value.int(bytes_written)
           end
-        end
-
-        # Dispatches on `data`'s actual shape — String (single write),
-        # Array (each element, Crystal-level iteration — LEGATE.md's
-        # own "Enumerable of Strings" example is an Array, and an
-        # Array's elements are already fully materialized in memory
-        # regardless, so there's no streaming benefit to be had
-        # walking it any other way), or a Legate stream
-        # (`Legate::Stream.walk`, genuinely pulling one element at a
-        # time — see this file's own top comment for why THIS case is
-        # the one that actually matters for §4.3's "never materialises"
-        # requirement). Anything else raises `R037`. Budget accounting
-        # (`broker.budget.record_write`) happens PER PIECE as it's
-        # written, not once at the end — the same "a huge write must be
-        # able to hit budget exhaustion partway through" reasoning
-        # every streaming READ verb's own per-chunk `record_read`
-        # already established, mirrored here for the write side.
-        private def self.write_data(io : IO, data_val : Value, ncc : NativeCallContext, broker : Broker, eof : RubyClass) : Int64
-          if data_val.string?
-            return write_piece(io, data_val, ncc, broker, "Legate.write")
-          end
-
-          if arr = data_val.as_array?
-            total = 0_i64
-            arr.to_a.each { |piece| total += write_piece(io, piece, ncc, broker, "Legate.write") }
-            return total
-          end
-
-          if (robj = data_val.as_robject?) && robj.is_a?(StreamObject)
-            total = 0_i64
-            Legate::Stream.walk(robj, ncc, eof) { |piece| total += write_piece(io, piece, ncc, broker, "Legate.write") }
-            return total
-          end
-
-          ncc.raise_error(
-            "R037",
-            {"method" => "Legate.write", "class_name" => Builtins.builtin_type_name(data_val)},
-            "TypeError",
-          )
-        end
-
-        # One element written, one element accounted for — `R038` if
-        # it isn't actually a String (no implicit `#to_s`; see that
-        # catalog entry's own reasoning: writing arbitrary objects'
-        # default inspect-ish representations to a file silently would
-        # be far more surprising than requiring the caller to convert
-        # explicitly).
-        private def self.write_piece(io : IO, piece : Value, ncc : NativeCallContext, broker : Broker, method : String) : Int64
-          unless piece.string?
-            ncc.raise_error(
-              "R038",
-              {"method" => method, "class_name" => Builtins.builtin_type_name(piece)},
-              "TypeError",
-            )
-          end
-          bytes = piece.as_string.to_slice
-          io.write(bytes)
-          broker.budget.record_write(bytes.size.to_i64)
-          bytes.size.to_i64
         end
       end
     end
