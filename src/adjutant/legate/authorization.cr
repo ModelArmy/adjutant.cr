@@ -100,7 +100,7 @@ module Adjutant
         real_ancestor, trailing = ancestor
         prospective = trailing.empty? ? real_ancestor : File.join(real_ancestor, File.join(trailing))
 
-        under_root = roots.any? { |root| under?(prospective, root) }
+        under_root = roots.any? { |root| under_maybe_missing?(prospective, root) }
 
         under_root ? Decision.allow : Decision.deny("#{path} (prospective: #{prospective}) is not under any granted root")
       end
@@ -171,6 +171,47 @@ module Adjutant
         return false unless real_root
 
         rel = ::Path.new(real_path).relative_to(::Path.new(real_root))
+        return true if rel.to_s == "."
+        rel.parts.first? != ".."
+      end
+
+      # Same containment test as `under?` just above, but tolerant of
+      # a GRANTED ROOT that doesn't exist on disk yet either — added
+      # 2026-08-27, once a real script surfaced this exact gap: it
+      # granted `write` access to an `output/`-style directory that
+      # the script itself creates via `Legate.mkdir`, and THAT
+      # `mkdir` call — targeting the granted root path itself, not a
+      # file inside it — was denied, because `under?`'s own
+      # `resolve(root)` call requires the root to already exist.
+      # `check_root_maybe_missing` already tolerates a missing
+      # TARGET; nothing previously tolerated a missing ROOT, even
+      # though "grant write to `./output` before anything has created
+      # `./output`" is an entirely plausible, realistic embedder
+      # scenario, not just a theoretical edge case.
+      #
+      # Only used by `check_root_maybe_missing` above, deliberately —
+      # `check_root`'s own strict variant (paths that must ALREADY
+      # exist) keeps requiring the root to exist too: a READ grant
+      # naming a directory that doesn't exist is basically always a
+      # misconfiguration (there's nothing to read from it), unlike a
+      # WRITE grant naming a not-yet-created output directory, which
+      # is the realistic, worth-supporting case this fix targets.
+      #
+      # Falls back to the SAME `deepest_existing_ancestor` prospective-
+      # path construction `check_root_maybe_missing` already uses for
+      # `path`, applied to `root` too — only once the fast, exact
+      # `resolve(root)` path fails; the common "root already exists"
+      # case costs exactly what it did before.
+      private def under_maybe_missing?(prospective_path : String, root : String) : Bool
+        effective_root = resolve(root)
+        unless effective_root
+          root_ancestor = deepest_existing_ancestor(root)
+          return false unless root_ancestor
+          real_root_ancestor, root_trailing = root_ancestor
+          effective_root = root_trailing.empty? ? real_root_ancestor : File.join(real_root_ancestor, File.join(root_trailing))
+        end
+
+        rel = ::Path.new(prospective_path).relative_to(::Path.new(effective_root))
         return true if rel.to_s == "."
         rel.parts.first? != ".."
       end

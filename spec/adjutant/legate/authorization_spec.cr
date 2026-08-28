@@ -91,6 +91,63 @@ module Adjutant
       end
     end
 
+    describe "#check_root_maybe_missing" do
+      it "allows a path that doesn't exist yet, nested under an EXISTING granted root" do
+        with_tmpdir do |dir|
+          target = File.join(dir, "not-yet-created.txt")
+          Legate::Grants.new.check_root_maybe_missing(target, [dir]).allowed?.should be_true
+        end
+      end
+
+      it "denies a not-yet-existing path outside every granted root" do
+        with_tmpdir do |dir|
+          with_tmpdir do |other|
+            target = File.join(other, "not-yet-created.txt")
+            Legate::Grants.new.check_root_maybe_missing(target, [dir]).allowed?.should be_false
+          end
+        end
+      end
+
+      # The real gap this test locks in: found via a script granting
+      # `write` access to an `output/`-style directory the script
+      # itself creates via `Legate.mkdir` — the FIRST time anywhere in
+      # this codebase a granted ROOT (not just the target path) didn't
+      # exist yet. `Legate.mkdir(output_dir)` targets the granted root
+      # PATH ITSELF, which used to be denied outright: `under?`'s own
+      # `resolve(root)` call required the root to already exist, with
+      # no fallback — even though "grant write to `./output` before
+      # anything has created `./output`" is an entirely realistic
+      # embedder scenario, not just a theoretical edge case.
+      it "allows creating a directory AT a granted root that doesn't exist yet itself" do
+        with_tmpdir do |dir|
+          root = File.join(dir, "output") # does NOT exist on disk
+          Legate::Grants.new.check_root_maybe_missing(root, [root]).allowed?.should be_true
+        end
+      end
+
+      it "allows a not-yet-existing path nested under a not-yet-existing granted root" do
+        with_tmpdir do |dir|
+          root = File.join(dir, "output")
+          target = File.join(root, "sub", "file.txt")
+          Legate::Grants.new.check_root_maybe_missing(target, [root]).allowed?.should be_true
+        end
+      end
+
+      it "still denies a not-yet-existing path outside a not-yet-existing granted root" do
+        with_tmpdir do |dir|
+          root = File.join(dir, "output")
+          sibling = File.join(dir, "other-output", "file.txt") # NOT under `root`
+          Legate::Grants.new.check_root_maybe_missing(sibling, [root]).allowed?.should be_false
+        end
+      end
+
+      it "denies when no roots are granted" do
+        decision = Legate::Grants.deny_all.check_root_maybe_missing(__FILE__, [] of String)
+        decision.allowed?.should be_false
+        decision.reason.should match(/no roots granted/)
+      end
+    end
+
     describe "#check_host" do
       it "denies when no hosts are granted" do
         Legate::Grants.deny_all.check_host("api.example.com").allowed?.should be_false
