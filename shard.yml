@@ -13,6 +13,8 @@ authors:
 development_dependencies:
   ameba:
     github: crystal-ameba/ameba
+  wiretap:
+    github: nogginly/wiretap.cr
 
 targets:
   test_runner:

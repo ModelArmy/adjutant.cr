@@ -1,0 +1,57 @@
+{
+  "name": "legate_fetch_redirect",
+  "recorded_with": "wiretap/0.4.2",
+  "interactions": [
+    {
+      "request": {
+        "method": "GET",
+        "url": "https://httpbin.org/redirect/1",
+        "headers": {
+          "Host": "httpbin.org",
+          "User-Agent": "Crystal",
+          "Accept-Encoding": "gzip, deflate"
+        }
+      },
+      "response": {
+        "status": 302,
+        "headers": {
+          "Date": "Sun, 30 Aug 2026 07:23:23 GMT",
+          "Content-Type": "text/html; charset=utf-8",
+          "Content-Length": "215",
+          "Connection": "keep-alive",
+          "Server": "gunicorn/19.9.0",
+          "Location": "/get",
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Credentials": "true"
+        },
+        "body": "<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 3.2 Final//EN\">\n<title>Redirecting...</title>\n<h1>Redirecting...</h1>\n<p>You should be redirected automatically to target URL: <a href=\"/get\">/get</a>.  If not click the link."
+      },
+      "recorded_at": "2026-08-30T07:23:23Z"
+    },
+    {
+      "request": {
+        "method": "GET",
+        "url": "https://httpbin.org/get",
+        "headers": {
+          "Host": "httpbin.org",
+          "User-Agent": "Crystal",
+          "Accept-Encoding": "gzip, deflate"
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Date": "Sun, 30 Aug 2026 07:23:23 GMT",
+          "Content-Type": "application/json",
+          "Content-Length": "269",
+          "Connection": "keep-alive",
+          "Server": "gunicorn/19.9.0",
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Credentials": "true"
+        },
+        "body": "{\n  \"args\": {}, \n  \"headers\": {\n    \"Accept-Encoding\": \"gzip, deflate\", \n    \"Host\": \"httpbin.org\", \n    \"User-Agent\": \"Crystal\", \n    \"X-Amzn-Trace-Id\": \"Root=1-6a93da6b-7e07e29108d9fbb5451207cd\"\n  }, \n  \"origin\": \"174.93.24.23\", \n  \"url\": \"https://httpbin.org/get\"\n}\n"
+      },
+      "recorded_at": "2026-08-30T07:23:23Z"
+    }
+  ]
+}

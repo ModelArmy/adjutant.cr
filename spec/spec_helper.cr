@@ -1,5 +1,23 @@
 require "spec"
+require "wiretap"
 require "../src/adjutant"
+
+# Wiretap records real HTTP interactions once, to JSON transcripts under
+# `spec/transcripts/`, then replays them offline forever after. Only
+# `Legate.fetch`'s specs use it; every other spec in this suite is
+# untouched by it.
+#
+# `record_mode` is the important line. Locally it is `:once`, so a
+# missing transcript is recorded against a real server the first time
+# and committed. **In CI it is `:none`**, which forbids recording
+# outright and fails on any request that has no matching transcript.
+# That is deliberate: a CI run that silently reached the network would
+# be non-deterministic, would depend on a third party's uptime, and —
+# worst — would quietly paper over a spec whose transcript someone
+# forgot to commit. Failing loudly is the point.
+Wiretap.configure do |c|
+  c.record_mode = ENV["CI"]? ? :none : :once
+end
 
 module Adjutant
   # Shared test default: reject_all, since most specs aren't testing IFC

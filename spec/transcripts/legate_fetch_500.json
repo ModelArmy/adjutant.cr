@@ -1,0 +1,31 @@
+{
+  "name": "legate_fetch_500",
+  "recorded_with": "wiretap/0.4.2",
+  "interactions": [
+    {
+      "request": {
+        "method": "GET",
+        "url": "https://httpbin.org/status/500",
+        "headers": {
+          "Host": "httpbin.org",
+          "User-Agent": "Crystal",
+          "Accept-Encoding": "gzip, deflate"
+        }
+      },
+      "response": {
+        "status": 500,
+        "headers": {
+          "Date": "Sun, 30 Aug 2026 07:23:22 GMT",
+          "Content-Type": "text/html; charset=utf-8",
+          "Content-Length": "0",
+          "Connection": "keep-alive",
+          "Server": "gunicorn/19.9.0",
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Credentials": "true"
+        },
+        "body": ""
+      },
+      "recorded_at": "2026-08-30T07:23:22Z"
+    }
+  ]
+}

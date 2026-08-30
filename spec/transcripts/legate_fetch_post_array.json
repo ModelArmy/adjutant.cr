@@ -1,0 +1,34 @@
+{
+  "name": "legate_fetch_post_array",
+  "recorded_with": "wiretap/0.4.2",
+  "interactions": [
+    {
+      "request": {
+        "method": "POST",
+        "url": "https://httpbin.org/post",
+        "headers": {
+          "Content-Length": "3",
+          "Host": "httpbin.org",
+          "User-Agent": "Crystal",
+          "Accept-Encoding": "gzip, deflate"
+        },
+        "body": "abc",
+        "body_digest": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Date": "Sun, 30 Aug 2026 07:23:22 GMT",
+          "Content-Type": "application/json",
+          "Content-Length": "364",
+          "Connection": "keep-alive",
+          "Server": "gunicorn/19.9.0",
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Credentials": "true"
+        },
+        "body": "{\n  \"args\": {}, \n  \"data\": \"abc\", \n  \"files\": {}, \n  \"form\": {}, \n  \"headers\": {\n    \"Accept-Encoding\": \"gzip, deflate\", \n    \"Content-Length\": \"3\", \n    \"Host\": \"httpbin.org\", \n    \"User-Agent\": \"Crystal\", \n    \"X-Amzn-Trace-Id\": \"Root=1-6a93da6a-2febea5303fcfe960c513a5f\"\n  }, \n  \"json\": null, \n  \"origin\": \"174.93.24.23\", \n  \"url\": \"https://httpbin.org/post\"\n}\n"
+      },
+      "recorded_at": "2026-08-30T07:23:22Z"
+    }
+  ]
+}

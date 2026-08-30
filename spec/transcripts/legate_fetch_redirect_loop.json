@@ -1,0 +1,84 @@
+{
+  "name": "legate_fetch_redirect_loop",
+  "recorded_with": "wiretap/0.4.2",
+  "interactions": [
+    {
+      "request": {
+        "method": "GET",
+        "url": "https://httpbin.org/redirect/6",
+        "headers": {
+          "Host": "httpbin.org",
+          "User-Agent": "Crystal",
+          "Accept-Encoding": "gzip, deflate"
+        }
+      },
+      "response": {
+        "status": 302,
+        "headers": {
+          "Date": "Sun, 30 Aug 2026 07:23:23 GMT",
+          "Content-Type": "text/html; charset=utf-8",
+          "Content-Length": "247",
+          "Connection": "keep-alive",
+          "Server": "gunicorn/19.9.0",
+          "Location": "/relative-redirect/5",
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Credentials": "true"
+        },
+        "body": "<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 3.2 Final//EN\">\n<title>Redirecting...</title>\n<h1>Redirecting...</h1>\n<p>You should be redirected automatically to target URL: <a href=\"/relative-redirect/5\">/relative-redirect/5</a>.  If not click the link."
+      },
+      "recorded_at": "2026-08-30T07:23:23Z"
+    },
+    {
+      "request": {
+        "method": "GET",
+        "url": "https://httpbin.org/relative-redirect/5",
+        "headers": {
+          "Host": "httpbin.org",
+          "User-Agent": "Crystal",
+          "Accept-Encoding": "gzip, deflate"
+        }
+      },
+      "response": {
+        "status": 302,
+        "headers": {
+          "Date": "Sun, 30 Aug 2026 07:23:23 GMT",
+          "Content-Type": "text/html; charset=utf-8",
+          "Content-Length": "0",
+          "Connection": "keep-alive",
+          "Server": "gunicorn/19.9.0",
+          "Location": "/relative-redirect/4",
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Credentials": "true"
+        },
+        "body": ""
+      },
+      "recorded_at": "2026-08-30T07:23:23Z"
+    },
+    {
+      "request": {
+        "method": "GET",
+        "url": "https://httpbin.org/relative-redirect/4",
+        "headers": {
+          "Host": "httpbin.org",
+          "User-Agent": "Crystal",
+          "Accept-Encoding": "gzip, deflate"
+        }
+      },
+      "response": {
+        "status": 302,
+        "headers": {
+          "Date": "Sun, 30 Aug 2026 07:23:24 GMT",
+          "Content-Type": "text/html; charset=utf-8",
+          "Content-Length": "0",
+          "Connection": "keep-alive",
+          "Server": "gunicorn/19.9.0",
+          "Location": "/relative-redirect/3",
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Credentials": "true"
+        },
+        "body": ""
+      },
+      "recorded_at": "2026-08-30T07:23:24Z"
+    }
+  ]
+}

@@ -764,6 +764,54 @@ individually.
 
 ### Legate
 
+- **`Legate.fetch` does not pin the resolved address for the
+  connection (§8.2).** Found 2026-08-30 implementing `fetch.cr`. §8.2
+  requires three things: resolve the hostname, check **every**
+  resulting address against the private/loopback/link-local/metadata
+  ranges, then **pin the chosen address for the connection**. The
+  first two are implemented and tested (`fetch_spec.cr` covers
+  loopback, RFC 1918, CGNAT, the metadata address, IPv6 unique-local,
+  both spellings of IPv4-mapped IPv6, and the multi-address case where
+  only one entry is blocked). The third is not: once the check passes,
+  the connection is made **by hostname**, so the name is resolved a
+  second time by the TCP stack and a DNS rebinding attack can return a
+  different address the second time. **Must Fix**, not Will Fix — this
+  is a stated §8.2 requirement and the residual window is exactly the
+  attack the section exists to describe, even though the allowlist and
+  range checks themselves are re-run at every redirect hop and are not
+  weakened by it. Fix shape: bind the connection to the already-
+  resolved `Socket::IPAddress` while still presenting the original
+  hostname for TLS SNI and the `Host` header, which needs more than
+  `HTTP::Client`'s public surface offers directly — likely a custom
+  socket or a client subclass, and worth doing carefully rather than
+  quickly.
+
+- **`Legate.fetch`'s `stream: true` is not implemented.** Found
+  2026-08-30, staged deliberately. §4.5 specifies that `stream: true`
+  makes the response body a `Legate::Bytes` rather than a `String`
+  capped by `limit`. Today the kwarg raises a clear `Legate::Transport`
+  naming itself as unimplemented, rather than silently buffering
+  behind a kwarg that promises otherwise — a script asking for a
+  stream and quietly receiving a fully buffered String would appear to
+  work right up until a response too large to hold in memory. Will
+  Fix: the buffered path is the whole of §4.5 otherwise and is
+  testable today. Fix shape: a streaming response body has to outlive
+  the `HTTP::Client#exec` block that produces it, so the
+  `Legate::Stream` iterator must own the client's lifetime and close
+  it on exhaustion — the same ownership pattern `bytes.cr`'s
+  `ChunkIterator` already uses for an open `File`, but with a
+  connection instead, where getting it wrong leaks sockets rather than
+  failing loudly.
+
+- **`Legate.fetch`'s `body:` does not stream an Enumerable.** Found
+  2026-08-30. §4.5 says `body:` accepts a String or an Enumerable "so
+  uploads stream"; an Array is currently joined into a single String
+  before the request is built, so the memory saving the sentence
+  promises does not happen. Will Fix, and paired with the `stream:`
+  entry above — both need the connection's own IO rather than the
+  buffered `exec` path, and both should land together rather than
+  half-solving the streaming story twice.
+
 - **IPv6 literals can't be written in a `net.hosts` rule.** Found
   2026-08-30 building `net_rule.cr`. The scalar parser splits a
   `host:port` entry on the colon, which is unambiguous for a DNS name

@@ -177,8 +177,15 @@ module Adjutant
         raise_kwarg_type_error(ncc, method, kwarg, "Symbol", given)
       end
 
-      private def self.raise_kwarg_type_error(ncc : NativeCallContext, method : String, kwarg : String,
-                                              expected : String, given : Value) : NoReturn
+      # PUBLIC (was private until 2026-08-30) — `Verbs::Fetch` reads
+      # two kwargs whose shapes none of the three `checked_*` helpers
+      # above cover (`headers:` is a Hash of String => String,
+      # `body:` is a String or an Array of Strings), and it must
+      # produce the SAME clean R036 TypeError those helpers do rather
+      # than inventing a second, differently-worded failure for the
+      # same class of caller mistake.
+      def self.raise_kwarg_type_error(ncc : NativeCallContext, method : String, kwarg : String,
+                                      expected : String, given : Value) : NoReturn
         ncc.raise_error(
           "R036",
           {"method" => method, "kwarg" => kwarg, "expected" => expected, "class_name" => Builtins.builtin_type_name(given)},

@@ -26,6 +26,7 @@ require "./legate/verbs/mkdir"
 require "./legate/verbs/cp"
 require "./legate/verbs/rm"
 require "./legate/verbs/mv"
+require "./legate/verbs/fetch"
 
 module Adjutant::Legate
 end
