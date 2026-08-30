@@ -148,24 +148,136 @@ module Adjutant
       end
     end
 
-    describe "#check_host" do
+    describe "#check_net" do
+      get_only = ["get"]
+
       it "denies when no hosts are granted" do
-        Legate::Grants.deny_all.check_host("api.example.com").allowed?.should be_false
+        Legate::Grants.deny_all.check_net("https", "api.example.com", 443, "get").allowed?.should be_false
       end
 
-      it "allows an exact allowlisted host" do
-        grants = Legate::Grants.new(net_hosts: ["api.example.com"])
-        grants.check_host("api.example.com").allowed?.should be_true
+      it "denies when hosts are granted but net.methods is empty" do
+        grants = Legate::Grants.new(net_rules: [Legate::NetRule.parse("api.example.com")])
+        decision = grants.check_net("https", "api.example.com", 443, "get")
+        decision.allowed?.should be_false
+        decision.reason.should match(/net\.methods is empty/)
+      end
+
+      it "allows an exact allowlisted host on its default scheme and port" do
+        grants = Legate::Grants.new(
+          net_rules: [Legate::NetRule.parse("api.example.com")], net_methods: get_only,
+        )
+        grants.check_net("https", "api.example.com", 443, "get").allowed?.should be_true
       end
 
       it "denies a host not on the allowlist" do
-        grants = Legate::Grants.new(net_hosts: ["api.example.com"])
-        grants.check_host("evil.example.com").allowed?.should be_false
+        grants = Legate::Grants.new(
+          net_rules: [Legate::NetRule.parse("api.example.com")], net_methods: get_only,
+        )
+        grants.check_net("https", "evil.example.com", 443, "get").allowed?.should be_false
       end
 
-      it "does not treat a subdomain as matching its parent" do
-        grants = Legate::Grants.new(net_hosts: ["example.com"])
-        grants.check_host("evil.example.com").allowed?.should be_false
+      it "does not treat a subdomain as matching its parent by default" do
+        grants = Legate::Grants.new(
+          net_rules: [Legate::NetRule.parse("example.com")], net_methods: get_only,
+        )
+        grants.check_net("https", "evil.example.com", 443, "get").allowed?.should be_false
+      end
+
+      # THE change this whole type exists for: a host is not a
+      # service. An allowlisted name on an unlisted port is denied.
+      it "denies an allowlisted host on a port the rule doesn't name" do
+        grants = Legate::Grants.new(
+          net_rules: [Legate::NetRule.parse("api.example.com")], net_methods: get_only,
+        )
+        decision = grants.check_net("https", "api.example.com", 22, "get")
+        decision.allowed?.should be_false
+        decision.reason.should match(/port 22 is not in \[443\]/)
+      end
+
+      it "denies plaintext http against a rule that didn't ask for it" do
+        grants = Legate::Grants.new(
+          net_rules: [Legate::NetRule.parse("api.example.com")], net_methods: get_only,
+        )
+        decision = grants.check_net("http", "api.example.com", 80, "get")
+        decision.allowed?.should be_false
+        decision.reason.should match(/granted only over https/)
+      end
+
+      it "allows http when the rule names it explicitly" do
+        grants = Legate::Grants.new(
+          net_rules: [Legate::NetRule.parse("http://api.example.com")], net_methods: get_only,
+        )
+        grants.check_net("http", "api.example.com", 80, "get").allowed?.should be_true
+      end
+
+      it "honours an explicit port in the URL shorthand, and only that port" do
+        grants = Legate::Grants.new(
+          net_rules: [Legate::NetRule.parse("https://api.example.com:8443")], net_methods: get_only,
+        )
+        grants.check_net("https", "api.example.com", 8443, "get").allowed?.should be_true
+        grants.check_net("https", "api.example.com", 443, "get").allowed?.should be_false
+      end
+
+      it "denies a method the grant-wide net.methods list doesn't include" do
+        grants = Legate::Grants.new(
+          net_rules: [Legate::NetRule.parse("api.example.com")], net_methods: get_only,
+        )
+        decision = grants.check_net("https", "api.example.com", 443, "post")
+        decision.allowed?.should be_false
+        decision.reason.should match(/method POST is not granted/)
+      end
+
+      # A per-rule methods list NARROWS the grant-wide ceiling and can
+      # never widen it — so reading the single top-level line always
+      # tells you the maximum for the whole policy.
+      it "lets a rule narrow the grant-wide method list" do
+        rule = Legate::NetRule.new(host: "api.example.com", methods: ["get"])
+        grants = Legate::Grants.new(net_rules: [rule], net_methods: ["get", "post"])
+        grants.check_net("https", "api.example.com", 443, "get").allowed?.should be_true
+        grants.check_net("https", "api.example.com", 443, "post").allowed?.should be_false
+      end
+
+      it "does not let a rule widen past the grant-wide method list" do
+        rule = Legate::NetRule.new(host: "api.example.com", methods: ["get", "delete"])
+        grants = Legate::Grants.new(net_rules: [rule], net_methods: ["get"])
+        grants.check_net("https", "api.example.com", 443, "delete").allowed?.should be_false
+      end
+
+      describe "subdomains: true" do
+        it "admits a child of the rule's own host" do
+          rule = Legate::NetRule.new(host: "b.com", subdomains: true)
+          grants = Legate::Grants.new(net_rules: [rule], net_methods: get_only)
+          grants.check_net("https", "a.b.com", 443, "get").allowed?.should be_true
+          grants.check_net("https", "b.com", 443, "get").allowed?.should be_true
+        end
+
+        # Widening is from THIS RULE'S host, never from a suffix of
+        # it: `x.y.com` admits `a.x.y.com` but must not admit
+        # `a.y.com`.
+        it "widens from the rule's host, not from a parent of it" do
+          rule = Legate::NetRule.new(host: "x.y.com", subdomains: true)
+          grants = Legate::Grants.new(net_rules: [rule], net_methods: get_only)
+          grants.check_net("https", "a.x.y.com", 443, "get").allowed?.should be_true
+          grants.check_net("https", "a.y.com", 443, "get").allowed?.should be_false
+          grants.check_net("https", "y.com", 443, "get").allowed?.should be_false
+        end
+
+        # The classic subdomain-matching bug: a missing dot in the
+        # suffix check turns a rule for `b.com` into one that admits
+        # `evilb.com`.
+        it "requires the dot boundary, so evilb.com does not match b.com" do
+          rule = Legate::NetRule.new(host: "b.com", subdomains: true)
+          grants = Legate::Grants.new(net_rules: [rule], net_methods: get_only)
+          grants.check_net("https", "evilb.com", 443, "get").allowed?.should be_false
+        end
+      end
+
+      it "matches hosts case-insensitively and ignores a trailing dot" do
+        grants = Legate::Grants.new(
+          net_rules: [Legate::NetRule.parse("API.Example.com")], net_methods: get_only,
+        )
+        grants.check_net("https", "api.example.com", 443, "get").allowed?.should be_true
+        grants.check_net("https", "api.example.com.", 443, "get").allowed?.should be_true
       end
     end
 

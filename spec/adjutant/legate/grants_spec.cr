@@ -54,7 +54,7 @@ module Adjutant
         grants.read_roots.should be_empty
         grants.write_roots.should be_empty
         grants.delete_roots.should be_empty
-        grants.net_hosts.should be_empty
+        grants.net_rules.should be_empty
         grants.net_methods.should be_empty
         grants.exec_binaries.should be_empty
         grants.ambient_env.should be_empty
@@ -68,6 +68,7 @@ module Adjutant
         limits = Legate::Grants.deny_all.limits
         limits.read_limit.should eq Legate::Limits::DEFAULT_READ_LIMIT
         limits.fetch_limit.should eq Legate::Limits::DEFAULT_FETCH_LIMIT
+        limits.url_limit.should eq Legate::Limits::DEFAULT_URL_LIMIT
       end
 
       it "leaves per-run budgets unenforced (nil)" do
@@ -112,7 +113,16 @@ module Adjutant
         grants.read_roots.should eq ["/work/input", "/work/logs"]
         grants.write_roots.should eq ["/work/output"]
         grants.delete_roots.should eq ["/work/output/tmp"]
-        grants.net_hosts.should eq ["api.example.com"]
+        grants.net_rules.size.should eq 1
+        grants.net_rules.first.host.should eq "api.example.com"
+        # §7's plain-string form still means what it always meant —
+        # but its scheme and port are now PINNED to the fail-closed
+        # defaults rather than being unconstrained. That change of
+        # meaning is the whole point of net_rule.cr; see its own
+        # top comment.
+        grants.net_rules.first.scheme.should eq "https"
+        grants.net_rules.first.ports.should eq [443]
+        grants.net_rules.first.subdomains?.should be_false
         grants.net_methods.should eq ["get", "post"]
         grants.exec_binaries.should eq ["/usr/bin/git", "/usr/bin/rg"]
         grants.ambient_env.should eq ["TZ", "LANG"]
@@ -127,6 +137,17 @@ module Adjutant
         limits.wall_clock.should eq 300
         limits.total_read.should eq 4_294_967_296_i64
         limits.total_write.should eq 1_073_741_824_i64
+        # §7's own example names no `url_limit`, so it falls back to
+        # the 2 KiB default rather than being unbounded.
+        limits.url_limit.should eq Legate::Limits::DEFAULT_URL_LIMIT
+      end
+
+      it "parses an explicit url_limit" do
+        limits = Legate::Grants.from_yaml(<<-YAML).limits
+        limits:
+          url_limit: 4KiB
+        YAML
+        limits.url_limit.should eq 4_096_i64
       end
 
       it "denies everything and leaves budgets unenforced when both top-level keys are absent" do
@@ -182,6 +203,7 @@ module Adjutant
           YAML
         grants.limits.read_limit.should eq Legate::Limits::DEFAULT_READ_LIMIT
         grants.limits.fetch_limit.should eq Legate::Limits::DEFAULT_FETCH_LIMIT
+        grants.limits.url_limit.should eq Legate::Limits::DEFAULT_URL_LIMIT
       end
     end
   end

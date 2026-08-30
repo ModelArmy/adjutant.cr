@@ -764,6 +764,35 @@ individually.
 
 ### Legate
 
+- **IPv6 literals can't be written in a `net.hosts` rule.** Found
+  2026-08-30 building `net_rule.cr`. The scalar parser splits a
+  `host:port` entry on the colon, which is unambiguous for a DNS name
+  and hopeless for `2001:db8::1`; bracketed forms
+  (`[2001:db8::1]:8443`) aren't handled either. The parser *rejects*
+  both loudly with an `ArgumentError` at policy-load time rather than
+  mis-splitting on the first colon, so nothing silently misbehaves — a
+  policy naming an IPv6 literal fails to load instead of quietly
+  building a rule for a host that doesn't exist and then denying every
+  real connection to it with a baffling reason. Will Fix rather than
+  Must Fix: the same grant is expressible by hostname today, and the
+  failure mode is loud and immediate. Fix shape: bracket-aware
+  splitting in `NetRule.parse`, plus a decision on whether a bare IPv6
+  address should be grantable at all, given §8.2's address-range
+  checks are about to reject most of the interesting ones anyway.
+
+- **LEGATE.md §7 doesn't document the `net.hosts` mapping form or
+  `limits.url_limit`.** Both landed 2026-08-30 as deliberate,
+  embedder-agreed extensions (see `net_rule.cr`'s and `Limits`' own
+  top comments for the full reasoning), and both are implemented and
+  tested — but §7's YAML block still shows only the plain-string
+  `hosts:` list and a `limits:` block with no URL cap. LEGATE.md is
+  treated as authoritative here, so leaving it describing a narrower
+  surface than the implementation actually enforces is a real
+  divergence, not a documentation nicety. Will Fix: needs a §7 edit
+  covering the mapping keys (`scheme`/`ports`/`methods`/`subdomains`),
+  the fail-closed default each omitted key takes, and `url_limit`'s
+  place among the per-call limits.
+
 - **Deletion consumes no budget of any kind except wall clock.**
   Found 2026-08-28 implementing `rm.cr`. `Budget` (`legate/budget.cr`)
   models exactly two quantities — bytes read and bytes written — and

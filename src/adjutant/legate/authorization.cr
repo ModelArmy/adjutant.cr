@@ -105,15 +105,49 @@ module Adjutant
         under_root ? Decision.allow : Decision.deny("#{path} (prospective: #{prospective}) is not under any granted root")
       end
 
-      # Allowlist membership only — exact string match against
-      # `net_hosts`. No wildcard/subdomain matching (§7's own example
-      # lists exact hostnames, not patterns) and no SSRF/DNS-resolved-
-      # address-range check (§8.2) — that needs the actual connection
-      # attempt's resolved address, which only exists once a `net`
-      # verb is mid-call, so it's deferred there.
-      def check_host(host : String) : Decision
-        return Decision.deny("no hosts granted") if net_hosts.empty?
-        net_hosts.includes?(host) ? Decision.allow : Decision.deny("#{host} is not in the granted host allowlist")
+      # Replaces the old `check_host`, which matched a hostname string
+      # and nothing else. A connection is now authorized against all
+      # four of scheme, host, port and method together, because any
+      # three of them without the fourth is not a service — see
+      # net_rule.cr's own top comment for the full reasoning and for
+      # why each default fails closed.
+      #
+      # Still allowlist semantics: ANY rule matching all four allows.
+      # Still no SSRF/DNS-resolved-address-range check (§8.2) — that
+      # needs the actual connection attempt's resolved addresses,
+      # which only exist once `Legate.fetch` is mid-call, so it stays
+      # deferred there. This method is the STATIC half only.
+      #
+      # The denial reason names the closest miss rather than a bare
+      # "denied". A `net` denial is FATAL and unrescuable, so it ends
+      # the run; being told "host matched, port 22 is not in [443]"
+      # rather than "denied" is the difference between a one-line
+      # policy fix and an afternoon.
+      def check_net(scheme : String, host : String, port : Int32, method : String) : Decision
+        return Decision.deny("no hosts granted") if net_rules.empty?
+        return Decision.deny("no methods granted (net.methods is empty)") if net_methods.empty?
+
+        host_matches = net_rules.select(&.matches_host?(host))
+        if host_matches.empty?
+          return Decision.deny("#{host} is not in the granted host allowlist")
+        end
+
+        scheme_matches = host_matches.select(&.matches_scheme?(scheme))
+        if scheme_matches.empty?
+          return Decision.deny("#{scheme}://#{host} denied: #{host} is granted only over #{host_matches.map(&.scheme).uniq!.join("/")}")
+        end
+
+        port_matches = scheme_matches.select(&.matches_port?(port))
+        if port_matches.empty?
+          allowed = scheme_matches.flat_map(&.ports).uniq!.sort!
+          return Decision.deny("#{scheme}://#{host}:#{port} denied: port #{port} is not in #{allowed}")
+        end
+
+        if port_matches.any?(&.allows_method?(method, net_methods))
+          Decision.allow
+        else
+          Decision.deny("#{method.upcase} #{scheme}://#{host}:#{port} denied: method #{method.upcase} is not granted for this host")
+        end
       end
 
       # Resolves `binary` to an absolute path — a bare name (no `/`)

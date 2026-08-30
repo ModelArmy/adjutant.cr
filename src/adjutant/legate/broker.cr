@@ -22,7 +22,7 @@ module Adjutant
     #      is a plain "is the run still allowed to continue at all,"
     #      ahead of "is THIS call allowed."
     #   2. Grants (STATIC, this broker's own `@grants`, via 4b's
-    #      `check_root`/`check_host`/`check_binary`) — a structural
+    #      `check_root`/`check_net`/`check_binary`) — a structural
     #      "is this call allowed to happen at all," decided without
     #      looking at what data is flowing through it. A denial here
     #      is FATAL: `Legate::FatalSignal.new(:denied, ...)`,
@@ -155,16 +155,33 @@ module Adjutant
         end
       end
 
-      # §4.6ish's `net`-grant boundary — allowlist membership only
-      # (4b's `check_host`). §8.2's SSRF/DNS-resolved-address-range
-      # hardening needs the connection's actual resolved address,
-      # which only exists mid-call inside a real `net` verb, so it is
-      # NOT part of this boundary check — a verb calling this method
-      # still has its own further check to make after DNS resolution,
-      # same as `authorize_write`'s parent-directory case above.
-      def authorize_net(host : String, ncc : NativeCallContext) : RiskFlowLabel?
-        authorize(:net, "net", host, RiskTag::NetworkEgress, ProvenanceKind::Host, ncc) do
-          @grants.check_host(host)
+      # §4.5's `net`-grant boundary — the STATIC half only (4b's
+      # `check_net`). Takes all four of scheme/host/port/method rather
+      # than a bare hostname, because a NetRule authorizes a SERVICE,
+      # not a machine; see net_rule.cr's own top comment.
+      #
+      # §8.2's SSRF/DNS-resolved-address-range hardening needs the
+      # connection's actual resolved addresses, which only exist
+      # mid-call inside a real `net` verb, so it is NOT part of this
+      # boundary check — a verb calling this method still has its own
+      # further check to make after DNS resolution, same as
+      # `authorize_write`'s parent-directory case above.
+      #
+      # `subject` for the audit record and for sensitivity resolution
+      # is the origin form `scheme://host:port`, not the bare host.
+      # That is a deliberate change of shape: a RiskFlowPolicy
+      # sensitivity pattern for a network origin should be able to
+      # distinguish `https://api.example.com:443` from the same name
+      # on a different port, for exactly the reason the rules
+      # themselves do. It does mean a pattern written against a bare
+      # hostname no longer matches — worth knowing, though nothing
+      # ships against the old shape yet, since no verb existed to use
+      # it.
+      def authorize_net(scheme : String, host : String, port : Int32, method : String,
+                        ncc : NativeCallContext) : RiskFlowLabel?
+        subject = "#{scheme}://#{host}:#{port}"
+        authorize(:net, "net", subject, RiskTag::NetworkEgress, ProvenanceKind::Host, ncc) do
+          @grants.check_net(scheme, host, port, method)
         end
       end
 
@@ -190,7 +207,7 @@ module Adjutant
       # The shared shape every authorize_* method above follows:
       # wall-clock check, then the caller-supplied Grants decision
       # (each grant category resolves its own Decision differently —
-      # `check_root` vs `check_host` vs `check_binary` — hence the
+      # `check_root` vs `check_net` vs `check_binary` — hence the
       # block rather than a fixed argument), then RiskFlowPolicy, with
       # exactly one AuditRecord appended per outcome. `grant` is the
       # AuditRecord's own grant-category symbol; `verb`/`subject` are

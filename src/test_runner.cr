@@ -147,7 +147,7 @@ module Testing
         read_roots: raw.read_roots.map { |root| File.expand_path(root, dir) },
         write_roots: raw.write_roots.map { |root| File.expand_path(root, dir) },
         delete_roots: raw.delete_roots.map { |root| File.expand_path(root, dir) },
-        net_hosts: raw.net_hosts,
+        net_rules: raw.net_rules,
         net_methods: raw.net_methods,
         exec_binaries: raw.exec_binaries.map { |root| File.expand_path(root, dir) },
         ambient_env: raw.ambient_env,

@@ -1,4 +1,5 @@
 require "yaml"
+require "./net_rule"
 
 module Adjutant
   module Legate
@@ -57,14 +58,40 @@ module Adjutant
       DEFAULT_READ_LIMIT  =  8_388_608_i64 # 8 MiB — §4.1
       DEFAULT_FETCH_LIMIT = 33_554_432_i64 # 32 MiB — §4.5
 
+      # DELIBERATE ADDITION to §7's `limits:` block, agreed with the
+      # embedder. §7 names no cap on the REQUEST side of a fetch at
+      # all — `fetch_limit` bounds the response only. That leaves the
+      # URL itself unbounded, and a URL is a perfectly serviceable
+      # exfiltration channel: a script with a `net` grant to any host
+      # can encode arbitrary amounts of sensitive data into a query
+      # string and "search" for it, with the whole payload sitting in
+      # the request line where a response-size limit never looks.
+      #
+      # 2 KiB by default. That is comfortably above any legitimate
+      # API call and comfortably below a useful exfiltration payload;
+      # it is also roughly where several real servers and proxies
+      # start refusing request lines anyway, so a policy sitting at
+      # the default is unlikely to break a script that would have
+      # worked in production.
+      #
+      # Enforced by `Legate.fetch` as a RECOVERABLE `Legate::TooLarge`
+      # (per-call limits are recoverable, §7), checked BEFORE the
+      # broker call so an over-long URL is never authorized, never
+      # resolved and never audited as an allowed egress — the data
+      # does not leave either way, and the script can retry with a
+      # smaller query.
+      DEFAULT_URL_LIMIT = 2_048_i64 # 2 KiB
+
       getter read_limit : Int64
       getter fetch_limit : Int64
+      getter url_limit : Int64
       getter memory : Int64?
       getter wall_clock : Int32?
       getter total_read : Int64?
       getter total_write : Int64?
 
       def initialize(@read_limit = DEFAULT_READ_LIMIT, @fetch_limit = DEFAULT_FETCH_LIMIT,
+                     @url_limit = DEFAULT_URL_LIMIT,
                      @memory = nil, @wall_clock = nil, @total_read = nil, @total_write = nil)
       end
     end
@@ -96,7 +123,7 @@ module Adjutant
       getter read_roots : Array(String)
       getter write_roots : Array(String)
       getter delete_roots : Array(String)
-      getter net_hosts : Array(String)
+      getter net_rules : Array(NetRule)
       getter net_methods : Array(String)
       getter exec_binaries : Array(String)
       getter ambient_env : Array(String)
@@ -113,7 +140,7 @@ module Adjutant
       getter limits : Limits
 
       def initialize(@read_roots = [] of String, @write_roots = [] of String,
-                     @delete_roots = [] of String, @net_hosts = [] of String,
+                     @delete_roots = [] of String, @net_rules = [] of NetRule,
                      @net_methods = [] of String, @exec_binaries = [] of String,
                      @ambient_env = [] of String, @ambient_now = :live,
                      @limits = Limits.new)
@@ -145,7 +172,7 @@ module Adjutant
           read_roots: string_array(grants_node, "read", "roots"),
           write_roots: string_array(grants_node, "write", "roots"),
           delete_roots: string_array(grants_node, "delete", "roots"),
-          net_hosts: string_array(grants_node, "net", "hosts"),
+          net_rules: net_rules_of(grants_node),
           net_methods: string_array(grants_node, "net", "methods").map(&.downcase),
           exec_binaries: string_array(grants_node, "exec", "binaries"),
           ambient_env: string_array(grants_node, "ambient", "env"),
@@ -162,6 +189,18 @@ module Adjutant
         from_yaml(File.read(path))
       end
 
+      # `net.hosts` entries are each parsed into a NetRule (which
+      # accepts both the plain-string form §7 shows and the richer
+      # mapping form) rather than being read as bare strings — see
+      # net_rule.cr's own top comment for why the widening was
+      # needed and how each default fails closed.
+      private def self.net_rules_of(grants_node : YAML::Any?) : Array(NetRule)
+        node = grants_node.try(&.["net"]?).try(&.["hosts"]?)
+        list = node.try(&.as_a?)
+        return [] of NetRule unless list
+        list.map { |entry| NetRule.from_yaml_node(entry) }
+      end
+
       private def self.ambient_now_of(grants_node : YAML::Any?) : Symbol
         raw = grants_node.try(&.["ambient"]?).try(&.["now"]?).try(&.as_s?)
         raw == "pinned" ? :pinned : :live
@@ -171,6 +210,7 @@ module Adjutant
         Limits.new(
           read_limit: size_or(limits_node, "read_limit", Limits::DEFAULT_READ_LIMIT),
           fetch_limit: size_or(limits_node, "fetch_limit", Limits::DEFAULT_FETCH_LIMIT),
+          url_limit: size_or(limits_node, "url_limit", Limits::DEFAULT_URL_LIMIT),
           memory: size_or?(limits_node, "memory"),
           wall_clock: duration_or?(limits_node, "wall_clock"),
           total_read: size_or?(limits_node, "total_read"),
