@@ -272,6 +272,41 @@ module Adjutant
         end
       end
 
+      describe "#net_allows_local?" do
+        it "is false for a rule that didn't ask for it" do
+          grants = Legate::Grants.new(
+            net_rules: [Legate::NetRule.parse("api.example.com")], net_methods: get_only,
+          )
+          grants.net_allows_local?("https", "api.example.com", 443, "get").should be_false
+        end
+
+        it "is true for a matching rule with local: true" do
+          rule = Legate::NetRule.new(host: "localhost", scheme: "http", ports: [11434], local: true)
+          grants = Legate::Grants.new(net_rules: [rule], net_methods: get_only)
+          grants.net_allows_local?("http", "localhost", 11434, "get").should be_true
+        end
+
+        # The opt-in belongs to the RULE, not the policy: a
+        # `local: true` rule for the model server grants nothing to
+        # the public API host sitting beside it in the same file.
+        it "does not leak the opt-in to other rules in the same policy" do
+          local_rule = Legate::NetRule.new(host: "localhost", scheme: "http", ports: [11434], local: true)
+          public_rule = Legate::NetRule.parse("api.example.com")
+          grants = Legate::Grants.new(net_rules: [local_rule, public_rule], net_methods: get_only)
+          grants.net_allows_local?("http", "localhost", 11434, "get").should be_true
+          grants.net_allows_local?("https", "api.example.com", 443, "get").should be_false
+        end
+
+        # Only a rule that authorizes the whole connection counts. A
+        # `local: true` rule for port 11434 says nothing about the
+        # same host on a port it doesn't grant.
+        it "ignores a local rule that doesn't match the connection" do
+          rule = Legate::NetRule.new(host: "localhost", scheme: "http", ports: [11434], local: true)
+          grants = Legate::Grants.new(net_rules: [rule], net_methods: get_only)
+          grants.net_allows_local?("http", "localhost", 8080, "get").should be_false
+        end
+      end
+
       it "matches hosts case-insensitively and ignores a trailing dot" do
         grants = Legate::Grants.new(
           net_rules: [Legate::NetRule.parse("API.Example.com")], net_methods: get_only,

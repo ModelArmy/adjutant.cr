@@ -833,7 +833,8 @@ individually.
   treated as authoritative here, so leaving it describing a narrower
   surface than the implementation actually enforces is a real
   divergence, not a documentation nicety. Will Fix: needs a §7 edit
-  covering the mapping keys (`scheme`/`ports`/`methods`/`subdomains`),
+  covering the mapping keys (`scheme`/`ports`/`methods`/`subdomains`/
+  `local`),
   the fail-closed default each omitted key takes, and `url_limit`'s
   place among the per-call limits.
 

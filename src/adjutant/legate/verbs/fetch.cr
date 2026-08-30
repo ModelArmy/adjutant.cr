@@ -113,7 +113,8 @@ module Adjutant
               label = RiskFlowLabel.join(label, broker.authorize_net(scheme, host, port, opts.method, ncc))
 
               addresses = resolve(host, port, ncc, transport)
-              check_addresses!(addresses, host, ncc, transport)
+              allow_local = broker.net_allows_local?(scheme, host, port, opts.method)
+              check_addresses!(addresses, host, allow_local, ncc, transport)
 
               # Pin the FIRST vetted address. Which one hardly matters
               # — `check_addresses!` refuses the whole hop unless
@@ -324,49 +325,88 @@ module Adjutant
           ncc.raise_error_class("Legate.fetch — could not resolve #{host}: #{ex.message}", transport)
         end
 
-        # §8.2 step two. Deliberately hand-rolled octet arithmetic
-        # rather than `Socket::IPAddress`'s own `#private?`/
-        # `#loopback?`/`#link_local?` predicates: those exist in
-        # recent Crystal, but their exact coverage (does `private?`
-        # include carrier-grade NAT? does `link_local?` cover IPv6
-        # fe80::/10?) is precisely the sort of thing this check
-        # cannot afford to be approximately right about, and the
-        # ranges below are short enough to state outright and read.
+        # §8.2 step two, split across two questions rather than one.
         #
-        # The metadata address (169.254.169.254) needs no special case
-        # — it lives inside link-local 169.254.0.0/16, which is
-        # blocked wholesale.
+        # Some ranges are refused NO MATTER WHAT a policy says: the
+        # cloud metadata endpoint and its link-local neighbours,
+        # multicast, broadcast, and the various reserved blocks. No
+        # script has a legitimate reason to reach any of them, and
+        # `169.254.169.254` in particular is the highest-value SSRF
+        # target there is.
+        #
+        # Loopback and private space are different. §8.2's
+        # confused-deputy problem is a script reaching an internal
+        # address it never NAMED — a permitted public host that 302s
+        # somewhere private. A policy that names `localhost:11434`
+        # itself is not confused, and refusing it would rule out an
+        # entire category of legitimate use (a local model server, a
+        # service on the LAN, a dev backend). So those ranges are
+        # gated on the matched rule's `local: true`, resolved per hop
+        # by `Grants#net_allows_local?`.
+        #
+        # Deliberately hand-rolled octet arithmetic rather than
+        # `Socket::IPAddress`'s own `#private?`/`#loopback?`/
+        # `#link_local?` predicates: those exist in recent Crystal,
+        # but their exact coverage (does `private?` include
+        # carrier-grade NAT? does `link_local?` cover IPv6 fe80::/10?)
+        # is precisely the sort of thing this check cannot afford to
+        # be approximately right about, and the ranges below are short
+        # enough to state outright and read.
         private def self.check_addresses!(addresses : Array(Socket::IPAddress), host : String,
-                                          ncc : NativeCallContext, transport : RubyClass) : Nil
+                                          allow_local : Bool, ncc : NativeCallContext,
+                                          transport : RubyClass) : Nil
           if addresses.empty?
             ncc.raise_error_class("Legate.fetch — #{host} resolved to no addresses", transport)
           end
 
           addresses.each do |address|
-            next unless blocked?(address)
+            if always_blocked?(address)
+              ncc.raise_error_class(
+                "Legate.fetch — #{host} resolves to #{address.address}, which is in a link-local, metadata, multicast or reserved range",
+                transport,
+              )
+            end
+
+            next unless local_range?(address)
+            next if allow_local
+
+            # The message names the remedy, because this is the one
+            # denial in the whole check that a policy author is
+            # entitled to overturn.
             ncc.raise_error_class(
-              "Legate.fetch — #{host} resolves to #{address.address}, which is in a private, loopback, link-local or metadata range",
+              "Legate.fetch — #{host} resolves to #{address.address}, which is loopback or private space; the matching net rule needs local: true",
               transport,
             )
           end
         end
 
-        private def self.blocked?(address : Socket::IPAddress) : Bool
+        # Refused regardless of any rule.
+        private def self.always_blocked?(address : Socket::IPAddress) : Bool
           text = address.address.downcase
           if octets = ipv4_octets(text)
-            return blocked_ipv4?(octets)
+            return always_blocked_ipv4?(octets)
           end
-          blocked_ipv6?(text)
+          always_blocked_ipv6?(text)
         end
 
-        # Also handles BOTH spellings of the IPv4-mapped IPv6 form,
-        # which would otherwise slip past both checks: neither is a
-        # bare dotted quad, and as IPv6 strings they match none of the
-        # prefixes below. The dotted spelling (`::ffff:127.0.0.1`) is
-        # what a policy author would write; the hex spelling
-        # (`::ffff:7f00:1`) is what `Socket::IPAddress#address` may
-        # actually render back, so checking only the first would leave
-        # the real one open.
+        # Refused unless the matched rule sets `local: true`.
+        private def self.local_range?(address : Socket::IPAddress) : Bool
+          text = address.address.downcase
+          if octets = ipv4_octets(text)
+            return local_ipv4?(octets)
+          end
+          local_ipv6?(text)
+        end
+
+        # Returns the four octets when `text` denotes an IPv4 address,
+        # in any of the three spellings that can reach this point.
+        # BOTH IPv4-mapped IPv6 forms are handled, since neither is a
+        # bare dotted quad and as IPv6 strings they match none of the
+        # prefixes checked elsewhere: the dotted spelling
+        # (`::ffff:127.0.0.1`) is what a person would write, while the
+        # hex spelling (`::ffff:7f00:1`) is what
+        # `Socket::IPAddress#address` may render back — checking only
+        # the first would leave the real one open.
         private def self.ipv4_octets(text : String) : Array(Int32)?
           if text.starts_with?("::ffff:")
             mapped = text.lchop("::ffff:")
@@ -402,30 +442,41 @@ module Adjutant
           [(high >> 8) & 0xFF, high & 0xFF, (low >> 8) & 0xFF, low & 0xFF]
         end
 
-        private def self.blocked_ipv4?(o : Array(Int32)) : Bool
+        private def self.always_blocked_ipv4?(o : Array(Int32)) : Bool
           case
           when o[0] == 0                                 then true # 0.0.0.0/8 — "this network"
-          when o[0] == 10                                then true # private
-          when o[0] == 127                               then true # loopback
-          when o[0] == 169 && o[1] == 254                then true # link-local, incl. 169.254.169.254 metadata
-          when o[0] == 172 && o[1] >= 16 && o[1] <= 31   then true # private
-          when o[0] == 192 && o[1] == 168                then true # private
+          when o[0] == 169 && o[1] == 254                then true # link-local, incl. the 169.254.169.254 metadata endpoint
           when o[0] == 192 && o[1] == 0 && o[2] == 0     then true # IETF protocol assignments
-          when o[0] == 100 && o[1] >= 64 && o[1] <= 127  then true # carrier-grade NAT
           when o[0] == 198 && (o[1] == 18 || o[1] == 19) then true # benchmarking
           when o[0] >= 224                               then true # multicast, reserved, broadcast
           else                                                false
           end
         end
 
-        private def self.blocked_ipv6?(text : String) : Bool
+        private def self.local_ipv4?(o : Array(Int32)) : Bool
+          case
+          when o[0] == 127                              then true # loopback
+          when o[0] == 10                               then true # private
+          when o[0] == 172 && o[1] >= 16 && o[1] <= 31  then true # private
+          when o[0] == 192 && o[1] == 168               then true # private
+          when o[0] == 100 && o[1] >= 64 && o[1] <= 127 then true # carrier-grade NAT
+          else                                               false
+          end
+        end
+
+        private def self.always_blocked_ipv6?(text : String) : Bool
           stripped = text.split('%').first # scope id, e.g. fe80::1%eth0
-          return true if stripped == "::1" || stripped == "::"
+          return true if stripped == "::"
           return true if stripped.starts_with?("fe8") || stripped.starts_with?("fe9") ||
                          stripped.starts_with?("fea") || stripped.starts_with?("feb") # fe80::/10 link-local
-          return true if stripped.starts_with?("fc") || stripped.starts_with?("fd")   # fc00::/7 unique-local
           return true if stripped.starts_with?("ff")                                  # ff00::/8 multicast
           false
+        end
+
+        private def self.local_ipv6?(text : String) : Bool
+          stripped = text.split('%').first
+          return true if stripped == "::1"                           # loopback
+          stripped.starts_with?("fc") || stripped.starts_with?("fd") # fc00::/7 unique-local
         end
 
         # One request, one response, fully buffered but read in

@@ -65,6 +65,40 @@ module Adjutant
       getter ports : Array(Int32)
       getter? subdomains : Bool
 
+      # Opt-in to reaching loopback and private address space — a
+      # local Ollama on `127.0.0.1:11434`, a service on the LAN, a
+      # dev server. Defaults to false, so §8.2's address check refuses
+      # every internal address unless a rule says otherwise.
+      #
+      # The distinction this encodes: §8.2's confused-deputy problem
+      # exists when a script reaches an internal address it never
+      # named — a permitted public host that 302s to somewhere
+      # private. If the POLICY itself names the destination, nobody is
+      # confused; that is the grant working as written.
+      #
+      # Per RULE rather than per policy, deliberately. A policy can
+      # grant `local: true` to its Ollama rule while every other host
+      # in the same file still refuses to follow a redirect into
+      # private space. And because each redirect hop re-authorizes
+      # from scratch, a `local: true` rule grants nothing to whatever
+      # it redirects to.
+      #
+      # Explicit rather than inferred: this is NOT deduced from the
+      # host being spelled `localhost` or `127.0.0.1`, because a name
+      # like `ollama.internal` resolving to `192.168.1.50` deserves
+      # the same opt-in, and a flag in the YAML is greppable across a
+      # fleet of policies in a way that inference never is.
+      #
+      # LINK-LOCAL IS NOT COVERED and cannot be opted into by any
+      # rule: `169.254.0.0/16` and `fe80::/10` stay blocked
+      # unconditionally. That range is what a device self-assigns when
+      # DHCP fails, so almost nothing legitimate listens there — and
+      # `169.254.169.254`, the cloud metadata endpoint, is the single
+      # highest-value SSRF target in existence. The cost is that
+      # genuine IPv6 link-local LAN addresses are unreachable too,
+      # which is a real trade and a deliberate one.
+      getter? local : Bool
+
       # Empty means "inherit the grant-wide list" — NOT "no methods."
       # The distinction matters and is why this is not defaulted to
       # something concrete here: a rule that says nothing about
@@ -74,7 +108,7 @@ module Adjutant
 
       def initialize(@host : String, @scheme : String = "https",
                      ports : Array(Int32)? = nil, @methods : Array(String) = [] of String,
-                     @subdomains : Bool = false)
+                     @subdomains : Bool = false, @local : Bool = false)
         @ports = ports || [DEFAULT_PORTS[@scheme]? || 443]
       end
 
@@ -113,9 +147,10 @@ module Adjutant
 
         methods = hash[YAML::Any.new("methods")]?.try(&.as_a?).try(&.map(&.as_s.downcase)) || [] of String
         subdomains = hash[YAML::Any.new("subdomains")]?.try(&.as_bool?) || false
+        local = hash[YAML::Any.new("local")]?.try(&.as_bool?) || false
 
         new(host: normalize_host(raw_host), scheme: scheme, ports: ports,
-          methods: methods, subdomains: subdomains)
+          methods: methods, subdomains: subdomains, local: local)
       end
 
       # The scalar form. Three spellings, resolved by inspection
@@ -219,6 +254,7 @@ module Adjutant
         io << scheme << "://" << host
         io << ":" << ports.join(",")
         io << " (+subdomains)" if subdomains?
+        io << " (+local)" if local?
         io << " methods=" << methods.join(",") unless methods.empty?
       end
     end

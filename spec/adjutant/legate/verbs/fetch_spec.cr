@@ -321,6 +321,117 @@ module Adjutant
       end
     end
 
+    # The `local: true` opt-in. §8.2's confused-deputy problem is a
+    # script reaching an internal address it never NAMED; a policy
+    # that names `localhost` itself is not confused.
+    describe "local: true" do
+      local_grants = ->(host : String, port : Int32) do
+        rule = Legate::NetRule.new(host: host, scheme: "http", ports: [port], local: true)
+        Legate::Grants.new(net_rules: [rule], net_methods: ["get"])
+      end
+
+      it "still refuses loopback for a rule without the opt-in" do
+        with_resolver(["127.0.0.1"]) do
+          rule = Legate::NetRule.new(host: "localhost", scheme: "http", ports: [11434])
+          grants = Legate::Grants.new(net_rules: [rule], net_methods: ["get"])
+          interp, _ = make_interp(grants: grants)
+          eval = interp.eval(<<-RUBY)
+          begin
+            Legate.fetch("http://localhost:11434/api/tags")
+            "no error"
+          rescue Legate::Transport
+            "caught"
+          end
+          RUBY
+          eval.as_string.should eq "caught"
+        end
+      end
+
+      # Past the address check and on to the transport, which then
+      # fails because nothing is listening — the point being that the
+      # SSRF check no longer refuses it. A `Transport` from a refused
+      # ADDRESS and one from a refused CONNECTION are distinguished by
+      # message.
+      it "lets a rule with the opt-in past the address check" do
+        with_resolver(["127.0.0.1"]) do
+          interp, _ = make_interp(grants: local_grants.call("localhost", 11434))
+          eval = interp.eval(<<-RUBY)
+          begin
+            Legate.fetch("http://localhost:11434/api/tags")
+            "no error"
+          rescue Legate::Transport => e
+            e.message
+          end
+          RUBY
+          eval.as_string.should_not contain "local: true"
+        end
+      end
+
+      it "lets a rule with the opt-in reach RFC 1918 space" do
+        with_resolver(["192.168.1.50"]) do
+          interp, _ = make_interp(grants: local_grants.call("ollama.internal", 11434))
+          eval = interp.eval(<<-RUBY)
+          begin
+            Legate.fetch("http://ollama.internal:11434/api/tags")
+            "no error"
+          rescue Legate::Transport => e
+            e.message
+          end
+          RUBY
+          eval.as_string.should_not contain "local: true"
+        end
+      end
+
+      # The line that must hold no matter what a policy says. Even
+      # with local: true, the metadata endpoint stays refused.
+      it "still refuses the cloud metadata address" do
+        with_resolver(["169.254.169.254"]) do
+          interp, _ = make_interp(grants: local_grants.call("api.example.com", 80))
+          eval = interp.eval(<<-RUBY)
+          begin
+            Legate.fetch("http://api.example.com/")
+            "no error"
+          rescue Legate::Transport => e
+            e.message
+          end
+          RUBY
+          eval.as_string.should contain "link-local"
+        end
+      end
+
+      it "still refuses IPv6 link-local even with the opt-in" do
+        with_resolver(["fe80::1"]) do
+          interp, _ = make_interp(grants: local_grants.call("api.example.com", 80))
+          eval = interp.eval(<<-RUBY)
+          begin
+            Legate.fetch("http://api.example.com/")
+            "no error"
+          rescue Legate::Transport => e
+            e.message
+          end
+          RUBY
+          eval.as_string.should contain "link-local"
+        end
+      end
+
+      it "names the remedy when refusing loopback without the opt-in" do
+        with_resolver(["127.0.0.1"]) do
+          rule = Legate::NetRule.new(host: "localhost", scheme: "http", ports: [11434])
+          grants = Legate::Grants.new(net_rules: [rule], net_methods: ["get"])
+          interp, _ = make_interp(grants: grants)
+          eval = interp.eval(<<-RUBY)
+          begin
+            Legate.fetch("http://localhost:11434/api/tags")
+            "no error"
+          rescue Legate::Transport => e
+            e.message
+          end
+          RUBY
+          eval.as_string.should contain "local: true"
+        end
+      end
+    end
+
     describe "kwarg validation" do
       it "raises TypeError (R036) for a wrong-typed timeout:" do
         interp, _ = make_interp(grants: net_grants)

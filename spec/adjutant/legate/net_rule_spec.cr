@@ -16,6 +16,7 @@ module Adjutant
         rule.scheme.should eq "https"
         rule.ports.should eq [443]
         rule.subdomains?.should be_false
+        rule.local?.should be_false
         rule.methods.should be_empty
       end
 
@@ -31,6 +32,10 @@ module Adjutant
         rule.host.should eq "internal.example.com"
         rule.scheme.should eq "http"
         rule.ports.should eq [8080]
+      end
+
+      it "does not set local for a scalar entry" do
+        Legate::NetRule.parse("localhost:11434").local?.should be_false
       end
 
       it "defaults a scheme-only http URL to port 80, not 443" do
@@ -85,12 +90,14 @@ module Adjutant
             ports: [8080, 8081]
             methods: [get]
             subdomains: true
+            local: true
         YAML
         rule.host.should eq "internal.example.com"
         rule.scheme.should eq "http"
         rule.ports.should eq [8080, 8081]
         rule.methods.should eq ["get"]
         rule.subdomains?.should be_true
+        rule.local?.should be_true
       end
 
       it "applies the fail-closed defaults for every omitted field" do
@@ -101,6 +108,7 @@ module Adjutant
         rule.scheme.should eq "https"
         rule.ports.should eq [443]
         rule.subdomains?.should be_false
+        rule.local?.should be_false
         rule.methods.should be_empty
       end
 
@@ -181,6 +189,11 @@ module Adjutant
       it "spells the rule out in the shape the policy file used" do
         rule = Legate::NetRule.new(host: "b.com", ports: [8080, 8081], subdomains: true)
         rule.to_s.should eq "https://b.com:8080,8081 (+subdomains)"
+      end
+
+      it "shows the local opt-in" do
+        rule = Legate::NetRule.new(host: "localhost", scheme: "http", ports: [11434], local: true)
+        rule.to_s.should eq "http://localhost:11434 (+local)"
       end
     end
   end

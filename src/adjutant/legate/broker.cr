@@ -173,6 +173,17 @@ module Adjutant
       # hostname no longer matches — worth knowing, though nothing
       # ships against the old shape yet, since no verb existed to use
       # it.
+      # Whether the rule that authorized this connection opted into
+      # loopback and private address space. `Legate.fetch` asks after
+      # a successful `authorize_net`, to decide how strictly to vet
+      # the addresses the hostname resolves to. Not part of the
+      # authorization result itself because it is not an
+      # allowed/denied question — the grant has already been settled
+      # by the time it matters.
+      def net_allows_local?(scheme : String, host : String, port : Int32, method : String) : Bool
+        @grants.net_allows_local?(scheme, host, port, method)
+      end
+
       def authorize_net(scheme : String, host : String, port : Int32, method : String,
                         ncc : NativeCallContext) : RiskFlowLabel?
         subject = "#{scheme}://#{host}:#{port}"

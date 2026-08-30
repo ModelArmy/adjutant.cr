@@ -123,6 +123,29 @@ module Adjutant
       # the run; being told "host matched, port 22 is not in [443]"
       # rather than "denied" is the difference between a one-line
       # policy fix and an afternoon.
+      # The rules that authorize this exact connection — all four of
+      # scheme, host, port and method. Separate from `check_net`
+      # because a caller needs more than allowed/denied: `Legate.fetch`
+      # has to know whether the MATCHED rule opted into loopback and
+      # private address space (`local: true`) before it can vet the
+      # resolved addresses. Returning the rules rather than a bare
+      # boolean keeps that decision where the rule is.
+      def matching_net_rules(scheme : String, host : String, port : Int32, method : String) : Array(NetRule)
+        return [] of NetRule if net_rules.empty? || net_methods.empty?
+        net_rules.select do |rule|
+          rule.matches_host?(host) && rule.matches_scheme?(scheme) &&
+            rule.matches_port?(port) && rule.allows_method?(method, net_methods)
+        end
+      end
+
+      # Whether any rule authorizing this connection permits loopback
+      # and private address space. False unless a matching rule says
+      # `local: true` — see `NetRule#local?`, and note that link-local
+      # is never covered by it.
+      def net_allows_local?(scheme : String, host : String, port : Int32, method : String) : Bool
+        matching_net_rules(scheme, host, port, method).any?(&.local?)
+      end
+
       def check_net(scheme : String, host : String, port : Int32, method : String) : Decision
         return Decision.deny("no hosts granted") if net_rules.empty?
         return Decision.deny("no methods granted (net.methods is empty)") if net_methods.empty?
