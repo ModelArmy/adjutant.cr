@@ -1,4 +1,6 @@
 require "http/client"
+require "openssl"
+require "../http_client_pinning"
 require "socket"
 require "uri"
 require "../broker"
@@ -20,33 +22,24 @@ module Adjutant
       # exception — `Legate::Response#raise!` exists precisely so a
       # script can opt into that itself.
       #
-      # SCOPE OF THIS PASS. `stream: true` is NOT implemented yet and
-      # raises a clear `Legate::Transport` if asked for. That is a
-      # deliberate staging decision, not an oversight: a streaming
-      # response body has to outlive the `HTTP::Client#exec` block
-      # that produces it, which means owning the client's lifetime
-      # from inside a `Legate::Stream` iterator, and getting that
-      # wrong leaks connections rather than failing loudly. The
-      # buffered path below is the whole of §4.5 otherwise, and is
-      # testable today; streaming lands in its own pass with its own
-      # tests. Logged in SCOPE.md.
+      # NOT IMPLEMENTED: `stream: true`, which raises a clear
+      # `Legate::Transport` if asked for. Deliberate rather than an
+      # oversight — a streaming response body has to outlive the
+      # `HTTP::Client#exec` block that produces it, which means
+      # owning the client's lifetime from inside a `Legate::Stream`
+      # iterator, and getting that wrong leaks connections rather
+      # than failing loudly. The buffered path below is the whole of
+      # §4.5 otherwise. Logged in SCOPE.md.
       #
-      # PINNING GAP, worth reading before trusting this file's §8.2
-      # compliance. §8.2 requires: resolve the hostname, check EVERY
-      # resulting address against the private/loopback/link-local/
-      # metadata ranges, then **pin the chosen address for the
-      # connection**. The first two happen below and are real. The
-      # third does not: after `check_addresses!` passes, the actual
-      # connection is made by HOSTNAME, so the name is resolved a
-      # second time by the TCP stack and a DNS rebinding attack can
-      # return a different address the second time. Closing this
-      # properly needs the connection bound to the already-resolved
-      # `Socket::IPAddress` while still presenting the original
-      # hostname for TLS SNI and the `Host` header — which is more
-      # than `HTTP::Client`'s public surface offers directly. Logged
-      # in SCOPE.md as a Must Fix. Every hop is re-checked, so the
-      # allowlist and range checks themselves are not weakened by
-      # this; only the window between check and connect is.
+      # PINNING (§8.2), implemented in `http_client_pinning.cr`. §8.2
+      # requires three things of every hop: resolve the hostname,
+      # check EVERY resulting address against the private/loopback/
+      # link-local/metadata ranges, then pin the chosen address for
+      # the connection. All three happen — see that file for how the
+      # third is done without disturbing TLS hostname
+      # verification, the `Host` header, or the laziness that lets
+      # replayed specs run without opening a socket.
+      #
       module Fetch
         KWARG_NAMES = Set{"method", "headers", "body", "stream", "timeout", "limit", "redirects"}
 
@@ -122,7 +115,14 @@ module Adjutant
               addresses = resolve(host, port, ncc, transport)
               check_addresses!(addresses, host, ncc, transport)
 
-              response = perform(target, opts, ncc, transport, timeout_cls, too_large, broker)
+              # Pin the FIRST vetted address. Which one hardly matters
+              # — `check_addresses!` refuses the whole hop unless
+              # EVERY address passed, so there is no "safest" entry to
+              # prefer — but pinning one specific address is the whole
+              # point, so it is chosen here, once, and carried into
+              # the connection rather than left to the TCP stack to
+              # pick again later.
+              response = perform(target, addresses.first, opts, ncc, transport, timeout_cls, too_large, broker)
 
               location = redirect_target(response)
               if location && hops < opts.redirects
@@ -442,11 +442,25 @@ module Adjutant
         # written from recollection. Same caveat this codebase flags
         # on every other stdlib assumption; the first `ops test` run
         # against a recorded transcript is what confirms them.
-        private def self.perform(target : Target, opts : Options, ncc : NativeCallContext,
-                                 transport : RubyClass, timeout_cls : RubyClass,
+        private def self.perform(target : Target, pinned : Socket::IPAddress, opts : Options,
+                                 ncc : NativeCallContext, transport : RubyClass, timeout_cls : RubyClass,
                                  too_large : RubyClass, broker : Broker) : Result
           uri = target.uri
-          client = HTTP::Client.new(target.host, target.port, tls: target.scheme == "https")
+          # An explicit context rather than `tls: true`, because
+          # the pinning override needs the context object itself to hand to
+          # `OpenSSL::SSL::Socket::Client`. The default client context
+          # verifies the peer certificate and hostname; §8.2 makes
+          # that non-configurable, so nothing here exposes a way to
+          # weaken it — there is deliberately no `verify:` kwarg on
+          # `Legate.fetch` for a script to reach for.
+          tls = target.scheme == "https" ? OpenSSL::SSL::Context::Client.new : nil
+          client = HTTP::Client.new(target.host, target.port, tls: tls)
+          # THE pinning step (§8.2). Set on a plain `HTTP::Client`
+          # rather than obtained by subclassing it — the receiver's
+          # type has to stay exactly `HTTP::Client` or the
+          # record/replay harness stops intercepting it. See
+          # `http_client_pinning.cr`.
+          client.adjutant_pinned_address = pinned.address
           # `Time::Span`, not a bare Int32 — the integer-seconds
           # setters are deprecated. `timeout:` stays an Integer at the
           # SCRIPT boundary (§4.5 spells it `timeout: 30`), so the

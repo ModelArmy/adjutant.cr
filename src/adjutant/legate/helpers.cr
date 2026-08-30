@@ -25,9 +25,8 @@ module Adjutant
       # (`Op::GetConstantFrom`, vm.cr), the same mechanism a
       # script-written `class A; class B; end; end` uses for `A::B`.
       # NOT a flat "Legate::Foo" global name — see
-      # Legate::Exceptions.bootstrap's own original comment (the first
-      # place this reasoning was worked out) for the full explanation
-      # of why: short name only, `lexical_parent` set to `parent`,
+      # Legate::Exceptions.bootstrap's own comment for the full
+      # explanation of why: short name only, `lexical_parent` set to `parent`,
       # inserted into `parent`'s own `constants` table keyed by that
       # short name's interned symbol — `qualified_name` then derives
       # "Legate::Foo" for display by walking `lexical_parent`, for
@@ -177,9 +176,9 @@ module Adjutant
         raise_kwarg_type_error(ncc, method, kwarg, "Symbol", given)
       end
 
-      # PUBLIC (was private until 2026-08-30) — `Verbs::Fetch` reads
-      # two kwargs whose shapes none of the three `checked_*` helpers
-      # above cover (`headers:` is a Hash of String => String,
+      # Public, unlike the `checked_*` helpers' own internals, because
+      # `Verbs::Fetch` reads two kwargs whose shapes none of those
+      # helpers cover (`headers:` is a Hash of String => String,
       # `body:` is a String or an Array of Strings), and it must
       # produce the SAME clean R036 TypeError those helpers do rather
       # than inventing a second, differently-worded failure for the

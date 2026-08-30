@@ -764,30 +764,26 @@ individually.
 
 ### Legate
 
-- **`Legate.fetch` does not pin the resolved address for the
-  connection (§8.2).** Found 2026-08-30 implementing `fetch.cr`. §8.2
-  requires three things: resolve the hostname, check **every**
-  resulting address against the private/loopback/link-local/metadata
-  ranges, then **pin the chosen address for the connection**. The
-  first two are implemented and tested (`fetch_spec.cr` covers
-  loopback, RFC 1918, CGNAT, the metadata address, IPv6 unique-local,
-  both spellings of IPv4-mapped IPv6, and the multi-address case where
-  only one entry is blocked). The third is not: once the check passes,
-  the connection is made **by hostname**, so the name is resolved a
-  second time by the TCP stack and a DNS rebinding attack can return a
-  different address the second time. **Must Fix**, not Will Fix — this
-  is a stated §8.2 requirement and the residual window is exactly the
-  attack the section exists to describe, even though the allowlist and
-  range checks themselves are re-run at every redirect hop and are not
-  weakened by it. Fix shape: bind the connection to the already-
-  resolved `Socket::IPAddress` while still presenting the original
-  hostname for TLS SNI and the `Host` header, which needs more than
-  `HTTP::Client`'s public surface offers directly — likely a custom
-  socket or a client subclass, and worth doing carefully rather than
-  quickly.
+- **The pinned socket's TLS path is only exercised when a transcript
+  is RECORDED.** Found 2026-08-30. The plain socket half is covered
+  offline: `http_client_pinning_canary_spec.cr`
+  stands up a loopback HTTP server and pins to it from a client whose
+  hostname (`canary.invalid`) cannot resolve, so a response can only
+  arrive if the pinned address was used and the name never consulted.
+  What that spec does NOT cover is the `OpenSSL::SSL::Socket::Client`
+  branch — SNI and certificate verification against the logical
+  hostname while connected to the pinned address — because that needs
+  a local TLS server with a certificate the client will accept. Will
+  Fix. The practical verification meanwhile is re-recording: deleting
+  a transcript under `spec/transcripts/` and re-running with
+  `WIRETAP_RECORD=1` forces a real TLS handshake through the pinning
+  override. Fix shape: a
+  self-signed certificate generated per-run plus a client context
+  trusting it, which is a chunk of setup worth doing deliberately
+  rather than inline in a spec.
 
 - **`Legate.fetch`'s `stream: true` is not implemented.** Found
-  2026-08-30, staged deliberately. §4.5 specifies that `stream: true`
+  2026-08-30. §4.5 specifies that `stream: true`
   makes the response body a `Legate::Bytes` rather than a `String`
   capped by `limit`. Today the kwarg raises a clear `Legate::Transport`
   naming itself as unimplemented, rather than silently buffering

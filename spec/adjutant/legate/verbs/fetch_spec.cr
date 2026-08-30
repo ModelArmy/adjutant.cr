@@ -18,9 +18,66 @@ private def with_resolver(addresses : Array(String), &)
   end
 end
 
-private def public_ip(&)
-  with_resolver(["93.184.216.34"]) { yield }
+# The resolver for the RECORDED specs, and the reason it isn't a fixed
+# stub like `with_resolver` above.
+#
+# Since `Legate.fetch` pins the resolved address, a stubbed answer is
+# no longer inert during recording — it is where the socket actually
+# goes. A fixed placeholder would mean recording tries to reach
+# `httpbin.org` at some unrelated host's address and fails, so those
+# specs could never be re-recorded at all.
+#
+# So: resolve for real when the network is there (recording works, and
+# the pinned address is genuinely httpbin's), and fall back to a fixed
+# public placeholder when it isn't (replay works offline, and the
+# address is never dialled because the harness answers first).
+#
+# `Legate.fetch` resolves on EVERY hop, including replayed ones — the
+# address check runs before the client is involved — which is why some
+# answer has to be available even when nothing will be connected to.
+private def resolving_or_placeholder(&)
+  previous = Adjutant::Legate::Verbs::Fetch.resolver
+  Adjutant::Legate::Verbs::Fetch.resolver = ->(host : String, port : Int32) {
+    begin
+      Socket::Addrinfo.tcp(host, port).map(&.ip_address)
+    rescue Socket::Error
+      # 93.184.216.34 is a documented public address, chosen only
+      # because it passes the §8.2 range checks. Nothing is ever
+      # connected to it: reaching this branch means DNS is
+      # unavailable, which means the run is offline, which means the
+      # harness is replaying.
+      [Socket::IPAddress.new("93.184.216.34", port)]
+    end
+  }
+  begin
+    yield
+  ensure
+    Adjutant::Legate::Verbs::Fetch.resolver = previous
+  end
 end
+
+# Replay mode for the recorded specs below.
+#
+# `:none` rather than `:once`, deliberately. Under `:once` a
+# transcript that fails to load — missing, misnamed, or no longer
+# matching on URL or body digest — silently falls back to RECORDING,
+# which means a real network call to whatever the resolver stub
+# returned. That turns every kind of transcript problem into the same
+# opaque connection error, and (worse) can quietly rewrite a committed
+# transcript on a developer's machine.
+#
+# `:none` forbids recording, so a transcript problem fails loudly with
+# a message naming the method, URL and digest it looked for.
+#
+# To RECORD — first time, or after deleting a transcript deliberately —
+# run the suite once with WIRETAP_RECORD set:
+#
+#     WIRETAP_RECORD=1 crystal spec spec/adjutant/legate/verbs/fetch_spec.cr
+#
+# then commit the JSON under spec/transcripts/. Recording needs real
+# network access and reaches the live host. Every other run, including
+# CI, replays offline.
+private RECORDED_MODE = ENV["WIRETAP_RECORD"]? ? :once : :none
 
 module Adjutant
   private def self.net_grants(host : String = "api.example.com",
@@ -360,8 +417,8 @@ module Adjutant
       recorded_host = "httpbin.org"
 
       it "returns a Legate::Response for a plain GET" do
-        public_ip do
-          Wiretap.intercept("legate_fetch_get") do
+        resolving_or_placeholder do
+          Wiretap.intercept("legate_fetch_get", mode: RECORDED_MODE) do
             interp, _ = make_interp(grants: net_grants(recorded_host))
             eval = interp.eval(%(Legate.fetch("https://#{recorded_host}/get").status))
             eval.as_int.should eq 200
@@ -370,8 +427,8 @@ module Adjutant
       end
 
       it "exposes downcased response headers" do
-        public_ip do
-          Wiretap.intercept("legate_fetch_get") do
+        resolving_or_placeholder do
+          Wiretap.intercept("legate_fetch_get", mode: RECORDED_MODE) do
             interp, _ = make_interp(grants: net_grants(recorded_host))
             eval = interp.eval(%(Legate.fetch("https://#{recorded_host}/get").headers["content-type"]))
             eval.as_string.should contain "application/json"
@@ -380,8 +437,8 @@ module Adjutant
       end
 
       it "parses a JSON body through Response#json" do
-        public_ip do
-          Wiretap.intercept("legate_fetch_get") do
+        resolving_or_placeholder do
+          Wiretap.intercept("legate_fetch_get", mode: RECORDED_MODE) do
             interp, _ = make_interp(grants: net_grants(recorded_host))
             eval = interp.eval(%(Legate.fetch("https://#{recorded_host}/get").json["url"]))
             eval.as_string.should contain recorded_host
@@ -392,8 +449,8 @@ module Adjutant
       # §4.5's boundary, stated as a test: a 500 is an ANSWER. Nothing
       # in this verb turns a status code into an exception.
       it "returns a 500 as data rather than raising" do
-        public_ip do
-          Wiretap.intercept("legate_fetch_500") do
+        resolving_or_placeholder do
+          Wiretap.intercept("legate_fetch_500", mode: RECORDED_MODE) do
             interp, _ = make_interp(grants: net_grants(recorded_host))
             eval = interp.eval(<<-RUBY)
             response = Legate.fetch("https://#{recorded_host}/status/500")
@@ -407,8 +464,8 @@ module Adjutant
       end
 
       it "sends a POST body and gets it back" do
-        public_ip do
-          Wiretap.intercept("legate_fetch_post") do
+        resolving_or_placeholder do
+          Wiretap.intercept("legate_fetch_post", mode: RECORDED_MODE) do
             interp, _ = make_interp(grants: net_grants(recorded_host, ["get", "post"]))
             eval = interp.eval(<<-RUBY)
             response = Legate.fetch("https://#{recorded_host}/post", method: :post, body: "hello legate")
@@ -420,8 +477,8 @@ module Adjutant
       end
 
       it "joins an Array body into one request body" do
-        public_ip do
-          Wiretap.intercept("legate_fetch_post_array") do
+        resolving_or_placeholder do
+          Wiretap.intercept("legate_fetch_post_array", mode: RECORDED_MODE) do
             interp, _ = make_interp(grants: net_grants(recorded_host, ["get", "post"]))
             eval = interp.eval(<<-RUBY)
             response = Legate.fetch("https://#{recorded_host}/post", method: :post, body: ["a", "b", "c"])
@@ -433,8 +490,8 @@ module Adjutant
       end
 
       it "follows a redirect and reports the FINAL url" do
-        public_ip do
-          Wiretap.intercept("legate_fetch_redirect") do
+        resolving_or_placeholder do
+          Wiretap.intercept("legate_fetch_redirect", mode: RECORDED_MODE) do
             interp, _ = make_interp(grants: net_grants(recorded_host))
             eval = interp.eval(%(Legate.fetch("https://#{recorded_host}/redirect/1").url))
             eval.as_string.should contain "/get"
@@ -443,8 +500,8 @@ module Adjutant
       end
 
       it "raises Legate::Transport when the redirect budget is spent" do
-        public_ip do
-          Wiretap.intercept("legate_fetch_redirect_loop") do
+        resolving_or_placeholder do
+          Wiretap.intercept("legate_fetch_redirect_loop", mode: RECORDED_MODE) do
             interp, _ = make_interp(grants: net_grants(recorded_host))
             eval = interp.eval(<<-RUBY)
             begin
@@ -460,8 +517,8 @@ module Adjutant
       end
 
       it "raises Legate::TooLarge when the response exceeds limit:" do
-        public_ip do
-          Wiretap.intercept("legate_fetch_too_large") do
+        resolving_or_placeholder do
+          Wiretap.intercept("legate_fetch_too_large", mode: RECORDED_MODE) do
             interp, _ = make_interp(grants: net_grants(recorded_host))
             eval = interp.eval(<<-RUBY)
             begin
@@ -477,8 +534,8 @@ module Adjutant
       end
 
       it "logs exactly one :allowed audit record for a single-hop fetch" do
-        public_ip do
-          Wiretap.intercept("legate_fetch_get") do
+        resolving_or_placeholder do
+          Wiretap.intercept("legate_fetch_get", mode: RECORDED_MODE) do
             interp, _ = make_interp(grants: net_grants(recorded_host))
             interp.eval(%(Legate.fetch("https://#{recorded_host}/get")))
             records = interp.broker.audit_log.records.select { |r| r.verb == "net" }
@@ -493,8 +550,8 @@ module Adjutant
       # two records — the audit log records what was attempted, and a
       # redirect is a second, separate egress.
       it "logs one audit record per redirect hop" do
-        public_ip do
-          Wiretap.intercept("legate_fetch_redirect") do
+        resolving_or_placeholder do
+          Wiretap.intercept("legate_fetch_redirect", mode: RECORDED_MODE) do
             interp, _ = make_interp(grants: net_grants(recorded_host))
             interp.eval(%(Legate.fetch("https://#{recorded_host}/redirect/1")))
             interp.broker.audit_log.records.select { |r| r.verb == "net" }.size.should eq 2

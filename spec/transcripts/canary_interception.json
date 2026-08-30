@@ -1,0 +1,23 @@
+{
+  "name": "canary_interception",
+  "recorded_with": "hand-written",
+  "interactions": [
+    {
+      "request": {
+        "method": "GET",
+        "url": "http://canary.invalid/ping",
+        "headers": {
+          "Host": "canary.invalid"
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "text/plain"
+        },
+        "body": "pong"
+      },
+      "recorded_at": "2026-08-30T00:00:00Z"
+    }
+  ]
+}

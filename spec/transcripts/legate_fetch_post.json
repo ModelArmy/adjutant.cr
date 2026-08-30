@@ -18,7 +18,7 @@
       "response": {
         "status": 200,
         "headers": {
-          "Date": "Sun, 30 Aug 2026 07:23:22 GMT",
+          "Date": "Sun, 30 Aug 2026 18:42:09 GMT",
           "Content-Type": "application/json",
           "Content-Length": "374",
           "Connection": "keep-alive",
@@ -26,9 +26,9 @@
           "Access-Control-Allow-Origin": "*",
           "Access-Control-Allow-Credentials": "true"
         },
-        "body": "{\n  \"args\": {}, \n  \"data\": \"hello legate\", \n  \"files\": {}, \n  \"form\": {}, \n  \"headers\": {\n    \"Accept-Encoding\": \"gzip, deflate\", \n    \"Content-Length\": \"12\", \n    \"Host\": \"httpbin.org\", \n    \"User-Agent\": \"Crystal\", \n    \"X-Amzn-Trace-Id\": \"Root=1-6a93da6a-4a4cabd633de16542ea24b6b\"\n  }, \n  \"json\": null, \n  \"origin\": \"174.93.24.23\", \n  \"url\": \"https://httpbin.org/post\"\n}\n"
+        "body": "{\n  \"args\": {}, \n  \"data\": \"hello legate\", \n  \"files\": {}, \n  \"form\": {}, \n  \"headers\": {\n    \"Accept-Encoding\": \"gzip, deflate\", \n    \"Content-Length\": \"12\", \n    \"Host\": \"httpbin.org\", \n    \"User-Agent\": \"Crystal\", \n    \"X-Amzn-Trace-Id\": \"Root=1-6a947981-7f61c08f1cdb24d87dbc01ff\"\n  }, \n  \"json\": null, \n  \"origin\": \"174.93.24.23\", \n  \"url\": \"https://httpbin.org/post\"\n}\n"
       },
-      "recorded_at": "2026-08-30T07:23:22Z"
+      "recorded_at": "2026-08-30T18:42:09Z"
     }
   ]
 }

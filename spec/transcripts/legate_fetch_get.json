@@ -15,7 +15,7 @@
       "response": {
         "status": 200,
         "headers": {
-          "Date": "Sun, 30 Aug 2026 07:23:22 GMT",
+          "Date": "Sun, 30 Aug 2026 18:42:09 GMT",
           "Content-Type": "application/json",
           "Content-Length": "269",
           "Connection": "keep-alive",
@@ -23,9 +23,9 @@
           "Access-Control-Allow-Origin": "*",
           "Access-Control-Allow-Credentials": "true"
         },
-        "body": "{\n  \"args\": {}, \n  \"headers\": {\n    \"Accept-Encoding\": \"gzip, deflate\", \n    \"Host\": \"httpbin.org\", \n    \"User-Agent\": \"Crystal\", \n    \"X-Amzn-Trace-Id\": \"Root=1-6a93da6a-70462c0a700358fb3f6b247e\"\n  }, \n  \"origin\": \"174.93.24.23\", \n  \"url\": \"https://httpbin.org/get\"\n}\n"
+        "body": "{\n  \"args\": {}, \n  \"headers\": {\n    \"Accept-Encoding\": \"gzip, deflate\", \n    \"Host\": \"httpbin.org\", \n    \"User-Agent\": \"Crystal\", \n    \"X-Amzn-Trace-Id\": \"Root=1-6a947981-1fb58b48266b69224904c9c2\"\n  }, \n  \"origin\": \"174.93.24.23\", \n  \"url\": \"https://httpbin.org/get\"\n}\n"
       },
-      "recorded_at": "2026-08-30T07:23:22Z"
+      "recorded_at": "2026-08-30T18:42:09Z"
     }
   ]
 }
