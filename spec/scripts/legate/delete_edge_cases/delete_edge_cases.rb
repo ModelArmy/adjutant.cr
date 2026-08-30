@@ -1,0 +1,115 @@
+require "assert"
+
+# The delete grant's non-obvious behaviours — the ones a script author
+# coming from `rm -rf` or Ruby's `FileUtils` would get wrong, and the
+# ones the Crystal specs prove but nobody reads. Everything here is
+# deliberate design, documented in `rm.cr`/`mv.cr`'s own top comments;
+# none of it is incidental.
+FIXTURES = Legate::Path.new(__FILE__).parent / "fixtures"
+WORKSPACE = Legate::Path.new(__FILE__).parent / "workspace"
+
+Legate.mkdir(WORKSPACE)
+
+# --- The split that catches everyone: missing SOURCE, two answers ---
+#
+# `rm` on a path that isn't there returns 0. `mv` from a path that
+# isn't there raises `Legate::NotFound`. Both are §4.4's own text, and
+# the difference is not an inconsistency: "make sure this isn't here"
+# has already succeeded if it was never here, whereas "move this
+# thing" with no thing to move is simply impossible.
+
+assert_equal(0, Legate.rm(WORKSPACE / "never-existed.txt"))
+assert_raise(Legate::NotFound) { Legate.mv(WORKSPACE / "never-existed.txt", WORKSPACE / "dest.txt") }
+
+# --- recursive: gates EMPTINESS, not directory-ness ---
+#
+# Worth contrasting directly with `cp`, whose `recursive:` refuses ANY
+# directory source regardless of what's in it. `rm`'s flag is looser
+# on purpose, because §4.4 has it subsume `rmdir` — and `rmdir` is
+# precisely the empty-directory operation.
+
+empty_dir = WORKSPACE / "empty"
+Legate.mkdir(empty_dir)
+assert_equal(1, Legate.rm(empty_dir)) # no recursive: needed
+
+full_dir = WORKSPACE / "full"
+Legate.mkdir(full_dir)
+Legate.write(full_dir / "a.txt", "a\n")
+assert_raise(Legate::Conflict) { Legate.rm(full_dir) }
+assert_equal("a\n", Legate.read(full_dir / "a.txt")) # refused, and nothing was removed
+
+# --- What the returned count actually counts ---
+#
+# Every entry removed, the directory ITSELF included — not just the
+# files inside it. `full/` + `full/a.txt` is 2.
+
+assert_equal(2, Legate.rm(full_dir, recursive: true))
+
+# A deeper tree, spelled out so the arithmetic is checkable:
+# tree/ + tree/top.txt + tree/sub/ + tree/sub/deep.txt = 4.
+tree = WORKSPACE / "tree"
+Legate.mkdir(tree / "sub")
+Legate.write(tree / "top.txt", "top\n")
+Legate.write(tree / "sub" / "deep.txt", "deep\n")
+assert_equal(4, Legate.rm(tree, recursive: true))
+
+# --- mv overwrites a file, the same as write and cp do ---
+#
+# No special stricter rule for this verb: an existing FILE at the
+# destination is replaced.
+
+Legate.write(WORKSPACE / "new.txt", "new\n")
+Legate.write(WORKSPACE / "old.txt", "old\n")
+Legate.mv(WORKSPACE / "new.txt", WORKSPACE / "old.txt")
+assert_equal("new\n", Legate.read(WORKSPACE / "old.txt"))
+assert_nil(Legate.stat(WORKSPACE / "new.txt"))
+
+# --- ...but mv REFUSES to replace one kind of thing with another ---
+#
+# A file over a directory, or a directory over a file, is never what
+# a caller meant, so both are `Legate::Conflict` rather than a silent
+# clobber.
+
+occupied_dir = WORKSPACE / "occupied"
+Legate.mkdir(occupied_dir)
+Legate.write(WORKSPACE / "loose.txt", "loose\n")
+assert_raise(Legate::Conflict) { Legate.mv(WORKSPACE / "loose.txt", occupied_dir) }
+assert_equal("loose\n", Legate.read(WORKSPACE / "loose.txt")) # source survives a refused move
+
+other_dir = WORKSPACE / "other"
+Legate.mkdir(other_dir)
+assert_raise(Legate::Conflict) { Legate.mv(other_dir, WORKSPACE / "loose.txt") }
+
+# --- ...and refuses to replace a NON-EMPTY directory ---
+#
+# An empty destination directory is fine to move over; one with
+# content in it would mean destroying unrelated data as a side effect
+# of a move nobody asked to be destructive.
+
+Legate.write(occupied_dir / "keep.txt", "keep\n")
+assert_raise(Legate::Conflict) { Legate.mv(other_dir, occupied_dir) }
+assert_equal("keep\n", Legate.read(occupied_dir / "keep.txt"))
+
+# --- mv into a path whose parents don't exist yet ---
+#
+# Created automatically, the same as `write`/`cp`. §4.4 doesn't say
+# so; `mv.cr` extends §4.3's stated behaviour by analogy, since a
+# script author moving a file into a fresh output directory would be
+# surprised to have to `mkdir` first when `cp` needs no such thing.
+
+Legate.mv(WORKSPACE / "loose.txt", WORKSPACE / "deep" / "deeper" / "landed.txt")
+assert_equal("loose\n", Legate.read(WORKSPACE / "deep" / "deeper" / "landed.txt"))
+
+# --- rm removes what a fresh mkdir would recreate ---
+#
+# Round-tripping, as a sanity check that neither verb leaves anything
+# odd behind: after removing the tree, the same path is available to
+# build on again.
+
+assert_equal(3, Legate.rm(WORKSPACE / "deep", recursive: true))
+Legate.mkdir(WORKSPACE / "deep")
+assert(WORKSPACE.to_s + "/deep is a directory again") { Legate.stat(WORKSPACE / "deep").dir? }
+
+# --- Nothing escaped the workspace ---
+
+assert_equal("keep me\n", Legate.read(FIXTURES / "anchor.txt"))

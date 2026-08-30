@@ -85,7 +85,19 @@ module Adjutant
             str_val = ncc.call_method(path_val, "to_s", [] of Value)
             raw = str_val.as_string
 
-            broker.authorize_delete(raw, ncc, allow_missing: true)
+            # Convention 3: join the resolved label rather than
+            # discarding `authorize_*`'s return value. Worth spelling
+            # out why an INTEGER gets a label at all, since this verb
+            # hands back no content: the count is derived from the
+            # target, and a count is a real (if narrow) channel — "how
+            # many entries does this sensitive directory hold" is
+            # exactly the sort of thing a High-sensitivity path
+            # shouldn't answer into an unlabelled Integer that then
+            # flows freely onward. Labelling costs nothing here and
+            # keeps this verb consistent with every other one rather
+            # than making it the lone exception a future reader has to
+            # explain.
+            label = RiskFlowLabel.join(str_val.label, broker.authorize_delete(raw, ncc, allow_missing: true))
 
             info = File.info?(raw, follow_symlinks: false)
             # §4.4/§2.3's documented missing-path result. Note this is
@@ -96,14 +108,14 @@ module Adjutant
             # this isn't here" has already succeeded if it was never
             # here — whereas a `cp`/`mv` with no source has simply
             # been asked to do something impossible.
-            next Value.int(0_i64) unless info
+            next Value.int(0_i64, label) unless info
 
             if info.directory?
-              next Value.int(remove_directory(raw, recursive, ncc, conflict))
+              next Value.int(remove_directory(raw, recursive, ncc, conflict), label)
             end
 
             File.delete(raw)
-            Value.int(1_i64)
+            Value.int(1_i64, label)
           end
         end
 
