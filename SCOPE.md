@@ -764,6 +764,25 @@ individually.
 
 ### Legate
 
+- **Deletion consumes no budget of any kind except wall clock.**
+  Found 2026-08-28 implementing `rm.cr`. `Budget` (`legate/budget.cr`)
+  models exactly two quantities — bytes read and bytes written — and
+  `Legate.rm` moves neither, so there is nothing for it to record and
+  no `record_delete` to call. Consequence: a script holding a `delete`
+  grant can remove an unbounded number of entries, of unbounded total
+  size, and the only limit it can ever hit is `wall_clock` (checked
+  once per `authorize_delete` call, so a single `rm(recursive: true)`
+  over an enormous tree doesn't even get that mid-operation). Will Fix
+  rather than Must Fix: nothing behaves *wrongly* — the `delete` grant
+  is doing its real job of bounding *where* deletion can happen, and
+  §7's limits table names no deletion quantity, so this is arguably
+  the design as specified rather than a gap in the implementation of
+  it. But "where" without "how much" is a weaker guarantee than the
+  read/write side gets, and it's worth a deliberate decision rather
+  than silence. Fix shape not scoped — needs a call on whether the
+  right quantity is entries removed, bytes reclaimed, or neither, and
+  that's a LEGATE.md §7 amendment, not a code change.
+
 - **§2.7's `include Legate::Read` submodule-include feature (dropping
   the `Legate.` prefix, e.g. `include Legate::Read; read("x")`) isn't
   implemented at all — no code references it anywhere.** Found

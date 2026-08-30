@@ -122,13 +122,36 @@ module Adjutant
         end
       end
 
-      # §4.4's `delete`-grant boundary. Unlike `write`, a delete
-      # target existing is the normal case (nothing to delete
-      # otherwise), so `check_root`'s exists-only assumption is a
-      # non-issue here.
-      def authorize_delete(path : String, ncc : NativeCallContext) : RiskFlowLabel?
+      # §4.4's `delete`-grant boundary. A delete target existing is of
+      # course the normal case — but "of course" turned out not to be
+      # good enough, and this method's original comment (which said
+      # exactly that, and defaulted to the strict `check_root` on the
+      # strength of it) was wrong in a way `rm.cr` made concrete:
+      #
+      # §4.4 states outright that `Legate.rm` on a MISSING path
+      # returns `0` — it is a documented, non-exceptional result,
+      # part of §2.3's "nil/0 for a non-existent path" family. But
+      # strict `check_root` denies any path it cannot resolve, and a
+      # denial here is FATAL and unrescuable (see `deny!` below). So
+      # under the original signature, `Legate.rm("gone.txt")` on a
+      # path INSIDE a granted delete root would kill the run outright
+      # instead of returning `0` — the grant was never the problem,
+      # the path simply wasn't there.
+      #
+      # `allow_missing` therefore mirrors `authorize_read`/
+      # `authorize_write`'s identical parameter exactly, and for the
+      # same underlying reason: whether a not-yet/no-longer-existing
+      # target is normal or exceptional is the VERB's knowledge, not
+      # the broker's. `rm.cr` passes `true` and then decides for
+      # itself (missing → `0`); `mv.cr` passes `true` for its source
+      # and then decides differently (missing → a recoverable
+      # `Legate::NotFound`, which is what §4.4's own Raises line
+      # names). The default stays `false`, so any future caller that
+      # genuinely requires the target to already exist still gets the
+      # stricter check by saying nothing.
+      def authorize_delete(path : String, ncc : NativeCallContext, allow_missing : Bool = false) : RiskFlowLabel?
         authorize(:delete, "delete", path, RiskTag::DeletesFiles, ProvenanceKind::File, ncc) do
-          @grants.check_root(path, @grants.delete_roots)
+          allow_missing ? @grants.check_root_maybe_missing(path, @grants.delete_roots) : @grants.check_root(path, @grants.delete_roots)
         end
       end
 
