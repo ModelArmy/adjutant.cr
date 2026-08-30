@@ -824,39 +824,6 @@ individually.
   address should be grantable at all, given §8.2's address-range
   checks are about to reject most of the interesting ones anyway.
 
-- **LEGATE.md §7 doesn't document the `net.hosts` mapping form or
-  `limits.url_limit`.** Both landed 2026-08-30 as deliberate,
-  embedder-agreed extensions (see `net_rule.cr`'s and `Limits`' own
-  top comments for the full reasoning), and both are implemented and
-  tested — but §7's YAML block still shows only the plain-string
-  `hosts:` list and a `limits:` block with no URL cap. LEGATE.md is
-  treated as authoritative here, so leaving it describing a narrower
-  surface than the implementation actually enforces is a real
-  divergence, not a documentation nicety. Will Fix: needs a §7 edit
-  covering the mapping keys (`scheme`/`ports`/`methods`/`subdomains`/
-  `local`),
-  the fail-closed default each omitted key takes, and `url_limit`'s
-  place among the per-call limits.
-
-- **Deletion consumes no budget of any kind except wall clock.**
-  Found 2026-08-28 implementing `rm.cr`. `Budget` (`legate/budget.cr`)
-  models exactly two quantities — bytes read and bytes written — and
-  `Legate.rm` moves neither, so there is nothing for it to record and
-  no `record_delete` to call. Consequence: a script holding a `delete`
-  grant can remove an unbounded number of entries, of unbounded total
-  size, and the only limit it can ever hit is `wall_clock` (checked
-  once per `authorize_delete` call, so a single `rm(recursive: true)`
-  over an enormous tree doesn't even get that mid-operation). Will Fix
-  rather than Must Fix: nothing behaves *wrongly* — the `delete` grant
-  is doing its real job of bounding *where* deletion can happen, and
-  §7's limits table names no deletion quantity, so this is arguably
-  the design as specified rather than a gap in the implementation of
-  it. But "where" without "how much" is a weaker guarantee than the
-  read/write side gets, and it's worth a deliberate decision rather
-  than silence. Fix shape not scoped — needs a call on whether the
-  right quantity is entries removed, bytes reclaimed, or neither, and
-  that's a LEGATE.md §7 amendment, not a code change.
-
 - **§2.7's `include Legate::Read` submodule-include feature (dropping
   the `Legate.` prefix, e.g. `include Legate::Read; read("x")`) isn't
   implemented at all — no code references it anywhere.** Found

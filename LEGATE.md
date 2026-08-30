@@ -403,7 +403,7 @@ Legate.mv(from, to)                -> Legate::Path
 ```
 `rm` subsumes `rmdir` and `unlink`; without `recursive:` it raises `Legate::Conflict` on a non-empty directory. `rm` on a missing path returns `0` (§2.3).
 
-`mv` sits here rather than under `write` because it destroys the source. A script holding `write` but not `delete` can achieve a move only as `cp` followed by `rm`, which it cannot do — and that is the correct outcome, since the two grants exist precisely to be separable.
+`mv` requires **both** `delete` on the source and `write` on the destination, because a move both destroys and creates. A script holding `write` but not `delete` can achieve a move only as `cp` followed by `rm`, which it cannot do; a script holding `delete` but not `write` is equally refused, since otherwise it could place content at any path it can name while holding no write grant at all. The grants exist precisely to be separable, and that cuts both ways.
 
 Creating data and destroying it are different authorities, and policies routinely want to grant the first without the second. Splitting them also means a script that deletes announces the fact in its manifest line (§2.7).
 **Raises** `NotFound` (`mv` source), `Conflict`.
@@ -595,8 +595,16 @@ grants:
   delete:
     roots: ["/work/output/tmp"]     # narrower than write, deliberately
   net:
-    hosts: ["api.example.com"]
-    methods: [get, post]
+    methods: [get, post]           # ceiling for every rule below
+    hosts:
+      - api.example.com            # https, port 443, exact host
+      - "https://files.example.com:8443"
+      - host: localhost            # mapping form, for anything narrower
+        scheme: http               #   default: https
+        ports: [11434]             #   default: the scheme's port alone
+        methods: [get]             #   narrows net.methods, never widens
+        subdomains: false          #   default: exact host match only
+        local: true                #   default: internal addresses refused
   exec:
     binaries: ["/usr/bin/git", "/usr/bin/rg"]
   ambient:
@@ -604,12 +612,19 @@ grants:
     now: pinned            # or: live
 limits:
   read_limit: 8MiB         # per call — recoverable
-  fetch_limit: 32MiB       # per call — recoverable
+  fetch_limit: 32MiB       # per call — recoverable (response body)
+  url_limit: 2KiB          # per call — recoverable (request URL)
   memory: 512MiB           # per run  — fatal
   wall_clock: 300s         # per run  — fatal
   total_read: 4GiB         # per run  — fatal
   total_write: 1GiB        # per run  — fatal
 ```
+
+A `net.hosts` entry is either a plain string or a mapping. Every default fails closed, and each field narrows rather than widens: a host is not a service, so an entry grants one scheme on one set of ports for one set of methods. There is no wildcard syntax — `subdomains: true` is the only widening lever, and it admits only names for which the rule's own host is a dot-boundary suffix (`x.y.com` admits `a.x.y.com`, never `a.y.com`).
+
+`local: true` opts a rule into loopback and private address space, for a local model server or a service on the LAN. See §8.2 for what it does and does not cover.
+
+`url_limit` caps the request URL. `fetch_limit` bounds only the response, which would otherwise leave the query string as an unmetered channel for sending data out.
 
 Absent grants are denied. **Per-call limits are recoverable; per-run budgets are fatal.** Hitting the 8 MiB read limit is advice — the script should switch to `Legate.lines`. Hitting the 4 GiB total-read budget is exhaustion, and permitting a script to catch and retry past it reinstates exactly the denial-of-service the budget existed to prevent.
 
@@ -629,7 +644,9 @@ Steps 2–3 are check-then-open, not atomic — a real, accepted gap, not an ove
 
 ### 8.2 Network
 
-- Resolve the hostname, check **every** resulting address against the private, loopback, link-local and metadata ranges, then pin the chosen address for the connection.
+- Resolve the hostname, check **every** resulting address, then pin the chosen address for the connection — so the name is never resolved a second time by the TCP stack, which would reopen the window to DNS rebinding.
+- Link-local, metadata, multicast, broadcast and reserved ranges are refused unconditionally; no policy can permit them. `169.254.169.254` is the highest-value SSRF target there is, and nothing legitimate listens on an address a host self-assigned because DHCP failed.
+- Loopback and private ranges are refused **unless the matching rule sets `local: true`** (§7). The confused-deputy problem is a script reaching an internal address it never named; a policy that names `localhost` itself is not confused. The opt-in belongs to the rule, so it grants nothing to other hosts in the same policy and nothing to a redirect target.
 - Re-run the full check at every redirect hop. A permitted host that 302s to `169.254.169.254` is the standard SSRF.
 - Enforce `limit` on the response as bytes arrive, not after.
 - TLS verification is mandatory and not configurable.
