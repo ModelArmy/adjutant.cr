@@ -26,6 +26,7 @@ require "./adjutant/risk_aggregator"
 require "./adjutant/type_hint"
 require "./adjutant/type_inference"
 require "./adjutant/risk_walker"
+require "./adjutant/utils/http_response_stream"
 
 module Adjutant
   VERSION    = {{ `shards version #{__DIR__}`.chomp.stringify }}
