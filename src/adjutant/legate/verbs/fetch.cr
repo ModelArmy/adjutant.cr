@@ -8,6 +8,7 @@ require "../response"
 require "../exceptions"
 require "../helpers"
 require "../../native_call_context"
+require "../../utils/http_response_stream"
 
 module Adjutant
   module Legate
@@ -22,14 +23,20 @@ module Adjutant
       # exception — `Legate::Response#raise!` exists precisely so a
       # script can opt into that itself.
       #
-      # NOT IMPLEMENTED: `stream: true`, which raises a clear
-      # `Legate::Transport` if asked for. Deliberate rather than an
-      # oversight — a streaming response body has to outlive the
-      # `HTTP::Client#exec` block that produces it, which means
-      # owning the client's lifetime from inside a `Legate::Stream`
-      # iterator, and getting that wrong leaks connections rather
-      # than failing loudly. The buffered path below is the whole of
-      # §4.5 otherwise. Logged in SCOPE.md.
+      # `stream: true` (§4.5) hands back a `Legate::Bytes` whose
+      # iterator owns the connection for the life of the walk, rather
+      # than a buffered String. The mechanism is worth knowing before
+      # reading the hop loop: Crystal's non-block `HTTP::Client#exec`
+      # buffers the whole body, and its block form closes the
+      # connection when the block returns, so NEITHER form can hand
+      # back a body that outlives the call. `Utils::HttpResponseStream`
+      # bridges that — it keeps the block open on its own fiber and
+      # hands chunks across a channel — and this verb layers the
+      # Legate concerns (label, budget, `stream_limit`, the open-source
+      # registry) on top of it.
+      #
+      # STILL BUFFERED: an Enumerable `body:`, which is joined into one
+      # String before the request is built. Logged in SCOPE.md.
       #
       # PINNING (§8.2), implemented in `http_client_pinning.cr`. §8.2
       # requires three things of every hop: resolve the hostname,
@@ -58,7 +65,14 @@ module Adjutant
           timeout_cls = Helpers.fetch(legate, interp, "Timeout")
           too_large = Helpers.fetch(legate, interp, "TooLarge")
           redirect = Helpers.fetch(legate, interp, "Redirect")
+          too_many = Helpers.fetch(legate, interp, "TooMany")
           response_cls = Helpers.fetch(legate, interp, "Response")
+          # `stream: true` hands back the same `Legate::Bytes` a
+          # `Legate.bytes` call does — §3's type index has one stream
+          # type, not one per source — so the classes come from the
+          # same place rather than fetch growing its own.
+          bytes_cls = Helpers.fetch(legate, interp, "Bytes")
+          chunk_cls = Helpers.fetch(legate, interp, "Chunk")
 
           legate.define_native_singleton_method(
             interp.symbols.intern("fetch").value,
@@ -124,6 +138,55 @@ module Adjutant
               # point, so it is chosen here, once, and carried into
               # the connection rather than left to the TCP stack to
               # pick again later.
+              # STREAMING AND BUFFERED SHARE THIS LOOP, and the
+              # streaming half deliberately runs every hop through
+              # `HttpResponseStream` too, not just the last one.
+              #
+              # It has to: whether a hop is the last one is decided by
+              # its own status and `Location`, which are not known
+              # until the response has been opened. `HttpResponseStream`
+              # exposes both BEFORE any body byte is pulled, which is
+              # exactly what makes "open it, look, then either close
+              # and follow or keep it" possible. An intermediate hop
+              # is closed unread — its body is a redirect notice
+              # nobody wants — and only the final one is kept and
+              # handed to the script.
+              if opts.stream?
+                # BEFORE the connection is opened, so a refusal at the
+                # cap leaves nothing to leak — the same ordering
+                # `bytes.cr` uses around `File.open`, and the reason
+                # the check is separate from registration at all.
+                broker.check_stream_capacity!(ncc, too_many)
+
+                streamed = perform_streaming(target, addresses.first, opts, ncc, transport, timeout_cls)
+                location = redirect_target_of(streamed.status, streamed.headers)
+
+                if location
+                  # Every path below abandons this hop, so the
+                  # connection goes back before anything can raise —
+                  # an `ensure` would be wrong here, since the
+                  # SUCCESS path must NOT close it.
+                  streamed.close
+                  raise_payload_redirect(ncc, redirect, streamed.status, location, label) if opts.payload?
+
+                  if hops < opts.redirects
+                    hops += 1
+                    current_url = absolutize(location, target.uri)
+                    next
+                  end
+
+                  ncc.raise_error_class("Legate.fetch — more than #{opts.redirects} redirects following #{raw_url}", transport)
+                end
+
+                iterator = ResponseChunkIterator.new(streamed, opts.limit, chunk_cls, label, broker, ncc, too_large)
+                broker.register_source(iterator)
+
+                break Legate::Response.build(
+                  interp, response_cls, streamed.status, streamed.header_hash,
+                  Value.robject(StreamObject.new(bytes_cls, iterator)), current_url, label,
+                )
+              end
+
               response = perform(target, addresses.first, opts, ncc, transport, timeout_cls, too_large, broker)
 
               location = redirect_target(response)
@@ -164,13 +227,7 @@ module Adjutant
               # table would drift from reality the way the status table
               # just did.
               if location && opts.payload?
-                ncc.raise_error_class(
-                  "Legate.fetch — #{response.status_code} redirect to #{location} on a request with a body; " \
-                  "re-issue it yourself if you mean to send the body there",
-                  redirect,
-                  {"status"   => Value.int(response.status_code.to_i64),
-                   "location" => Value.string(location, label)},
-                )
+                raise_payload_redirect(ncc, redirect, response.status_code, location, label)
               end
 
               if location && hops < opts.redirects
@@ -204,8 +261,9 @@ module Adjutant
           getter timeout : Int32
           getter limit : Int64
           getter redirects : Int32
+          getter? stream : Bool
 
-          def initialize(@method, @headers, @body, @timeout, @limit, @redirects)
+          def initialize(@method, @headers, @body, @timeout, @limit, @redirects, @stream)
           end
 
           # Whether this request carried something the script sent —
@@ -223,23 +281,22 @@ module Adjutant
           end
 
           def self.read(ncc : NativeCallContext, broker : Broker, transport : RubyClass) : Options
-            if Helpers.checked_bool_kwarg(ncc, "Legate.fetch", "stream")
-              # See this module's own top comment: deliberately
-              # staged, and LOUD rather than silently buffering
-              # behind a kwarg that promises otherwise. A script
-              # asking for a stream and quietly receiving a fully
-              # buffered String would be the worst outcome — it
-              # would appear to work right up until a response too
-              # large to hold in memory.
-              ncc.raise_error_class("Legate.fetch — stream: true is not implemented yet; omit it for a buffered String body", transport)
-            end
+            stream = Helpers.checked_bool_kwarg(ncc, "Legate.fetch", "stream") || false
 
             method = Helpers.checked_symbol_kwarg(ncc, "Legate.fetch", "method")
             timeout = Helpers.checked_int_kwarg(ncc, "Legate.fetch", "timeout")
             redirects = Helpers.checked_int_kwarg(ncc, "Legate.fetch", "redirects")
             limit = Helpers.checked_int_kwarg(ncc, "Legate.fetch", "limit")
 
-            policy_limit = broker.grants.limits.fetch_limit
+            # WHICH policy cap `limit` is clamped against depends on
+            # `stream:`, because the two caps answer different
+            # questions — `fetch_limit` is how much this run will hold
+            # in memory at once, `stream_limit` is how far a response
+            # may run before it is treated as endless. See
+            # `Limits::DEFAULT_STREAM_LIMIT`. Clamping a streamed
+            # response against `fetch_limit` would make `stream: true`
+            # useless for exactly the bodies it exists for.
+            policy_limit = stream ? broker.grants.limits.stream_limit : broker.grants.limits.fetch_limit
             effective_limit = limit ? Math.min(limit, policy_limit) : policy_limit
 
             new(
@@ -249,6 +306,7 @@ module Adjutant
               timeout: timeout ? timeout.to_i32 : DEFAULT_TIMEOUT,
               limit: effective_limit,
               redirects: redirects ? redirects.to_i32 : DEFAULT_REDIRECTS,
+              stream: stream,
             )
           end
 
@@ -666,9 +724,70 @@ module Adjutant
         # deliberately absent: it is a cache answer, not a redirect,
         # and following it would be nonsense.
         private def self.redirect_target(result : Result) : String?
-          return nil unless {301, 302, 303, 307, 308}.includes?(result.status_code)
-          location = result.headers["location"]? || result.headers["Location"]?
+          redirect_target_of(result.status_code, result.headers)
+        end
+
+        # The same test against a status and headers that did not come
+        # from a `Result` — the streaming path has both in hand before
+        # any body exists, which is the whole reason it can decide
+        # whether to keep a connection or drop it.
+        private def self.redirect_target_of(status : Int32, headers : Hash(String, String)) : String?
+          return nil unless {301, 302, 303, 307, 308}.includes?(status)
+          location = headers["location"]? || headers["Location"]?
           location && !location.empty? ? location : nil
+        end
+
+        # Shared by the buffered and streaming paths so the rule is
+        # stated once. See the hop loop for why it exists at all.
+        private def self.raise_payload_redirect(ncc : NativeCallContext, redirect : RubyClass,
+                                                status : Int32, location : String,
+                                                label : RiskFlowLabel?) : NoReturn
+          ncc.raise_error_class(
+            "Legate.fetch — #{status} redirect to #{location} on a request with a body; " \
+            "re-issue it yourself if you mean to send the body there",
+            redirect,
+            {"status"   => Value.int(status.to_i64),
+             "location" => Value.string(location, label)},
+          )
+        end
+
+        # Opens one hop WITHOUT reading its body, handing back a live
+        # connection the caller must eventually close.
+        #
+        # The client is deliberately NOT closed here and there is no
+        # `ensure` doing it: ownership passes to the returned
+        # `StreamedResponse`, and from there either to the hop loop
+        # (which closes it on a redirect) or to
+        # `ResponseChunkIterator` (which closes it on exhaustion, and
+        # is registered with the run so teardown closes it otherwise).
+        # This is the one place in the verb where a resource outlives
+        # the method that made it, which is why the ownership chain is
+        # spelled out rather than left to be traced.
+        private def self.perform_streaming(target : Target, pinned : Socket::IPAddress, opts : Options,
+                                           ncc : NativeCallContext, transport : RubyClass,
+                                           timeout_cls : RubyClass) : StreamedResponse
+          uri = target.uri
+          tls = target.scheme == "https" ? OpenSSL::SSL::Context::Client.new : nil
+          client = HTTP::Client.new(target.host, target.port, tls: tls)
+          client.adjutant_pinned_address = pinned.address
+          client.connect_timeout = opts.timeout.seconds
+          # `HttpResponseStream` holds no timeouts of its own and
+          # inherits this one — without it a server that stalls
+          # mid-body parks the reader indefinitely. See that class's
+          # own comment.
+          client.read_timeout = opts.timeout.seconds
+
+          request_headers = HTTP::Headers.new
+          opts.headers.each { |name, value| request_headers[name] = value }
+          request = HTTP::Request.new(opts.method.upcase, request_target(uri), request_headers, opts.body)
+
+          begin
+            StreamedResponse.new(Utils::HttpResponseStream.open(client, request, READ_CHUNK_SIZE))
+          rescue IO::TimeoutError
+            ncc.raise_error_class("Legate.fetch — timed out after #{opts.timeout}s fetching #{uri}", timeout_cls)
+          rescue ex : Socket::Error | OpenSSL::Error | IO::Error
+            ncc.raise_error_class("Legate.fetch — transport failure fetching #{uri}: #{ex.message}", transport)
+          end
         end
 
         # A `Location` may be relative; resolve it against the hop it
@@ -690,6 +809,103 @@ module Adjutant
           getter body : String
 
           def initialize(@status_code, @headers, @body)
+          end
+        end
+
+        # One hop opened but not read — status and headers available,
+        # body still on the wire.
+        #
+        # A thin wrapper over `Utils::HttpResponseStream` rather than
+        # the stream itself, purely so the rest of this verb speaks in
+        # the same `Hash(String, String)` headers shape `Result` uses
+        # and `Response.build` expects, instead of `HTTP::Headers`
+        # leaking into the hop loop.
+        class StreamedResponse
+          # Declared rather than inferred: Crystal cannot type an ivar
+          # that only ever appears under `||=`.
+          @header_hash : Hash(String, String)?
+
+          def initialize(@stream : Utils::HttpResponseStream)
+          end
+
+          def status : Int32
+            @stream.status
+          end
+
+          def headers : Hash(String, String)
+            @header_hash ||= begin
+              out = {} of String => String
+              @stream.headers.each { |key, values| out[key] = values.join(", ") }
+              out
+            end
+          end
+
+          # Same thing under the name the hop loop reads better with.
+          def header_hash : Hash(String, String)
+            headers
+          end
+
+          def next_chunk : ::Bytes?
+            @stream.next_chunk
+          end
+
+          def close : Nil
+            @stream.close
+          end
+        end
+
+        # The response-side twin of `bytes.cr`'s `ChunkIterator`, and
+        # deliberately the same shape: it owns a resource for the
+        # lifetime of one walk, closes it on exhaustion, and registers
+        # with the run so teardown closes it when the walk never
+        # finishes. The resource is a socket rather than a file
+        # handle, which changes nothing about the pattern and
+        # everything about the cost of getting it wrong.
+        class ResponseChunkIterator
+          include ::Iterator(Value)
+          include Closable
+
+          def initialize(@response : StreamedResponse, @limit : Int64, @chunk_cls : RubyClass,
+                         @label : RiskFlowLabel?, @broker : Broker, @ncc : NativeCallContext,
+                         @too_large : RubyClass)
+            @done = false
+            @total = 0_i64
+          end
+
+          def next
+            return stop if @done
+
+            chunk = @response.next_chunk
+            unless chunk
+              close_source
+              return stop
+            end
+
+            @total += chunk.size
+            # ENFORCED AS BYTES ARRIVE, matching the buffered path and
+            # §8.2's own wording. The cap here is `stream_limit`, not
+            # `fetch_limit` — a runaway guard rather than a memory one
+            # (see `Limits::DEFAULT_STREAM_LIMIT`). The connection is
+            # dropped before raising: a script that rescues this must
+            # not be left holding an open socket to a server still
+            # sending.
+            if @total > @limit
+              close_source
+              @ncc.raise_error_class("Legate.fetch — response exceeded the #{@limit}-byte limit", @too_large)
+            end
+
+            @broker.budget.record_read(chunk.size.to_i64)
+            Legate::Chunk.build(@chunk_cls, chunk, @label)
+          end
+
+          # Idempotent, as `Closable` requires — reachable from
+          # exhaustion, from the limit breach above, and from run
+          # teardown on a stream the script walked away from.
+          def close_source : Nil
+            return if @done
+            @done = true
+            @response.close
+            @broker.open_sources.release(self)
           end
         end
       end

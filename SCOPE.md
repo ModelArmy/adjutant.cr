@@ -782,31 +782,18 @@ individually.
   trusting it, which is a chunk of setup worth doing deliberately
   rather than inline in a spec.
 
-- **`Legate.fetch`'s `stream: true` is not implemented.** Found
-  2026-08-30. §4.5 specifies that `stream: true`
-  makes the response body a `Legate::Bytes` rather than a `String`
-  capped by `limit`. Today the kwarg raises a clear `Legate::Transport`
-  naming itself as unimplemented, rather than silently buffering
-  behind a kwarg that promises otherwise — a script asking for a
-  stream and quietly receiving a fully buffered String would appear to
-  work right up until a response too large to hold in memory. Will
-  Fix: the buffered path is the whole of §4.5 otherwise and is
-  testable today. Fix shape: a streaming response body has to outlive
-  the `HTTP::Client#exec` block that produces it, so the
-  `Legate::Stream` iterator must own the client's lifetime and close
-  it on exhaustion — the same ownership pattern `bytes.cr`'s
-  `ChunkIterator` already uses for an open `File`, but with a
-  connection instead, where getting it wrong leaks sockets rather than
-  failing loudly.
-
 - **`Legate.fetch`'s `body:` does not stream an Enumerable.** Found
   2026-08-30. §4.5 says `body:` accepts a String or an Enumerable "so
   uploads stream"; an Array is currently joined into a single String
   before the request is built, so the memory saving the sentence
-  promises does not happen. Will Fix, and paired with the `stream:`
-  entry above — both need the connection's own IO rather than the
-  buffered `exec` path, and both should land together rather than
-  half-solving the streaming story twice.
+  promises does not happen. Will Fix. The response half of streaming
+  has since landed (`Utils::HttpResponseStream` plus `stream: true`),
+  and this is the remaining half: it needs the REQUEST body written
+  incrementally to the connection rather than materialised first,
+  which `HTTP::Request` accepts as an `IO` but Legate does not yet
+  supply. Note the interaction already settled in §4.5 — a redirect on
+  a request that carried a body is handed to the script, so a
+  single-pass upload stream never has to be replayed.
 
 - **IPv6 literals can't be written in a `net.hosts` rule.** Found
   2026-08-30 building `net_rule.cr`. The scalar parser splits a

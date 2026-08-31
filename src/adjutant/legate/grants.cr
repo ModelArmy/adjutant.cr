@@ -82,6 +82,26 @@ module Adjutant
       # smaller query.
       DEFAULT_URL_LIMIT = 2_048_i64 # 2 KiB
 
+      # The cap on a STREAMED response body (`Legate.fetch stream:
+      # true`), separate from `fetch_limit` and much larger, because
+      # the two limits exist for different reasons.
+      #
+      # `fetch_limit` is a MEMORY cap: 32 MiB is what a run is willing
+      # to hold in one String at once. Nothing is held when streaming,
+      # so that number is simply the wrong question. What a streamed
+      # response still needs is a RUNAWAY cap — a server that never
+      # sends EOF would otherwise pull bytes forever, and §4.5 read as
+      # though `limit` governed only the buffered body, which would
+      # have left streaming as the one unmetered ingress path in the
+      # whole grant.
+      #
+      # 1 GiB: high enough that no legitimate download trips it (the
+      # whole point of streaming is handling bodies too big to buffer)
+      # and low enough to stop an endless one long before the per-run
+      # `total_read` budget would, if that budget is even set — it is
+      # nil by default, whereas this is not.
+      DEFAULT_STREAM_LIMIT = 1_073_741_824_i64 # 1 GiB
+
       # DELIBERATE ADDITION to §7's `limits:` block. §7 has no cap on
       # how many streams a script may hold OPEN AT ONCE, and the
       # per-run teardown added alongside this (open_sources.cr) bounds
@@ -116,6 +136,7 @@ module Adjutant
       getter read_limit : Int64
       getter fetch_limit : Int64
       getter url_limit : Int64
+      getter stream_limit : Int64
       getter max_open_streams : Int32
       getter memory : Int64?
       getter wall_clock : Int32?
@@ -124,6 +145,7 @@ module Adjutant
 
       def initialize(@read_limit = DEFAULT_READ_LIMIT, @fetch_limit = DEFAULT_FETCH_LIMIT,
                      @url_limit = DEFAULT_URL_LIMIT,
+                     @stream_limit = DEFAULT_STREAM_LIMIT,
                      @max_open_streams = DEFAULT_MAX_OPEN_STREAMS,
                      @memory = nil, @wall_clock = nil, @total_read = nil, @total_write = nil)
       end
@@ -244,6 +266,7 @@ module Adjutant
           read_limit: size_or(limits_node, "read_limit", Limits::DEFAULT_READ_LIMIT),
           fetch_limit: size_or(limits_node, "fetch_limit", Limits::DEFAULT_FETCH_LIMIT),
           url_limit: size_or(limits_node, "url_limit", Limits::DEFAULT_URL_LIMIT),
+          stream_limit: size_or(limits_node, "stream_limit", Limits::DEFAULT_STREAM_LIMIT),
           max_open_streams: count_or(limits_node, "max_open_streams", Limits::DEFAULT_MAX_OPEN_STREAMS),
           memory: size_or?(limits_node, "memory"),
           wall_clock: duration_or?(limits_node, "wall_clock"),

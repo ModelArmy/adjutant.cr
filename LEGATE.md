@@ -422,6 +422,8 @@ Legate.fetch(url,
 ```
 One verb covers all of HTTP. `body:` accepts a String or an Enumerable, so uploads stream. With `stream: true` the response's `body` is a `Legate::Bytes`; otherwise a `String` subject to `limit` (default 32 MiB).
 
+`limit` applies either way, but is clamped against a different policy cap depending on which one is asked for: `fetch_limit` for a buffered body, `stream_limit` for a streamed one. They answer different questions — `fetch_limit` is how much a run will hold in memory at once, `stream_limit` is how far a response may run before it is treated as endless — so a streamed body gets a far larger cap without becoming unmetered. A streamed body's bytes count against the run's read budget as they arrive, and a stream abandoned without being walked to its end has its connection closed when the run ends.
+
 The boundary is important: transport failures raise; HTTP status codes do not. A 500 is an answer.
 
 **A redirect on a request that carried a body is handed to the script, not followed.** `Legate::Redirect` carries `status` (the Integer HTTP status) and `location` (the target URL), and the script re-issues the request itself if it means to. A request with no body — every `get`, and any other method called without `body:` — follows redirects automatically as normal, so `redirects:` governs body-less requests only. An empty-String body counts as no body.
@@ -619,6 +621,7 @@ limits:
   read_limit: 8MiB         # per call — recoverable
   fetch_limit: 32MiB       # per call — recoverable (response body)
   url_limit: 2KiB          # per call — recoverable (request URL)
+  stream_limit: 1GiB       # per call — recoverable (streamed response body)
   max_open_streams: 64     # per run  — recoverable (streams held open at once)
   memory: 512MiB           # per run  — fatal
   wall_clock: 300s         # per run  — fatal
@@ -631,6 +634,8 @@ A `net.hosts` entry is either a plain string or a mapping. Every default fails c
 `local: true` opts a rule into loopback and private address space, for a local model server or a service on the LAN. See §8.2 for what it does and does not cover.
 
 `url_limit` caps the request URL. `fetch_limit` bounds only the response, which would otherwise leave the query string as an unmetered channel for sending data out.
+
+`stream_limit` caps a streamed response body, as `fetch_limit` caps a buffered one. The two are separate because they guard different things: `fetch_limit` is a memory cap, and nothing is held in memory when streaming, so the only remaining danger is a server that never sends EOF. That is a runaway guard, and it can be far larger.
 
 `max_open_streams` caps how many streams a script may hold open **at once**. A stream's source is released when it is walked to exhaustion, and anything still open is closed when the run ends — but a script opening streams in a loop without consuming them holds every descriptor until then, and without a cap that fails as an opaque exhaustion error from inside the operating system rather than as something a script can act on.
 
