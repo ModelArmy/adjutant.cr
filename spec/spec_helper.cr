@@ -222,8 +222,14 @@ module Adjutant
 
     # No-op raise, matching raise_error's own reasoning above — this
     # harness has no real VM to build a real error object through.
-    def raise_error_class(message : String, error_class : RubyClass) : NoReturn
-      raise "#{error_class.name}: #{message}"
+    # `attributes` is rendered into the message rather than attached,
+    # since there is no error object here to attach it to; a spec that
+    # needs to assert on a real attribute should go through the real
+    # VM (interp.eval), as native_error_attributes_spec.cr does.
+    def raise_error_class(message : String, error_class : RubyClass,
+                          attributes : Hash(String, Value)? = nil) : NoReturn
+      suffix = attributes && !attributes.empty? ? " #{attributes}" : ""
+      raise "#{error_class.name}: #{message}#{suffix}"
     end
   end
 end

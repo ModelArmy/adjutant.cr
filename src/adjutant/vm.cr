@@ -3613,8 +3613,9 @@ module Adjutant
     # `RuntimeError#message`/logs, matching how a script's own
     # `raise Foo, "msg"` carries no code either.
     protected def raise_native_error_class(message : String, error_class : RubyClass,
-                                           filename : String, line : Int32) : NoReturn
-      err_val = make_error_object(error_class, message)
+                                           filename : String, line : Int32,
+                                           attributes : Hash(String, Value)? = nil) : NoReturn
+      err_val = make_error_object(error_class, message, attributes)
       raise RuntimeError.new(message, filename, line, error_value: err_val)
     end
 
@@ -3865,10 +3866,21 @@ module Adjutant
     # Build a RubyObject of `cls` with its `message` ivar set — the
     # shape both explicit `raise` and internal VM errors use so a
     # rescue variable can call `.message` on either uniformly.
-    private def make_error_object(cls : RubyClass, message : String) : Value
+    private def make_error_object(cls : RubyClass, message : String,
+                                  attributes : Hash(String, Value)? = nil) : Value
       obj = RubyObject.new(cls)
       msg_sym = @symbols.intern("message")
       obj.ivars[msg_sym.value] = Value.string(message)
+      # Set AFTER `message`, and deliberately not guarded against
+      # overwriting it: a caller passing `"message"` here is asking
+      # for a different message than the one it also passed
+      # positionally, which is a caller bug worth surfacing as
+      # confusing behaviour rather than hiding behind a silent skip.
+      # Nothing in the tree does it, and a guard would be a rule a
+      # reader has to learn for a case that does not arise.
+      attributes.try &.each do |name, value|
+        obj.ivars[@symbols.intern(name).value] = value
+      end
       Value.robject(obj)
     end
 

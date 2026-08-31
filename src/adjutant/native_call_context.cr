@@ -229,6 +229,34 @@ module Adjutant
     # specific message computed and just needs it turned into a
     # real, catchable error object of the right class — the same
     # thing `raise ClassName, "msg"` does at the script level.
-    abstract def raise_error_class(message : String, error_class : RubyClass) : NoReturn
+    # `attributes` attaches extra ivars to the error object alongside
+    # its `message`, so a raised error can carry STRUCTURED data a
+    # script reads programmatically rather than parses back out of a
+    # sentence.
+    #
+    # Every native-raised error carried nothing but `message` before
+    # this, which is fine for most of them — a `NotFound` has nothing
+    # to say that the path in its message doesn't already say. It
+    # stops being fine as soon as a script is expected to BRANCH on
+    # something the error knows: an HTTP status, an exit code, a byte
+    # count. Recovering those from a message means string-matching
+    # prose that exists to be read by a human, and any rewording of
+    # that prose silently breaks the script.
+    #
+    # The keys are plain ivar names WITHOUT a leading `@` or `__`
+    # prefix (`"status"`, not `"@status"`), matching how
+    # `message` itself is stored. Reader methods are the raising
+    # side's responsibility: attaching an ivar makes the value
+    # present, but a script can only reach it if the error's CLASS
+    # defines a method returning it — see `Legate::Redirect` for the
+    # pattern.
+    #
+    # Nothing validates that a class defines readers for the
+    # attributes it is given. That is deliberate: an ivar with no
+    # reader is inert rather than harmful, and requiring the two to
+    # be declared together would mean this method needed to know
+    # about class definitions.
+    abstract def raise_error_class(message : String, error_class : RubyClass,
+                                   attributes : Hash(String, Value)? = nil) : NoReturn
   end
 end

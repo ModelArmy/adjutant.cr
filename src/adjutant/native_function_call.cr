@@ -72,8 +72,9 @@ module Adjutant
       @vm.raise_native_error(code, data, error_class, filename, line)
     end
 
-    def raise_error_class(message : String, error_class : RubyClass) : NoReturn
-      @vm.raise_native_error_class(message, error_class, filename, line)
+    def raise_error_class(message : String, error_class : RubyClass,
+                          attributes : Hash(String, Value)? = nil) : NoReturn
+      @vm.raise_native_error_class(message, error_class, filename, line, attributes)
     end
   end
 end
