@@ -87,7 +87,13 @@ module Adjutant
             # DIFFERENT failure (e.g. a permissions error) as
             # `NotFound` when it isn't.
             io = File.open(raw, "rb")
-            Value.robject(StreamObject.new(bytes_cls, ChunkIterator.new(io, chunk_size, chunk_cls, label, broker)))
+            iterator = ChunkIterator.new(io, chunk_size, chunk_cls, label, broker)
+            # Registered here rather than inside the constructor: an
+            # object handing `self` to a collaborator before its own
+            # initialization has finished is avoidable, and the verb
+            # is the natural place for "this run now owns a handle."
+            broker.open_sources.register(iterator)
+            Value.robject(StreamObject.new(bytes_cls, iterator))
           end
         end
 
@@ -116,8 +122,14 @@ module Adjutant
         # construction only covers the STATIC grant/policy check, not
         # budget accounting, which is necessarily progressive for a
         # stream of unknown total size.
+        # Closing on exhaustion is the FAST path, not the only one —
+        # `first(n)`/`take(n)` halt a walk without exhausting the
+        # source, and an exception can leave the walk entirely, so the
+        # run's `OpenSources` registry closes whatever never got here
+        # (see `open_sources.cr`).
         class ChunkIterator
           include ::Iterator(Value)
+          include Closable
 
           def initialize(@io : File, @chunk_size : Int32, @chunk_cls : RubyClass,
                          @label : RiskFlowLabel?, @broker : Broker)
@@ -129,12 +141,24 @@ module Adjutant
             buf = ::Bytes.new(@chunk_size)
             n = @io.read(buf)
             if n == 0
-              @io.close
-              @done = true
+              close_source
               return stop
             end
             @broker.budget.record_read(n.to_i64)
             Legate::Chunk.build(@chunk_cls, buf[0, n], @label)
+          end
+
+          # Idempotent, as `Closable` requires: reached either from
+          # `#next` on genuine exhaustion or from `close_all` at the
+          # end of a run, and on an abandoned stream BOTH can happen
+          # if the script pulls again after teardown. `@done` also
+          # keeps `#next` returning `stop` rather than reading a
+          # closed handle.
+          def close_source : Nil
+            return if @done
+            @done = true
+            @io.close
+            @broker.open_sources.release(self)
           end
         end
       end

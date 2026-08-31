@@ -196,7 +196,38 @@ module Adjutant
     def eval(body : Body, filename : String) : Value
       chunk, local_count = Compiler.compile(body, @symbols)
       vm = make_vm
-      vm.run(chunk, filename, local_count)
+      begin
+        vm.run(chunk, filename, local_count)
+      ensure
+        # Run teardown. Every Legate stream still holding an open file
+        # handle (or, once `Legate.fetch stream: true` lands, an open
+        # socket) is closed here — see `legate/open_sources.cr` for why
+        # a registry is needed and why the iterators' own
+        # close-on-exhaustion cannot cover every exit.
+        #
+        # THE `ensure` IS THE POINT. A script that raises is the case
+        # that leaks: the exception propagates out through
+        # `Stream.walk`, past the iterator's close, and out of `run`.
+        # Adjutant is embedded in a host application that keeps
+        # running, so "the OS will clean up when the process exits" —
+        # true for a command-line interpreter — is not available here.
+        #
+        # Deliberately NOT `at_exit`: the process belongs to the
+        # embedder and outlives any one script. The scope that matters
+        # is this single `eval`, so the next script on this same
+        # Interpreter starts with nothing of the last one's still open.
+        #
+        # All three `eval` overloads funnel here, so this is the one
+        # place it is needed.
+        #
+        # Failures are collected, not raised: this frequently runs
+        # while a real exception is already unwinding, and replacing
+        # the script's error with an incidental "socket was already
+        # closed" would be strictly worse for whoever is debugging.
+        # Nothing consumes the returned array yet — an embedder-facing
+        # cleanup-failure hook is a real question and a separate one.
+        @broker.open_sources.close_all
+      end
     end
 
     # Compile a source string without executing — for pre-validation.

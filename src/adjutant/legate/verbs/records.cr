@@ -99,11 +99,22 @@ module Adjutant
                 line_iter = Lines::LineIterator.new(
                   io, Lines::DEFAULT_MAX_LINE, true, malformed, too_large, raw, label, broker, ncc,
                 )
+                # The LINE iterator is registered, not the wrapping
+                # `JsonlIterator` — it is the one that owns the handle,
+                # and it already knows how to close it. Registering the
+                # wrapper too would put one file descriptor in the
+                # registry twice.
+                broker.open_sources.register(line_iter)
                 JsonlIterator.new(line_iter, malformed, ncc, interp, label)
               when "csv"
                 counting_io = BudgetCountingIO.new(io, broker)
                 parser = ::CSV::Parser.new(counting_io)
-                CsvIterator.new(parser, io, interp, headers_flag, label, ncc, malformed, raw)
+                csv_iter = CsvIterator.new(parser, io, interp, headers_flag, label, ncc, malformed, raw, broker)
+                # Here the outer iterator DOES own the handle
+                # (`BudgetCountingIO` only counts bytes through it), so
+                # it is the one registered.
+                broker.open_sources.register(csv_iter)
+                csv_iter
               else
                 raise InternalError.new("Legate.records: unreachable — format_of already validated \"#{format}\"")
               end
@@ -226,9 +237,11 @@ module Adjutant
         #      confirmed against the actual `csv` stdlib source.
         class CsvIterator
           include ::Iterator(Value)
+          include Closable
 
           def initialize(@parser : ::CSV::Parser, @io : File, @interp : Interpreter, @headers_flag : Bool,
-                         @label : RiskFlowLabel?, @ncc : NativeCallContext, @malformed : RubyClass, @path : String)
+                         @label : RiskFlowLabel?, @ncc : NativeCallContext, @malformed : RubyClass, @path : String,
+                         @broker : Broker)
             @header_syms = nil.as(Array(Sym)?)
             @headers_read = false
             @done = false
@@ -271,9 +284,20 @@ module Adjutant
           end
 
           private def finish : Iterator::Stop
+            close_source
+            stop
+          end
+
+          # Idempotent — see `bytes.cr`'s `ChunkIterator#close_source`.
+          # `@done` is sufficient here, unlike `LineIterator`'s extra
+          # flag: this iterator has nothing buffered to yield after the
+          # handle shuts, so "closed" and "finished" really are the
+          # same state.
+          def close_source : Nil
+            return if @done
             @done = true
             @io.close
-            stop
+            @broker.open_sources.release(self)
           end
         end
       end

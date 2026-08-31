@@ -78,6 +78,9 @@ module Adjutant
             # comment for the full reasoning, unchanged here).
             io = File.open(raw, "rb")
             iterator = LineIterator.new(io, max_line, scrub, malformed, too_large, raw, label, broker, ncc)
+            # See `bytes.cr`'s identical call for why registration
+            # happens in the verb rather than the constructor.
+            broker.open_sources.register(iterator)
             Value.robject(StreamObject.new(lines_cls, iterator))
           end
         end
@@ -110,6 +113,7 @@ module Adjutant
         # file.
         class LineIterator
           include ::Iterator(Value)
+          include Closable
 
           # `ncc` here is the ONE that constructed this stream (the
           # original `Legate.lines(...)` call) — captured because
@@ -135,8 +139,9 @@ module Adjutant
                          @too_large : RubyClass, @path : String, @label : RiskFlowLabel?, @broker : Broker,
                          @ncc : NativeCallContext)
             @pending = ::Bytes.empty
-            @io_done = false # true once the underlying IO itself hit EOF (0-byte read)
-            @done = false    # true once there is neither a pending partial line nor more IO to read
+            @io_done = false       # true once the underlying IO itself hit EOF (0-byte read)
+            @done = false          # true once there is neither a pending partial line nor more IO to read
+            @source_closed = false # true once the handle is shut, whoever shut it
           end
 
           def next
@@ -176,13 +181,28 @@ module Adjutant
                 # `@pending` (possibly empty) is the final line, same
                 # as Ruby's own `each_line` behavior on a file missing
                 # a trailing "\n".
-                @done = true
-                @io.close
+                close_source
                 return @pending.empty? ? stop : build_line(@pending)
               end
 
               pull_more
             end
+          end
+
+          # Idempotent — see `bytes.cr`'s `ChunkIterator#close_source`.
+          #
+          # A SEPARATE `@source_closed` flag rather than reusing
+          # `@done`: this iterator closes the handle while still
+          # holding a final unterminated line in `@pending` (a file
+          # with no trailing newline), so the two states are genuinely
+          # distinct — "the handle is shut" happens one pull before
+          # "there is nothing left to yield."
+          def close_source : Nil
+            return if @source_closed
+            @source_closed = true
+            @done = true
+            @io.close
+            @broker.open_sources.release(self)
           end
 
           # Reads one more chunk from `@io`, appends it to `@pending`,

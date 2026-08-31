@@ -2,6 +2,7 @@ require "./grants"
 require "./authorization"
 require "./budget"
 require "./audit_log"
+require "./open_sources"
 require "./exceptions"
 require "../risk_profile"
 require "../risk_flow_label"
@@ -63,6 +64,19 @@ module Adjutant
       getter budget : Budget
       getter audit_log : AuditLog
 
+      # Every stream-backing source opened during this run that has
+      # not yet closed itself — see `open_sources.cr` for why a
+      # registry is needed at all, and why closing on walk-halt is not
+      # an acceptable substitute.
+      #
+      # Lives on the Broker rather than the Interpreter for the same
+      # reason `budget` and `audit_log` do: it is per-RUN state
+      # accumulated by verbs, and the Broker is the one instance every
+      # verb bootstrap already closes over. A verb reaching a fresh
+      # registry through some other path would be a second source of
+      # truth for what is open.
+      getter open_sources : OpenSources
+
       # Public so a VERB (step 5) can read policy limits directly
       # (e.g. `Legate.read`'s own `limit:` kwarg has to be clamped to
       # `grants.limits.read_limit`, never allowed to exceed it) —
@@ -80,6 +94,12 @@ module Adjutant
         @grants = grants
         @budget = budget || Budget.new(grants.limits)
         @audit_log = audit_log
+        # Not injectable, unlike `budget`/`audit_log`. Those are
+        # inspectable RESULTS an embedder may legitimately want to
+        # supply or share across a sequence of calls; this is live
+        # resource ownership, and two Brokers sharing one registry
+        # would mean either could close the other's open handles.
+        @open_sources = OpenSources.new
       end
 
       # §4.1's `read`-grant boundary. `path` is the raw string a verb
