@@ -99,7 +99,54 @@ module Adjutant
         # supply or share across a sequence of calls; this is live
         # resource ownership, and two Brokers sharing one registry
         # would mean either could close the other's open handles.
-        @open_sources = OpenSources.new
+        @open_sources = OpenSources.new(grants.limits.max_open_streams)
+      end
+
+      # Refuses to let the run open one more stream once
+      # `max_open_streams` are already open.
+      #
+      # SEPARATE FROM `register_source`, and called BEFORE the
+      # resource is acquired — not folded into registration for the
+      # one reason that matters: a verb opens its `File` (or, later,
+      # its connection) and only then has something to register, so a
+      # cap enforced at registration time would refuse a handle that
+      # is already open and that nothing would then be holding to
+      # close. Checking first means the refusal happens while there is
+      # still nothing to leak.
+      #
+      # NOT an `authorize_*` method, and deliberately not shaped like
+      # one: there is no grant to consult, no sensitivity to declare
+      # and no audit entry to write — opening a stream was already
+      # authorized by the `authorize_read` (or, later,
+      # `authorize_net`) call the verb made moments earlier. This is
+      # resource accounting for a call that has ALREADY been allowed,
+      # which is why it sits alongside `budget` rather than inside the
+      # authorization sequence.
+      #
+      # The verb passes its own `TooMany` class in for the same reason
+      # every other Legate verb does: nested Legate error classes
+      # resolve only via real ConstPath lookup, so they cannot be
+      # fetched by name from here.
+      #
+      # The message names the cap and the remedy. A script hitting
+      # this is almost always opening streams in a loop without
+      # consuming them, and the fix is to finish walking one before
+      # opening the next — §9.1's "the message MUST hint at" column,
+      # applied to a limit §9 does not yet list.
+      def check_stream_capacity!(ncc : NativeCallContext, too_many : RubyClass) : Nil
+        return unless @open_sources.at_capacity?
+        ncc.raise_error_class(
+          "#{@open_sources.max_open} streams are already open — finish walking one before opening another, " \
+          "or raise max_open_streams in the policy's limits",
+          too_many,
+        )
+      end
+
+      # Takes ownership of one stream-backing source for the rest of
+      # the run. Pair with `check_stream_capacity!`, called before the
+      # underlying handle was opened.
+      def register_source(source : Closable) : Nil
+        @open_sources.register(source)
       end
 
       # §4.1's `read`-grant boundary. `path` is the raw string a verb

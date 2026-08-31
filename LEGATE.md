@@ -614,6 +614,7 @@ limits:
   read_limit: 8MiB         # per call — recoverable
   fetch_limit: 32MiB       # per call — recoverable (response body)
   url_limit: 2KiB          # per call — recoverable (request URL)
+  max_open_streams: 64     # per run  — recoverable (streams held open at once)
   memory: 512MiB           # per run  — fatal
   wall_clock: 300s         # per run  — fatal
   total_read: 4GiB         # per run  — fatal
@@ -625,6 +626,10 @@ A `net.hosts` entry is either a plain string or a mapping. Every default fails c
 `local: true` opts a rule into loopback and private address space, for a local model server or a service on the LAN. See §8.2 for what it does and does not cover.
 
 `url_limit` caps the request URL. `fetch_limit` bounds only the response, which would otherwise leave the query string as an unmetered channel for sending data out.
+
+`max_open_streams` caps how many streams a script may hold open **at once**. A stream's source is released when it is walked to exhaustion, and anything still open is closed when the run ends — but a script opening streams in a loop without consuming them holds every descriptor until then, and without a cap that fails as an opaque exhaustion error from inside the operating system rather than as something a script can act on.
+
+It is the one limit that is **per run and recoverable**, and deliberately so: it caps simultaneous holdings rather than cumulative consumption, so a script that hits it and then finishes walking one stream has genuinely freed the resource and may legitimately open another. That is unlike `total_read`, where catching and retrying past the budget would reinstate the exhaustion the budget exists to prevent.
 
 Absent grants are denied. **Per-call limits are recoverable; per-run budgets are fatal.** Hitting the 8 MiB read limit is advice — the script should switch to `Legate.lines`. Hitting the 4 GiB total-read budget is exhaustion, and permitting a script to catch and retry past it reinstates exactly the denial-of-service the budget existed to prevent.
 
@@ -763,16 +768,16 @@ flowchart TB
 
 Caught by an ordinary `rescue => e`. These are expected conditions a script should handle.
 
-Class                |Meaning                                      |Message MUST hint at              
----------------------|---------------------------------------------|----------------------------------
-`Legate::NotFound`   |path or binary absent                        |—                                 
-`Legate::Malformed`  |bad JSON, CSV, encoding, or path construction|—                                 
-`Legate::TooLarge`   |per-call byte or memory cap                  |the streaming verb or `each_slice`
-`Legate::TooMany`    |per-call cardinality cap                     |`limit:` or `each_slice`          
-`Legate::Timeout`    |per-call wall clock                          |—                                 
-`Legate::Transport`  |DNS, TLS, connection, redirect loop          |—                                 
-`Legate::Conflict`   |destination exists, non-empty directory      |`recursive:`                      
-`Legate::NonZeroExit`|`Legate::Exit#raise!` on a non-zero exit code|the exit code and truncated `err` 
+Class                |Meaning                                        |Message MUST hint at                         
+---------------------|-----------------------------------------------|---------------------------------------------
+`Legate::NotFound`   |path or binary absent                          |—                                            
+`Legate::Malformed`  |bad JSON, CSV, encoding, or path construction  |—                                            
+`Legate::TooLarge`   |per-call byte or memory cap                    |the streaming verb or `each_slice`           
+`Legate::TooMany`    |per-call cardinality cap, or `max_open_streams`|`limit:`, `each_slice`, or finishing a stream
+`Legate::Timeout`    |per-call wall clock                            |—                                            
+`Legate::Transport`  |DNS, TLS, connection, redirect loop            |—                                            
+`Legate::Conflict`   |destination exists, non-empty directory        |`recursive:`                                 
+`Legate::NonZeroExit`|`Legate::Exit#raise!` on a non-zero exit code  |the exit code and truncated `err`            
 
 A `TooLarge` message MUST read like: *"config.json is 1.4 GB, over the 8 MiB read limit — use `Legate.lines(path)` to stream."* Models reliably read exception messages and unreliably read specifications; this is the cheapest documentation channel available.
 

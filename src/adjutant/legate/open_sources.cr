@@ -1,3 +1,5 @@
+require "./grants"
+
 module Adjutant
   module Legate
     # Anything holding an OS resource (an open `File` today, an
@@ -59,16 +61,32 @@ module Adjutant
     # release its sockets so the NEXT script on the same Interpreter
     # starts clean. See `Interpreter#eval`'s own `ensure`.
     class OpenSources
-      def initialize
+      # The cap comes from policy (`Legate::Limits#max_open_streams`),
+      # not from a constant here — an embedder running scripts with
+      # wide fan-out can raise it, and one running hostile scripts can
+      # lower it. See that field's own comment for why the cap is
+      # recoverable rather than fatal.
+      getter max_open : Int32
+
+      def initialize(@max_open : Int32 = Limits::DEFAULT_MAX_OPEN_STREAMS)
         @open = [] of Closable
       end
 
-      # Currently-open count. Public for specs, and for the per-run
-      # open-source cap that lands next — that cap is what makes a
-      # script holding thousands of simultaneous streams fail at a
-      # knowable number instead of at whatever the OS fd limit
-      # happens to be. `close_all` alone bounds the leak in TIME, not
-      # in COUNT.
+      # Whether one more source would exceed the cap.
+      #
+      # A PREDICATE, not a raise: this class deliberately knows
+      # nothing about `NativeCallContext`, `RubyClass` or how a script
+      # error is built — it is a plain resource registry, and keeping
+      # the Adjutant-runtime coupling on the Broker side is what lets
+      # it be tested (and reasoned about) without an interpreter. The
+      # raising wrapper is `Broker#register_source`.
+      def at_capacity? : Bool
+        @open.size >= @max_open
+      end
+
+      # Currently-open count. Public for specs and for `at_capacity?`.
+      # `close_all` alone bounds the leak in TIME, not in COUNT — the
+      # cap is what bounds it in count.
       def size : Int32
         @open.size
       end

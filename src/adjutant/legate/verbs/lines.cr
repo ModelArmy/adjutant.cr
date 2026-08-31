@@ -35,6 +35,7 @@ module Adjutant
 
         def self.bootstrap(interp : Interpreter, legate : RubyClass, broker : Broker) : Nil
           not_found = Helpers.fetch(legate, interp, "NotFound")
+          too_many = Helpers.fetch(legate, interp, "TooMany")
           too_large = Helpers.fetch(legate, interp, "TooLarge")
           malformed = Helpers.fetch(legate, interp, "Malformed")
           lines_cls = Helpers.nest(legate, interp, "Lines")
@@ -76,11 +77,15 @@ module Adjutant
             # as a raw Crystal exception rather than guessed at and
             # remapped to a Legate error tier (see that file's own
             # comment for the full reasoning, unchanged here).
+            # See `bytes.cr` for why the cap is checked before the
+            # handle is opened rather than at registration.
+            broker.check_stream_capacity!(ncc, too_many)
+
             io = File.open(raw, "rb")
             iterator = LineIterator.new(io, max_line, scrub, malformed, too_large, raw, label, broker, ncc)
             # See `bytes.cr`'s identical call for why registration
             # happens in the verb rather than the constructor.
-            broker.open_sources.register(iterator)
+            broker.register_source(iterator)
             Value.robject(StreamObject.new(lines_cls, iterator))
           end
         end

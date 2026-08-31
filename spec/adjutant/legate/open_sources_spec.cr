@@ -132,6 +132,142 @@ module Adjutant
       registry.close_all
       a.closes.should eq 1
     end
+
+    it "reports capacity against its configured cap" do
+      registry = Legate::OpenSources.new(2)
+      registry.at_capacity?.should be_false
+      registry.register(FakeSource.new)
+      registry.at_capacity?.should be_false
+      registry.register(FakeSource.new)
+      registry.at_capacity?.should be_true
+    end
+
+    it "is below capacity again once a source releases" do
+      registry = Legate::OpenSources.new(1)
+      a = FakeSource.new
+      registry.register(a)
+      registry.at_capacity?.should be_true
+
+      registry.release(a)
+      registry.at_capacity?.should be_false
+    end
+  end
+
+  describe "max_open_streams" do
+    it "refuses to open more streams than the cap allows" do
+      with_tmpdir do |dir|
+        file = File.join(dir, "f.txt")
+        File.write(file, "0123456789")
+        interp, _ = make_interp(
+          grants: Legate::Grants.new(
+            read_roots: [dir],
+            limits: Legate::Limits.new(max_open_streams: 2),
+          ),
+        )
+
+        # Three streams opened and none consumed. The third is the one
+        # that must fail, and it must fail as a recoverable TooMany the
+        # script can see — not as an fd exhaustion from inside File.
+        eval = interp.eval(<<-RUBY)
+        opened = 0
+        error = nil
+        begin
+          3.times do
+            Legate.bytes(#{file.inspect}, chunk: 4)
+            opened = opened + 1
+          end
+        rescue Legate::TooMany => e
+          error = e.message
+        end
+        [opened, error]
+        RUBY
+
+        result = eval.as_array.to_a
+        result[0].as_int.should eq 2
+        result[1].as_string.should contain "2 streams are already open"
+      end
+    end
+
+    # The cap is on SIMULTANEOUS holdings, not cumulative opens — a
+    # script that finishes with one stream can always open another.
+    # This is the property that makes the limit recoverable rather
+    # than fatal, so it is worth a test of its own.
+    it "allows opening again after an earlier stream is fully walked" do
+      with_tmpdir do |dir|
+        file = File.join(dir, "f.txt")
+        File.write(file, "0123456789")
+        interp, _ = make_interp(
+          grants: Legate::Grants.new(
+            read_roots: [dir],
+            limits: Legate::Limits.new(max_open_streams: 1),
+          ),
+        )
+
+        eval = interp.eval(<<-RUBY)
+        count = 0
+        3.times do
+          Legate.bytes(#{file.inspect}, chunk: 4).each { |c| c }
+          count = count + 1
+        end
+        count
+        RUBY
+
+        eval.as_int.should eq 3
+      end
+    end
+
+    # The refusal must happen BEFORE the handle is opened. If it did
+    # not, the very call that reports the cap would itself leak a
+    # descriptor, and the registry would be the only thing that knew.
+    it "leaves nothing registered when it refuses" do
+      with_tmpdir do |dir|
+        file = File.join(dir, "f.txt")
+        File.write(file, "0123456789")
+        interp, _ = make_interp(
+          grants: Legate::Grants.new(
+            read_roots: [dir],
+            limits: Legate::Limits.new(max_open_streams: 1),
+          ),
+        )
+
+        interp.eval(<<-RUBY)
+        Legate.bytes(#{file.inspect}, chunk: 4)
+        begin
+          Legate.bytes(#{file.inspect}, chunk: 4)
+        rescue Legate::TooMany => e
+          nil
+        end
+        RUBY
+
+        interp.broker.open_sources.size.should eq 0
+      end
+    end
+
+    it "applies the same cap to lines and records" do
+      with_tmpdir do |dir|
+        file = File.join(dir, "f.txt")
+        File.write(file, "a\nb\nc\n")
+        interp, _ = make_interp(
+          grants: Legate::Grants.new(
+            read_roots: [dir],
+            limits: Legate::Limits.new(max_open_streams: 1),
+          ),
+        )
+
+        eval = interp.eval(<<-RUBY)
+        Legate.lines(#{file.inspect})
+        caught = false
+        begin
+          Legate.lines(#{file.inspect})
+        rescue Legate::TooMany => e
+          caught = true
+        end
+        caught
+        RUBY
+
+        eval.truthy?.should be_true
+      end
+    end
   end
 
   describe "stream source lifetime" do

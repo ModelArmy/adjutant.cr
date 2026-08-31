@@ -82,9 +82,41 @@ module Adjutant
       # smaller query.
       DEFAULT_URL_LIMIT = 2_048_i64 # 2 KiB
 
+      # DELIBERATE ADDITION to §7's `limits:` block. §7 has no cap on
+      # how many streams a script may hold OPEN AT ONCE, and the
+      # per-run teardown added alongside this (open_sources.cr) bounds
+      # the leak in TIME but not in COUNT: a script looping over ten
+      # thousand paths or URLs and calling `.first(1)` on each holds
+      # ten thousand descriptors simultaneously, and every one of them
+      # is released only when the run ends. Without a cap that fails
+      # at whatever the process fd limit happens to be, as an opaque
+      # `Too many open files` from somewhere deep in `File.open`.
+      #
+      # NEITHER of §7's two categories, and worth being explicit about
+      # that rather than filing it under the nearest one. §7's rule is
+      # "per-call limits are recoverable; per-run budgets are fatal,"
+      # and the reasoning for the fatal half is that a cumulative
+      # budget a script could catch and retry past is no budget at
+      # all. This is a per-run cap on SIMULTANEOUS HOLDINGS, not on
+      # cumulative consumption: a script that hits it and then
+      # finishes walking one stream has genuinely freed the resource,
+      # and retrying is legitimate rather than an end-run around
+      # exhaustion. So it is RECOVERABLE (`Legate::TooMany`), which
+      # matches how the same shape behaves everywhere else in the
+      # system — you can always make progress by consuming what you
+      # already opened.
+      #
+      # 64 by default: far above any plausible legitimate fan-out (a
+      # script comparing a handful of files, or fetching a few
+      # endpoints in sequence, holds one or two), and far below any
+      # ordinary process fd limit, so the cap bites long before the
+      # OS does and says something useful when it does.
+      DEFAULT_MAX_OPEN_STREAMS = 64
+
       getter read_limit : Int64
       getter fetch_limit : Int64
       getter url_limit : Int64
+      getter max_open_streams : Int32
       getter memory : Int64?
       getter wall_clock : Int32?
       getter total_read : Int64?
@@ -92,6 +124,7 @@ module Adjutant
 
       def initialize(@read_limit = DEFAULT_READ_LIMIT, @fetch_limit = DEFAULT_FETCH_LIMIT,
                      @url_limit = DEFAULT_URL_LIMIT,
+                     @max_open_streams = DEFAULT_MAX_OPEN_STREAMS,
                      @memory = nil, @wall_clock = nil, @total_read = nil, @total_write = nil)
       end
     end
@@ -211,6 +244,7 @@ module Adjutant
           read_limit: size_or(limits_node, "read_limit", Limits::DEFAULT_READ_LIMIT),
           fetch_limit: size_or(limits_node, "fetch_limit", Limits::DEFAULT_FETCH_LIMIT),
           url_limit: size_or(limits_node, "url_limit", Limits::DEFAULT_URL_LIMIT),
+          max_open_streams: count_or(limits_node, "max_open_streams", Limits::DEFAULT_MAX_OPEN_STREAMS),
           memory: size_or?(limits_node, "memory"),
           wall_clock: duration_or?(limits_node, "wall_clock"),
           total_read: size_or?(limits_node, "total_read"),
@@ -220,6 +254,21 @@ module Adjutant
 
       private def self.size_or(node : YAML::Any?, key : String, default : Int64) : Int64
         size_or?(node, key) || default
+      end
+
+      # A PLAIN COUNT, not a size literal — `max_open_streams: 64`
+      # means sixty-four streams, and there is no `64MiB`-style suffix
+      # to interpret. Accepts either a YAML integer or a numeric
+      # string, since a policy author who quotes it (habit, after
+      # every neighbouring key IS a quoted literal) should not get a
+      # silent fallback to the default. A zero or negative value is
+      # rejected the same way: it would mean "no stream may ever be
+      # opened," which is far more likely a typo than a policy.
+      private def self.count_or(node : YAML::Any?, key : String, default : Int32) : Int32
+        raw = node.try(&.[key]?)
+        return default unless raw
+        n = raw.as_i? || raw.as_s?.try(&.to_i32?)
+        n && n > 0 ? n : default
       end
 
       private def self.size_or?(node : YAML::Any?, key : String) : Int64?

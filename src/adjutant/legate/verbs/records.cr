@@ -50,6 +50,7 @@ module Adjutant
 
         def self.bootstrap(interp : Interpreter, legate : RubyClass, broker : Broker) : Nil
           not_found = Helpers.fetch(legate, interp, "NotFound")
+          too_many = Helpers.fetch(legate, interp, "TooMany")
           malformed = Helpers.fetch(legate, interp, "Malformed")
           too_large = Helpers.fetch(legate, interp, "TooLarge")
           records_cls = Helpers.nest(legate, interp, "Records")
@@ -80,6 +81,10 @@ module Adjutant
             end
 
             headers_flag = headers_flag_of(ncc)
+            # See `bytes.cr` for why the cap is checked before the
+            # handle is opened rather than at registration.
+            broker.check_stream_capacity!(ncc, too_many)
+
             io = File.open(raw, "rb")
 
             iterator =
@@ -104,7 +109,7 @@ module Adjutant
                 # and it already knows how to close it. Registering the
                 # wrapper too would put one file descriptor in the
                 # registry twice.
-                broker.open_sources.register(line_iter)
+                broker.register_source(line_iter)
                 JsonlIterator.new(line_iter, malformed, ncc, interp, label)
               when "csv"
                 counting_io = BudgetCountingIO.new(io, broker)
@@ -113,7 +118,7 @@ module Adjutant
                 # Here the outer iterator DOES own the handle
                 # (`BudgetCountingIO` only counts bytes through it), so
                 # it is the one registered.
-                broker.open_sources.register(csv_iter)
+                broker.register_source(csv_iter)
                 csv_iter
               else
                 raise InternalError.new("Legate.records: unreachable — format_of already validated \"#{format}\"")

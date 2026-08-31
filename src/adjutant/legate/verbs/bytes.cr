@@ -41,6 +41,7 @@ module Adjutant
 
         def self.bootstrap(interp : Interpreter, legate : RubyClass, broker : Broker) : Nil
           not_found = Helpers.fetch(legate, interp, "NotFound")
+          too_many = Helpers.fetch(legate, interp, "TooMany")
           bytes_cls = Helpers.nest(legate, interp, "Bytes")
           chunk_cls = Helpers.fetch(legate, interp, "Chunk")
           stream_module = Helpers.fetch(legate, interp, "Stream")
@@ -86,13 +87,19 @@ module Adjutant
             # error tier it belongs to) risks miscategorizing a
             # DIFFERENT failure (e.g. a permissions error) as
             # `NotFound` when it isn't.
+            # BEFORE `File.open`, so a refusal at the cap happens
+            # while there is still no handle to leak — see
+            # `Broker#check_stream_capacity!`.
+            broker.check_stream_capacity!(ncc, too_many)
+
             io = File.open(raw, "rb")
             iterator = ChunkIterator.new(io, chunk_size, chunk_cls, label, broker)
             # Registered here rather than inside the constructor: an
             # object handing `self` to a collaborator before its own
             # initialization has finished is avoidable, and the verb
             # is the natural place for "this run now owns a handle."
-            broker.open_sources.register(iterator)
+            #
+            broker.register_source(iterator)
             Value.robject(StreamObject.new(bytes_cls, iterator))
           end
         end
