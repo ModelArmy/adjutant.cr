@@ -86,6 +86,51 @@ module Adjutant
         %w[NotFound Malformed TooLarge TooMany Timeout Transport Conflict NonZeroExit EOF].each do |name|
           Helpers.nest(legate, interp, name, error)
         end
+
+        bootstrap_redirect(interp, legate, error)
+      end
+
+      # `Legate::Redirect` — LEGATE.md §4.5. Raised when a request that
+      # CARRIED A BODY is redirected, handing the decision back to the
+      # script rather than following on its behalf.
+      #
+      # THE ONLY LEGATE ERROR THAT CARRIES DATA, and the reason
+      # `raise_error_class` gained an `attributes` parameter at all
+      # (see DEVELOPMENT.md's exception-handling section). Every other
+      # error here says everything it has to say in its message; this
+      # one expects a script to BRANCH on the status — auto-following a
+      # 303 receipt while surfacing a 307 for a human — and recovering
+      # a status code by string-matching a sentence written for a
+      # human is not something a script should have to do.
+      #
+      # Two readers, both plain values a script hands straight back to
+      # `Legate.fetch`: `status` is the Integer HTTP status, `location`
+      # the target URL as a String. `location` is deliberately NOT
+      # wrapped in a value type the way a filesystem path becomes a
+      # `Legate::Path` — there is no URL type in Legate to wrap it in,
+      # and inventing one for a single field would be a worse trade
+      # than leaving it a String that the very next `Legate.fetch`
+      # call parses and re-authorizes from scratch anyway.
+      private def self.bootstrap_redirect(interp : Interpreter, legate : RubyClass,
+                                          error : RubyClass) : Nil
+        cls = Helpers.nest(legate, interp, "Redirect", error)
+        status_sym = interp.symbols.intern("status").value
+        location_sym = interp.symbols.intern("location").value
+
+        # `|| Value.nil_value` rather than an assertion: an error
+        # object of this class could in principle be constructed by a
+        # script's own `raise Legate::Redirect, "..."`, which attaches
+        # no attributes at all. Returning nil there is the same
+        # forgiving shape `#message` already has, and is far better
+        # than a native method raising while a script is in the middle
+        # of rescuing something.
+        Builtins.define(cls, interp, "status") do |args|
+          args.first.as_robject.ivars[status_sym]? || Value.nil_value
+        end
+
+        Builtins.define(cls, interp, "location") do |args|
+          args.first.as_robject.ivars[location_sym]? || Value.nil_value
+        end
       end
     end
   end

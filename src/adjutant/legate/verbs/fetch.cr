@@ -57,6 +57,7 @@ module Adjutant
           transport = Helpers.fetch(legate, interp, "Transport")
           timeout_cls = Helpers.fetch(legate, interp, "Timeout")
           too_large = Helpers.fetch(legate, interp, "TooLarge")
+          redirect = Helpers.fetch(legate, interp, "Redirect")
           response_cls = Helpers.fetch(legate, interp, "Response")
 
           legate.define_native_singleton_method(
@@ -126,6 +127,52 @@ module Adjutant
               response = perform(target, addresses.first, opts, ncc, transport, timeout_cls, too_large, broker)
 
               location = redirect_target(response)
+
+              # THE PAYLOAD RULE (§4.5). A redirect on a request that
+              # carried a body is handed back to the script; a
+              # body-less request is followed automatically, as before.
+              #
+              # Neither half of what a client would otherwise do is
+              # safe to do silently once a body is involved:
+              #
+              #   - 307/308 mean "replay this exactly." Re-sending a
+              #     body the script may have streamed is impossible
+              #     (a Legate stream is single-pass, §6.1) and
+              #     re-sending it to a DIFFERENT host is a second full
+              #     upload the script never asked for.
+              #   - 301/302/303 are, by three decades of practice,
+              #     degraded to GET with the body dropped. A POST
+              #     silently becomes a GET, the request the script
+              #     asked for never happens, and the script gets a 200
+              #     for it. That is the worse failure of the two: it
+              #     looks like success.
+              #
+              # A single rule covering all five rather than a
+              # per-status table, deliberately. The two-clause version
+              # ("must replay and cannot" or "would be downgraded")
+              # predicts the same outcomes but asks a reader to hold
+              # four status codes and their history in mind; a script
+              # author only has to know "I sent information, so I own
+              # what happens to it." The 303 case genuinely costs one
+              # extra explicit `Legate.fetch` for the receipt, and that
+              # is the accepted price of the simpler rule — `status` is
+              # on the error precisely so a script that wants to
+              # auto-follow one code can, in a line.
+              #
+              # Keys on THE BODY, NOT THE METHOD: a POST with no body
+              # follows redirects, a PUT with one does not. A method
+              # table would drift from reality the way the status table
+              # just did.
+              if location && opts.payload?
+                ncc.raise_error_class(
+                  "Legate.fetch — #{response.status_code} redirect to #{location} on a request with a body; " \
+                  "re-issue it yourself if you mean to send the body there",
+                  redirect,
+                  {"status"   => Value.int(response.status_code.to_i64),
+                   "location" => Value.string(location, label)},
+                )
+              end
+
               if location && hops < opts.redirects
                 hops += 1
                 current_url = absolutize(location, target.uri)
@@ -159,6 +206,20 @@ module Adjutant
           getter redirects : Int32
 
           def initialize(@method, @headers, @body, @timeout, @limit, @redirects)
+          end
+
+          # Whether this request carried something the script sent —
+          # the trigger for the redirect rule in the hop loop above.
+          #
+          # An EMPTY String counts as no payload. Raising on a
+          # zero-length body would be pedantry: nothing is at stake,
+          # there is nothing to replay and nothing to silently drop.
+          # The choice is arbitrary enough to be worth stating rather
+          # than leaving a reader to infer it from the `.empty?`.
+          def payload? : Bool
+            body = @body
+            return false unless body
+            !body.empty?
           end
 
           def self.read(ncc : NativeCallContext, broker : Broker, transport : RubyClass) : Options

@@ -670,5 +670,148 @@ module Adjutant
         end
       end
     end
+
+    # --- The payload redirect rule (§4.5) ----------------------------
+    #
+    # Hand-written transcripts, and `with_resolver` rather than
+    # `resolving_or_placeholder`: these never need a live host, so
+    # nothing here should depend on DNS or be re-recordable. See
+    # `canary_interception.json` for the same reasoning.
+    #
+    # Each interaction's `body_digest` is the SHA-256 of its request
+    # body, and the harness matches on it as well as method and URL —
+    # so a body here must be kept byte-identical to the one the
+    # corresponding `Legate.fetch` call sends, or the match fails with
+    # "the request body digest differed" rather than anything about
+    # redirects.
+    describe "redirects on a request that carried a body" do
+      payload_host = "api.example.com"
+
+      it "raises Legate::Redirect rather than following a 307" do
+        with_resolver(["93.184.216.34"]) do
+          Wiretap.intercept("legate_fetch_redirect_payload", mode: :none) do
+            interp, _ = make_interp(grants: net_grants(payload_host, ["get", "post"]))
+            eval = interp.eval(<<-RUBY)
+            begin
+              Legate.fetch("https://#{payload_host}/orders", method: :post, body: "an order")
+              "followed"
+            rescue Legate::Redirect
+              "handed back"
+            end
+            RUBY
+            eval.as_string.should eq "handed back"
+          end
+        end
+      end
+
+      # The whole reason the error carries data: a script auto-follows
+      # one status and surfaces another, without parsing the message.
+      it "carries the status and location for the script to branch on" do
+        with_resolver(["93.184.216.34"]) do
+          Wiretap.intercept("legate_fetch_redirect_payload", mode: :none) do
+            interp, _ = make_interp(grants: net_grants(payload_host, ["get", "post"]))
+            eval = interp.eval(<<-RUBY)
+            status = nil
+            target = nil
+            begin
+              Legate.fetch("https://#{payload_host}/orders", method: :post, body: "an order")
+            rescue Legate::Redirect => e
+              status = e.status
+              target = e.location
+            end
+            [status, target]
+            RUBY
+            result = eval.as_array.to_a
+            result[0].as_int.should eq 307
+            result[1].as_string.should eq "https://#{payload_host}/v2/orders"
+          end
+        end
+      end
+
+      # 303 is handed back too. The rule is uniform across all five
+      # codes deliberately — see §4.5 — and `status` is what lets a
+      # script that wants to auto-follow this one do so in a line.
+      it "hands back a 303 as well, with its own status" do
+        with_resolver(["93.184.216.34"]) do
+          Wiretap.intercept("legate_fetch_redirect_payload", mode: :none) do
+            interp, _ = make_interp(grants: net_grants(payload_host, ["get", "post"]))
+            eval = interp.eval(<<-RUBY)
+            code = nil
+            begin
+              Legate.fetch("https://#{payload_host}/submit", method: :post, body: "a form")
+            rescue Legate::Redirect => e
+              code = e.status
+            end
+            code
+            RUBY
+            eval.as_int.should eq 303
+          end
+        end
+      end
+
+      # The failure this rule exists to prevent: a 301 on a POST would
+      # conventionally degrade to GET, drop the body, and return a 2xx
+      # for a request that never happened.
+      it "hands back a 301 rather than silently degrading it to a GET" do
+        with_resolver(["93.184.216.34"]) do
+          Wiretap.intercept("legate_fetch_redirect_payload", mode: :none) do
+            interp, _ = make_interp(grants: net_grants(payload_host, ["get", "post"]))
+            eval = interp.eval(<<-RUBY)
+            code = nil
+            begin
+              Legate.fetch("https://#{payload_host}/legacy", method: :post, body: "data")
+            rescue Legate::Redirect => e
+              code = e.status
+            end
+            code
+            RUBY
+            eval.as_int.should eq 301
+          end
+        end
+      end
+
+      # The predicate keys on the BODY, not the method — a POST with
+      # nothing to send has nothing at stake and follows as normal.
+      it "follows a redirect on a body-less POST" do
+        with_resolver(["93.184.216.34"]) do
+          Wiretap.intercept("legate_fetch_redirect_no_payload", mode: :none) do
+            interp, _ = make_interp(grants: net_grants(payload_host, ["get", "post"]))
+            eval = interp.eval(%(Legate.fetch("https://#{payload_host}/ping", method: :post).body))
+            eval.as_string.should eq "pong"
+          end
+        end
+      end
+
+      # An empty String is no payload. Raising here would be pedantry:
+      # there is nothing to replay and nothing to silently drop.
+      it "treats an empty body as no body and follows the redirect" do
+        with_resolver(["93.184.216.34"]) do
+          Wiretap.intercept("legate_fetch_redirect_no_payload", mode: :none) do
+            interp, _ = make_interp(grants: net_grants(payload_host, ["get", "post"]))
+            eval = interp.eval(%(Legate.fetch("https://#{payload_host}/empty", method: :post, body: "").body))
+            eval.as_string.should eq "ok"
+          end
+        end
+      end
+
+      # Handed back before the second hop is attempted, so the audit
+      # log shows exactly one egress — the script has not yet decided
+      # whether the body should go to the new host.
+      it "logs one audit record, not two, when it hands a redirect back" do
+        with_resolver(["93.184.216.34"]) do
+          Wiretap.intercept("legate_fetch_redirect_payload", mode: :none) do
+            interp, _ = make_interp(grants: net_grants(payload_host, ["get", "post"]))
+            interp.eval(<<-RUBY)
+            begin
+              Legate.fetch("https://#{payload_host}/orders", method: :post, body: "an order")
+            rescue Legate::Redirect => e
+              nil
+            end
+            RUBY
+            interp.broker.audit_log.records.select { |r| r.verb == "net" }.size.should eq 1
+          end
+        end
+      end
+    end
   end
 end

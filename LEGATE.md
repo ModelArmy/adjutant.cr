@@ -423,7 +423,12 @@ Legate.fetch(url,
 One verb covers all of HTTP. `body:` accepts a String or an Enumerable, so uploads stream. With `stream: true` the response's `body` is a `Legate::Bytes`; otherwise a `String` subject to `limit` (default 32 MiB).
 
 The boundary is important: transport failures raise; HTTP status codes do not. A 500 is an answer.
-**Raises** `Transport` (DNS, TLS, connection, redirect loop), `Timeout`, `TooLarge`.
+
+**A redirect on a request that carried a body is handed to the script, not followed.** `Legate::Redirect` carries `status` (the Integer HTTP status) and `location` (the target URL), and the script re-issues the request itself if it means to. A request with no body — every `get`, and any other method called without `body:` — follows redirects automatically as normal, so `redirects:` governs body-less requests only. An empty-String body counts as no body.
+
+The rule is deliberately uniform across 301, 302, 303, 307 and 308 rather than following each code's convention. 307 and 308 ask for the body to be replayed, which cannot be done faithfully for a streamed body and means a second full upload to a different host when it can. 301, 302 and 303 are in practice degraded to GET with the body dropped, so the request the script asked for silently never happens and a 2xx comes back for it — the worse failure, because it looks like success. A script that wants to auto-follow one particular code can branch on `status` in a line.
+
+**Raises** `Transport` (DNS, TLS, connection, redirect loop), `Redirect`, `Timeout`, `TooLarge`.
 
 ### 4.6 Execution — grant `exec`
 
@@ -776,6 +781,7 @@ Class                |Meaning                                        |Message MU
 `Legate::TooMany`    |per-call cardinality cap, or `max_open_streams`|`limit:`, `each_slice`, or finishing a stream
 `Legate::Timeout`    |per-call wall clock                            |—                                            
 `Legate::Transport`  |DNS, TLS, connection, redirect loop            |—                                            
+`Legate::Redirect`   |redirect on a request that carried a body      |`status`, `location`, and re-issuing it      
 `Legate::Conflict`   |destination exists, non-empty directory        |`recursive:`                                 
 `Legate::NonZeroExit`|`Legate::Exit#raise!` on a non-zero exit code  |the exit code and truncated `err`            
 

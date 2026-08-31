@@ -1,0 +1,84 @@
+{
+  "name": "legate_fetch_redirect_no_payload",
+  "recorded_with": "hand-written",
+  "interactions": [
+    {
+      "request": {
+        "method": "POST",
+        "url": "https://api.example.com/ping",
+        "headers": {
+          "Host": "api.example.com"
+        },
+        "body": "",
+        "body_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "response": {
+        "status": 307,
+        "headers": {
+          "Content-Type": "text/plain",
+          "Location": "https://api.example.com/ping/v2"
+        },
+        "body": "moved"
+      },
+      "recorded_at": "2026-08-30T00:00:00Z"
+    },
+    {
+      "request": {
+        "method": "POST",
+        "url": "https://api.example.com/ping/v2",
+        "headers": {
+          "Host": "api.example.com"
+        },
+        "body": "",
+        "body_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "text/plain"
+        },
+        "body": "pong"
+      },
+      "recorded_at": "2026-08-30T00:00:00Z"
+    },
+    {
+      "request": {
+        "method": "POST",
+        "url": "https://api.example.com/empty",
+        "headers": {
+          "Host": "api.example.com"
+        },
+        "body": "",
+        "body_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "response": {
+        "status": 307,
+        "headers": {
+          "Content-Type": "text/plain",
+          "Location": "https://api.example.com/empty/v2"
+        },
+        "body": "moved"
+      },
+      "recorded_at": "2026-08-30T00:00:00Z"
+    },
+    {
+      "request": {
+        "method": "POST",
+        "url": "https://api.example.com/empty/v2",
+        "headers": {
+          "Host": "api.example.com"
+        },
+        "body": "",
+        "body_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "text/plain"
+        },
+        "body": "ok"
+      },
+      "recorded_at": "2026-08-30T00:00:00Z"
+    }
+  ]
+}
