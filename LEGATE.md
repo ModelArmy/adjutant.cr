@@ -229,7 +229,11 @@ Two constraints apply when a manifest is used, both statically checked (§10.4):
 
 ### 2.8 Determinism
 
-`Legate.now` and `Legate.random` are the only sources of nondeterminism. They are grants, not core functions, so a policy may pin them for replay. Nothing else in Legate varies between two runs given identical inputs.
+`Legate.now` and `Legate.random` are the only sources of nondeterminism. Nothing else in Legate varies between two runs given identical inputs.
+
+`Legate.now` returns the current time and nothing else. An earlier draft of this section had a policy pin it for replay, and `ambient.now: pinned` was carried in the config for a verb that was never implemented; that was removed on 2026-09-01. Pinning a clock is a reproducibility control, not a permission — it does not answer "may this run read the clock", which is the only question a grant asks. If deterministic replay is wanted later it belongs with the machinery that records and replays a run, not in the perimeter.
+
+`Legate.now` exists as a verb rather than deferring to `Time.now` because Legate's `Time` is not the full Ruby class.
 
 ---
 
@@ -447,7 +451,7 @@ A nonzero exit code does **not** raise; it is reported on `Legate::Exit#code`. T
 ```ruby
 Legate.scratch                -> Legate::Path    # writable temp dir, granted by default
 Legate.env(name)              -> String | nil # allowlisted names only; nil if unset
-Legate.now                    -> Time         # frozen; may be pinned by policy
+Legate.now                    -> Time         # frozen
 Legate.random(n = nil)        -> Float | Integer
 Legate.log(message, **fields) -> nil          # structured, to the audit stream
 Legate.fail(message)          -> no return    # raises Legate::Aborted (fatal)
@@ -617,7 +621,6 @@ grants:
     binaries: ["/usr/bin/git", "/usr/bin/rg"]
   ambient:
     env: ["TZ", "LANG"]
-    now: pinned            # or: live
 limits:
   read_limit: 8MiB         # per call — recoverable
   fetch_limit: 32MiB       # per call — recoverable (response body)

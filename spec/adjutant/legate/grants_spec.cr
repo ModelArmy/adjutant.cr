@@ -60,10 +60,6 @@ module Adjutant
         grants.ambient_env.should be_empty
       end
 
-      it "defaults ambient_now to :live" do
-        Legate::Grants.deny_all.ambient_now.should eq :live
-      end
-
       it "still fills in the spec-defaulted per-call limits" do
         limits = Legate::Grants.deny_all.limits
         limits.read_limit.should eq Legate::Limits::DEFAULT_READ_LIMIT
@@ -126,7 +122,6 @@ module Adjutant
         grants.net_methods.should eq ["get", "post"]
         grants.exec_binaries.should eq ["/usr/bin/git", "/usr/bin/rg"]
         grants.ambient_env.should eq ["TZ", "LANG"]
-        grants.ambient_now.should eq :pinned
       end
 
       it "parses every limit from §7's own example" do
@@ -184,15 +179,6 @@ module Adjutant
               methods: [GET, Post]
           YAML
         grants.net_methods.should eq ["get", "post"]
-      end
-
-      it "defaults ambient_now to :live when omitted" do
-        grants = Legate::Grants.from_yaml(<<-YAML)
-          grants:
-            ambient:
-              env: ["TZ"]
-          YAML
-        grants.ambient_now.should eq :live
       end
 
       it "fills in spec-defaulted per-call limits when limits: is absent entirely" do

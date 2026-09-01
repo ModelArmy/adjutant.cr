@@ -131,7 +131,7 @@ module Testing
       policy_path = File.join(dir, POLICY_FILE_NAME)
       return Adjutant::Legate::Grants.deny_all unless File.exists?(policy_path)
 
-      raw = Adjutant::Legate::Grants.from_file(policy_path)
+      raw = Adjutant::Legate::Grants.from_yaml(File.read(policy_path))
       # `Grants.from_yaml` stores each root string exactly as written
       # in the YAML — a RELATIVE root like `read_roots: [fixtures]`
       # would otherwise resolve against wherever the `crystal spec`/
@@ -151,7 +151,6 @@ module Testing
         net_methods: raw.net_methods,
         exec_binaries: raw.exec_binaries.map { |root| File.expand_path(root, dir) },
         ambient_env: raw.ambient_env,
-        ambient_now: raw.ambient_now,
         limits: raw.limits,
       )
     end

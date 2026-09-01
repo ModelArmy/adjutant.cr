@@ -1,4 +1,5 @@
 require "yaml"
+require "../grants"
 require "./net_rule"
 
 module Adjutant
@@ -174,31 +175,38 @@ module Adjutant
     # proceed." The broker (step 4c) is what actually resolves a path
     # against `read_roots`/etc at call time; this class only holds and
     # parses the data it needs to do that.
-    class Grants
-      getter read_roots : Array(String)
-      getter write_roots : Array(String)
-      getter delete_roots : Array(String)
+    # Extends the core perimeter (`Adjutant::Grants` — filesystem
+    # roots and the binary allowlist, plus the checks over them) with
+    # the parts that are Legate's own: network rules, the top-level
+    # method ceiling, the ambient-env allowlist, and the per-verb
+    # limits.
+    #
+    # Subclassed rather than composed so a Broker still holds ONE
+    # grants object. Splitting it into "the core half" and "the Legate
+    # half" would give every caller two things to keep in step, and
+    # `Grants::Decision` resolves through the superclass either way.
+    #
+    # Network rules stayed HERE rather than moving to core with the
+    # roots (2026-09-01): authorizing a connection needs to know
+    # something about the protocol — HTTP methods today — and a core
+    # type that knows GET from POST is core knowing about HTTP. Core
+    # would also have to hold the list of schemes that exist, so
+    # adding a protocol would mean a core change for no benefit. Kept
+    # here until a second protocol makes the real seam visible; see
+    # SCOPE.md.
+    class Grants < ::Adjutant::Grants
       getter net_rules : Array(NetRule)
       getter net_methods : Array(String)
-      getter exec_binaries : Array(String)
       getter ambient_env : Array(String)
-
-      # `:pinned` or `:live` — §7's `ambient.now`. A mode, not a
-      # yes/no grant, so it doesn't fit the Array(String)-empty-means-
-      # denied shape the other seven fields share. Defaults to `:live`
-      # (real wall-clock time) rather than `:pinned`, since pinning is
-      # the deliberate opt-in for determinism (§2.8), not the safe
-      # default — unlike every other field here, "absent" for `now`
-      # isn't "denied," it's "ordinary behavior."
-      getter ambient_now : Symbol
 
       getter limits : Limits
 
-      def initialize(@read_roots = [] of String, @write_roots = [] of String,
-                     @delete_roots = [] of String, @net_rules = [] of NetRule,
-                     @net_methods = [] of String, @exec_binaries = [] of String,
-                     @ambient_env = [] of String, @ambient_now = :live,
+      def initialize(read_roots = [] of String, write_roots = [] of String,
+                     delete_roots = [] of String, @net_rules = [] of NetRule,
+                     @net_methods = [] of String, exec_binaries = [] of String,
+                     @ambient_env = [] of String,
                      @limits = Limits.new)
+        super(read_roots, write_roots, delete_roots, exec_binaries)
       end
 
       # The fully-closed policy — every category empty, every per-run
@@ -231,17 +239,8 @@ module Adjutant
           net_methods: string_array(grants_node, "net", "methods").map(&.downcase),
           exec_binaries: string_array(grants_node, "exec", "binaries"),
           ambient_env: string_array(grants_node, "ambient", "env"),
-          ambient_now: ambient_now_of(grants_node),
           limits: limits_of(limits_node),
         )
-      end
-
-      # Convenience over `from_yaml` for the common case of a policy
-      # file on disk — separated purely so specs (and callers with an
-      # in-memory YAML string, e.g. a test fixture or an embedded
-      # default) can call `from_yaml` directly without a real file.
-      def self.from_file(path : String) : Grants
-        from_yaml(File.read(path))
       end
 
       # `net.hosts` entries are each parsed into a NetRule (which
@@ -254,11 +253,6 @@ module Adjutant
         list = node.try(&.as_a?)
         return [] of NetRule unless list
         list.map { |entry| NetRule.from_yaml_node(entry) }
-      end
-
-      private def self.ambient_now_of(grants_node : YAML::Any?) : Symbol
-        raw = grants_node.try(&.["ambient"]?).try(&.["now"]?).try(&.as_s?)
-        raw == "pinned" ? :pinned : :live
       end
 
       private def self.limits_of(limits_node : YAML::Any?) : Limits
