@@ -29,7 +29,7 @@ module Adjutant
           # label at all. A verb touching files needs both, same as
           # every risk-tagged native method elsewhere in this
           # codebase — this is not a Legate-specific pattern.
-          Builtins.define_singleton(legate, interp, "stat", risk: RiskProfile.new(tags: Set{RiskTag::ReadsFiles})) do |args, _blk, ncc|
+          Builtins.define_singleton(legate, interp, "stat", risk: RiskProfile.new(effects: Set{Effect::ReadsFiles})) do |args, _blk, ncc|
             path_val = args[1]? || Value.nil_value
             str_val = ncc.call_method(path_val, "to_s", [] of Value)
             raw = str_val.as_string

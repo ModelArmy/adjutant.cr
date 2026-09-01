@@ -22,7 +22,7 @@ module Adjutant
 
           legate.define_native_singleton_method(
             interp.symbols.intern("read").value,
-            RiskProfile.new(tags: Set{RiskTag::ReadsFiles}), # complements declare_sensitivity — see stat.cr's own comment on why both are needed
+            RiskProfile.new(effects: Set{Effect::ReadsFiles}), # complements declare_sensitivity — see stat.cr's own comment on why both are needed
             KWARG_NAMES,
           ) do |args, _blk, ncc|
             # `limit`/`scrub` validated FIRST — SCOPE.md's "kwarg-

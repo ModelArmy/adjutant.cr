@@ -48,7 +48,7 @@ module Adjutant
 
           legate.define_native_singleton_method(
             interp.symbols.intern("write").value,
-            RiskProfile.new(tags: Set{RiskTag::WritesFiles}),
+            RiskProfile.new(effects: Set{Effect::WritesFiles}),
           ) do |args, _blk, ncc|
             path_val = args[1]? || Value.nil_value
             str_val = ncc.call_method(path_val, "to_s", [] of Value)

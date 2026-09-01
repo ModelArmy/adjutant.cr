@@ -8,17 +8,17 @@ module Adjutant
   # (inside if branch: user_confirmed == false)" — rather than just a
   # severity badge.
   struct RiskSummary
-    getter tags : Set(RiskTag)
+    getter effects : Set(Effect)
     getter reversible : Reversibility
     getter severity : Severity
     getter path : Array(String) # trail of descriptions/origins, root to leaf
     getter? iterated : Bool     # true if any Sequence on the worst path was iterated
 
-    def initialize(@tags, @reversible, @severity, @path, @iterated)
+    def initialize(@effects, @reversible, @severity, @path, @iterated)
     end
 
     def self.none : RiskSummary
-      RiskSummary.new(Set(RiskTag).new, Reversibility::Yes, Severity::Info, [] of String, false)
+      RiskSummary.new(Set(Effect).new, Reversibility::Yes, Severity::Info, [] of String, false)
     end
   end
 
@@ -26,7 +26,7 @@ module Adjutant
   # tree, with enough context for a UX to group, filter, or sort —
   # unlike RiskSummary, which collapses everything to one worst-case
   # path. `iterated`/`branch_path` say WHERE in the control-flow shape
-  # this leaf sits, since two leaves with identical tags can carry very
+  # this leaf sits, since two leaves with identical effects can carry very
   # different weight (once, vs. inside a loop; unconditional, vs. only
   # on the `--force` branch).
   struct RiskFinding
@@ -82,17 +82,17 @@ module Adjutant
     # summarize() — kept as one place so both entry points agree on
     # what "unresolved" means as a profile.
     private def self.unresolved_profile : RiskProfile
-      RiskProfile.new(tags: Set{RiskTag::ExecutesCode}, reversible: Reversibility::No, severity: Severity::Error)
+      RiskProfile.new(effects: Set{Effect::ExecutesCode}, reversible: Reversibility::No, severity: Severity::Error)
     end
 
     def self.summarize(node : RiskNode) : RiskSummary
       case node
       when RiskLeaf
-        RiskSummary.new(node.profile.tags, node.profile.reversible, node.profile.severity,
+        RiskSummary.new(node.profile.effects, node.profile.reversible, node.profile.severity,
           [node.description], false)
       when RiskUnresolved
         p = unresolved_profile
-        RiskSummary.new(p.tags, p.reversible, p.severity,
+        RiskSummary.new(p.effects, p.reversible, p.severity,
           ["unresolved call: #{node.description}"], false)
       when RiskSequence
         summarize_sequence(node)
@@ -109,16 +109,16 @@ module Adjutant
       end
     end
 
-    # All children occur — union tags, OR-ed reversible/severity via
+    # All children occur — union effects, OR-ed reversible/severity via
     # worse-wins, path is the concatenation of each child's worst path.
     private def self.summarize_sequence(node : RiskSequence) : RiskSummary
       return RiskSummary.none if node.children.empty?
       child_summaries = node.children.map { |child| summarize(child) }
-      tags = Set(RiskTag).new
-      child_summaries.each { |summary| tags.concat(summary.tags) }
+      effects = Set(Effect).new
+      child_summaries.each { |summary| effects.concat(summary.effects) }
       worst = child_summaries.max_by { |summary| rank(summary) }
       RiskSummary.new(
-        tags,
+        effects,
         worst.reversible,
         worst.severity,
         child_summaries.flat_map(&.path),
@@ -134,7 +134,7 @@ module Adjutant
       child_summaries = node.children.map { |child| summarize(child) }
       worst = child_summaries.max_by { |summary| rank(summary) }
       RiskSummary.new(
-        worst.tags,
+        worst.effects,
         worst.reversible,
         worst.severity,
         ["#{node.origin} branch"] + worst.path,
@@ -142,7 +142,7 @@ module Adjutant
       )
     end
 
-    # The child's full severity/reversibility/tags are used as-is (see
+    # The child's full severity/reversibility/effects are used as-is (see
     # all_findings' RiskDeferred case for why: this project treats
     # "can't confirm" as a reason to surface loudly, matching how
     # RiskUnresolved is handled, not a reason to under-report) — only
@@ -153,7 +153,7 @@ module Adjutant
     private def self.summarize_deferred(node : RiskDeferred) : RiskSummary
       child_summary = summarize(node.child)
       RiskSummary.new(
-        child_summary.tags,
+        child_summary.effects,
         child_summary.reversible,
         child_summary.severity,
         ["deferred: #{node.reason}"] + child_summary.path,

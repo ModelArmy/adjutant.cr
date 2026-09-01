@@ -1,15 +1,20 @@
 require "./diagnostic"
 
 module Adjutant
-  # Intrinsic risk categories a native function's effect can fall into.
+  # What a native function does to the world outside the VM.
   #
-  # Tags are the *reason* a function is risky; Reversibility and Severity
-  # (below) are *conclusions* drawn from them. A RiskProfile with no tags
-  # must therefore be fully safe (see RiskProfile's strict-empty rule) —
-  # if a function needs a non-default reversibility or severity but has
-  # no tag to justify it, that means a tag is missing, not that the
-  # conclusion fields should be set freely.
-  enum RiskTag
+  # An Effect is a *consequence* — the reason a function is risky.
+  # Reversibility and Severity (below) are *conclusions* drawn from
+  # them. A RiskProfile with no effects must therefore be fully safe
+  # (see RiskProfile's strict-empty rule) — if a function needs a
+  # non-default reversibility or severity but has no effect to justify
+  # it, that means an effect is missing, not that the conclusion fields
+  # should be set freely.
+  #
+  # Deliberately NOT the same vocabulary as the authority a call
+  # exercises: a move requires both delete and write authority, but
+  # destroys nothing. See Authority for that half.
+  enum Effect
     ReadsFiles
     WritesFiles
     DeletesFiles
@@ -34,7 +39,7 @@ module Adjutant
   end
 
   # Precomputed severity for presentation — avoids re-deriving a summary
-  # verdict from tags every time a risk manifest is displayed.
+  # verdict from effects every time a risk manifest is displayed.
   enum Severity
     Info
     Warning
@@ -47,22 +52,22 @@ module Adjutant
   # native functions (arithmetic, string/array helpers, etc.) have no
   # side effects at all.
   #
-  # Empty tags strictly implies Reversibility::Yes and Severity::Info;
-  # constructing an empty-tag profile with any other reversibility or
-  # severity is a bug in the caller and raises immediately. If a
-  # function needs to express risk with no existing tag fitting, add a
-  # new RiskTag rather than bypassing this check.
+  # An empty effect set strictly implies Reversibility::Yes and
+  # Severity::Info; constructing an empty profile with any other
+  # reversibility or severity is a bug in the caller and raises
+  # immediately. If a function needs to express risk with no existing
+  # effect fitting, add a new Effect rather than bypassing this check.
   struct RiskProfile
-    getter tags : Set(RiskTag)
+    getter effects : Set(Effect)
     getter reversible : Reversibility
     getter severity : Severity
     getter note : String?
 
-    def initialize(@tags = Set(RiskTag).new,
+    def initialize(@effects = Set(Effect).new,
                    @reversible = Reversibility::Yes,
                    @severity = Severity::Info,
                    @note = nil)
-      if @tags.empty? && (!@reversible.yes? || !@severity.info?)
+      if @effects.empty? && (!@reversible.yes? || !@severity.info?)
         raise HostArgumentError.new(Diagnostic.new(code: "H001"))
       end
       if @reversible.depends? && @note.nil?
@@ -70,7 +75,7 @@ module Adjutant
       end
     end
 
-    # The no-side-effects case: no tags, fully reversible, informational.
+    # The no-side-effects case: no effects, fully reversible, informational.
     def self.none : RiskProfile
       RiskProfile.new
     end

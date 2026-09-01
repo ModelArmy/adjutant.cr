@@ -57,7 +57,7 @@ module Adjutant
 
           legate.define_native_singleton_method(
             interp.symbols.intern("grep").value,
-            RiskProfile.new(tags: Set{RiskTag::ReadsFiles}),
+            RiskProfile.new(effects: Set{Effect::ReadsFiles}),
             KWARG_NAMES,
           ) do |args, _blk, ncc|
             # Pattern/paths/context/limit ALL validated FIRST, before

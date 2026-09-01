@@ -59,7 +59,7 @@ module Adjutant
 
           legate.define_native_singleton_method(
             interp.symbols.intern("cp").value,
-            RiskProfile.new(tags: Set{RiskTag::ReadsFiles, RiskTag::WritesFiles}),
+            RiskProfile.new(effects: Set{Effect::ReadsFiles, Effect::WritesFiles}),
             Set{"recursive"},
           ) do |args, _blk, ncc|
             recursive = recursive_flag(ncc)

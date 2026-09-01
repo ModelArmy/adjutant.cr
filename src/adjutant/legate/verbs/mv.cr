@@ -68,7 +68,7 @@ module Adjutant
             # which `reversible`/`severity` stop being safe to leave
             # at their defaults.
             RiskProfile.new(
-              tags: Set{RiskTag::DeletesFiles, RiskTag::WritesFiles},
+              effects: Set{Effect::DeletesFiles, Effect::WritesFiles},
               reversible: Reversibility::No,
               severity: Severity::Warning,
             ),

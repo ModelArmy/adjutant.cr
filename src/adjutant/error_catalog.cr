@@ -565,11 +565,12 @@ module Adjutant
       # actually accurate.
       "H001" => Entry.new(
         code: "H001",
-        summary: "a RiskProfile with no tags must be reversible and Info",
-        why: "An untagged profile describes a call with no risk, so it " \
-             "cannot also declare itself irreversible or more severe than " \
-             "informational — the two statements contradict each other.",
-        help: "Add the `RiskTag` that describes the actual risk, rather " \
+        summary: "a RiskProfile with no effects must be reversible and Info",
+        why: "A profile with no effects describes a call with no risk, " \
+             "so it cannot also declare itself irreversible or more " \
+             "severe than informational — the two statements contradict " \
+             "each other.",
+        help: "Add the `Effect` that describes the actual risk, rather " \
               "than setting `reversible` or `severity` on their own."
       ),
       "H002" => Entry.new(

@@ -49,7 +49,7 @@ module Adjutant
 
           legate.define_native_singleton_method(
             interp.symbols.intern("bytes").value,
-            RiskProfile.new(tags: Set{RiskTag::ReadsFiles}), # complements declare_sensitivity — see stat.cr's own comment
+            RiskProfile.new(effects: Set{Effect::ReadsFiles}), # complements declare_sensitivity — see stat.cr's own comment
             KWARG_NAMES,
           ) do |args, _blk, ncc|
             # `chunk` validated FIRST — SCOPE.md's "kwarg-validation

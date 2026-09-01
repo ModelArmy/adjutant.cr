@@ -164,7 +164,7 @@ module Adjutant
       # (authorization.cr). Defaults false, matching every OTHER
       # read-grant verb, where a missing path really is just missing.
       def authorize_read(path : String, ncc : NativeCallContext, allow_missing : Bool = false) : RiskFlowLabel?
-        authorize(:read, "read", path, RiskTag::ReadsFiles, ProvenanceKind::File, ncc) do
+        authorize(:read, "read", path, Authority::Read, ProvenanceKind::File, ncc) do
           allow_missing ? @grants.check_root_maybe_missing(path, @grants.read_roots) : @grants.check_root(path, @grants.read_roots)
         end
       end
@@ -184,7 +184,7 @@ module Adjutant
       # the target to already exist can still get the stricter
       # existing-only check by leaving the default.
       def authorize_write(path : String, ncc : NativeCallContext, allow_missing : Bool = false) : RiskFlowLabel?
-        authorize(:write, "write", path, RiskTag::WritesFiles, ProvenanceKind::File, ncc) do
+        authorize(:write, "write", path, Authority::Write, ProvenanceKind::File, ncc) do
           allow_missing ? @grants.check_root_maybe_missing(path, @grants.write_roots) : @grants.check_root(path, @grants.write_roots)
         end
       end
@@ -213,7 +213,7 @@ module Adjutant
       # genuinely requires the target to already exist still gets the
       # stricter check by saying nothing.
       def authorize_delete(path : String, ncc : NativeCallContext, allow_missing : Bool = false) : RiskFlowLabel?
-        authorize(:delete, "delete", path, RiskTag::DeletesFiles, ProvenanceKind::File, ncc) do
+        authorize(:delete, "delete", path, Authority::Delete, ProvenanceKind::File, ncc) do
           allow_missing ? @grants.check_root_maybe_missing(path, @grants.delete_roots) : @grants.check_root(path, @grants.delete_roots)
         end
       end
@@ -254,7 +254,7 @@ module Adjutant
       def authorize_net(scheme : String, host : String, port : Int32, method : String,
                         ncc : NativeCallContext) : RiskFlowLabel?
         subject = "#{scheme}://#{host}:#{port}"
-        authorize(:net, "net", subject, RiskTag::NetworkEgress, ProvenanceKind::Host, ncc) do
+        authorize(:net, "net", subject, Authority::Net, ProvenanceKind::Host, ncc) do
           @grants.check_net(scheme, host, port, method)
         end
       end
@@ -273,7 +273,7 @@ module Adjutant
       # path. Worth flagging as a judgment call rather than something
       # the spec states outright.
       def authorize_exec(binary : String, ncc : NativeCallContext) : RiskFlowLabel?
-        authorize(:exec, "exec", binary, RiskTag::ExecutesCode, ProvenanceKind::File, ncc) do
+        authorize(:exec, "exec", binary, Authority::Exec, ProvenanceKind::File, ncc) do
           @grants.check_binary(binary)
         end
       end
@@ -287,7 +287,7 @@ module Adjutant
       # AuditRecord's own grant-category symbol; `verb`/`subject` are
       # both purely descriptive (verb name, the path/host/binary
       # string) and never affect the decision itself.
-      private def authorize(grant : Symbol, verb : String, subject : String, tag : RiskTag,
+      private def authorize(grant : Symbol, verb : String, subject : String, authority : Authority,
                             provenance_kind : ProvenanceKind, ncc : NativeCallContext, & : -> Grants::Decision) : RiskFlowLabel?
         @budget.check_wall_clock!
 
@@ -298,7 +298,7 @@ module Adjutant
         end
 
         label = begin
-          ncc.declare_sensitivity(tag, provenance_kind, subject)
+          ncc.declare_sensitivity(authority, provenance_kind, subject)
         rescue ex : RuntimeError
           @audit_log.append(AuditRecord.new(verb, subject, grant, :rejected, REJECTED_CLASS_NAME))
           raise ex

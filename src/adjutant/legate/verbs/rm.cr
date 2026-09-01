@@ -68,7 +68,7 @@ module Adjutant
             # purpose is destroying data would be wrong in the one
             # direction a risk profile must never be wrong in.
             RiskProfile.new(
-              tags: Set{RiskTag::DeletesFiles},
+              effects: Set{Effect::DeletesFiles},
               reversible: Reversibility::No,
               severity: Severity::Warning,
             ),

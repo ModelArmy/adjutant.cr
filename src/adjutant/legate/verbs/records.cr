@@ -59,7 +59,7 @@ module Adjutant
 
           legate.define_native_singleton_method(
             interp.symbols.intern("records").value,
-            RiskProfile.new(tags: Set{RiskTag::ReadsFiles}),
+            RiskProfile.new(effects: Set{Effect::ReadsFiles}),
             KWARG_NAMES,
           ) do |args, _blk, ncc|
             # `format:` validated BEFORE `authorize_read` deliberately

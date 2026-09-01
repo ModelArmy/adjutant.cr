@@ -2395,7 +2395,7 @@ module Adjutant
     # Before the call itself, runs the risk flow check (see
     # research/IFC_DESIGN.md's enforcement design notes): if any
     # argument's label carries a ProvenanceTag whose sensitivity,
-    # combined with one of `native.risk.tags`, resolves to
+    # combined with one of `native.risk.effects`, resolves to
     # RiskFlowAction::Reject or ::Ask via `@risk_flow_policy`, the call
     # does not proceed silently — Reject (or an Ask resolved to Reject
     # by `@on_risk_flow_decision`) raises a script-catchable
@@ -2457,21 +2457,30 @@ module Adjutant
     end
 
     # The risk flow check itself — see call_native's doc comment. A
-    # no-op (cheap: one empty-tags check, no allocation) for the
-    # overwhelming majority of native calls, which either have no
-    # RiskTag at all (RiskProfile.none) or receive no labeled arguments.
+    # no-op (cheap: one empty-authorities check, no allocation) for the
+    # overwhelming majority of native calls, which either exercise no
+    # Authority at all (a pure function) or receive no labeled
+    # arguments.
+    #
+    # Keyed on the callable's authorities, not its RiskProfile: the
+    # policy table asks what the call is permitted to do, and the
+    # profile answers a different question (see Authority). Before
+    # these were separate enums this loop read `risk.effects`, which
+    # meant adding a purely descriptive effect to a profile silently
+    # created a rule key matching nothing — a manifest change quietly
+    # altering enforcement.
     private def check_risk_flow(native : NativeCallable, args : Array(Value), kwargs : Hash(String, Value)?,
                                 name : String, filename : String, line : Int32) : Nil
-      return if native.risk.tags.empty?
+      return if native.authorities.empty?
       kwarg_values = kwargs.try(&.values)
       labeled_args = args.any?(&.label)
       labeled_kwargs = kwarg_values.try(&.any?(&.label)) || false
       return unless labeled_args || labeled_kwargs
 
       matches = [] of RiskFlowMatch
-      native.risk.tags.each do |tag|
+      native.authorities.each do |authority|
         # kwargs are folded in here (not just `args`) so a labeled
-        # value reaching a risk-tagged native call via a keyword
+        # value reaching a risky native call via a keyword
         # argument gets the exact same enforcement a positional
         # argument already did — before native kwargs existed at all,
         # this was moot (reject_kwargs! fired first); now that a
@@ -2484,7 +2493,7 @@ module Adjutant
           label = arg.label
           next unless label
           label.tags.each do |provenance_tag|
-            action, rule = @risk_flow_policy.action_for(tag, provenance_tag.sensitivity)
+            action, rule = @risk_flow_policy.action_for(authority, provenance_tag.sensitivity)
             next if action.allow?
             matches << RiskFlowMatch.new(action, rule, provenance_tag)
           end
@@ -2492,7 +2501,7 @@ module Adjutant
       end
       return if matches.empty?
 
-      resolve_risk_flow_matches(matches, name, native.risk, filename, line)
+      resolve_risk_flow_matches(matches, name, native.risk, native.authorities, filename, line)
     end
 
     # Explicit counterpart to check_risk_flow's automatic, label-driven
@@ -2521,25 +2530,31 @@ module Adjutant
     # resolves to Allow still needs the SAME label as a direct Allow —
     # the data's provenance doesn't change based on which branch
     # granted the call.
-    def declare_sensitivity(tag : RiskTag, kind : ProvenanceKind, origin : String, name : String,
-                            filename : String, line : Int32, sensitivity : Sensitivity? = nil) : RiskFlowLabel?
+    #
+    # `risk` is the calling native's own RiskProfile, passed through
+    # from NativeFunctionCall rather than reconstructed here: the
+    # authority that triggered the decision says nothing about what the
+    # call does, so building a profile out of it would put a fabricated
+    # effect set in front of whoever answers the prompt.
+    def declare_sensitivity(authority : Authority, kind : ProvenanceKind, origin : String, name : String,
+                            risk : RiskProfile, filename : String, line : Int32,
+                            sensitivity : Sensitivity? = nil) : RiskFlowLabel?
       resolved_sensitivity = sensitivity || @risk_flow_policy.sensitivity_for(kind, origin)
       return nil if resolved_sensitivity.none?
 
       label = RiskFlowLabel.of(kind, origin, resolved_sensitivity)
 
-      action, rule = @risk_flow_policy.action_for(tag, resolved_sensitivity)
+      action, rule = @risk_flow_policy.action_for(authority, resolved_sensitivity)
       return label if action.allow?
 
       provenance_tag = ProvenanceTag.new(kind, origin, resolved_sensitivity)
       matches = [RiskFlowMatch.new(action, rule, provenance_tag)]
-      risk = RiskProfile.new(tags: Set{tag})
       # `resolve_risk_flow_matches` either raises (Reject, or an Ask
       # resolved to Reject — see its own comment) or returns normally
       # (an Ask resolved to Allow) — reaching the line after it here
       # means the latter, so returning `label` below is reachable and
       # correct, not dead code.
-      resolve_risk_flow_matches(matches, name, risk, filename, line)
+      resolve_risk_flow_matches(matches, name, risk, Set{authority}, filename, line)
       label
     end
 
@@ -2551,13 +2566,14 @@ module Adjutant
     # @on_risk_flow_decision) raises; Allow (directly, or via a
     # callback's answer to Ask) returns normally.
     private def resolve_risk_flow_matches(matches : Array(RiskFlowMatch), name : String, risk : RiskProfile,
+                                          authorities : Set(Authority),
                                           filename : String, line : Int32) : Nil
       # Worst-first: RiskFlowAction (Reject > Ask), then Sensitivity
       # (High > Elevated), stable beyond that — see
       # RiskFlowDecisionRequest#matches's doc comment.
       matches = matches.sort_by { |match| {-match.action.value, -match.tag.sensitivity.value} }
 
-      request = RiskFlowDecisionRequest.new(name, risk, matches, filename, line)
+      request = RiskFlowDecisionRequest.new(name, risk, authorities, matches, filename, line)
 
       worst_action = matches.first.action
       if worst_action.reject?
@@ -2583,7 +2599,7 @@ module Adjutant
     # RuntimeError` clause).
     private def raise_risk_flow_rejected(request : RiskFlowDecisionRequest, filename : String, line : Int32) : NoReturn
       first = request.matches.first
-      reason = first.rule.try { |rule| "#{rule.tag} (#{first.tag})" } || "reject_all policy (#{first.tag})"
+      reason = first.rule.try { |rule| "#{rule.authority} (#{first.tag})" } || "reject_all policy (#{first.tag})"
       diag = Diagnostic.new(
         code: "F001",
         primary: Span.new(line: line, filename: filename),

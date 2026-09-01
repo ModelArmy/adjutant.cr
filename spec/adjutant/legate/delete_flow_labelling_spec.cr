@@ -30,13 +30,13 @@ module Adjutant
   #      the worst possible outcome, and the ordering in `mv.cr`
   #      (authorize both, THEN touch the filesystem) is what prevents
   #      it. Both are asserted below.
-  private def self.policy_for(sensitive_path : String, tag : RiskTag, action : RiskFlowAction) : RiskFlowPolicy
+  private def self.policy_for(sensitive_path : String, authority : Authority, action : RiskFlowAction) : RiskFlowPolicy
     priority = 10
     RiskFlowPolicy.new(
       sensitivity_patterns: [
         SensitivityPattern.new(ProvenanceKind::File, sensitive_path, priority, Sensitivity::High),
       ],
-      risk_flow_rules: [RiskFlowRule.new(tag, Sensitivity::High, action)],
+      risk_flow_rules: [RiskFlowRule.new(authority, Sensitivity::High, action)],
     )
   end
 
@@ -49,7 +49,7 @@ module Adjutant
       with_tmpdir do |dir|
         file = File.join(dir, "secret.txt")
         File.write(file, "shh")
-        policy = policy_for(file, RiskTag::DeletesFiles, RiskFlowAction::Allow)
+        policy = policy_for(file, Authority::Delete, RiskFlowAction::Allow)
         interp, _ = make_interp(grants: delete_grants(dir), risk_flow_policy: policy)
 
         result = interp.eval(%(Legate.rm(#{file.inspect})))
@@ -69,7 +69,7 @@ module Adjutant
     it "Legate.rm: labels the count even on the missing-path 0 return" do
       with_tmpdir do |dir|
         missing = File.join(dir, "gone.txt")
-        policy = policy_for(missing, RiskTag::DeletesFiles, RiskFlowAction::Allow)
+        policy = policy_for(missing, Authority::Delete, RiskFlowAction::Allow)
         interp, _ = make_interp(grants: delete_grants(dir), risk_flow_policy: policy)
 
         result = interp.eval(%(Legate.rm(#{missing.inspect})))
@@ -83,7 +83,7 @@ module Adjutant
         target = File.join(dir, "tree")
         Dir.mkdir(target)
         File.write(File.join(target, "a.txt"), "a")
-        policy = policy_for(target, RiskTag::DeletesFiles, RiskFlowAction::Allow)
+        policy = policy_for(target, Authority::Delete, RiskFlowAction::Allow)
         interp, _ = make_interp(grants: delete_grants(dir), risk_flow_policy: policy)
 
         result = interp.eval(%(Legate.rm(#{target.inspect}, recursive: true)))
@@ -99,7 +99,7 @@ module Adjutant
       with_tmpdir do |dir|
         file = File.join(dir, "secret.txt")
         File.write(file, "shh")
-        policy = policy_for(file, RiskTag::DeletesFiles, RiskFlowAction::Reject)
+        policy = policy_for(file, Authority::Delete, RiskFlowAction::Reject)
         interp, _ = make_interp(grants: delete_grants(dir), risk_flow_policy: policy)
 
         eval = interp.eval(<<-RUBY)
@@ -119,7 +119,7 @@ module Adjutant
       with_tmpdir do |dir|
         file = File.join(dir, "secret.txt")
         File.write(file, "shh")
-        policy = policy_for(file, RiskTag::DeletesFiles, RiskFlowAction::Ask)
+        policy = policy_for(file, Authority::Delete, RiskFlowAction::Ask)
         callback = ->(req : RiskFlowDecisionRequest) : RiskFlowDecision { RiskFlowDecision::Reject }
         interp, _ = make_interp(
           grants: delete_grants(dir), risk_flow_policy: policy, on_risk_flow_decision: callback,
@@ -142,7 +142,7 @@ module Adjutant
       with_tmpdir do |dir|
         file = File.join(dir, "secret.txt")
         File.write(file, "shh")
-        policy = policy_for(file, RiskTag::DeletesFiles, RiskFlowAction::Ask)
+        policy = policy_for(file, Authority::Delete, RiskFlowAction::Ask)
         callback = ->(req : RiskFlowDecisionRequest) : RiskFlowDecision { RiskFlowDecision::Allow }
         interp, _ = make_interp(
           grants: delete_grants(dir), risk_flow_policy: policy, on_risk_flow_decision: callback,
@@ -160,7 +160,7 @@ module Adjutant
         from = File.join(dir, "secret.txt")
         to = File.join(dir, "moved.txt")
         File.write(from, "shh")
-        policy = policy_for(from, RiskTag::DeletesFiles, RiskFlowAction::Allow)
+        policy = policy_for(from, Authority::Delete, RiskFlowAction::Allow)
         interp, _ = make_interp(grants: delete_grants(dir), risk_flow_policy: policy)
 
         result = interp.eval(%(Legate.mv(#{from.inspect}, #{to.inspect})))
@@ -177,7 +177,7 @@ module Adjutant
         from = File.join(dir, "plain.txt")
         to = File.join(dir, "secret.txt")
         File.write(from, "hi")
-        policy = policy_for(to, RiskTag::WritesFiles, RiskFlowAction::Allow)
+        policy = policy_for(to, Authority::Write, RiskFlowAction::Allow)
         interp, _ = make_interp(grants: delete_grants(dir), risk_flow_policy: policy)
 
         result = interp.eval(%(Legate.mv(#{from.inspect}, #{to.inspect})))
@@ -190,7 +190,7 @@ module Adjutant
         from = File.join(dir, "secret.txt")
         to = File.join(dir, "moved.txt")
         File.write(from, "shh")
-        policy = policy_for(from, RiskTag::DeletesFiles, RiskFlowAction::Reject)
+        policy = policy_for(from, Authority::Delete, RiskFlowAction::Reject)
         interp, _ = make_interp(grants: delete_grants(dir), risk_flow_policy: policy)
 
         eval = interp.eval(<<-RUBY)
@@ -216,7 +216,7 @@ module Adjutant
         from = File.join(dir, "plain.txt")
         to = File.join(dir, "secret.txt")
         File.write(from, "hi")
-        policy = policy_for(to, RiskTag::WritesFiles, RiskFlowAction::Reject)
+        policy = policy_for(to, Authority::Write, RiskFlowAction::Reject)
         interp, _ = make_interp(grants: delete_grants(dir), risk_flow_policy: policy)
 
         eval = interp.eval(<<-RUBY)
@@ -244,7 +244,7 @@ module Adjutant
         from = File.join(dir, "plain.txt")
         to = File.join(dir, "secret.txt")
         File.write(from, "hi")
-        policy = policy_for(to, RiskTag::WritesFiles, RiskFlowAction::Reject)
+        policy = policy_for(to, Authority::Write, RiskFlowAction::Reject)
         interp, _ = make_interp(grants: delete_grants(dir), risk_flow_policy: policy)
 
         interp.eval(<<-RUBY)
@@ -273,7 +273,7 @@ module Adjutant
         from = File.join(dir, "secret.txt")
         to = File.join(dir, "moved.txt")
         File.write(from, "shh")
-        policy = policy_for(from, RiskTag::DeletesFiles, RiskFlowAction::Allow)
+        policy = policy_for(from, Authority::Delete, RiskFlowAction::Allow)
         interp, _ = make_interp(grants: delete_grants(dir), risk_flow_policy: policy)
 
         result = interp.eval(%(Legate.mv(#{from.inspect}, #{to.inspect}).basename))

@@ -651,6 +651,26 @@ existing `RiskProfile`/`RiskTag`/`RiskAggregator` vocabulary (see
 one — the risk flow check reuses the same `RiskTag` enum static risk analysis
 already tags every `NativeCallable` with.
 
+> **Reversed 2026-09-01.** The reuse above was decided for economy and
+> it was reasonable at the time, but the one enum turned out to be
+> answering two different questions, and the ambiguity became load-
+> bearing. `RiskTag` was renamed `Effect` (what a call DOES, reported in
+> the static manifest) and a separate `Authority` enum added (what a
+> call is PERMITTED to do, enforced, and now the `RiskFlowRule` key).
+>
+> What forced it: the two halves have different membership, not just
+> different uses. A move needs Delete and Write authority while
+> destroying nothing, so no single member can describe both. And
+> because `VM#check_risk_flow` keyed the policy lookup on the *profile's*
+> tags, adding a purely descriptive tag to a profile silently created a
+> rule key matching nothing — a change intended to improve a manifest
+> would have quietly altered enforcement.
+>
+> `NativeCallable` now carries both: `risk` (effects, reported) and
+> `authorities` (enforced). They are deliberately not derived from each
+> other; a mapping table between them would drift the way this shared
+> enum did. See `authority.cr` and SCOPE.md.
+
 ### Actions
 
 Three, not two:

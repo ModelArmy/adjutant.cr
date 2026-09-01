@@ -161,8 +161,9 @@ module Adjutant
 
     # Lets a native function declare that one of its own arguments
     # (identified by a concrete ProvenanceKind + origin, not
-    # necessarily an already-labeled Value) is the risky subject of
-    # `tag`, feeding the same risk flow enforcement machinery
+    # necessarily an already-labeled Value) is the risky subject of a
+    # call exercising `authority`, feeding the same risk flow
+    # enforcement machinery
     # VM#call_native's automatic label-driven check uses (sorting,
     # RiskFlowDecisionRequest construction, the on_risk_flow_decision
     # callback, the script-catchable RiskFlowRejectedError raise).
@@ -191,7 +192,7 @@ module Adjutant
     # own comment for why this return value exists and matters: a
     # caller (a Legate verb, typically) needs it to tag the DATA it's
     # about to return, not just to have gated the call.
-    abstract def declare_sensitivity(tag : RiskTag, kind : ProvenanceKind, origin : String,
+    abstract def declare_sensitivity(authority : Authority, kind : ProvenanceKind, origin : String,
                                      sensitivity : Sensitivity? = nil) : RiskFlowLabel?
 
     # Lets a native method raise a real, script-catchable diagnostic —

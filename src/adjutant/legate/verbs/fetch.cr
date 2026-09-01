@@ -77,7 +77,7 @@ module Adjutant
           legate.define_native_singleton_method(
             interp.symbols.intern("fetch").value,
             RiskProfile.new(
-              tags: Set{RiskTag::NetworkEgress},
+              effects: Set{Effect::NetworkEgress},
               # Egress is not undoable — once bytes leave the process
               # no policy decision can call them back. Same reasoning
               # `rm.cr` gives for being the first verb to set these at

@@ -25,7 +25,7 @@ module Adjutant
 
           legate.define_native_singleton_method(
             interp.symbols.intern("list").value,
-            RiskProfile.new(tags: Set{RiskTag::ReadsFiles}),
+            RiskProfile.new(effects: Set{Effect::ReadsFiles}),
             KWARG_NAMES,
           ) do |args, _blk, ncc|
             # `limit` validated FIRST — SCOPE.md's "kwarg-validation

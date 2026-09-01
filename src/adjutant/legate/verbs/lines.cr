@@ -44,7 +44,7 @@ module Adjutant
 
           legate.define_native_singleton_method(
             interp.symbols.intern("lines").value,
-            RiskProfile.new(tags: Set{RiskTag::ReadsFiles}), # complements declare_sensitivity — see stat.cr's own comment
+            RiskProfile.new(effects: Set{Effect::ReadsFiles}), # complements declare_sensitivity — see stat.cr's own comment
             KWARG_NAMES,
           ) do |args, _blk, ncc|
             # `max_line`/`scrub` validated FIRST — SCOPE.md's "kwarg-

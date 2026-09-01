@@ -54,7 +54,7 @@ module Adjutant
       sensitivity_patterns: [
         SensitivityPattern.new(ProvenanceKind::Host, "http://127.0.0.1:#{port}", 10, sensitivity),
       ],
-      risk_flow_rules: [RiskFlowRule.new(RiskTag::NetworkEgress, sensitivity, RiskFlowAction::Allow)],
+      risk_flow_rules: [RiskFlowRule.new(Authority::Net, sensitivity, RiskFlowAction::Allow)],
     )
   end
 
@@ -225,9 +225,9 @@ module Adjutant
                 SensitivityPattern.new(ProvenanceKind::File, url_file, 10, Sensitivity::High),
               ],
               risk_flow_rules: [
-                RiskFlowRule.new(RiskTag::NetworkEgress, Sensitivity::Elevated, RiskFlowAction::Allow),
-                RiskFlowRule.new(RiskTag::NetworkEgress, Sensitivity::High, RiskFlowAction::Allow),
-                RiskFlowRule.new(RiskTag::ReadsFiles, Sensitivity::High, RiskFlowAction::Allow),
+                RiskFlowRule.new(Authority::Net, Sensitivity::Elevated, RiskFlowAction::Allow),
+                RiskFlowRule.new(Authority::Net, Sensitivity::High, RiskFlowAction::Allow),
+                RiskFlowRule.new(Authority::Read, Sensitivity::High, RiskFlowAction::Allow),
               ],
             )
             grants = Legate::Grants.new(
@@ -341,7 +341,7 @@ module Adjutant
             sensitivity_patterns: [
               SensitivityPattern.new(ProvenanceKind::Host, "http://127.0.0.1:#{port}", 10, Sensitivity::High),
             ],
-            risk_flow_rules: [RiskFlowRule.new(RiskTag::NetworkEgress, Sensitivity::High, RiskFlowAction::Reject)],
+            risk_flow_rules: [RiskFlowRule.new(Authority::Net, Sensitivity::High, RiskFlowAction::Reject)],
           )
           interp, _ = make_interp(grants: loopback_grants(port), risk_flow_policy: policy)
           eval = interp.eval(<<-RUBY)
@@ -362,7 +362,7 @@ module Adjutant
             sensitivity_patterns: [
               SensitivityPattern.new(ProvenanceKind::Host, "http://127.0.0.1:#{port}", 10, Sensitivity::High),
             ],
-            risk_flow_rules: [RiskFlowRule.new(RiskTag::NetworkEgress, Sensitivity::High, RiskFlowAction::Reject)],
+            risk_flow_rules: [RiskFlowRule.new(Authority::Net, Sensitivity::High, RiskFlowAction::Reject)],
           )
           interp, _ = make_interp(grants: loopback_grants(port), risk_flow_policy: policy)
           eval = interp.eval(<<-RUBY)
@@ -384,7 +384,7 @@ module Adjutant
             sensitivity_patterns: [
               SensitivityPattern.new(ProvenanceKind::Host, "http://127.0.0.1:#{port}", 10, Sensitivity::High),
             ],
-            risk_flow_rules: [RiskFlowRule.new(RiskTag::NetworkEgress, Sensitivity::High, RiskFlowAction::Reject)],
+            risk_flow_rules: [RiskFlowRule.new(Authority::Net, Sensitivity::High, RiskFlowAction::Reject)],
           )
           interp, _ = make_interp(grants: loopback_grants(port), risk_flow_policy: policy)
           interp.eval(<<-RUBY)

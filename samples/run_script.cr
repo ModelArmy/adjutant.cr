@@ -77,13 +77,14 @@ class SampleModule < Adjutant::ScriptModule
     # scanned too, not just args.
     interp.define_native("delete_file",
       risk: Adjutant::RiskProfile.new(
-        tags: Set{Adjutant::RiskTag::DeletesFiles},
+        effects: Set{Adjutant::Effect::DeletesFiles},
         reversible: Adjutant::Reversibility::No,
         severity: Adjutant::Severity::Error,
       ),
-      kwarg_names: Set{"reason"}) do |args, _blk, ncc|
+      kwarg_names: Set{"reason"},
+      authorities: Set{Adjutant::Authority::Delete}) do |args, _blk, ncc|
       path = args.first.as_string
-      ncc.declare_sensitivity(Adjutant::RiskTag::DeletesFiles, Adjutant::ProvenanceKind::File, path)
+      ncc.declare_sensitivity(Adjutant::Authority::Delete, Adjutant::ProvenanceKind::File, path)
       if reason = ncc.kwargs.try(&.["reason"]?)
         puts "  [simulated] deleted #{path} (reason: #{reason.raw.inspect})"
       else
@@ -103,13 +104,14 @@ class SampleModule < Adjutant::ScriptModule
     # see SCOPE.md/DEVELOPMENT.md's native keyword arguments note.
     interp.define_native("remove_path",
       risk: Adjutant::RiskProfile.new(
-        tags: Set{Adjutant::RiskTag::DeletesFiles},
+        effects: Set{Adjutant::Effect::DeletesFiles},
         reversible: Adjutant::Reversibility::No,
         severity: Adjutant::Severity::Error,
       ),
-      kwarg_names: Set{"path"}) do |args, _blk, ncc|
+      kwarg_names: Set{"path"},
+      authorities: Set{Adjutant::Authority::Delete}) do |args, _blk, ncc|
       path = ncc.kwargs.try(&.["path"]?).try(&.as_string) || ""
-      ncc.declare_sensitivity(Adjutant::RiskTag::DeletesFiles, Adjutant::ProvenanceKind::File, path)
+      ncc.declare_sensitivity(Adjutant::Authority::Delete, Adjutant::ProvenanceKind::File, path)
       puts "  [simulated] removed #{path}"
       Adjutant::Value.bool(true)
     end
@@ -127,9 +129,10 @@ class SampleModule < Adjutant::ScriptModule
     # delete_file above) — not every risky argument needs it.
     interp.define_native("post_data",
       risk: Adjutant::RiskProfile.new(
-        tags: Set{Adjutant::RiskTag::NetworkEgress},
+        effects: Set{Adjutant::Effect::NetworkEgress},
         severity: Adjutant::Severity::Warning,
-      )) do |args|
+      ),
+      authorities: Set{Adjutant::Authority::Net}) do |args|
       url = args.first.as_string
       data = args[1]?.try(&.as_string) || ""
       puts "  [simulated] posted #{data.size} bytes to #{url}"
@@ -164,10 +167,10 @@ SAMPLE_POLICY_JSON = <<-JSON
     { "kind": "Host", "pattern_type": "regex", "pattern": ".*", "priority": -10, "sensitivity": "Elevated" }
   ],
   "risk_flow_rules": [
-    { "tag": "DeletesFiles", "sensitivity": "Elevated", "action": "Ask" },
-    { "tag": "DeletesFiles", "sensitivity": "High", "action": "Reject" },
-    { "tag": "NetworkEgress", "sensitivity": "Elevated", "action": "Ask" },
-    { "tag": "NetworkEgress", "sensitivity": "High", "action": "Ask" }
+    { "authority": "Delete", "sensitivity": "Elevated", "action": "Ask" },
+    { "authority": "Delete", "sensitivity": "High", "action": "Reject" },
+    { "authority": "Net", "sensitivity": "Elevated", "action": "Ask" },
+    { "authority": "Net", "sensitivity": "High", "action": "Ask" }
   ]
 }
 JSON
@@ -183,10 +186,11 @@ def prompt_for_risk_flow_decision(request : Adjutant::RiskFlowDecisionRequest) :
   puts
   puts "=== Risk flow approval requested ==="
   puts "Call: #{request.call_name}  (#{request.filename}:#{request.line})"
-  puts "Risk: #{request.risk.severity}, reversible=#{request.risk.reversible}, tags: #{request.risk.tags.join(", ")}"
+  puts "Risk: #{request.risk.severity}, reversible=#{request.risk.reversible}, effects: #{request.risk.effects.join(", ")}"
+  puts "Authority: #{request.authorities.join(", ")}"
   puts "Reasons (worst first):"
   request.matches.each do |match|
-    rule_desc = match.rule.try { |rule| "#{rule.tag} x #{rule.sensitivity} -> #{rule.action}" } || "reject_all policy"
+    rule_desc = match.rule.try { |rule| "#{rule.authority} x #{rule.sensitivity} -> #{rule.action}" } || "reject_all policy"
     puts "  - #{match.tag.kind}:#{match.tag.origin} (#{match.tag.sensitivity}) matched #{rule_desc}"
   end
   puts
@@ -249,7 +253,7 @@ interp = Adjutant::Interpreter.new(
 interp.modules.register(SampleModule.new)
 # Registering makes the module's native functions known to the
 # interpreter (and thus to RiskWalker) without running any script code
-# — needed for the static assessment pass below to see real RiskTags
+# — needed for the static assessment pass below to see real Effects
 # instead of Unknown ones.
 interp.modules.require("sample", interp)
 
@@ -283,7 +287,7 @@ summary = Adjutant::RiskAggregator.summarize(tree)
 
 puts "=== Static risk assessment: #{script_file} ==="
 puts "Worst case: #{summary.severity} / reversible=#{summary.reversible}"
-puts "Tags: #{summary.tags.empty? ? "none" : summary.tags.join(", ")}"
+puts "Effects: #{summary.effects.empty? ? "none" : summary.effects.join(", ")}"
 puts
 
 # Now actually run the script — this is where dynamic risk flow (IFC)

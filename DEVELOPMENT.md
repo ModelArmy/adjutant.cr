@@ -31,7 +31,7 @@ The sample `run_script.cr` runs a script end to end through both risk layers: a 
 - Run `ops build`, then
 - run `bin/debug/run_script samples/scripts/risk_flow_ask.rb`
 
-You'll see a static assessment summary first (the `RiskTag`s the script's calls could trigger, independent of any data), then the script actually running — pausing to prompt you for a decision when it reaches the call that triggers `RiskFlowAction::Ask`. Try the other `samples/scripts/risk_flow_*.rb` scripts too: `risk_flow_allowed.rb` runs straight through with no prompt, `risk_flow_reject.rb` demonstrates a hard policy rejection *and* a live `Ask` in the same run, and `risk_flow_declared_literal.rb`/`risk_flow_declared_variable.rb` show `declare_sensitivity` catching a risky call that carries no propagated label at all (see "Information flow control (risk flow)" below for why that's a separate mechanism from label propagation).
+You'll see a static assessment summary first (the `Effect`s the script's calls could trigger, independent of any data), then the script actually running — pausing to prompt you for a decision when it reaches the call that triggers `RiskFlowAction::Ask`. Try the other `samples/scripts/risk_flow_*.rb` scripts too: `risk_flow_allowed.rb` runs straight through with no prompt, `risk_flow_reject.rb` demonstrates a hard policy rejection *and* a live `Ask` in the same run, and `risk_flow_declared_literal.rb`/`risk_flow_declared_variable.rb` show `declare_sensitivity` catching a risky call that carries no propagated label at all (see "Information flow control (risk flow)" below for why that's a separate mechanism from label propagation).
 
 Plain scripts with no native calls (e.g. `samples/scripts/fib_10.rb`) still work the same as before — the static assessment reports no tags, and execution proceeds with no risk flow interruptions.
 
@@ -755,11 +755,11 @@ Two same-origin tags merge to the worse (more sensitive) of the two rather than 
 
 Labels and tags are `JSON::Serializable` (a custom converter handles the `Set(ProvenanceTag)` field, since Crystal's `JSON::Serializable` only supports `Array` natively). `Interpreter#risk_flow_log` is a `RiskFlowLog` (also `JSON::Serializable`) that records a `RiskFlowEvent` per join for post-hoc audit/debugging, separate from the live label on each `Value` — enabled via `Interpreter.new(risk_flow_tracking: true)`, defaulting to disabled (`#record` is then a no-op, so every join site can call it unconditionally without branching on the flag itself).
 
-`Interpreter#risk_flow_policy` is a required `RiskFlowPolicy` (agent-loaded `JSON::Serializable`; Adjutant never reads a policy path off disk itself) with two lookups: `#sensitivity_for(kind, origin)` (origin → sensitivity, via `SensitivityPattern` rules matched by `exact` or `regex` pattern type, highest explicit `priority` wins, a tie at the top priority raises `AmbiguousRiskFlowPolicyError`) and `#action_for(tag, sensitivity)` (the `(RiskTag, Sensitivity) → RiskFlowAction` table, via `RiskFlowRule` rows; `Sensitivity::None` always resolves to `RiskFlowAction::Allow` regardless of table contents, and returns the matched `RiskFlowRule?` alongside the action). `RiskFlowAction` is `Allow`/`Ask`/`Reject`.
+`Interpreter#risk_flow_policy` is a required `RiskFlowPolicy` (agent-loaded `JSON::Serializable`; Adjutant never reads a policy path off disk itself) with two lookups: `#sensitivity_for(kind, origin)` (origin → sensitivity, via `SensitivityPattern` rules matched by `exact` or `regex` pattern type, highest explicit `priority` wins, a tie at the top priority raises `AmbiguousRiskFlowPolicyError`) and `#action_for(authority, sensitivity)` (the `(Authority, Sensitivity) → RiskFlowAction` table, via `RiskFlowRule` rows; `Sensitivity::None` always resolves to `RiskFlowAction::Allow` regardless of table contents, and returns the matched `RiskFlowRule?` alongside the action). `RiskFlowAction` is `Allow`/`Ask`/`Reject`.
 
 There is no `Interpreter.new` default that means "skip risk assessment" — `risk_flow_policy` and `on_risk_flow_decision` (a `RiskFlowDecisionRequest -> RiskFlowDecision` callback) are both required constructor params, always, with no defaults. An embedder who genuinely wants no risk assessment must say so explicitly via `RiskFlowPolicy.reject_all` (a policy that rejects every non-`None`-sensitivity flow unconditionally, with no `risk_flow_rules` needed) rather than by omission — Adjutant does not silently permit risky calls just because an integration didn't think about IFC. The callback is required unconditionally too, even for a `reject_all` policy that will never actually call it — Crystal can't express "required only if the policy could produce `Ask`" as a type constraint, so requiring it always is what makes the guarantee a checked one rather than a runtime surprise deep in a script.
 
-**Enforcement** is implemented: `VM#call_native` runs a risk flow check before every native call whose `RiskProfile` has any `RiskTag` and whose arguments include a labeled value. For each `(RiskTag, ProvenanceTag)` pair, `action_for` decides `Allow`/`Ask`/`Reject`; non-`Allow` results become `RiskFlowMatch`es (rule + triggering tag), sorted worst-first (`Reject` > `Ask`, then `Sensitivity`) into a `RiskFlowDecisionRequest`. A `Reject` (from a rule, or from `reject_all`, or from the `on_risk_flow_decision` callback answering an `Ask` with `Reject`) raises a script-catchable error: script-visible class `RiskFlowRejectedError` (a `RiskFlowPolicyError` subclass, itself a `StandardError`), following the same `RuntimeError` + `error_value` mechanism every other script-raised error uses — not a separate Crystal exception hierarchy, since the dispatch loop's rescue-and-unwind machinery only catches `RuntimeError` specifically. A script can `rescue RiskFlowRejectedError`, `rescue RiskFlowPolicyError`, or a bare `rescue` to catch it; the script (and the LLM that authored it) never needs to know whether the rejection came from a hard policy rule or a live decision — both look identical from inside the script.
+**Enforcement** is implemented: `VM#call_native` runs a risk flow check before every native call that declares any `Authority` and whose arguments include a labeled value. For each `(Authority, ProvenanceTag)` pair, `action_for` decides `Allow`/`Ask`/`Reject`; non-`Allow` results become `RiskFlowMatch`es (rule + triggering tag), sorted worst-first (`Reject` > `Ask`, then `Sensitivity`) into a `RiskFlowDecisionRequest`. A `Reject` (from a rule, or from `reject_all`, or from the `on_risk_flow_decision` callback answering an `Ask` with `Reject`) raises a script-catchable error: script-visible class `RiskFlowRejectedError` (a `RiskFlowPolicyError` subclass, itself a `StandardError`), following the same `RuntimeError` + `error_value` mechanism every other script-raised error uses — not a separate Crystal exception hierarchy, since the dispatch loop's rescue-and-unwind machinery only catches `RuntimeError` specifically. A script can `rescue RiskFlowRejectedError`, `rescue RiskFlowPolicyError`, or a bare `rescue` to catch it; the script (and the LLM that authored it) never needs to know whether the rejection came from a hard policy rule or a live decision — both look identical from inside the script.
 
 **Label propagation alone has a real blind spot**: it only ever sees taint that flowed *through* a labeling call. A script that writes a sensitive-looking value directly (`delete_file("/etc/passwd")`, no intermediate `read_file` call or variable at all) produces no `RiskFlowLabel` for anything to track — the automatic, label-driven check above has nothing to see. `NativeCallContext#declare_sensitivity(tag, kind, origin, sensitivity = nil)` closes this: a native function whose own argument *is* the risky subject (a path being deleted, a URL being posted to) calls it directly on that argument's literal content, consulting `sensitivity_for` itself (or using an already-known `sensitivity` to skip the lookup) and feeding the result into the same `RiskFlowMatch`/`RiskFlowDecisionRequest`/enforcement machinery as the automatic check — same sorting, same callback, same script-catchable error. This is why `declare_sensitivity` exists as a distinct, explicit call rather than something the VM could infer automatically: only the native function itself knows which of its arguments (if any) is the dangerous one, and in what role (Ruby has no static typing or required argument-naming to infer this from). See `samples/run_script.cr`'s `delete_file` for the pattern, and `samples/scripts/risk_flow_declared_literal.rb`/`risk_flow_declared_variable.rb` for scripts that specifically exercise it (a bare literal and a misleadingly-named variable, respectively — both invisible to label propagation, both caught by this).
 
@@ -817,9 +817,10 @@ end
 
 ```crystal
 interp.define_native("delete_file",
-  risk: Adjutant::RiskProfile.new(tags: Set{Adjutant::RiskTag::DeletesFiles})) do |args, _blk, ncc|
+  risk: Adjutant::RiskProfile.new(effects: Set{Adjutant::Effect::DeletesFiles}),
+  authorities: Set{Adjutant::Authority::Delete}) do |args, _blk, ncc|
   path = args.first.as_string
-  ncc.declare_sensitivity(Adjutant::RiskTag::DeletesFiles, Adjutant::ProvenanceKind::File, path)
+  ncc.declare_sensitivity(Adjutant::Authority::Delete, Adjutant::ProvenanceKind::File, path)
   File.delete(path)
   Adjutant::Value.bool(true)
 end
@@ -877,9 +878,9 @@ tags + reversible + severity] --> NC[NativeCallable]
     NC -.planned.-> RC[RubyClass native methods]
 ```
 
-`RiskTag` names *why* a call is risky (`ReadsFiles`, `WritesFiles`, `DeletesFiles`, `Recursive`, `ExecutesCode`, `NetworkEgress`, `ElevatedPrivilege`, `ModifiesEnvironment`). `Reversibility` (`Yes`/`No`/`Depends`) and `Severity` (`Info`/`Warning`/`Error`) are *conclusions* drawn from those tags.
+`Effect` and `Authority` are two enums answering two questions. `Authority` (`Read`, `Write`, `Delete`, `Net`, `Exec`, `Ambient`) names what a call is *permitted* to do — enforced, and the key a `RiskFlowRule` matches on. `Effect` names *what a call does to the world outside the VM*, and so *why* it is risky (`ReadsFiles`, `WritesFiles`, `DeletesFiles`, `Recursive`, `ExecutesCode`, `NetworkEgress`, `ElevatedPrivilege`, `ModifiesEnvironment`). `Reversibility` (`Yes`/`No`/`Depends`) and `Severity` (`Info`/`Warning`/`Error`) are *conclusions* drawn from those effects.
 
-Tags are the reason; reversibility and severity are consequences — a `RiskProfile` with no tags must be `Reversibility::Yes` and `Severity::Info`. Setting either otherwise on an empty-tag profile raises immediately, by design: it means a `RiskTag` is missing, not that the fields should be set freely.
+Effects are the reason; reversibility and severity are consequences — a `RiskProfile` with no effects must be `Reversibility::Yes` and `Severity::Info`. Setting either otherwise on an effect-less profile raises immediately, by design: it means an `Effect` is missing, not that the fields should be set freely.
 
 ```crystal
 # Pure — the default, no need to state it explicitly.
@@ -888,7 +889,7 @@ interp.define_native("square") { |args| ... }
 # Effectful:
 interp.define_native("delete_file",
   risk: Adjutant::RiskProfile.new(
-    tags: Set{Adjutant::RiskTag::DeletesFiles},
+    effects: Set{Adjutant::Effect::DeletesFiles},
     reversible: Adjutant::Reversibility::No,
     severity: Adjutant::Severity::Error,
   )) { |args| ... }
@@ -900,7 +901,7 @@ interp.define_native("delete_file",
 
 #### Structured risk: RiskNode and RiskAggregator
 
-A flat union of `RiskProfile`s across a script loses conditionality: an `if`/`else` with a safe branch and a destructive branch would merge into one tag set, as if both could happen in one run. `RiskNode` (`risk_node.cr`) mirrors the AST's control-flow shape instead, so aggregation respects it.
+A flat union of `RiskProfile`s across a script loses conditionality: an `if`/`else` with a safe branch and a destructive branch would merge into one effect set, as if both could happen in one run. `RiskNode` (`risk_node.cr`) mirrors the AST's control-flow shape instead, so aggregation respects it.
 
 ```mermaid
 ---

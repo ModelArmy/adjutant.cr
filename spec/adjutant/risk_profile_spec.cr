@@ -2,9 +2,9 @@ require "../spec_helper"
 
 module Adjutant
   describe RiskProfile do
-    it "none has no tags, is reversible, and is informational" do
+    it "none has no effects, is reversible, and is informational" do
       profile = RiskProfile.none
-      profile.tags.should be_empty
+      profile.effects.should be_empty
       profile.reversible.should eq Reversibility::Yes
       profile.severity.should eq Severity::Info
     end
@@ -13,25 +13,25 @@ module Adjutant
       RiskProfile.new.should eq RiskProfile.none
     end
 
-    it "allows a tagged profile with elevated severity and reversibility" do
+    it "allows a profile with effects, elevated severity and reversibility" do
       profile = RiskProfile.new(
-        tags: Set{RiskTag::DeletesFiles, RiskTag::Recursive},
+        effects: Set{Effect::DeletesFiles, Effect::Recursive},
         reversible: Reversibility::No,
         severity: Severity::Error,
       )
-      profile.tags.should eq Set{RiskTag::DeletesFiles, RiskTag::Recursive}
+      profile.effects.should eq Set{Effect::DeletesFiles, Effect::Recursive}
       profile.reversible.should eq Reversibility::No
       profile.severity.should eq Severity::Error
     end
 
-    it "raises when empty tags are paired with non-default reversibility" do
+    it "raises when an empty effect set is paired with non-default reversibility" do
       error = expect_raises(ArgumentError, /must be reversible and Info/) do
         RiskProfile.new(reversible: Reversibility::No)
       end
       error.as(HostArgumentError).diagnostic.not_nil!.code.should eq("H001")
     end
 
-    it "raises when empty tags are paired with non-default severity" do
+    it "raises when an empty effect set is paired with non-default severity" do
       # Still an ArgumentError — HostArgumentError subclasses it,
       # because these genuinely ARE bad arguments, so a host's existing
       # `rescue ArgumentError` keeps working.
@@ -43,7 +43,7 @@ module Adjutant
 
     it "raises when reversible is Depends without a note" do
       error = expect_raises(ArgumentError, /needs a note/) do
-        RiskProfile.new(tags: Set{RiskTag::WritesFiles}, reversible: Reversibility::Depends)
+        RiskProfile.new(effects: Set{Effect::WritesFiles}, reversible: Reversibility::Depends)
       end
       error.as(HostArgumentError).diagnostic.not_nil!.code.should eq("H002")
     end
@@ -59,12 +59,12 @@ module Adjutant
       diag.primary.should be_nil
       diag.spans.should be_empty
       # to_line therefore omits the position rather than inventing one.
-      diag.to_line.should eq("[H001] a RiskProfile with no tags must be reversible and Info")
+      diag.to_line.should eq("[H001] a RiskProfile with no effects must be reversible and Info")
     end
 
     it "allows reversible: Depends when a note is provided" do
       profile = RiskProfile.new(
-        tags: Set{RiskTag::WritesFiles},
+        effects: Set{Effect::WritesFiles},
         reversible: Reversibility::Depends,
         note: "reversible only if --backup is passed",
       )
@@ -80,7 +80,7 @@ module Adjutant
     end
 
     it "carries an explicit risk profile" do
-      risk = RiskProfile.new(tags: Set{RiskTag::NetworkEgress}, severity: Severity::Warning)
+      risk = RiskProfile.new(effects: Set{Effect::NetworkEgress}, severity: Severity::Warning)
       callable = NativeCallable.new(NativeFunc.new { |args, _, _| args.first }, risk)
       callable.risk.should eq risk
     end
@@ -98,7 +98,7 @@ module Adjutant
   describe "Interpreter#define_native with risk" do
     it "attaches a risk profile to a native function" do
       interp, _ = make_interp
-      risk = RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
+      risk = RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
       interp.define_native("dangerous_delete", risk: risk) { |_| Value.nil_value }
       sym_id = interp.symbols.lookup("dangerous_delete").not_nil!.value
       interp.native_callable(sym_id).not_nil!.risk.should eq risk
@@ -113,7 +113,7 @@ module Adjutant
 
     it "still executes correctly through the VM when a risk profile is attached" do
       interp, _ = make_interp
-      risk = RiskProfile.new(tags: Set{RiskTag::NetworkEgress}, severity: Severity::Warning)
+      risk = RiskProfile.new(effects: Set{Effect::NetworkEgress}, severity: Severity::Warning)
       interp.define_native("fetch_thing", risk: risk) { |args| Value.string("fetched:#{args.first.as_string}") }
       interp.eval(%(fetch_thing("url"))).as_string.should eq "fetched:url"
     end
