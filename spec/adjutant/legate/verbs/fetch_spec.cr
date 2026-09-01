@@ -1,4 +1,5 @@
 require "../../../spec_helper"
+require "socket"
 
 # Every spec below that reaches the transport stage installs a fixed
 # resolver, so nothing here depends on DNS. See `Fetch.resolver`'s own
@@ -352,17 +353,36 @@ module Adjutant
       # SSRF check no longer refuses it. A `Transport` from a refused
       # ADDRESS and one from a refused CONNECTION are distinguished by
       # message.
+      #
+      # THE PORT IS PROVEN UNBOUND rather than assumed. This spec used
+      # 11434, and "nothing is listening" is not true of that port on
+      # a machine running Ollama — or forwarding one over `ssh -L`,
+      # which binds it on loopback exactly where this connects. The
+      # fetch then SUCCEEDS, the script returns "no error", and the
+      # old assertion passed vacuously because "no error" happens not
+      # to contain "local: true". A test that silently stops testing
+      # is worse than one that fails, and this one also quietly sent a
+      # request to whatever was on the other end of the tunnel.
+      #
+      # Binding a port and releasing it hands back one the OS is not
+      # currently giving to anyone, so the connection is refused
+      # immediately and deterministically. The `should_not eq` is the
+      # other half of the fix: an assertion phrased purely as an
+      # absence cannot tell success from failure.
       it "lets a rule with the opt-in past the address check" do
+        unbound_port = TCPServer.open("127.0.0.1", 0) { |server| server.local_address.port }
+
         with_resolver(["127.0.0.1"]) do
-          interp, _ = make_interp(grants: local_grants.call("localhost", 11434))
+          interp, _ = make_interp(grants: local_grants.call("localhost", unbound_port))
           eval = interp.eval(<<-RUBY)
           begin
-            Legate.fetch("http://localhost:11434/api/tags")
+            Legate.fetch("http://localhost:#{unbound_port}/api/tags")
             "no error"
           rescue Legate::Transport => e
             e.message
           end
           RUBY
+          eval.as_string.should_not eq "no error"
           eval.as_string.should_not contain "local: true"
         end
       end
