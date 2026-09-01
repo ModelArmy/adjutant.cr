@@ -190,7 +190,7 @@ def prompt_for_risk_flow_decision(request : Adjutant::RiskFlowDecisionRequest) :
   puts "Authority: #{request.authorities.join(", ")}"
   puts "Reasons (worst first):"
   request.matches.each do |match|
-    rule_desc = match.rule.try { |rule| "#{rule.tag} x #{rule.sensitivity} -> #{rule.action}" } || "reject_all policy"
+    rule_desc = match.rule.try { |rule| "#{rule.authority} x #{rule.sensitivity} -> #{rule.action}" } || "reject_all policy"
     puts "  - #{match.tag.kind}:#{match.tag.origin} (#{match.tag.sensitivity}) matched #{rule_desc}"
   end
   puts
