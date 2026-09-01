@@ -367,17 +367,34 @@ module Adjutant
         end
       end
 
+      # WHAT THIS ASSERTS is only that the §8.2 address check stopped
+      # refusing — everything after that point is incidental, and
+      # deliberately not pinned to one failure class.
+      #
+      # Unlike its sibling above, this resolves to a ROUTABLE RFC 1918
+      # address, so the connection attempt genuinely leaves the
+      # machine. What happens next depends on the network the machine
+      # is attached to: a host that refuses gives `Transport` in
+      # milliseconds, one that silently drops gives `Timeout` after
+      # the full duration. Both prove the same thing. An earlier
+      # version rescued only `Transport` and so failed with a 30s hang
+      # on any network where 192.168.1.50 black-holes rather than
+      # refuses — a property of the tester's LAN, not of Adjutant.
+      # `timeout: 1` bounds the damage either way.
       it "lets a rule with the opt-in reach RFC 1918 space" do
         with_resolver(["192.168.1.50"]) do
           interp, _ = make_interp(grants: local_grants.call("ollama.internal", 11434))
           eval = interp.eval(<<-RUBY)
           begin
-            Legate.fetch("http://ollama.internal:11434/api/tags")
+            Legate.fetch("http://ollama.internal:11434/api/tags", timeout: 1)
             "no error"
           rescue Legate::Transport => e
             e.message
+          rescue Legate::Timeout => e
+            e.message
           end
           RUBY
+          eval.as_string.should_not eq "no error"
           eval.as_string.should_not contain "local: true"
         end
       end

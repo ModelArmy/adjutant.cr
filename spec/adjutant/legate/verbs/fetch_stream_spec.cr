@@ -165,11 +165,16 @@ module Adjutant
     describe "stream_limit" do
       # Enforced as bytes arrive, so a runaway response is refused
       # partway rather than after it has all been pulled.
+      #
+      # Reads are `READ_CHUNK_SIZE` (64 KiB) granular, so the limit
+      # sits between one chunk and two and the body spans three —
+      # otherwise the first read breaches the limit and "partway" is
+      # not what is being tested at all.
       it "raises Legate::TooLarge partway through an over-limit body" do
         with_stream_server(->(context : HTTP::Server::Context) {
-          context.response.print("q" * 50_000)
+          context.response.print("q" * 200_000)
         }) do |port|
-          limits = Legate::Limits.new(stream_limit: 4_096_i64)
+          limits = Legate::Limits.new(stream_limit: 100_000_i64)
           interp, _ = make_interp(grants: loopback_grants(port, limits))
           eval = interp.eval(<<-RUBY)
           begin
