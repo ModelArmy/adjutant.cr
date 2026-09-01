@@ -248,6 +248,137 @@ forward.
   out of scope for the `Effect`/`Authority` split — that change is
   about which enum keys the rule, not how many dimensions it has.
 
+- **Authorization is a Legate-private mechanism, but it is not a
+  Legate-shaped problem.** Decided 2026-09-01, in the design
+  conversation following the `Effect`/`Authority` split. `Authority`
+  and `RiskFlowPolicy` are core; the perimeter that decides whether a
+  given subject may be reached under a given authority is not — it
+  lives entirely in `Legate::Broker`, `Legate::Grants`,
+  `Legate::Authorization` and `Legate::Budget`. Anything else that
+  ever needs to reach outside the VM must either reimplement that
+  sequence or be bolted onto Legate, and neither is acceptable for a
+  mechanism whose whole job is being the one place effects are gated.
+
+  Must Fix rather than Will Fix on timing, not on breakage: nothing is
+  wrong today, but every additional consumer makes the move dearer,
+  and the last piece changes an embedder-facing config format. Pre-1.0
+  is the cheap moment.
+
+  **The seam already exists.** `Broker#authorize` takes the grant
+  decision as a block (`& : -> Grants::Decision`) precisely because
+  each category resolves differently. Everything before and after that
+  block is generic — wall-clock, then the decision, then
+  `ncc.declare_sensitivity`, then exactly one `AuditRecord` per
+  outcome, with the resolved `RiskFlowLabel?` threaded back out so a
+  verb can tag the data it returns. Only the block's body is Legate's.
+
+  ### What moves to core
+
+  - The sequence itself, `Authorization::Decision` (two fields,
+    nothing Legate in it), and `AuditRecord` — whose `grant : Symbol`
+    field collapses into `Authority`, since `Broker#authorize`
+    currently takes both and they are the same fact spelled twice.
+  - The perimeter predicates and the data they read: `check_root`,
+    `check_net`, `check_binary`, and `Grants`' roots / net rules /
+    exec allowlist. These are predicates over paths, hosts and
+    binaries; none of them mentions a verb.
+  - Run-level accounting: `wall_clock`, `memory`, `total_read`,
+    `total_write`. `wall_clock` especially — SCOPE's own "no
+    wall-clock bound on a script or a held-open stream" entry says the
+    fix belongs in one watchdog at the `Interpreter#eval` boundary,
+    and a core run-clock is where that hangs.
+  - `OpenSources` and `max_open_streams`: a cap over anything
+    closable, and `Interpreter#eval` already owns the teardown.
+  - Core's own unrescuable denial signal.
+
+  ### What stays in Legate
+
+  - The verb-facing wrappers (`authorize_read`/`_write`/`_delete`/
+    `_net`/`_exec`). They know about `allow_missing`, `Legate::Path`
+    and which `Legate::` class to name; fourteen verbs should not be
+    talking to a generic API directly.
+  - The verb-shaped limits — `read_limit`, `fetch_limit`,
+    `url_limit`, `stream_limit`. Named after verbs; `fetch_limit`
+    cannot mean anything to a subsystem with no `fetch`.
+  - §9's error tier and the script-visible class names. Core raises
+    its own signal; Legate supplies the name, roughly what
+    `FATAL_CLASS_NAME` already does as a constant.
+
+  ### The plug-in shape
+
+  The point is not just relocation — authorization becomes a
+  capability a subsystem plugs into, the way Legate will:
+
+  - **`Authority` stays CLOSED.** Six members, core, no registration.
+    It keys `RiskFlowRule`, so an open vocabulary makes policy tables
+    unbounded and breaks the property `reject_all` depends on ("never
+    silently stops covering an Authority added later"). It is also
+    what the static manifest reports, and a manifest whose vocabulary
+    depends on which extensions are loaded cannot be trusted.
+  - **The predicate is PLUGGABLE.** Core owns the sequence and asks a
+    registered resolver whether a subject is permitted under an
+    authority. Legate resolves `Write` against roots; something else
+    may resolve it against a different perimeter.
+  - **The config section is OPEN.** Each subsystem contributes and
+    parses its own block inside one document.
+
+  ### Interaction that does NOT move by itself
+
+  §10.1's grant inference walks the call graph for `Legate.*` names.
+  Once authorization is core with pluggable providers, that inference
+  must key on something REGISTERED rather than a hardcoded module
+  name — otherwise a second subsystem gets authorization but no static
+  manifest, which is exactly the asymmetry the manifest exists to
+  prevent.
+
+  ### Order, and why the config is last
+
+  Four separable pieces, to be landed and tested independently:
+
+  1. Perimeter to core (`Grants`, the `check_*` predicates,
+     `Decision`).
+  2. Run accounting to core (the run-level half of `Limits`,
+     `OpenSources`, `max_open_streams`).
+  3. The broker sequence to core, with pluggable resolvers and
+     `AuditRecord` rekeyed on `Authority`.
+  4. **One config document.** `RiskFlowPolicy` is JSON and
+     agent-constructed; `Grants` parses YAML. Two formats for one
+     document is history, not design. Last because it is the only
+     piece that changes an embedder-facing format, and it benefits
+     from the rest being settled.
+
+     Three properties a merged config MUST preserve, each a decision
+     made deliberately:
+
+     - **No permissive default.** `RiskFlowPolicy` has no bare `.new`
+       meaning "allow everything," so Adjutant never silently permits
+       risky calls because an embedder didn't think about IFC. A
+       document carrying a grants section and no risk section must
+       mean `reject_all`, NOT "unset, therefore allow" — and the
+       reverse likewise.
+     - **Adjutant still never reads a policy path off disk.**
+       Unifying the schema must not grow file IO in core; the
+       embedder loads and passes it, as today.
+     - **More surface, same coverage trap.** A larger document has
+       more places to silently stop covering an `Authority`.
+
+  ### Spec ownership
+
+  `LEGATE.md` §7 currently specifies the policy file, and `grants.cr`
+  parses that YAML. Once `Grants` is core, §7 either moves to a core
+  document or says plainly that it documents the Legate SURFACE over a
+  core mechanism. A core type specified only inside `LEGATE.md` is the
+  drift that produced the four divergences the 2026-08-31 handoff
+  complains about. Dismantling parts of LEGATE.md is expected here and
+  explicitly sanctioned — that spec predates both the `Effect`/
+  `Authority` split and Legate becoming an extension rather than an
+  island.
+
+  Note honestly: there is no second consumer today, so parts of this
+  generalise on the strength of the argument rather than on evidence.
+  Chosen deliberately — the perimeter is precisely what a future
+  subsystem should inherit rather than reinvent.
+
 ## Will Fix
 
 Real gaps, not currently blocking anything, no active design conversation
