@@ -1,7 +1,9 @@
+require "./authority"
 require "./risk_profile"
 
 module Adjutant
-  # A native function paired with its static RiskProfile.
+  # A native function paired with its static RiskProfile and the
+  # authorities it exercises.
   #
   # This is the single representation for any callable implemented in
   # Crystal rather than script code — currently functions installed via
@@ -16,6 +18,24 @@ module Adjutant
   struct NativeCallable
     getter func : NativeFunc
     getter risk : RiskProfile
+
+    # The permissions this call exercises to reach outside the VM —
+    # the key the risk flow policy matches on (see RiskFlowRule).
+    #
+    # Separate from `risk` rather than derived from it: `risk` reports
+    # what the call does, `authorities` states what it is permitted to
+    # do, and the two genuinely differ (a move needs Delete and Write
+    # authority while destroying nothing). Deriving one from the other
+    # would need a mapping table that drifts.
+    #
+    # Defaults to empty, like RiskProfile.none — a pure native
+    # function reaches outside the VM not at all, and an empty set is
+    # what makes VM#check_risk_flow a no-op for it. Nothing on this
+    # branch declares any: the only callables that exercise authority
+    # are Legate's verbs, which live on `add-legate`. Until they do,
+    # the automatic label-driven check is inert and enforcement runs
+    # entirely through the explicit declare_sensitivity path.
+    getter authorities : Set(Authority)
 
     # Keyword names this native callable accepts, by name only — no
     # declared defaults (see SCOPE.md/DEVELOPMENT.md's "Native
@@ -38,7 +58,8 @@ module Adjutant
     getter kwarg_names : Set(String)
 
     def initialize(@func : NativeFunc, @risk : RiskProfile = RiskProfile.none,
-                   @kwarg_names : Set(String) = Set(String).new)
+                   @kwarg_names : Set(String) = Set(String).new,
+                   @authorities : Set(Authority) = Set(Authority).new)
     end
 
     def call(args : Array(Value), blk : ScriptProc?, ctx : NativeCallContext) : Value

@@ -15,7 +15,7 @@ module Adjutant
   # lives on the ProvenanceTag already, set when the tag was created).
   private def self.enforcement_policy_for(action : RiskFlowAction) : RiskFlowPolicy
     RiskFlowPolicy.new(risk_flow_rules: [
-      RiskFlowRule.new(Effect::DeletesFiles, Sensitivity::High, action),
+      RiskFlowRule.new(Authority::Delete, Sensitivity::High, action),
     ])
   end
 
@@ -33,7 +33,8 @@ module Adjutant
       on_risk_flow_decision: on_risk_flow_decision,
       effect: ef,
     )
-    interp.define_native("delete_file", risk: RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)) do |args|
+    interp.define_native("delete_file", risk: RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error),
+      authorities: Set{Authority::Delete}) do |args|
       Value.bool(true)
     end
     # Sensitivity is baked in at tag-creation time (High), the way a
@@ -60,10 +61,11 @@ module Adjutant
         # rule table, regardless of what Effect the call carries.
         ef = TestEffectHandler.new
         policy = RiskFlowPolicy.new(risk_flow_rules: [
-          RiskFlowRule.new(Effect::DeletesFiles, Sensitivity::High, RiskFlowAction::Reject),
+          RiskFlowRule.new(Authority::Delete, Sensitivity::High, RiskFlowAction::Reject),
         ])
         interp = Interpreter.new(risk_flow_policy: policy, on_risk_flow_decision: TEST_UNEXPECTED_ASK_CALLBACK, effect: ef)
-        interp.define_native("delete_file", risk: RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)) do |args|
+        interp.define_native("delete_file", risk: RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error),
+      authorities: Set{Authority::Delete}) do |args|
           Value.bool(true)
         end
         interp.define_native("public_path") do |args|
@@ -226,7 +228,7 @@ module Adjutant
         req.matches.size.should eq 1
         match = req.matches.first
         match.action.should eq RiskFlowAction::Ask
-        match.rule.not_nil!.tag.should eq Effect::DeletesFiles
+        match.rule.not_nil!.authority.should eq Authority::Delete
         match.tag.origin.should eq "/etc/passwd"
         match.tag.kind.should eq ProvenanceKind::File
       end
@@ -251,7 +253,7 @@ module Adjutant
           RiskFlowDecision::Allow
         }
         policy = RiskFlowPolicy.new(risk_flow_rules: [
-          RiskFlowRule.new(Effect::DeletesFiles, Sensitivity::High, RiskFlowAction::Ask),
+          RiskFlowRule.new(Authority::Delete, Sensitivity::High, RiskFlowAction::Ask),
         ])
         interp, _ = make_enforcement_interp(policy, callback)
         interp.eval(%(delete_file("/tmp/scratch")))
@@ -485,7 +487,8 @@ module Adjutant
     describe "Op::SetAttr reaching a native setter (dormant today, real path)" do
       it "raises when a tainted value assigned via recv.attr = value matches a Reject rule" do
         interp, _ = make_enforcement_interp(enforcement_policy_for(RiskFlowAction::Reject))
-        interp.define_native("value=", risk: RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)) do |args|
+        interp.define_native("value=", risk: RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error),
+      authorities: Set{Authority::Delete}) do |args|
           Value.bool(true)
         end
         error = expect_raises(RuntimeError, /risk flow policy rejected/) do
@@ -508,7 +511,8 @@ module Adjutant
       it "the call's side effect does not happen when rejected, same as any other native call" do
         interp, _ = make_enforcement_interp(enforcement_policy_for(RiskFlowAction::Reject))
         effect_ran = false
-        interp.define_native("value=", risk: RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)) do |args|
+        interp.define_native("value=", risk: RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error),
+      authorities: Set{Authority::Delete}) do |args|
           effect_ran = true
           Value.bool(true)
         end
@@ -525,7 +529,8 @@ module Adjutant
 
       it "an untainted value assigned via recv.attr = value proceeds normally" do
         interp, _ = make_enforcement_interp(enforcement_policy_for(RiskFlowAction::Reject))
-        interp.define_native("value=", risk: RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)) do |args|
+        interp.define_native("value=", risk: RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error),
+      authorities: Set{Authority::Delete}) do |args|
           Value.bool(true)
         end
         result = interp.eval(<<-RUBY)
@@ -546,6 +551,7 @@ module Adjutant
       it "raises when a tainted kwarg value matches a Reject rule" do
         interp, _ = make_enforcement_interp(enforcement_policy_for(RiskFlowAction::Reject))
         interp.define_native("delete_at", risk: RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error),
+          authorities: Set{Authority::Delete},
           kwarg_names: Set{"path"}) do |args, blk, ncc|
           Value.bool(true)
         end
@@ -561,6 +567,7 @@ module Adjutant
         interp, _ = make_enforcement_interp(enforcement_policy_for(RiskFlowAction::Reject))
         effect_ran = false
         interp.define_native("delete_at", risk: RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error),
+          authorities: Set{Authority::Delete},
           kwarg_names: Set{"path"}) do |args, blk, ncc|
           effect_ran = true
           Value.bool(true)
@@ -577,6 +584,7 @@ module Adjutant
       it "an untainted kwarg value proceeds normally" do
         interp, _ = make_enforcement_interp(enforcement_policy_for(RiskFlowAction::Reject))
         interp.define_native("delete_at", risk: RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error),
+          authorities: Set{Authority::Delete},
           kwarg_names: Set{"path"}) do |args, blk, ncc|
           Value.bool(true)
         end
@@ -587,6 +595,7 @@ module Adjutant
       it "a tainted POSITIONAL argument alongside an untainted kwarg is still enforced (kwargs don't crowd out args)" do
         interp, _ = make_enforcement_interp(enforcement_policy_for(RiskFlowAction::Reject))
         interp.define_native("delete_with_mode", risk: RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error),
+          authorities: Set{Authority::Delete},
           kwarg_names: Set{"mode"}) do |args, blk, ncc|
           Value.bool(true)
         end

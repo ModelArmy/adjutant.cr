@@ -62,9 +62,9 @@ module Adjutant
       @vm.guard_rendering(obj_id, cycle_result) { yield }
     end
 
-    def declare_sensitivity(tag : Effect, kind : ProvenanceKind, origin : String,
+    def declare_sensitivity(authority : Authority, kind : ProvenanceKind, origin : String,
                             sensitivity : Sensitivity? = nil) : Nil
-      @vm.declare_sensitivity(tag, kind, origin, @name, filename, line, sensitivity)
+      @vm.declare_sensitivity(authority, kind, origin, @name, @callable.risk, filename, line, sensitivity)
     end
 
     def raise_error(code : String, data : Hash(String, String) = {} of String => String,

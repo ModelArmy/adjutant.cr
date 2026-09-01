@@ -146,6 +146,7 @@ module Adjutant
           Value.string("secret", RiskFlowLabel.of(ProvenanceKind::File, "secret", Sensitivity::High))
         end
         interp.define_native("risky_op", risk: RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error),
+          authorities: Set{Authority::Delete},
           kwarg_names: Set{"target"}) do |args, blk, ncc|
           Value.bool(true)
         end
@@ -171,6 +172,7 @@ module Adjutant
           Value.string("secret", RiskFlowLabel.of(ProvenanceKind::File, "secret", Sensitivity::High))
         end
         interp.define_native("risky_op", risk: RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error),
+          authorities: Set{Authority::Delete},
           kwarg_names: Set{"target"}) do |args, blk, ncc|
           Value.bool(true)
         end
@@ -201,6 +203,7 @@ module Adjutant
           Value.string("secret", RiskFlowLabel.of(ProvenanceKind::File, "secret", Sensitivity::High))
         end
         interp.define_native("risky_op", risk: RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error),
+          authorities: Set{Authority::Delete},
           kwarg_names: Set{"target"}) do |args, blk, ncc|
           Value.bool(true)
         end
@@ -209,7 +212,8 @@ module Adjutant
         # cleanly. If the first call's leaked, labeled kwargs value
         # somehow fed into this one's risk evaluation, it would be
         # rejected too, even though nothing about THIS call is risky.
-        interp.define_native("other_risky_op", risk: RiskProfile.new(effects: Set{Effect::NetworkEgress}, severity: Severity::Warning)) do |args|
+        interp.define_native("other_risky_op", risk: RiskProfile.new(effects: Set{Effect::NetworkEgress}, severity: Severity::Warning),
+          authorities: Set{Authority::Net}) do |args|
           Value.bool(true)
         end
         result = interp.eval(<<-RUBY)
