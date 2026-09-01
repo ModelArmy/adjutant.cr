@@ -2383,7 +2383,7 @@ module Adjutant
     # Before the call itself, runs the risk flow check (see
     # research/IFC_DESIGN.md's enforcement design notes): if any
     # argument's label carries a ProvenanceTag whose sensitivity,
-    # combined with one of `native.risk.tags`, resolves to
+    # combined with one of `native.risk.effects`, resolves to
     # RiskFlowAction::Reject or ::Ask via `@risk_flow_policy`, the call
     # does not proceed silently — Reject (or an Ask resolved to Reject
     # by `@on_risk_flow_decision`) raises a script-catchable
@@ -2428,21 +2428,21 @@ module Adjutant
     end
 
     # The risk flow check itself — see call_native's doc comment. A
-    # no-op (cheap: one empty-tags check, no allocation) for the
+    # no-op (cheap: one empty-effects check, no allocation) for the
     # overwhelming majority of native calls, which either have no
-    # RiskTag at all (RiskProfile.none) or receive no labeled arguments.
+    # Effect at all (RiskProfile.none) or receive no labeled arguments.
     private def check_risk_flow(native : NativeCallable, args : Array(Value), kwargs : Hash(String, Value)?,
                                 name : String, filename : String, line : Int32) : Nil
-      return if native.risk.tags.empty?
+      return if native.risk.effects.empty?
       kwarg_values = kwargs.try(&.values)
       labeled_args = args.any?(&.label)
       labeled_kwargs = kwarg_values.try(&.any?(&.label)) || false
       return unless labeled_args || labeled_kwargs
 
       matches = [] of RiskFlowMatch
-      native.risk.tags.each do |tag|
+      native.risk.effects.each do |effect|
         # kwargs are folded in here (not just `args`) so a labeled
-        # value reaching a risk-tagged native call via a keyword
+        # value reaching a risky native call via a keyword
         # argument gets the exact same enforcement a positional
         # argument already did — before native kwargs existed at all,
         # this was moot (reject_kwargs! fired first); now that a
@@ -2455,7 +2455,7 @@ module Adjutant
           label = arg.label
           next unless label
           label.tags.each do |provenance_tag|
-            action, rule = @risk_flow_policy.action_for(tag, provenance_tag.sensitivity)
+            action, rule = @risk_flow_policy.action_for(effect, provenance_tag.sensitivity)
             next if action.allow?
             matches << RiskFlowMatch.new(action, rule, provenance_tag)
           end
@@ -2476,7 +2476,7 @@ module Adjutant
     # `sensitivity` lets a native function that already knows the
     # sensitivity (e.g. it just computed it) skip the lookup; when nil,
     # this method performs the lookup itself via `sensitivity_for`.
-    def declare_sensitivity(tag : RiskTag, kind : ProvenanceKind, origin : String, name : String,
+    def declare_sensitivity(tag : Effect, kind : ProvenanceKind, origin : String, name : String,
                             filename : String, line : Int32, sensitivity : Sensitivity? = nil) : Nil
       resolved_sensitivity = sensitivity || @risk_flow_policy.sensitivity_for(kind, origin)
       return if resolved_sensitivity.none?
@@ -2486,7 +2486,7 @@ module Adjutant
 
       provenance_tag = ProvenanceTag.new(kind, origin, resolved_sensitivity)
       matches = [RiskFlowMatch.new(action, rule, provenance_tag)]
-      risk = RiskProfile.new(tags: Set{tag})
+      risk = RiskProfile.new(effects: Set{tag})
       resolve_risk_flow_matches(matches, name, risk, filename, line)
     end
 

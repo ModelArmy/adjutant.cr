@@ -145,7 +145,7 @@ module Adjutant
         interp.define_native("tainted_value") do |args|
           Value.string("secret", RiskFlowLabel.of(ProvenanceKind::File, "secret", Sensitivity::High))
         end
-        interp.define_native("risky_op", risk: RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error),
+        interp.define_native("risky_op", risk: RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error),
           kwarg_names: Set{"target"}) do |args, blk, ncc|
           Value.bool(true)
         end
@@ -170,7 +170,7 @@ module Adjutant
         interp.define_native("tainted_value") do |args|
           Value.string("secret", RiskFlowLabel.of(ProvenanceKind::File, "secret", Sensitivity::High))
         end
-        interp.define_native("risky_op", risk: RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error),
+        interp.define_native("risky_op", risk: RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error),
           kwarg_names: Set{"target"}) do |args, blk, ncc|
           Value.bool(true)
         end
@@ -200,7 +200,7 @@ module Adjutant
         interp.define_native("tainted_value") do |args|
           Value.string("secret", RiskFlowLabel.of(ProvenanceKind::File, "secret", Sensitivity::High))
         end
-        interp.define_native("risky_op", risk: RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error),
+        interp.define_native("risky_op", risk: RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error),
           kwarg_names: Set{"target"}) do |args, blk, ncc|
           Value.bool(true)
         end
@@ -209,7 +209,7 @@ module Adjutant
         # cleanly. If the first call's leaked, labeled kwargs value
         # somehow fed into this one's risk evaluation, it would be
         # rejected too, even though nothing about THIS call is risky.
-        interp.define_native("other_risky_op", risk: RiskProfile.new(tags: Set{RiskTag::NetworkEgress}, severity: Severity::Warning)) do |args|
+        interp.define_native("other_risky_op", risk: RiskProfile.new(effects: Set{Effect::NetworkEgress}, severity: Severity::Warning)) do |args|
           Value.bool(true)
         end
         result = interp.eval(<<-RUBY)

@@ -88,7 +88,7 @@ interp.modules.register("agent/io") do |i|
 
   i.define_native("delete_file",
     risk: Adjutant::RiskProfile.new(
-      tags: Set{Adjutant::RiskTag::DeletesFiles},
+      effects: Set{Adjutant::Effect::DeletesFiles},
       reversible: Adjutant::Reversibility::No,
       severity: Adjutant::Severity::Error,
     )) { |args| Adjutant::Value.nil_value }
@@ -274,9 +274,9 @@ Label-based tracking alone has a real blind spot: it only ever sees taint that f
 
 ```crystal
 interp.define_native("delete_file",
-  risk: Adjutant::RiskProfile.new(tags: Set{Adjutant::RiskTag::DeletesFiles})) do |args, _blk, ncc|
+  risk: Adjutant::RiskProfile.new(effects: Set{Adjutant::Effect::DeletesFiles})) do |args, _blk, ncc|
   path = args.first.as_string
-  ncc.declare_sensitivity(Adjutant::RiskTag::DeletesFiles, Adjutant::ProvenanceKind::File, path)
+  ncc.declare_sensitivity(Adjutant::Effect::DeletesFiles, Adjutant::ProvenanceKind::File, path)
   File.delete(path)
   Adjutant::Value.bool(true)
 end
@@ -286,7 +286,7 @@ This closes the gap for both a bare literal and a misleadingly-named variable ho
 
 ### Writing a policy
 
-A `RiskFlowPolicy` has two tables: `sensitivity_patterns` (origin → sensitivity, by `exact` match or `regex`, highest explicit `priority` wins) and `risk_flow_rules` (`RiskTag` × `Sensitivity` → `Allow`/`Ask`/`Reject`). `Sensitivity::None` always allows, regardless of the rule table. Load one from JSON — the same way you'd load it from a config file in a real deployment:
+A `RiskFlowPolicy` has two tables: `sensitivity_patterns` (origin → sensitivity, by `exact` match or `regex`, highest explicit `priority` wins) and `risk_flow_rules` (`Effect` × `Sensitivity` → `Allow`/`Ask`/`Reject`). `Sensitivity::None` always allows, regardless of the rule table. Load one from JSON — the same way you'd load it from a config file in a real deployment:
 
 ```crystal
 policy = Adjutant::RiskFlowPolicy.from_json(<<-JSON

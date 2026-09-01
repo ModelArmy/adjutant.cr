@@ -22,15 +22,15 @@ module Adjutant
       summary.severity.should eq Severity::Info
     end
 
-    it "a receiverless call to a risky native function surfaces its tags" do
+    it "a receiverless call to a risky native function surfaces its effects" do
       interp, _ = make_interp
-      risk = RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
+      risk = RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
       register_risky_module(interp, "delete_fn", risk)
       walker = RiskWalker.new(interp)
       body = risk_walker_test_parse("delete_fn()")
       summary = RiskAggregator.summarize(walker.walk_body(body))
       summary.severity.should eq Severity::Error
-      summary.tags.should eq Set{RiskTag::DeletesFiles}
+      summary.effects.should eq Set{Effect::DeletesFiles}
     end
 
     it "a call to an unregistered function is RiskUnresolved" do
@@ -48,7 +48,7 @@ module Adjutant
       body = risk_walker_test_parse("5.to_s")
       summary = RiskAggregator.summarize(walker.walk_body(body))
       summary.severity.should eq Severity::Info
-      summary.tags.should be_empty
+      summary.effects.should be_empty
     end
 
     # Closes the "TypeInference#infer_node has no case for
@@ -119,12 +119,12 @@ module Adjutant
 
     it "a risky call used as an assignment's value is not silently dropped" do
       interp, _ = make_interp
-      risk = RiskProfile.new(tags: Set{RiskTag::NetworkEgress}, severity: Severity::Warning)
+      risk = RiskProfile.new(effects: Set{Effect::NetworkEgress}, severity: Severity::Warning)
       register_risky_module(interp, "fetch_fn", risk)
       walker = RiskWalker.new(interp)
       body = risk_walker_test_parse("result = fetch_fn()")
       summary = RiskAggregator.summarize(walker.walk_body(body))
-      summary.tags.should eq Set{RiskTag::NetworkEgress}
+      summary.effects.should eq Set{Effect::NetworkEgress}
     end
 
     describe "keyword argument VALUES are walked (native kwargs support, 2026-08-09)" do
@@ -134,15 +134,15 @@ module Adjutant
       # same shape of gap the positional-args fix (2026-07-18, see
       # "risky call used as an assignment's value" above) closed for
       # `node.args`. See risk_walker.cr's walk_call for the fix.
-      it "a risky call passed as a keyword argument's value surfaces its tags" do
+      it "a risky call passed as a keyword argument's value surfaces its effects" do
         interp, _ = make_interp
-        risk = RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
+        risk = RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
         register_risky_module(interp, "delete_fn", risk)
         interp.define_native("configure", kwarg_names: Set{"handler"}) { |_| Value.nil_value }
         walker = RiskWalker.new(interp)
         body = risk_walker_test_parse("configure(handler: delete_fn())")
         summary = RiskAggregator.summarize(walker.walk_body(body))
-        summary.tags.should eq Set{RiskTag::DeletesFiles}
+        summary.effects.should eq Set{Effect::DeletesFiles}
       end
 
       it "a pure call passed as a keyword argument's value stays clean" do
@@ -157,21 +157,21 @@ module Adjutant
 
       it "a risky kwarg value is caught alongside a risky positional arg, not instead of it" do
         interp, _ = make_interp
-        delete_risk = RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
-        network_risk = RiskProfile.new(tags: Set{RiskTag::NetworkEgress}, severity: Severity::Warning)
+        delete_risk = RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
+        network_risk = RiskProfile.new(effects: Set{Effect::NetworkEgress}, severity: Severity::Warning)
         register_risky_module(interp, "delete_fn", delete_risk)
         register_risky_module(interp, "fetch_fn", network_risk)
         interp.define_native("configure", kwarg_names: Set{"handler"}) { |_| Value.nil_value }
         walker = RiskWalker.new(interp)
         body = risk_walker_test_parse("configure(fetch_fn(), handler: delete_fn())")
         summary = RiskAggregator.summarize(walker.walk_body(body))
-        summary.tags.should eq Set{RiskTag::DeletesFiles, RiskTag::NetworkEgress}
+        summary.effects.should eq Set{Effect::DeletesFiles, Effect::NetworkEgress}
       end
     end
 
     it "a top-level def, called later in the SAME walked body, resolves (not RiskUnresolved)" do
       interp, _ = make_interp
-      risk = RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
+      risk = RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
       register_risky_module(interp, "delete_file", risk)
       walker = RiskWalker.new(interp)
       body = risk_walker_test_parse(<<-RUBY)
@@ -181,7 +181,7 @@ module Adjutant
         cleanup(true)
       RUBY
       summary = RiskAggregator.summarize(walker.walk_body(body))
-      summary.tags.should eq Set{RiskTag::DeletesFiles}
+      summary.effects.should eq Set{Effect::DeletesFiles}
       summary.path.none? { |p| p.includes?("unresolved") }.should be_true
     end
 
@@ -227,9 +227,9 @@ module Adjutant
     # specs close that gap and cover the two related shapes (singleton
     # siblings, inherited-method resolution).
     describe "bare implicit-self calls to a class's own methods (found via Piece D testing)" do
-      it "a risky sibling method's tags actually surface through a bare call, not just 'not unresolved'" do
+      it "a risky sibling method's effects actually surface through a bare call, not just 'not unresolved'" do
         interp, _ = make_interp
-        register_risky_module(interp, "delete_fn", RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, severity: Severity::Error))
+        register_risky_module(interp, "delete_fn", RiskProfile.new(effects: Set{Effect::DeletesFiles}, severity: Severity::Error))
         walker = RiskWalker.new(interp)
         body = risk_walker_test_parse(<<-RUBY)
           class Svc
@@ -244,12 +244,12 @@ module Adjutant
           Svc.new.first
         RUBY
         summary = RiskAggregator.summarize(walker.walk_body(body))
-        summary.tags.should eq Set{RiskTag::DeletesFiles}
+        summary.effects.should eq Set{Effect::DeletesFiles}
       end
 
       it "works the same for a chain of THREE bare sibling calls, not just one hop" do
         interp, _ = make_interp
-        register_risky_module(interp, "delete_fn", RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, severity: Severity::Error))
+        register_risky_module(interp, "delete_fn", RiskProfile.new(effects: Set{Effect::DeletesFiles}, severity: Severity::Error))
         walker = RiskWalker.new(interp)
         body = risk_walker_test_parse(<<-RUBY)
           class Svc
@@ -268,7 +268,7 @@ module Adjutant
           Svc.new.a
         RUBY
         summary = RiskAggregator.summarize(walker.walk_body(body))
-        summary.tags.should eq Set{RiskTag::DeletesFiles}
+        summary.effects.should eq Set{Effect::DeletesFiles}
       end
 
       it "self_class is correctly nil again after returning from a nested class method walk (no context leak)" do
@@ -277,7 +277,7 @@ module Adjutant
         # unrelated top-level bare call resolve against Svc's method
         # table too.
         interp, _ = make_interp
-        register_risky_module(interp, "delete_fn", RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, severity: Severity::Error))
+        register_risky_module(interp, "delete_fn", RiskProfile.new(effects: Set{Effect::DeletesFiles}, severity: Severity::Error))
         walker = RiskWalker.new(interp)
         body = risk_walker_test_parse(<<-RUBY)
           class Svc
@@ -296,7 +296,7 @@ module Adjutant
 
       it "works for def self.foo calling a sibling def self.bar bare (singleton methods, not just instance)" do
         interp, _ = make_interp
-        register_risky_module(interp, "delete_fn", RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, severity: Severity::Error))
+        register_risky_module(interp, "delete_fn", RiskProfile.new(effects: Set{Effect::DeletesFiles}, severity: Severity::Error))
         walker = RiskWalker.new(interp)
         body = risk_walker_test_parse(<<-RUBY)
           class Svc
@@ -311,7 +311,7 @@ module Adjutant
           Svc.first
         RUBY
         summary = RiskAggregator.summarize(walker.walk_body(body))
-        summary.tags.should eq Set{RiskTag::DeletesFiles}
+        summary.effects.should eq Set{Effect::DeletesFiles}
       end
 
       it "a bare call to a method that doesn't exist anywhere in the chain is still honestly unresolved" do
@@ -347,9 +347,9 @@ module Adjutant
 
     it "an if/else with different-risk branches takes the worst branch, not a union" do
       interp, _ = make_interp
-      register_risky_module(interp, "safe_read", RiskProfile.new(tags: Set{RiskTag::ReadsFiles}, severity: Severity::Info))
+      register_risky_module(interp, "safe_read", RiskProfile.new(effects: Set{Effect::ReadsFiles}, severity: Severity::Info))
       register_risky_module(interp, "dangerous_delete",
-        RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error))
+        RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error))
       walker = RiskWalker.new(interp)
       body = risk_walker_test_parse(<<-RUBY)
         if true
@@ -359,13 +359,13 @@ module Adjutant
         end
       RUBY
       summary = RiskAggregator.summarize(walker.walk_body(body))
-      summary.tags.should eq Set{RiskTag::DeletesFiles}
+      summary.effects.should eq Set{Effect::DeletesFiles}
       summary.path.should contain "if branch"
     end
 
     it "a while loop body's risk is marked iterated" do
       interp, _ = make_interp
-      register_risky_module(interp, "write_fn", RiskProfile.new(tags: Set{RiskTag::WritesFiles}, severity: Severity::Warning))
+      register_risky_module(interp, "write_fn", RiskProfile.new(effects: Set{Effect::WritesFiles}, severity: Severity::Warning))
       walker = RiskWalker.new(interp)
       body = risk_walker_test_parse(<<-RUBY)
         while true
@@ -374,7 +374,7 @@ module Adjutant
       RUBY
       summary = RiskAggregator.summarize(walker.walk_body(body))
       summary.iterated?.should be_true
-      summary.tags.should eq Set{RiskTag::WritesFiles}
+      summary.effects.should eq Set{Effect::WritesFiles}
     end
 
     it "direct recursion resolves without infinite looping" do
@@ -396,7 +396,7 @@ module Adjutant
     it "a ScriptProc's risk is memoized (same object returned for repeated calls)" do
       interp, _ = make_interp
       register_risky_module(interp, "risky_fn",
-        RiskProfile.new(tags: Set{RiskTag::NetworkEgress}, severity: Severity::Warning))
+        RiskProfile.new(effects: Set{Effect::NetworkEgress}, severity: Severity::Warning))
       interp.eval(<<-RUBY)
         class Svc
           def call_it
@@ -411,14 +411,14 @@ module Adjutant
         s.call_it
       RUBY
       summary = RiskAggregator.summarize(walker.walk_body(body))
-      summary.tags.should eq Set{RiskTag::NetworkEgress}
+      summary.effects.should eq Set{Effect::NetworkEgress}
     end
 
     it "unless takes the worst branch, not a union" do
       interp, _ = make_interp
-      register_risky_module(interp, "safe_read", RiskProfile.new(tags: Set{RiskTag::ReadsFiles}, severity: Severity::Info))
+      register_risky_module(interp, "safe_read", RiskProfile.new(effects: Set{Effect::ReadsFiles}, severity: Severity::Info))
       register_risky_module(interp, "dangerous_delete",
-        RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error))
+        RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error))
       walker = RiskWalker.new(interp)
       body = risk_walker_test_parse(<<-RUBY)
         unless true
@@ -428,35 +428,35 @@ module Adjutant
         end
       RUBY
       summary = RiskAggregator.summarize(walker.walk_body(body))
-      summary.tags.should eq Set{RiskTag::DeletesFiles}
+      summary.effects.should eq Set{Effect::DeletesFiles}
       summary.path.should contain "unless branch"
     end
 
     it "a risky call in a modifier-if is not silently dropped" do
       interp, _ = make_interp
       register_risky_module(interp, "delete_fn",
-        RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error))
+        RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error))
       walker = RiskWalker.new(interp)
       body = risk_walker_test_parse("delete_fn() if true")
       summary = RiskAggregator.summarize(walker.walk_body(body))
-      summary.tags.should eq Set{RiskTag::DeletesFiles}
+      summary.effects.should eq Set{Effect::DeletesFiles}
     end
 
     it "a risky call in a modifier-while is marked iterated" do
       interp, _ = make_interp
-      register_risky_module(interp, "write_fn", RiskProfile.new(tags: Set{RiskTag::WritesFiles}, severity: Severity::Warning))
+      register_risky_module(interp, "write_fn", RiskProfile.new(effects: Set{Effect::WritesFiles}, severity: Severity::Warning))
       walker = RiskWalker.new(interp)
       body = risk_walker_test_parse("write_fn() while true")
       summary = RiskAggregator.summarize(walker.walk_body(body))
       summary.iterated?.should be_true
-      summary.tags.should eq Set{RiskTag::WritesFiles}
+      summary.effects.should eq Set{Effect::WritesFiles}
     end
 
     it "begin/rescue takes the worst of body vs rescue, not a union" do
       interp, _ = make_interp
-      register_risky_module(interp, "safe_read", RiskProfile.new(tags: Set{RiskTag::ReadsFiles}, severity: Severity::Info))
+      register_risky_module(interp, "safe_read", RiskProfile.new(effects: Set{Effect::ReadsFiles}, severity: Severity::Info))
       register_risky_module(interp, "dangerous_delete",
-        RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error))
+        RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error))
       walker = RiskWalker.new(interp)
       body = risk_walker_test_parse(<<-RUBY)
         begin
@@ -466,7 +466,7 @@ module Adjutant
         end
       RUBY
       summary = RiskAggregator.summarize(walker.walk_body(body))
-      summary.tags.should eq Set{RiskTag::DeletesFiles}
+      summary.effects.should eq Set{Effect::DeletesFiles}
       summary.path.should contain "rescue branch"
     end
 
@@ -474,9 +474,9 @@ module Adjutant
        "the last one — regression guard for RiskChoice generalizing from a " \
        "fixed 2-way (body, rescue) choice to N clause branches" do
       interp, _ = make_interp
-      register_risky_module(interp, "safe_read", RiskProfile.new(tags: Set{RiskTag::ReadsFiles}, severity: Severity::Info))
+      register_risky_module(interp, "safe_read", RiskProfile.new(effects: Set{Effect::ReadsFiles}, severity: Severity::Info))
       register_risky_module(interp, "dangerous_delete",
-        RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error))
+        RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error))
       register_risky_module(interp, "log_fn", RiskProfile.none)
       walker = RiskWalker.new(interp)
       body = risk_walker_test_parse(<<-RUBY)
@@ -494,7 +494,7 @@ module Adjutant
       # The risky call sits in the MIDDLE clause, not the first or
       # last — confirms the walker isn't just checking the first and
       # last branches, but genuinely folding in every clause.
-      summary.tags.should eq Set{RiskTag::DeletesFiles}
+      summary.effects.should eq Set{Effect::DeletesFiles}
       summary.path.should contain "rescue branch"
     end
 
@@ -502,7 +502,7 @@ module Adjutant
        "one RiskChoice branch, not one per listed class" do
       interp, _ = make_interp
       register_risky_module(interp, "dangerous_delete",
-        RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error))
+        RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error))
       walker = RiskWalker.new(interp)
       body = risk_walker_test_parse(<<-RUBY)
         begin
@@ -516,7 +516,7 @@ module Adjutant
       # that one clause must not have produced two branches.
       choice.children.size.should eq 2
       summary = RiskAggregator.summarize(walker.walk_body(body))
-      summary.tags.should eq Set{RiskTag::DeletesFiles}
+      summary.effects.should eq Set{Effect::DeletesFiles}
     end
 
     it "each rescue clause's bound variable is scoped independently — a name " \
@@ -549,9 +549,9 @@ module Adjutant
       # it) and static assessment silently misses it because else
       # isn't folded into the choice the same way the body is.
       interp, _ = make_interp
-      register_risky_module(interp, "safe_setup", RiskProfile.new(tags: Set{RiskTag::ReadsFiles}, severity: Severity::Info))
+      register_risky_module(interp, "safe_setup", RiskProfile.new(effects: Set{Effect::ReadsFiles}, severity: Severity::Info))
       register_risky_module(interp, "dangerous_delete",
-        RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error))
+        RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error))
       walker = RiskWalker.new(interp)
       body = risk_walker_test_parse(<<-RUBY)
         begin
@@ -563,25 +563,25 @@ module Adjutant
         end
       RUBY
       summary = RiskAggregator.summarize(walker.walk_body(body))
-      # Both tags are real here: safe_setup() and dangerous_delete()
+      # Both effects are real here: safe_setup() and dangerous_delete()
       # both genuinely run together on the success path (body then
-      # else, in sequence) — RiskSequence unions tags from both
+      # else, in sequence) — RiskSequence unions effects from both
       # children rather than picking one, same "both are real, not
       # just the worst one" rule the existing ensure's-risk-always-
       # applies test documents. The point of this test is that
       # DeletesFiles shows up AT ALL — proving else's risky call
       # wasn't silently dropped — not that it shows up alone.
-      summary.tags.should eq Set{RiskTag::ReadsFiles, RiskTag::DeletesFiles}
+      summary.effects.should eq Set{Effect::ReadsFiles, Effect::DeletesFiles}
       summary.severity.should eq Severity::Error
     end
 
     it "takes the worst of (body + else) vs rescue, not a union — same " \
        "worst-case-branch aggregation as the plain body-vs-rescue case" do
       interp, _ = make_interp
-      register_risky_module(interp, "safe_setup", RiskProfile.new(tags: Set{RiskTag::ReadsFiles}, severity: Severity::Info))
-      register_risky_module(interp, "safe_cleanup", RiskProfile.new(tags: Set{RiskTag::ReadsFiles}, severity: Severity::Info))
+      register_risky_module(interp, "safe_setup", RiskProfile.new(effects: Set{Effect::ReadsFiles}, severity: Severity::Info))
+      register_risky_module(interp, "safe_cleanup", RiskProfile.new(effects: Set{Effect::ReadsFiles}, severity: Severity::Info))
       register_risky_module(interp, "dangerous_delete",
-        RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error))
+        RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error))
       walker = RiskWalker.new(interp)
       body = risk_walker_test_parse(<<-RUBY)
         begin
@@ -597,7 +597,7 @@ module Adjutant
       # body+else branch (ReadsFiles/Info only) — worst-of-all-
       # branches picks rescue here, same "not a union" contract the
       # existing plain body-vs-rescue test already asserts.
-      summary.tags.should eq Set{RiskTag::DeletesFiles}
+      summary.effects.should eq Set{Effect::DeletesFiles}
       summary.path.should contain "rescue branch"
     end
 
@@ -621,8 +621,8 @@ module Adjutant
 
     it "ensure's risk always applies, regardless of the try/rescue outcome" do
       interp, _ = make_interp
-      register_risky_module(interp, "safe_read", RiskProfile.new(tags: Set{RiskTag::ReadsFiles}, severity: Severity::Info))
-      register_risky_module(interp, "cleanup_fn", RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error))
+      register_risky_module(interp, "safe_read", RiskProfile.new(effects: Set{Effect::ReadsFiles}, severity: Severity::Info))
+      register_risky_module(interp, "cleanup_fn", RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error))
       walker = RiskWalker.new(interp)
       body = risk_walker_test_parse(<<-RUBY)
         begin
@@ -633,17 +633,17 @@ module Adjutant
       RUBY
       summary = RiskAggregator.summarize(walker.walk_body(body))
       # ensure's risk must appear even though the protected body alone
-      # is Info-only. The Sequence wrapping the Choice unions tags from
+      # is Info-only. The Sequence wrapping the Choice unions effects from
       # BOTH the try body (ReadsFiles) and ensure (DeletesFiles) — both
       # genuinely run in this shape (try succeeds, then ensure always
       # runs), so both are real, not just the worst one.
-      summary.tags.should eq Set{RiskTag::ReadsFiles, RiskTag::DeletesFiles}
+      summary.effects.should eq Set{Effect::ReadsFiles, Effect::DeletesFiles}
       summary.severity.should eq Severity::Error
     end
 
     it "a begin with no rescue clause still walks body and ensure as a plain Sequence" do
       interp, _ = make_interp
-      register_risky_module(interp, "write_fn", RiskProfile.new(tags: Set{RiskTag::WritesFiles}, severity: Severity::Warning))
+      register_risky_module(interp, "write_fn", RiskProfile.new(effects: Set{Effect::WritesFiles}, severity: Severity::Warning))
       walker = RiskWalker.new(interp)
       body = risk_walker_test_parse(<<-RUBY)
         begin
@@ -651,7 +651,7 @@ module Adjutant
         end
       RUBY
       summary = RiskAggregator.summarize(walker.walk_body(body))
-      summary.tags.should eq Set{RiskTag::WritesFiles}
+      summary.effects.should eq Set{Effect::WritesFiles}
     end
 
     it "a module's methods are discoverable the same way a class's are" do
@@ -675,23 +675,23 @@ module Adjutant
 
     it "an OpAssign's risky value is not silently dropped" do
       interp, _ = make_interp
-      register_risky_module(interp, "fetch_fn", RiskProfile.new(tags: Set{RiskTag::NetworkEgress}, severity: Severity::Warning))
+      register_risky_module(interp, "fetch_fn", RiskProfile.new(effects: Set{Effect::NetworkEgress}, severity: Severity::Warning))
       walker = RiskWalker.new(interp)
       body = risk_walker_test_parse(<<-RUBY)
         total = 0
         total += fetch_fn()
       RUBY
       summary = RiskAggregator.summarize(walker.walk_body(body))
-      summary.tags.should eq Set{RiskTag::NetworkEgress}
+      summary.effects.should eq Set{Effect::NetworkEgress}
     end
 
     it "a CondAssign's risky value is not silently dropped" do
       interp, _ = make_interp
-      register_risky_module(interp, "fetch_fn", RiskProfile.new(tags: Set{RiskTag::NetworkEgress}, severity: Severity::Warning))
+      register_risky_module(interp, "fetch_fn", RiskProfile.new(effects: Set{Effect::NetworkEgress}, severity: Severity::Warning))
       walker = RiskWalker.new(interp)
       body = risk_walker_test_parse("x ||= fetch_fn()")
       summary = RiskAggregator.summarize(walker.walk_body(body))
-      summary.tags.should eq Set{RiskTag::NetworkEgress}
+      summary.effects.should eq Set{Effect::NetworkEgress}
     end
 
     # Note: `a, b = expr, expr` (bare comma-separated multi-assign) is
@@ -701,14 +701,14 @@ module Adjutant
 
     it "an IndexAssign's risky value is not silently dropped" do
       interp, _ = make_interp
-      register_risky_module(interp, "fetch_fn", RiskProfile.new(tags: Set{RiskTag::NetworkEgress}, severity: Severity::Warning))
+      register_risky_module(interp, "fetch_fn", RiskProfile.new(effects: Set{Effect::NetworkEgress}, severity: Severity::Warning))
       walker = RiskWalker.new(interp)
       body = risk_walker_test_parse(<<-RUBY)
         arr = []
         arr[0] = fetch_fn()
       RUBY
       summary = RiskAggregator.summarize(walker.walk_body(body))
-      summary.tags.should eq Set{RiskTag::NetworkEgress}
+      summary.effects.should eq Set{Effect::NetworkEgress}
     end
 
     # AttrAssign (2026-08-08) — same shape of regression as
@@ -716,7 +716,7 @@ module Adjutant
     # see the two specs below.
     it "an AttrAssign's risky VALUE is not silently dropped" do
       interp, _ = make_interp
-      register_risky_module(interp, "fetch_fn", RiskProfile.new(tags: Set{RiskTag::NetworkEgress}, severity: Severity::Warning))
+      register_risky_module(interp, "fetch_fn", RiskProfile.new(effects: Set{Effect::NetworkEgress}, severity: Severity::Warning))
       walker = RiskWalker.new(interp)
       body = risk_walker_test_parse(<<-RUBY)
         class Box
@@ -726,12 +726,12 @@ module Adjutant
         b.value = fetch_fn()
       RUBY
       summary = RiskAggregator.summarize(walker.walk_body(body))
-      summary.tags.should eq Set{RiskTag::NetworkEgress}
+      summary.effects.should eq Set{Effect::NetworkEgress}
     end
 
     it "an AttrAssign's risky RECEIVER expression is also walked, not just the value" do
       interp, _ = make_interp
-      register_risky_module(interp, "fetch_fn", RiskProfile.new(tags: Set{RiskTag::NetworkEgress}, severity: Severity::Warning))
+      register_risky_module(interp, "fetch_fn", RiskProfile.new(effects: Set{Effect::NetworkEgress}, severity: Severity::Warning))
       walker = RiskWalker.new(interp)
       body = risk_walker_test_parse(<<-RUBY)
         class Box
@@ -743,7 +743,7 @@ module Adjutant
         get_box.value = 1
       RUBY
       summary = RiskAggregator.summarize(walker.walk_body(body))
-      summary.tags.should eq Set{RiskTag::NetworkEgress}
+      summary.effects.should eq Set{Effect::NetworkEgress}
     end
 
     # The actual bug this session's attr_accessor work introduced and
@@ -792,21 +792,21 @@ module Adjutant
       it "a risky call used as a plain argument is no longer invisible" do
         interp, _ = make_interp
         register_risky_module(interp, "safe_fn", RiskProfile.none)
-        register_risky_module(interp, "delete_fn", RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, severity: Severity::Error))
+        register_risky_module(interp, "delete_fn", RiskProfile.new(effects: Set{Effect::DeletesFiles}, severity: Severity::Error))
         walker = RiskWalker.new(interp)
         body = risk_walker_test_parse("safe_fn(delete_fn())")
         summary = RiskAggregator.summarize(walker.walk_body(body))
         summary.severity.should eq Severity::Error
-        summary.tags.should eq Set{RiskTag::DeletesFiles}
+        summary.effects.should eq Set{Effect::DeletesFiles}
       end
 
       it "a risky receiver expression (not just args) is also walked" do
         interp, _ = make_interp
-        register_risky_module(interp, "delete_fn", RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, severity: Severity::Error))
+        register_risky_module(interp, "delete_fn", RiskProfile.new(effects: Set{Effect::DeletesFiles}, severity: Severity::Error))
         walker = RiskWalker.new(interp)
         body = risk_walker_test_parse("delete_fn().to_s")
         summary = RiskAggregator.summarize(walker.walk_body(body))
-        # Not asserting `tags eq {DeletesFiles}` — .to_s on delete_fn()'s
+        # Not asserting `effects eq {DeletesFiles}` — .to_s on delete_fn()'s
         # result is separately RiskUnresolved (delete_fn has no known
         # return type at all — TypeInference has no general native-
         # function-return-type resolution; unrelated to the
@@ -817,7 +817,7 @@ module Adjutant
         # actually about — the receiver expression itself not being
         # silently dropped — only needs DeletesFiles to be PRESENT,
         # not the tag set to be exactly that.
-        summary.tags.should contain RiskTag::DeletesFiles
+        summary.effects.should contain Effect::DeletesFiles
       end
     end
 
@@ -829,7 +829,7 @@ module Adjutant
     describe "block folding (Piece D)" do
       it "a risky call inside a block passed to each is no longer invisible" do
         interp, _ = make_interp
-        register_risky_module(interp, "delete_fn", RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, severity: Severity::Error))
+        register_risky_module(interp, "delete_fn", RiskProfile.new(effects: Set{Effect::DeletesFiles}, severity: Severity::Error))
         walker = RiskWalker.new(interp)
         body = risk_walker_test_parse(<<-RUBY)
           [1, 2, 3].each { |x| delete_fn() }
@@ -841,12 +841,12 @@ module Adjutant
         # block's DeletesFiles — fixed, see type_inference_spec.cr.
         # Asserting `contain`, not exact tag-set equality, since this
         # spec is only about the block's own risk not being dropped.
-        summary.tags.should contain RiskTag::DeletesFiles
+        summary.effects.should contain Effect::DeletesFiles
       end
 
       it "a block sees the enclosing env, not a fresh param-only scope (real closure semantics)" do
         interp, _ = make_interp
-        register_risky_module(interp, "delete_fn", RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, severity: Severity::Error))
+        register_risky_module(interp, "delete_fn", RiskProfile.new(effects: Set{Effect::DeletesFiles}, severity: Severity::Error))
         register_risky_module(interp, "safe_fn", RiskProfile.none)
         walker = RiskWalker.new(interp)
         # The block itself doesn't call anything risky directly, but
@@ -866,7 +866,7 @@ module Adjutant
         # was fixed 2026-07-21 (type_inference_spec.cr), but the
         # `contain` shape is kept since this spec's actual point is the
         # risky call OUTSIDE the block, not the receiver.
-        summary.tags.should contain RiskTag::DeletesFiles
+        summary.effects.should contain Effect::DeletesFiles
       end
     end
 
@@ -878,13 +878,13 @@ module Adjutant
       it "its risk is surfaced (not invisible) but tagged deferred, not folded in unconditionally" do
         interp, _ = make_interp
         register_risky_module(interp, "apply_fn", RiskProfile.none)
-        register_risky_module(interp, "delete_fn", RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, severity: Severity::Error))
+        register_risky_module(interp, "delete_fn", RiskProfile.new(effects: Set{Effect::DeletesFiles}, severity: Severity::Error))
         walker = RiskWalker.new(interp)
         body = risk_walker_test_parse(<<-RUBY)
           apply_fn(->() { delete_fn() })
         RUBY
         summary = RiskAggregator.summarize(walker.walk_body(body))
-        summary.tags.should eq Set{RiskTag::DeletesFiles}
+        summary.effects.should eq Set{Effect::DeletesFiles}
         summary.path.any?(&.starts_with?("deferred:")).should be_true
       end
 
@@ -906,28 +906,28 @@ module Adjutant
     describe "constant-held lambdas (Piece D)" do
       it "F1.call(...) resolves directly to the lambda body's risk, no RiskDeferred wrapper" do
         interp, _ = make_interp
-        register_risky_module(interp, "delete_fn", RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, severity: Severity::Error))
+        register_risky_module(interp, "delete_fn", RiskProfile.new(effects: Set{Effect::DeletesFiles}, severity: Severity::Error))
         walker = RiskWalker.new(interp)
         body = risk_walker_test_parse(<<-RUBY)
           F1 = ->() { delete_fn() }
           F1.call
         RUBY
         summary = RiskAggregator.summarize(walker.walk_body(body))
-        summary.tags.should eq Set{RiskTag::DeletesFiles}
+        summary.effects.should eq Set{Effect::DeletesFiles}
         summary.path.any?(&.starts_with?("deferred:")).should be_false
       end
 
       it "F1 passed as an argument gets the RiskDeferred treatment, same as a literal" do
         interp, _ = make_interp
         register_risky_module(interp, "apply_fn", RiskProfile.none)
-        register_risky_module(interp, "delete_fn", RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, severity: Severity::Error))
+        register_risky_module(interp, "delete_fn", RiskProfile.new(effects: Set{Effect::DeletesFiles}, severity: Severity::Error))
         walker = RiskWalker.new(interp)
         body = risk_walker_test_parse(<<-RUBY)
           F1 = ->() { delete_fn() }
           apply_fn(F1)
         RUBY
         summary = RiskAggregator.summarize(walker.walk_body(body))
-        summary.tags.should eq Set{RiskTag::DeletesFiles}
+        summary.effects.should eq Set{Effect::DeletesFiles}
         summary.path.any?(&.starts_with?("deferred:")).should be_true
       end
 
@@ -970,21 +970,21 @@ module Adjutant
     describe "bare identifier as an implicit zero-arg call (found via Piece D testing)" do
       it "a bare risky function name (no parens) is no longer invisible" do
         interp, _ = make_interp
-        register_risky_module(interp, "delete_fn", RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, severity: Severity::Error))
+        register_risky_module(interp, "delete_fn", RiskProfile.new(effects: Set{Effect::DeletesFiles}, severity: Severity::Error))
         walker = RiskWalker.new(interp)
         body = risk_walker_test_parse("delete_fn")
         summary = RiskAggregator.summarize(walker.walk_body(body))
-        summary.tags.should eq Set{RiskTag::DeletesFiles}
+        summary.effects.should eq Set{Effect::DeletesFiles}
       end
 
       it "matches the WITH-parens call exactly (same resolution path)" do
         interp, _ = make_interp
-        register_risky_module(interp, "delete_fn", RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, severity: Severity::Error))
+        register_risky_module(interp, "delete_fn", RiskProfile.new(effects: Set{Effect::DeletesFiles}, severity: Severity::Error))
         walker = RiskWalker.new(interp)
         with_parens = RiskAggregator.summarize(walker.walk_body(risk_walker_test_parse("delete_fn()")))
         walker2 = RiskWalker.new(interp)
         without_parens = RiskAggregator.summarize(walker2.walk_body(risk_walker_test_parse("delete_fn")))
-        with_parens.tags.should eq without_parens.tags
+        with_parens.effects.should eq without_parens.effects
         with_parens.severity.should eq without_parens.severity
       end
 
@@ -1015,13 +1015,13 @@ module Adjutant
       it "a bare risky call inside a Lambda literal argument is now found (the person's exact repro shape)" do
         interp, _ = make_interp
         register_risky_module(interp, "apply_fn", RiskProfile.none)
-        register_risky_module(interp, "delete_fn", RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, severity: Severity::Error))
+        register_risky_module(interp, "delete_fn", RiskProfile.new(effects: Set{Effect::DeletesFiles}, severity: Severity::Error))
         walker = RiskWalker.new(interp)
         body = risk_walker_test_parse(<<-RUBY)
           apply_fn(->() { delete_fn })
         RUBY
         summary = RiskAggregator.summarize(walker.walk_body(body))
-        summary.tags.should eq Set{RiskTag::DeletesFiles}
+        summary.effects.should eq Set{Effect::DeletesFiles}
       end
 
       it "rescue => e — a bare reference to the caught exception is not a false-positive call" do
@@ -1077,26 +1077,26 @@ module Adjutant
          "generic else branch entirely" do
         interp, _ = make_interp
         register_risky_module(interp, "dangerous_delete",
-          RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error))
+          RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error))
         walker = RiskWalker.new(interp)
         body = risk_walker_test_parse(<<-RUBY)
           [dangerous_delete(), 1, 2]
         RUBY
         summary = RiskAggregator.summarize(walker.walk_body(body))
-        summary.tags.should eq Set{RiskTag::DeletesFiles}
+        summary.effects.should eq Set{Effect::DeletesFiles}
         summary.severity.should eq Severity::Error
       end
 
       it "a risky call inside a hash literal (hash-rocket spelling) is found" do
         interp, _ = make_interp
         register_risky_module(interp, "dangerous_delete",
-          RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error))
+          RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error))
         walker = RiskWalker.new(interp)
         body = risk_walker_test_parse(<<-RUBY)
           { "path" => dangerous_delete() }
         RUBY
         summary = RiskAggregator.summarize(walker.walk_body(body))
-        summary.tags.should eq Set{RiskTag::DeletesFiles}
+        summary.effects.should eq Set{Effect::DeletesFiles}
       end
 
       it "a risky call inside a hash literal (symbol-shorthand spelling) is " \
@@ -1104,39 +1104,39 @@ module Adjutant
          "risk_static_hash_literal.rb that confirmed this gap" do
         interp, _ = make_interp
         register_risky_module(interp, "dangerous_delete",
-          RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error))
+          RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error))
         walker = RiskWalker.new(interp)
         body = risk_walker_test_parse(<<-RUBY)
           { path: dangerous_delete() }
         RUBY
         summary = RiskAggregator.summarize(walker.walk_body(body))
-        summary.tags.should eq Set{RiskTag::DeletesFiles}
+        summary.effects.should eq Set{Effect::DeletesFiles}
       end
 
       it "a risky call inside a hash literal's KEY position is found too, " \
          "not just the value" do
         interp, _ = make_interp
         register_risky_module(interp, "dangerous_delete",
-          RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error))
+          RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error))
         walker = RiskWalker.new(interp)
         body = risk_walker_test_parse(<<-RUBY)
           { dangerous_delete() => "ok" }
         RUBY
         summary = RiskAggregator.summarize(walker.walk_body(body))
-        summary.tags.should eq Set{RiskTag::DeletesFiles}
+        summary.effects.should eq Set{Effect::DeletesFiles}
       end
 
       it "a risky call nested inside a literal inside another literal is " \
          "still found — confirms recursion, not just one level deep" do
         interp, _ = make_interp
         register_risky_module(interp, "dangerous_delete",
-          RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error))
+          RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error))
         walker = RiskWalker.new(interp)
         body = risk_walker_test_parse(<<-RUBY)
           { targets: [1, dangerous_delete()] }
         RUBY
         summary = RiskAggregator.summarize(walker.walk_body(body))
-        summary.tags.should eq Set{RiskTag::DeletesFiles}
+        summary.effects.should eq Set{Effect::DeletesFiles}
       end
 
       it "an array/hash literal with no calls at all still reports Info, " \
@@ -1148,23 +1148,23 @@ module Adjutant
         RUBY
         summary = RiskAggregator.summarize(walker.walk_body(body))
         summary.severity.should eq Severity::Info
-        summary.tags.should be_empty
+        summary.effects.should be_empty
       end
 
       it "multiple risky calls across array elements and hash pairs all " \
-         "contribute — tags union, not just the worst one, since every " \
+         "contribute — effects union, not just the worst one, since every " \
          "element genuinely evaluates" do
         interp, _ = make_interp
         register_risky_module(interp, "dangerous_delete",
-          RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error))
+          RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error))
         register_risky_module(interp, "fetch_url",
-          RiskProfile.new(tags: Set{RiskTag::NetworkEgress}, severity: Severity::Warning))
+          RiskProfile.new(effects: Set{Effect::NetworkEgress}, severity: Severity::Warning))
         walker = RiskWalker.new(interp)
         body = risk_walker_test_parse(<<-RUBY)
           { deleted: dangerous_delete(), fetched: fetch_url() }
         RUBY
         summary = RiskAggregator.summarize(walker.walk_body(body))
-        summary.tags.should eq Set{RiskTag::DeletesFiles, RiskTag::NetworkEgress}
+        summary.effects.should eq Set{Effect::DeletesFiles, Effect::NetworkEgress}
         summary.severity.should eq Severity::Error
       end
     end
@@ -1177,9 +1177,9 @@ module Adjutant
       # invisible to static analysis. Same blind spot walk_call's own
       # 2026-07-18 args fix closed for ordinary calls. See SCOPE.md's
       # risk-flow-impact note for the super-dispatch rewrite session.
-      it "a risky call reached via a SCRIPT superclass method through `super` surfaces its tags" do
+      it "a risky call reached via a SCRIPT superclass method through `super` surfaces its effects" do
         interp, _ = make_interp
-        risk = RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
+        risk = RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
         register_risky_module(interp, "delete_fn", risk)
         walker = RiskWalker.new(interp)
         body = risk_walker_test_parse(<<-RUBY)
@@ -1197,12 +1197,12 @@ module Adjutant
         RUBY
         summary = RiskAggregator.summarize(walker.walk_body(body))
         summary.severity.should eq Severity::Error
-        summary.tags.should eq Set{RiskTag::DeletesFiles}
+        summary.effects.should eq Set{Effect::DeletesFiles}
       end
 
-      it "a risky call passed as an EXPLICIT `super` argument surfaces its tags, even though the superclass method itself does nothing with it" do
+      it "a risky call passed as an EXPLICIT `super` argument surfaces its effects, even though the superclass method itself does nothing with it" do
         interp, _ = make_interp
-        risk = RiskProfile.new(tags: Set{RiskTag::NetworkEgress}, severity: Severity::Warning)
+        risk = RiskProfile.new(effects: Set{Effect::NetworkEgress}, severity: Severity::Warning)
         register_risky_module(interp, "fetch_url", risk)
         walker = RiskWalker.new(interp)
         body = risk_walker_test_parse(<<-RUBY)
@@ -1219,12 +1219,12 @@ module Adjutant
         RUBY
         summary = RiskAggregator.summarize(walker.walk_body(body))
         summary.severity.should eq Severity::Warning
-        summary.tags.should eq Set{RiskTag::NetworkEgress}
+        summary.effects.should eq Set{Effect::NetworkEgress}
       end
 
-      it "a risky NATIVE method reached via `super` surfaces its tags" do
+      it "a risky NATIVE method reached via `super` surfaces its effects" do
         interp, _ = make_interp
-        risk = RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
+        risk = RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
         cls = RubyClass.new("Greeter")
         sym_id = interp.symbols.intern("greet").value
         cls.define_native_method(sym_id, risk) { |args| Value.nil_value }
@@ -1240,7 +1240,7 @@ module Adjutant
         RUBY
         summary = RiskAggregator.summarize(walker.walk_body(body))
         summary.severity.should eq Severity::Error
-        summary.tags.should eq Set{RiskTag::DeletesFiles}
+        summary.effects.should eq Set{Effect::DeletesFiles}
       end
 
       it "a pure call reached via `super` stays clean" do
@@ -1293,7 +1293,7 @@ module Adjutant
 
       it "an ordinary block's env-threading (env.dup) already handles a risky call nested TWO blocks deep, correctly" do
         interp, _ = make_interp
-        risk = RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
+        risk = RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
         register_risky_module(interp, "delete_fn", risk)
         walker = RiskWalker.new(interp)
         body = risk_walker_test_parse(<<-RUBY)
@@ -1305,7 +1305,7 @@ module Adjutant
         RUBY
         summary = RiskAggregator.summarize(walker.walk_body(body))
         summary.severity.should eq Severity::Error
-        summary.tags.should eq Set{RiskTag::DeletesFiles}
+        summary.effects.should eq Set{Effect::DeletesFiles}
       end
 
       it "a block nested two levels deep correctly resolves a variable from the OUTERMOST scope as a known local, not an unresolved bare call" do
@@ -1335,7 +1335,7 @@ module Adjutant
         # lambda literal is a direct call argument at ITS OWN call
         # site.
         interp, _ = make_interp
-        risk = RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
+        risk = RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
         register_risky_module(interp, "delete_fn", risk)
         register_risky_module(interp, "run_it", RiskProfile.none)
         walker = RiskWalker.new(interp)
@@ -1348,7 +1348,7 @@ module Adjutant
         RUBY
         summary = RiskAggregator.summarize(walker.walk_body(body))
         summary.severity.should eq Severity::Error
-        summary.tags.should eq Set{RiskTag::DeletesFiles}
+        summary.effects.should eq Set{Effect::DeletesFiles}
       end
     end
   end

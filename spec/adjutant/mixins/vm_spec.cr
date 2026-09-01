@@ -266,12 +266,12 @@ module Adjutant
         # RiskWalker's own static recognition of `include`
         # (walk_class/walk_module's new `include_call?` branch,
         # mirroring the runtime effect via `register_static_include`)
-        # this test failed with severity Error/tags {ExecutesCode} —
+        # this test failed with severity Error/effects {ExecutesCode} —
         # RiskAggregator's generic "unresolved" fallback, not
         # {DeletesFiles} — because `A.included_modules` stayed empty
         # for the whole walk and `run` was never found at all.
         interp, _ = make_interp
-        risk = RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
+        risk = RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
         register_risky_module(interp, "delete_fn", risk)
         walker = RiskWalker.new(interp)
         body = risk_walker_test_parse(<<-RUBY)
@@ -287,12 +287,12 @@ module Adjutant
         RUBY
         summary = RiskAggregator.summarize(walker.walk_body(body))
         summary.severity.should eq Severity::Error
-        summary.tags.should eq Set{RiskTag::DeletesFiles}
+        summary.effects.should eq Set{Effect::DeletesFiles}
       end
 
       it "static include recognition also works for nested module inclusion (module including a module)" do
         interp, _ = make_interp
-        risk = RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
+        risk = RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
         register_risky_module(interp, "delete_fn", risk)
         walker = RiskWalker.new(interp)
         body = risk_walker_test_parse(<<-RUBY)
@@ -311,7 +311,7 @@ module Adjutant
         RUBY
         summary = RiskAggregator.summarize(walker.walk_body(body))
         summary.severity.should eq Severity::Error
-        summary.tags.should eq Set{RiskTag::DeletesFiles}
+        summary.effects.should eq Set{Effect::DeletesFiles}
       end
 
       it "an include argument that doesn't resolve to a known class/module doesn't crash the walk" do
@@ -541,9 +541,9 @@ module Adjutant
     end
 
     describe "include + super + RiskWalker (walk_super_target's own fix, found alongside dispatch_super's)" do
-      it "a risky call reached via super through an included module surfaces its tags statically" do
+      it "a risky call reached via super through an included module surfaces its effects statically" do
         interp, _ = make_interp
-        risk = RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
+        risk = RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
         register_risky_module(interp, "delete_fn", risk)
         walker = RiskWalker.new(interp)
         body = risk_walker_test_parse(<<-RUBY)
@@ -566,12 +566,12 @@ module Adjutant
         RUBY
         summary = RiskAggregator.summarize(walker.walk_body(body))
         summary.severity.should eq Severity::Error
-        summary.tags.should eq Set{RiskTag::DeletesFiles}
+        summary.effects.should eq Set{Effect::DeletesFiles}
       end
 
       it "super called from inside a module's own method resolves statically too, reaching the superclass" do
         interp, _ = make_interp
-        risk = RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
+        risk = RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
         register_risky_module(interp, "delete_fn", risk)
         walker = RiskWalker.new(interp)
         body = risk_walker_test_parse(<<-RUBY)
@@ -592,7 +592,7 @@ module Adjutant
         RUBY
         summary = RiskAggregator.summarize(walker.walk_body(body))
         summary.severity.should eq Severity::Error
-        summary.tags.should eq Set{RiskTag::DeletesFiles}
+        summary.effects.should eq Set{Effect::DeletesFiles}
       end
     end
 
@@ -695,7 +695,7 @@ module Adjutant
 
       it "RiskWalker's static resolution of singleton super already worked correctly (walk_super_target needed no code change) — confirmed rather than assumed" do
         interp, _ = make_interp
-        risk = RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
+        risk = RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
         register_risky_module(interp, "delete_fn", risk)
         walker = RiskWalker.new(interp)
         body = risk_walker_test_parse(<<-RUBY)
@@ -713,7 +713,7 @@ module Adjutant
         RUBY
         summary = RiskAggregator.summarize(walker.walk_body(body))
         summary.severity.should eq Severity::Error
-        summary.tags.should eq Set{RiskTag::DeletesFiles}
+        summary.effects.should eq Set{Effect::DeletesFiles}
       end
     end
 
@@ -954,14 +954,14 @@ module Adjutant
       # recognition (walk_class/walk_module's `extend_call?` branch,
       # mirroring the runtime effect via `register_static_extend`),
       # a class method only reachable through an extended module
-      # showed up as RiskUnresolved (severity Error, tags
+      # showed up as RiskUnresolved (severity Error, effects
       # {ExecutesCode} — RiskAggregator's generic "unresolved"
       # fallback), same failure shape include's own Step 3 had before
       # its fix.
 
       it "RiskWalker resolves a class-method call reached through an extended module" do
         interp, _ = make_interp
-        risk = RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
+        risk = RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
         register_risky_module(interp, "delete_fn", risk)
         walker = RiskWalker.new(interp)
         body = risk_walker_test_parse(<<-RUBY)
@@ -977,12 +977,12 @@ module Adjutant
         RUBY
         summary = RiskAggregator.summarize(walker.walk_body(body))
         summary.severity.should eq Severity::Error
-        summary.tags.should eq Set{RiskTag::DeletesFiles}
+        summary.effects.should eq Set{Effect::DeletesFiles}
       end
 
       it "static extend recognition also works for nested module inclusion (extended module including another module)" do
         interp, _ = make_interp
-        risk = RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
+        risk = RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
         register_risky_module(interp, "delete_fn", risk)
         walker = RiskWalker.new(interp)
         body = risk_walker_test_parse(<<-RUBY)
@@ -1001,7 +1001,7 @@ module Adjutant
         RUBY
         summary = RiskAggregator.summarize(walker.walk_body(body))
         summary.severity.should eq Severity::Error
-        summary.tags.should eq Set{RiskTag::DeletesFiles}
+        summary.effects.should eq Set{Effect::DeletesFiles}
       end
 
       it "an extend argument that doesn't resolve to a known class/module doesn't crash the walk" do
@@ -1018,7 +1018,7 @@ module Adjutant
 
       it "extend and include recognized in the same class walk independently, each into its own list" do
         interp, _ = make_interp
-        risk = RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
+        risk = RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
         register_risky_module(interp, "delete_fn", risk)
         walker = RiskWalker.new(interp)
         body = risk_walker_test_parse(<<-RUBY)
@@ -1041,7 +1041,7 @@ module Adjutant
         RUBY
         summary = RiskAggregator.summarize(walker.walk_body(body))
         summary.severity.should eq Severity::Error
-        summary.tags.should eq Set{RiskTag::DeletesFiles}
+        summary.effects.should eq Set{Effect::DeletesFiles}
       end
     end
 
@@ -1178,7 +1178,7 @@ module Adjutant
 
       it "RiskWalker resolves a class-method super call reached through an extended module" do
         interp, _ = make_interp
-        risk = RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
+        risk = RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
         register_risky_module(interp, "delete_fn", risk)
         walker = RiskWalker.new(interp)
         body = risk_walker_test_parse(<<-RUBY)
@@ -1201,7 +1201,7 @@ module Adjutant
         RUBY
         summary = RiskAggregator.summarize(walker.walk_body(body))
         summary.severity.should eq Severity::Error
-        summary.tags.should eq Set{RiskTag::DeletesFiles}
+        summary.effects.should eq Set{Effect::DeletesFiles}
       end
     end
 

@@ -14,10 +14,10 @@ module Adjutant
   # Warning/NetworkEgress.
   private def self.setup_risky_sample_fns(interp : Interpreter) : Nil
     register_risky_module(interp, "delete_file",
-      RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error))
+      RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error))
     register_risky_module(interp, "puts_args", RiskProfile.none)
     register_risky_module(interp, "fetch_url",
-      RiskProfile.new(tags: Set{RiskTag::NetworkEgress}, reversible: Reversibility::Yes, severity: Severity::Warning))
+      RiskProfile.new(effects: Set{Effect::NetworkEgress}, reversible: Reversibility::Yes, severity: Severity::Warning))
   end
 
   # Regression coverage for the four risky_example_0{2,3,4,5}.rb
@@ -55,7 +55,7 @@ module Adjutant
       RUBY
       summary = RiskAggregator.summarize(walker.walk_body(body))
       summary.severity.should eq Severity::Error
-      summary.tags.should eq Set{RiskTag::DeletesFiles}
+      summary.effects.should eq Set{Effect::DeletesFiles}
     end
 
     it "the same def self.foo body is NOT reachable as a bare top-level call" do
@@ -104,7 +104,7 @@ module Adjutant
       RUBY
       summary = RiskAggregator.summarize(walker.walk_body(body))
       summary.severity.should eq Severity::Error
-      summary.tags.should eq Set{RiskTag::DeletesFiles, RiskTag::NetworkEgress}
+      summary.effects.should eq Set{Effect::DeletesFiles, Effect::NetworkEgress}
       findings = RiskAggregator.all_findings(walker.walk_body(Parser.new(<<-RUBY).parse))
         class A
           def self.cleanup(force)
@@ -148,7 +148,7 @@ module Adjutant
       RUBY
       summary = RiskAggregator.summarize(walker.walk_body(body))
       summary.severity.should eq Severity::Error
-      summary.tags.should eq Set{RiskTag::DeletesFiles}
+      summary.effects.should eq Set{Effect::DeletesFiles}
     end
 
     it "full risky_example_04 shape: fetch_url loop + M::A.cleanup(true)" do
@@ -178,7 +178,7 @@ module Adjutant
       RUBY
       summary = RiskAggregator.summarize(walker.walk_body(body))
       summary.severity.should eq Severity::Error
-      summary.tags.should eq Set{RiskTag::DeletesFiles, RiskTag::NetworkEgress}
+      summary.effects.should eq Set{Effect::DeletesFiles, Effect::NetworkEgress}
     end
 
     it "M::A.new.method resolves via ConstPath through both TypeInference and RiskWalker (risky_example_05)" do
@@ -208,7 +208,7 @@ module Adjutant
       RUBY
       summary = RiskAggregator.summarize(walker.walk_body(body))
       summary.severity.should eq Severity::Error
-      summary.tags.should eq Set{RiskTag::DeletesFiles, RiskTag::NetworkEgress}
+      summary.effects.should eq Set{Effect::DeletesFiles, Effect::NetworkEgress}
     end
 
     it "an undefined constant path is RiskUnresolved, not a crash" do
@@ -338,7 +338,7 @@ module Adjutant
 
       summaries.each do |label, summary|
         summary.severity.should eq Severity::Error
-        summary.tags.should eq Set{RiskTag::DeletesFiles, RiskTag::NetworkEgress}
+        summary.effects.should eq Set{Effect::DeletesFiles, Effect::NetworkEgress}
       end
     end
   end

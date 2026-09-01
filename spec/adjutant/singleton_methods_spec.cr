@@ -196,7 +196,7 @@ module Adjutant
     it "A.method (native singleton, non-new) surfaces its real RiskProfile" do
       interp, _ = make_interp
       cls = RubyClass.new("Widget")
-      risk = RiskProfile.new(tags: Set{RiskTag::NetworkEgress}, severity: Severity::Warning)
+      risk = RiskProfile.new(effects: Set{Effect::NetworkEgress}, severity: Severity::Warning)
       sym = interp.symbols.intern("ping").value
       cls.define_native_singleton_method(sym, risk) { |args| Value.nil_value }
       interp.define_global_class(cls)
@@ -204,7 +204,7 @@ module Adjutant
       body = Parser.new("Widget.ping").parse
       summary = RiskAggregator.summarize(walker.walk_body(body))
       summary.severity.should eq Severity::Warning
-      summary.tags.should eq Set{RiskTag::NetworkEgress}
+      summary.effects.should eq Set{Effect::NetworkEgress}
     end
 
     it "A.method for an undefined singleton method is RiskUnresolved" do

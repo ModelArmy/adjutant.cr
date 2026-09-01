@@ -185,7 +185,7 @@ module Adjutant
     # (the native function already knows it, e.g. it just computed a
     # value rather than looking one up); when nil, this method
     # performs the lookup itself.
-    abstract def declare_sensitivity(tag : RiskTag, kind : ProvenanceKind, origin : String,
+    abstract def declare_sensitivity(tag : Effect, kind : ProvenanceKind, origin : String,
                                      sensitivity : Sensitivity? = nil) : Nil
 
     # Lets a native method raise a real, script-catchable diagnostic —

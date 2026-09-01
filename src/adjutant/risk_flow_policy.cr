@@ -57,18 +57,18 @@ module Adjutant
     end
   end
 
-  # A single (RiskTag, Sensitivity) → RiskFlowAction rule, consulted at the
+  # A single (Effect, Sensitivity) → RiskFlowAction rule, consulted at the
   # risk flow check. Sensitivity::None always allows regardless of table
   # contents (see RiskFlowPolicy#action_for) — rows here only need to cover
   # Elevated/High cases that should escalate above the default.
   struct RiskFlowRule
     include JSON::Serializable
 
-    getter tag : RiskTag
+    getter tag : Effect
     getter sensitivity : Sensitivity
     getter action : RiskFlowAction
 
-    def initialize(@tag : RiskTag, @sensitivity : Sensitivity, @action : RiskFlowAction)
+    def initialize(@tag : Effect, @sensitivity : Sensitivity, @action : RiskFlowAction)
     end
   end
 
@@ -139,7 +139,7 @@ module Adjutant
 
     # A policy that rejects every risky call outright — no sensitivity
     # patterns or risk_flow_rules needed, and (unlike an exhaustive
-    # generated rule table) never silently stops covering a RiskTag
+    # generated rule table) never silently stops covering a Effect
     # that's added later. The explicit, safe-by-default choice for an
     # embedder who wants "no risk assessment" without accidentally
     # meaning "allow everything."
@@ -172,7 +172,7 @@ module Adjutant
       top.first.sensitivity
     end
 
-    # (RiskTag, Sensitivity) → action lookup, consulted at the risk flow
+    # (Effect, Sensitivity) → action lookup, consulted at the risk flow
     # check. Sensitivity::None always allows regardless of table
     # contents — the universal default is not overridable by a rule,
     # only sensitivities above None can be. No matching rule for a
@@ -187,7 +187,7 @@ module Adjutant
     # explicit rule. Callers building a RiskFlowMatch for a
     # RiskFlowDecisionRequest need the specific rule that fired, not
     # just the resulting action.
-    def action_for(tag : RiskTag, sensitivity : Sensitivity) : {RiskFlowAction, RiskFlowRule?}
+    def action_for(tag : Effect, sensitivity : Sensitivity) : {RiskFlowAction, RiskFlowRule?}
       return {RiskFlowAction::Allow, nil} if sensitivity.none?
       return {RiskFlowAction::Reject, nil} if reject_all_flows?
       matched = risk_flow_rules.find { |rule| rule.tag == tag && rule.sensitivity == sensitivity }
