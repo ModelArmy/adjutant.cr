@@ -795,6 +795,46 @@ individually.
   a request that carried a body is handed to the script, so a
   single-pass upload stream never has to be replayed.
 
+- **`Legate.records` cannot consume a stream.** Found 2026-08-30,
+  logged 2026-08-31 after `stream: true` landed.
+  `Legate.records(path, format:)` opens the path itself, so a body
+  from `Legate.fetch(..., stream: true)` cannot be fed to it — a
+  script wanting to pull JSONL rows off a network response has to
+  buffer the whole thing first, which defeats the streaming it just
+  asked for. Will Fix. The plumbing is closer than it looks: both
+  parsers already consume an iterator rather than a file specifically
+  (`:jsonl` builds on `Lines::LineIterator`, `:csv` on
+  `CSV::Parser`), so what is missing is a second entry point.
+  Undecided whether that is `Legate.records(stream, format:)` or
+  `response.records(format:)`; the second reads better at a call site
+  but puts a parsing concern on `Response`.
+
+- **`Response#json` cannot parse a streamed body.** Found 2026-08-30,
+  logged 2026-08-31. `#json` raises `Legate::Malformed` on a
+  non-String body, so `stream: true` and `.json` are mutually
+  exclusive. Correct as it stands — the alternative is silently
+  buffering a body the script explicitly asked not to buffer — but it
+  means a large JSON document has no streaming path at all. Will Fix
+  eventually, and materially harder than the `records` entry above: it
+  needs an incremental JSON parser, not just a different entry point,
+  and Crystal's `JSON::PullParser` over a chunk iterator is the
+  obvious starting point rather than a settled design.
+
+- **No wall-clock bound on a script or on a held-open stream.** Found
+  2026-08-30 designing `stream: true`. `Legate.fetch`'s `timeout:`
+  becomes the client's connect and read timeouts, which bound each
+  individual READ but not total duration: a server dribbling one byte
+  every few seconds keeps a connection open indefinitely without ever
+  tripping a read timeout, and a script holding that stream stays
+  alive with it. `Limits#wall_clock` exists and is unenforced for the
+  same reason. Will Fix, and deliberately NOT solved inside one verb —
+  this is the same problem as an infinite loop in a script, and wants
+  one watchdog at the `Interpreter#eval` boundary rather than a
+  duration check invented separately in `fetch`, `exec`, and every
+  future long-running verb. The run-teardown seam added for
+  `open_sources` is the natural place to hang it, since it already
+  owns "this run is over, release everything."
+
 - **IPv6 literals can't be written in a `net.hosts` rule.** Found
   2026-08-30 building `net_rule.cr`. The scalar parser splits a
   `host:port` entry on the colon, which is unambiguous for a DNS name

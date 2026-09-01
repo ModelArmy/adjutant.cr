@@ -449,10 +449,12 @@ module Adjutant
     # Interpreter; @globals is shared with every VM it creates, and
     # persists across eval calls on the same interpreter.
     #
-    # rescue ClassName filtering (matching a raised object's class,
-    # or an ancestor, against the rescue clause) is not yet
-    # implemented — this hierarchy exists so `raise`/`.message` work
-    # and so that filtering has real classes to check against later.
+    # `rescue ClassName` filtering matches a raised object's class, or
+    # an ancestor, against the clause's class list — see
+    # `Compiler#compile_rescue_clause_test` and DEVELOPMENT.md's
+    # exception-handling section. This hierarchy is what those checks
+    # resolve against, so a script can `rescue Legate::TooMany` or
+    # `rescue RiskFlowRejectedError` and have it mean something.
     private def bootstrap_error_classes : Nil
       standard_error = nil
       Builtins.bootstrap_exception_and_subclasses(self) do |cls|
