@@ -3,12 +3,12 @@ require "./risk_profile"
 module Adjutant
   # Structured, static risk shape mirroring a script's control flow —
   # a sum-type-aware alternative to flattening every call site's
-  # RiskProfile into one set of tags.
+  # RiskProfile into one set of effects.
   #
   # Two other shapes were considered and rejected for v1:
   #   - A flat Array(RiskProfile): loses conditionality entirely (an
   #     if/else's two mutually-exclusive branches would merge into one
-  #     tag set, as if both could happen in the same run).
+  #     effect set, as if both could happen in the same run).
   #   - Bytecode-level walk instead of AST: uniform Op::Jump shapes,
   #     but loses the source-level distinction between "if" and "case"
   #     the presentation layer wants, and requires reconstructing

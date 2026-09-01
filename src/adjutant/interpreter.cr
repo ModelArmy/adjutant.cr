@@ -264,9 +264,11 @@ module Adjutant
     # call site passes it, so no existing native function's behavior
     # changes by this parameter existing.
     def define_native(name : String, risk : RiskProfile = RiskProfile.none, kwarg_names : Set(String) = Set(String).new, is_private : Bool = false,
+                      authorities : Set(Authority) = Set(Authority).new,
                       &block : Array(Value), ScriptProc?, NativeCallContext -> Value) : Nil
       sym = @symbols.intern(name)
-      object_class.define_native_method(sym.value, risk, kwarg_names, is_private: is_private, &block)
+      object_class.define_native_method(sym.value, risk, kwarg_names, is_private: is_private,
+        authorities: authorities, &block)
     end
 
     # Look up a native callable by symbol ID — called by VM dispatch.

@@ -163,13 +163,13 @@ module Adjutant
 
     it "a risky native new surfaces its real RiskProfile, not zero risk" do
       interp, _ = make_interp
-      risk = RiskProfile.new(tags: Set{RiskTag::WritesFiles}, severity: Severity::Warning)
+      risk = RiskProfile.new(effects: Set{Effect::WritesFiles}, severity: Severity::Warning)
       bootstrap_counter(interp, new_risk: risk)
       walker = RiskWalker.new(interp)
       body = Parser.new("Counter.new(0)").parse
       summary = RiskAggregator.summarize(walker.walk_body(body))
       summary.severity.should eq Severity::Warning
-      summary.tags.should eq Set{RiskTag::WritesFiles}
+      summary.effects.should eq Set{Effect::WritesFiles}
     end
 
     it "a class with no native new still resolves .new as zero risk (unchanged behavior)" do
@@ -192,7 +192,7 @@ module Adjutant
 
     it "risky construction via a var is not silently dropped downstream" do
       interp, _ = make_interp
-      risk = RiskProfile.new(tags: Set{RiskTag::WritesFiles}, severity: Severity::Warning)
+      risk = RiskProfile.new(effects: Set{Effect::WritesFiles}, severity: Severity::Warning)
       bootstrap_counter(interp, new_risk: risk)
       walker = RiskWalker.new(interp)
       body = Parser.new(<<-RUBY).parse
@@ -200,7 +200,7 @@ module Adjutant
         c.increment
       RUBY
       summary = RiskAggregator.summarize(walker.walk_body(body))
-      summary.tags.should eq Set{RiskTag::WritesFiles}
+      summary.effects.should eq Set{Effect::WritesFiles}
     end
   end
 end

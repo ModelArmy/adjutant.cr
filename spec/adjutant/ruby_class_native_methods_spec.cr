@@ -40,7 +40,7 @@ module Adjutant
       interp, _ = make_interp
       cls = RubyClass.new("Widget")
       sym_id = interp.symbols.intern("delete!").value
-      risk = RiskProfile.new(tags: Set{RiskTag::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
+      risk = RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error)
       cls.define_native_method(sym_id, risk) { |args| Value.nil_value }
       cls.find_native_method(sym_id).not_nil!.risk.should eq risk
     end

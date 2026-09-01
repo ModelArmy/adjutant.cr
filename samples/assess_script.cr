@@ -1,7 +1,7 @@
 require "../src/adjutant"
 
 # This sample registers a few native functions with real risk profiles,
-# so a script exercising them gets meaningful (non-Unknown) risk tags
+# so a script exercising them gets meaningful (non-Unknown) risk effects
 # in the assessment below.
 class RiskySampleModule < Adjutant::ScriptModule
   def name : String
@@ -13,16 +13,18 @@ class RiskySampleModule < Adjutant::ScriptModule
 
     interp.define_native("delete_file",
       risk: Adjutant::RiskProfile.new(
-        tags: Set{Adjutant::RiskTag::DeletesFiles},
+        effects: Set{Adjutant::Effect::DeletesFiles},
         reversible: Adjutant::Reversibility::No,
         severity: Adjutant::Severity::Error,
-      )) { |args| Adjutant::Value.nil_value }
+      ),
+      authorities: Set{Adjutant::Authority::Delete}) { |args| Adjutant::Value.nil_value }
 
     interp.define_native("fetch_url",
       risk: Adjutant::RiskProfile.new(
-        tags: Set{Adjutant::RiskTag::NetworkEgress},
+        effects: Set{Adjutant::Effect::NetworkEgress},
         severity: Adjutant::Severity::Warning,
-      )) { |args| Adjutant::Value.string("") }
+      ),
+      authorities: Set{Adjutant::Authority::Net}) { |args| Adjutant::Value.string("") }
 
     # Native keyword argument support (2026-08-09) — `path:` arrives
     # entirely as a keyword, no positional args at all. Registered
@@ -38,11 +40,12 @@ class RiskySampleModule < Adjutant::ScriptModule
     # runnable registration example, not just a risk-profile stub.
     interp.define_native("remove_path",
       risk: Adjutant::RiskProfile.new(
-        tags: Set{Adjutant::RiskTag::DeletesFiles},
+        effects: Set{Adjutant::Effect::DeletesFiles},
         reversible: Adjutant::Reversibility::No,
         severity: Adjutant::Severity::Error,
       ),
-      kwarg_names: Set{"path"}) { |args| Adjutant::Value.nil_value }
+      kwarg_names: Set{"path"},
+      authorities: Set{Adjutant::Authority::Delete}) { |args| Adjutant::Value.nil_value }
   end
 end
 
@@ -94,7 +97,7 @@ findings = Adjutant::RiskAggregator.all_findings(tree)
 puts "=== Risk assessment: #{script_file} ==="
 puts
 puts "Worst case: #{summary.severity} / reversible=#{summary.reversible}"
-puts "Tags: #{summary.tags.empty? ? "none" : summary.tags.join(", ")}"
+puts "Effects: #{summary.effects.empty? ? "none" : summary.effects.join(", ")}"
 puts "Path: #{summary.path.join(" -> ")}" unless summary.path.empty?
 puts
 
@@ -102,6 +105,6 @@ puts "All findings (#{findings.size}):"
 findings.each do |f|
   branch = f.branch_path.empty? ? "" : " [#{f.branch_path.join(" > ")}]"
   loop_marker = f.iterated? ? " (iterated)" : ""
-  tags = f.profile.tags.empty? ? "none" : f.profile.tags.join(", ")
-  puts "  line #{f.line}: #{f.description}#{branch}#{loop_marker} — #{f.profile.severity}, tags: #{tags}"
+  effects = f.profile.effects.empty? ? "none" : f.profile.effects.join(", ")
+  puts "  line #{f.line}: #{f.description}#{branch}#{loop_marker} — #{f.profile.severity}, effects: #{effects}"
 end

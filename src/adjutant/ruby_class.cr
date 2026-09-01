@@ -182,10 +182,16 @@ module Adjutant
     # `kwarg_names` declares which keyword names this method accepts
     # (see NativeCallable#kwarg_names) — empty by default, matching
     # every pre-existing native method, which accepted none.
+    #
+    # `authorities` declares the permissions this method exercises to
+    # reach outside the VM (see NativeCallable#authorities) — empty by
+    # default, which is correct for every pure native method and makes
+    # the risk flow check a no-op for it.
     def define_native_method(sym_id : Int32, risk : RiskProfile, kwarg_names : Set(String) = Set(String).new, is_private : Bool = false,
+                             authorities : Set(Authority) = Set(Authority).new,
                              &block : Array(Value), ScriptProc?, NativeCallContext -> Value) : Nil
       func = NativeFunc.new { |args, blk, ncc| block.call(args, blk, ncc) }
-      @native_methods[sym_id] = NativeCallable.new(func, risk, kwarg_names)
+      @native_methods[sym_id] = NativeCallable.new(func, risk, kwarg_names, authorities)
       if is_private
         @native_private_methods << sym_id
       else
@@ -215,9 +221,10 @@ module Adjutant
     # native `new` (e.g. `Config.new(retries:, timeout:)`) declare
     # accepted keyword names the same way.
     def define_native_singleton_method(sym_id : Int32, risk : RiskProfile, kwarg_names : Set(String) = Set(String).new,
+                                       authorities : Set(Authority) = Set(Authority).new,
                                        &block : Array(Value), ScriptProc?, NativeCallContext -> Value) : Nil
       func = NativeFunc.new { |args, blk, ncc| block.call(args, blk, ncc) }
-      @native_singleton_methods[sym_id] = NativeCallable.new(func, risk, kwarg_names)
+      @native_singleton_methods[sym_id] = NativeCallable.new(func, risk, kwarg_names, authorities)
     end
 
     # Look up a native singleton method by symbol id, walking the

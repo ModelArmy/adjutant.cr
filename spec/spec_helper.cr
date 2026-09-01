@@ -181,7 +181,7 @@ module Adjutant
     # flow enforcement, just method dispatch. See
     # risk_flow_enforcement_spec.cr for real declare_sensitivity
     # coverage, which goes through the actual VM.
-    def declare_sensitivity(tag : RiskTag, kind : ProvenanceKind, origin : String,
+    def declare_sensitivity(authority : Authority, kind : ProvenanceKind, origin : String,
                             sensitivity : Sensitivity? = nil) : Nil
     end
 

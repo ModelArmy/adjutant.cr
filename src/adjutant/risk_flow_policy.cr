@@ -1,4 +1,5 @@
 require "json"
+require "./authority"
 require "./risk_profile"
 require "./diagnostic"
 
@@ -57,18 +58,26 @@ module Adjutant
     end
   end
 
-  # A single (RiskTag, Sensitivity) → RiskFlowAction rule, consulted at the
-  # risk flow check. Sensitivity::None always allows regardless of table
-  # contents (see RiskFlowPolicy#action_for) — rows here only need to cover
-  # Elevated/High cases that should escalate above the default.
+  # A single (Authority, Sensitivity) → RiskFlowAction rule, consulted
+  # at the risk flow check. Sensitivity::None always allows regardless
+  # of table contents (see RiskFlowPolicy#action_for) — rows here only
+  # need to cover Elevated/High cases that should escalate above the
+  # default.
+  #
+  # Keyed on Authority, not Effect: a rule answers "may data this
+  # sensitive reach a sink with this permission," which is a question
+  # about what the call is allowed to do, not about what it does. That
+  # also keeps the manifest vocabulary free to gain members (an effect
+  # describing a consequence more precisely) without silently adding a
+  # rule key that matches nothing.
   struct RiskFlowRule
     include JSON::Serializable
 
-    getter tag : RiskTag
+    getter authority : Authority
     getter sensitivity : Sensitivity
     getter action : RiskFlowAction
 
-    def initialize(@tag : RiskTag, @sensitivity : Sensitivity, @action : RiskFlowAction)
+    def initialize(@authority : Authority, @sensitivity : Sensitivity, @action : RiskFlowAction)
     end
   end
 
@@ -139,7 +148,7 @@ module Adjutant
 
     # A policy that rejects every risky call outright — no sensitivity
     # patterns or risk_flow_rules needed, and (unlike an exhaustive
-    # generated rule table) never silently stops covering a RiskTag
+    # generated rule table) never silently stops covering an Authority
     # that's added later. The explicit, safe-by-default choice for an
     # embedder who wants "no risk assessment" without accidentally
     # meaning "allow everything."
@@ -172,12 +181,12 @@ module Adjutant
       top.first.sensitivity
     end
 
-    # (RiskTag, Sensitivity) → action lookup, consulted at the risk flow
-    # check. Sensitivity::None always allows regardless of table
+    # (Authority, Sensitivity) → action lookup, consulted at the risk
+    # flow check. Sensitivity::None always allows regardless of table
     # contents — the universal default is not overridable by a rule,
     # only sensitivities above None can be. No matching rule for a
-    # non-None sensitivity → Allow (a tag with no configured rows is
-    # treated as not policy-relevant, not as an implicit escalation) —
+    # non-None sensitivity → Allow (an authority with no configured rows
+    # is treated as not policy-relevant, not as an implicit escalation) —
     # unless reject_all_flows is set, in which case every non-None
     # sensitivity is Reject regardless of risk_flow_rules.
     #
@@ -187,10 +196,10 @@ module Adjutant
     # explicit rule. Callers building a RiskFlowMatch for a
     # RiskFlowDecisionRequest need the specific rule that fired, not
     # just the resulting action.
-    def action_for(tag : RiskTag, sensitivity : Sensitivity) : {RiskFlowAction, RiskFlowRule?}
+    def action_for(authority : Authority, sensitivity : Sensitivity) : {RiskFlowAction, RiskFlowRule?}
       return {RiskFlowAction::Allow, nil} if sensitivity.none?
       return {RiskFlowAction::Reject, nil} if reject_all_flows?
-      matched = risk_flow_rules.find { |rule| rule.tag == tag && rule.sensitivity == sensitivity }
+      matched = risk_flow_rules.find { |rule| rule.authority == authority && rule.sensitivity == sensitivity }
       {matched.try(&.action) || RiskFlowAction::Allow, matched}
     end
   end

@@ -1,3 +1,4 @@
+require "./authority"
 require "./risk_flow_policy"
 require "./risk_flow_label"
 require "./risk_profile"
@@ -36,7 +37,13 @@ module Adjutant
   # potentially large/irrelevant argument values into every prompt.
   struct RiskFlowDecisionRequest
     getter call_name : String
+    # What the call does, for display — and, separately, what it is
+    # permitted to do, which is what the policy actually matched on.
+    # Both are here because an agent building a prompt needs to say
+    # "this deletes files" AND "policy fired on Delete authority";
+    # neither implies the other (see Authority).
     getter risk : RiskProfile
+    getter authorities : Set(Authority)
     # Sorted worst-first: RiskFlowAction (Reject > Ask), then
     # Sensitivity (High > Elevated), stable beyond that (ties preserve
     # discovery order) — so `matches.first` is a reasonable "the primary
@@ -46,8 +53,8 @@ module Adjutant
     getter filename : String
     getter line : Int32
 
-    def initialize(@call_name : String, @risk : RiskProfile, @matches : Array(RiskFlowMatch),
-                   @filename : String, @line : Int32)
+    def initialize(@call_name : String, @risk : RiskProfile, @authorities : Set(Authority),
+                   @matches : Array(RiskFlowMatch), @filename : String, @line : Int32)
     end
   end
 
