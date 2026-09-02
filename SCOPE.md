@@ -181,8 +181,8 @@ forward.
   needs (`mv` still requires `delete` + `write`), which is correct
   once the two enums are separated: grants answer "what authority,"
   effects answer "what consequence." Nothing infers grants from
-  effects — §10.1 infers them by walking the call graph for `Legate.*`
-  names — so the asymmetry costs the analyser nothing.
+  effects — §10.1 SPECIFIES inferring them by walking the call graph
+  for `Legate.*` names (unimplemented; see the §10 entry below) — so the asymmetry costs the analyser nothing.
 
   Do this BEFORE writing the step 4c sweep. Writing assertions
   against the current declarations would pin behaviour we have already
@@ -324,13 +324,20 @@ forward.
 
   ### Interaction that does NOT move by itself
 
-  §10.1's grant inference walks the call graph for `Legate.*` names,
-  emits the minimum policy a script requires, and refuses a run whose
-  offered policy grants more than that. It keys on the literal module
-  name. Once authorization is core with pluggable providers, that
-  inference must key on something REGISTERED instead — otherwise a
-  second provider gets full enforcement and no static manifest, which
-  is exactly the asymmetry the manifest exists to prevent.
+  §10.1 SPECIFIES a grant inference that walks the call graph for
+  `Legate.*` names, emits the minimum policy a script requires, and
+  refuses a run whose offered policy grants more. **It does not
+  exist** — see the §10 entry below; nothing in `src/` infers a
+  policy, and `risk_walker.cr` contains no reference to Legate at all.
+  Corrected 2026-09-02, having been described here twice in the
+  present tense as though it were shipped.
+
+  So there is nothing to rekey, and this is cheaper than it looked:
+  what must change is the SPEC, so that whoever implements §10.1 keys
+  it on a registered provider rather than a hardcoded module name.
+  Otherwise a second provider gets full enforcement and no static
+  manifest, which is exactly the asymmetry the manifest exists to
+  prevent.
 
   Worked example, since one sentence understates it. Suppose a second
   provider `Vault` gives scripts access to secrets, and a script does:
@@ -338,7 +345,9 @@ forward.
       key = Vault.secret("stripe/live")
       Legate.fetch("https://api.example.com", body: key)
 
-  At RUNTIME this is fully protected. `Vault.secret` is an
+  This is what WILL happen when §10.1 is built as currently written —
+  a warning, not a bug report. At RUNTIME the script is already fully
+  protected. `Vault.secret` is an
   `EffectProvider`, so it goes through the same core Broker: same
   wall-clock check, same perimeter decision, same
   `declare_sensitivity`, same audit record, same RiskFlowPolicy. A
@@ -367,11 +376,11 @@ forward.
   nothing goes red when that happens: a second provider is added,
   every spec passes, and the manifest simply goes quiet about it.
 
-  Fix shape: the walk collects calls to any REGISTERED provider's
-  module rather than a hardcoded `Legate`, and each provider maps its
-  own verbs to the authorities it declares — which is what finally
-  makes `EffectProvider#authorities` load-bearing rather than
-  documentation.
+  Fix shape, for the SPEC today and the implementation whenever it
+  arrives: the walk collects calls to any REGISTERED provider's module
+  rather than a hardcoded `Legate`, and each provider maps its own
+  verbs to the authorities it declares — which is what finally makes
+  `EffectProvider#authorities` load-bearing rather than documentation.
 
   **Do this WITH piece 4, not before it.** The walk needs to know
   which providers exist and what each one's config section is called,
@@ -437,6 +446,95 @@ forward.
   generalise on the strength of the argument rather than on evidence.
   Chosen deliberately — the perimeter is precisely what a future
   subsystem should inherit rather than reinvent.
+
+- **LEGATE.md §10's static analysis layer does not exist, and §9/§10
+  lean on it in the present tense as though it did.** Found
+  2026-09-02, while checking what piece 4 of the authorization work
+  would have to rekey. Nothing in `src/` implements any part of §10 —
+  there is no analyser file, `risk_walker.cr` contains no reference to
+  Legate, and nothing infers, cross-checks or refuses a policy.
+
+  All three subsections are unbuilt:
+
+  - **§10.1 Dataflow.** No grant inference, so no minimum policy and
+    no over-grant refusal. Checks 2–5 (taint to argv, taint to path,
+    unbounded materialisation, double consumption) likewise. Note that
+    checks 2 and 3 are the ones §10.1 itself calls "the
+    security-critical pair."
+  - **§10.2 Exception discipline.** None of the six rules is enforced.
+    Worse than absent for one of them: `retry` is not merely ungated
+    but fully implemented (`Compiler#compile_retry`), and §10.2
+    forbids it outright as something that "converts a cap into a
+    loop." Bare `rescue` and `rescue Exception` are both accepted and
+    exercised by existing specs.
+  - **§10.3 The inclusion ledger.** No ledger, no sealing, no
+    unqualified-call check.
+
+  Why this is Must Fix even though the analyser is a large feature:
+  the DOCUMENTATION defect is live and separable from it. §9.2's own
+  text says "the static gate ensures it cannot deliberately swallow
+  one either," and §9's design-intent paragraph says "§10.2 ensures it
+  cannot do so on purpose." Both assert a guarantee that nothing
+  provides. A reader — including a model reading the spec to decide
+  how defensively to write — is being told a boundary is enforced that
+  is not.
+
+  What actually holds today is the RUNTIME property, and it holds
+  independently: `FatalSignal` is a plain `Exception`, not a
+  `RuntimeError`, so no script `rescue` of any class can catch it
+  regardless of syntax. `fatal_signal.cr`'s own comment already states
+  this correctly — the gate is a first line of defence and the runtime
+  guarantee "does not depend on the gate being correct or even
+  present." §9 should say the same rather than the reverse.
+
+  Fix in two parts, the first cheap and the second not:
+
+  1. **Correct the claims now.** §9.2 and §9's design-intent paragraph
+     state the runtime property as the guarantee and describe §10.2 as
+     an intended additional check, not a current one. Anywhere else
+     that says the analyser does something, say it SPECIFIES it.
+  2. **Build it later, as its own scoped piece of work**, with §10.1
+     keyed on the provider registry from the start (see the
+     authorization entry above).
+
+  ### The `retry` contradiction, and why its stated reason is half wrong
+
+  `retry` is a working language feature — `Compiler#compile_retry`
+  emits `Op::Retry`, and scripts can use it today. §10.2 forbids it
+  outright. Implementing that rule as written is therefore a breaking
+  change, not a new check, and it needs deciding rather than
+  discovering mid-implementation.
+
+  §10.2 gives two reasons; only the second survives §9.2.
+
+  - *"Converts a cap into a loop"* — largely FALSE as things now
+    stand. It would matter if a script could catch a budget
+    exhaustion and retry past it, but per-run budgets raise
+    `FatalSignal`, which no `rescue` of any class can catch (see
+    `fatal_signal.cr`). So `retry` can only loop on the RECOVERABLE
+    tier, where retrying is usually pointless and sometimes correct: a
+    `TooLarge` on an over-limit read fails identically the second
+    time, and a `TooMany` on `max_open_streams` is the case where
+    retrying is legitimate BY DESIGN — that limit caps simultaneous
+    holdings rather than cumulative consumption, so a script that
+    finishes a stream and tries again has genuinely freed the
+    resource. This reason reads as a leftover from before §9.2 made
+    the fatal tier uncatchable.
+  - *"Makes budget analysis undecidable"* — TRUE, and sufficient on
+    its own. `retry` puts a back-edge in the control-flow graph, and
+    §10.2's whole preamble is about keeping the CFG tractable.
+
+  So the rule is justified, but by tractability rather than by
+  security. Whether that justifies banning a working feature outright,
+  versus bounding it or accepting reduced analysis precision where it
+  appears, is the actual question. Cheaper to answer than it sounds:
+  `retry` appears in exactly one spec
+  (`classes_and_modules/vm_spec.cr`), so it is implemented but barely
+  exercised.
+
+  Recorded rather than fixed wholesale because the analyser is a
+  feature, not a bug — but the spec claiming it exists IS a bug, and
+  that half should not wait for the other.
 
 ## Will Fix
 

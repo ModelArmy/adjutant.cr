@@ -140,7 +140,7 @@ rows = begin
 
 Every Legate exception is either **recoverable** (under `StandardError`) or **fatal** (a direct subclass of `Exception`). The distinction is not severity but *who is permitted to recover*. See §9.
 
-Because `rescue => e` catches only `StandardError`, idiomatic Ruby cannot accidentally swallow a fatal exception. The static gate ensures it cannot deliberately swallow one either.
+Because `rescue => e` catches only `StandardError`, idiomatic Ruby cannot accidentally swallow a fatal exception. Nor can it deliberately: the fatal tier is a plain Crystal `Exception` rather than a `RuntimeError`, so the rescue-matching machinery never runs for it at all and `rescue Exception` cannot catch it either. §10.2's static gate is an intended ADDITIONAL check — it is not implemented, and the guarantee above does not depend on it.
 
 ### 2.3 What does not raise
 
@@ -806,7 +806,7 @@ Class              |Meaning
 `Legate::Exhausted`|per-run budget breached: total bytes, memory, wall clock
 `Legate::Aborted`  |`Legate.fail`, or a runtime invariant broken            
 
-The design intent: a denial is not a malfunction to be handled but the policy functioning as specified. A model writing defensively robust code will wrap risky calls in `rescue`, and that reflex must not be able to convert a security boundary into a retry loop. Placing these outside `StandardError` means idiomatic Ruby cannot swallow them by accident; §10.2 ensures it cannot do so on purpose.
+The design intent: a denial is not a malfunction to be handled but the policy functioning as specified. A model writing defensively robust code will wrap risky calls in `rescue`, and that reflex must not be able to convert a security boundary into a retry loop. Placing these outside `StandardError` means idiomatic Ruby cannot swallow them by accident, and implementing them as plain Crystal exceptions rather than `RuntimeError`s means it cannot do so on purpose. §10.2 would add a static gate on top; that gate is specified but not built, so it is not what makes this hold.
 
 ### 9.3 Placement rule
 
@@ -817,6 +817,15 @@ When adding a new failure mode, ask: *would a correct script ever want to contin
 ## 10. Obligations on the static analyser
 
 The specification is shaped to make these checks cheap. An implementation SHOULD perform them.
+
+> **Status: §10 is specified, not implemented.** No part of this
+> section exists in `src/` — there is no analyser, no grant inference,
+> no exception gate and no inclusion ledger. Read what follows as the
+> intended design. Where §9 previously described these checks as
+> guarantees already in force, that was wrong and has been corrected;
+> see SCOPE.md's entry on §10 for the full status and for the two
+> rules (`retry`, bare `rescue`) the language currently implements in
+> direct contradiction of §10.2.
 
 ### 10.1 Dataflow
 
