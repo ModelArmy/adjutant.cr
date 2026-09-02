@@ -5,6 +5,45 @@
 
 ---
 
+## 0. Implementation status
+
+This document is written throughout in the present tense, including for
+parts that do not exist yet. That was deliberate — it is a
+specification — but it makes intent indistinguishable from behaviour on
+a casual read, and by 2026-09-02 that had caused real confusion twice.
+This table is the index of what is actually built. Add to it when a
+section lands; correct it when it drifts.
+
+Section                                  |Status       |Notes                                                                          
+-----------------------------------------|-------------|-------------------------------------------------------------------------------
+§1–§3 principles, conventions, type index|Built        |                                                                               
+§4.1 reading                             |Built        |`read` `stat` `list` `grep`                                                    
+§4.2 streaming reads                     |Built        |`lines` `bytes` `records`                                                      
+§4.3 writing                             |Built        |`write` `append` `mkdir` `cp`                                                  
+§4.4 destruction                         |Built        |`rm` `mv`                                                                      
+§4.5 network                             |Built        |`fetch`; streamed request body still open                                      
+§4.6 execution                           |NOT BUILT    |No `run` verb. `authorize_exec`/`check_binary` exist and are unused            
+§4.7 ambient                             |NOT BUILT    |None of `scratch` `env` `now` `random` `log` `fail`                            
+§5 value types                           |Built        |All seven                                                                      
+§5.6 `Legate::Exit`                      |Built, UNUSED|Bootstrapped, but nothing produces one — it is `run`'s return type             
+§6 stream protocol                       |Built        |                                                                               
+§7 grants and policy                     |Built        |`ambient.now` removed 2026-09-01; see SCOPE.md                                 
+§8.1 path resolution / TOCTOU            |Built        |                                                                               
+§8.2 network hardening                   |Built        |Resolved-address checks in `fetch.cr`                                          
+§8.3 execution sandboxing                |NOT BUILT    |Nothing to sandbox until §4.6 exists                                           
+§8.4 caps                                |Built        |                                                                               
+§8.5 exception construction              |Built        |                                                                               
+§8.6 diagnostics for removed constructs  |PARTIAL      |`retry` and bare `rescue` are implemented, not removed — see §10.2 and SCOPE.md
+§8.7 audit log                           |Built        |Narrower than specified: no bytes/duration                                     
+§9 exception taxonomy                    |Built        |                                                                               
+§10 static analyser                      |NOT BUILT    |No part of it. See §10's own note                                              
+§11 surface count                        |ASPIRATIONAL |Counts the specified surface, not the built one                                
+
+**What exists today is 14 verbs, not 21**, no submodules, and no static
+analyser. Everything else in §1–§9 is real.
+
+---
+
 ## 1. Scope and principles
 
 Legate is a proper subset of Ruby. This document specifies only the **external surface**: the verbs that touch the world and the types they return. The pure core (Enumerable, String, Hash, Numeric, JSON, Regexp) is specified separately; it is ordinary Ruby with mutation removed.
@@ -215,6 +254,10 @@ Submodule        |Grant    |Verbs
 `Legate::Net`    |`net`    |`fetch`                                              
 `Legate::Exec`   |`exec`   |`run`                                                
 `Legate::Ambient`|`ambient`|`scratch` `env` `now` `random` `log` `fail`          
+
+> **Not built.** None of the six submodules exists, so no script can
+> write `include Legate::Read` today. The constraints below are
+> specified for §10.4, which is also unbuilt. §0.
 
 **The manifest is optional and MUST remain so.** Grants are inferred from the call graph regardless (§10.1), so the analysis never depends on the declaration. Where includes are present, the analyser cross-checks them against the inference and the policy — a free additional signal, not a requirement.
 
@@ -694,7 +737,7 @@ Enforce at three levels, on the assumption that the higher ones will eventually 
 The vocabulary in §4 is novel, so priors do not fight it. The **removals** in §1.2 are where habit will collide with the language, and no amount of design avoids that. Three requirements make the collision cheap:
 
 1. **Remove, never cripple.** Undefine the constant or method entirely. A partially-implemented `File` invites the author to assume the other thirty-nine methods exist.
-2. **Fail at parse time where possible.** `File.read`, `send`, `eval`, `retry`, bare `rescue` and a String `argv` are all detectable statically. A diagnostic before execution costs one turn; a failure on line 340 of a long run costs the whole run.
+2. **Fail at parse time where possible.** `File.read`, `send`, `eval`, `retry`, bare `rescue` and a String `argv` are all detectable statically. A diagnostic before execution costs one turn; a failure on line 340 of a long run costs the whole run. (Detectable, but not currently detected for `retry` and bare `rescue`, both of which are implemented — §0.)
 3. **Name the replacement.** Every removal diagnostic MUST state the Legate equivalent, or state plainly that none exists.
 
 Written                        |Diagnostic                                                          
@@ -706,7 +749,7 @@ Written                        |Diagnostic
 `Net::HTTP…`                   |not available — use `Legate.fetch(url)`                             
 `arr << x`, `s.gsub!`          |mutation removed — use `arr + [x]`, `s.gsub`                        
 `eval`, `send`, `define_method`|removed; no equivalent                                              
-`retry`                        |removed — it converts a resource cap into a loop                    
+`retry`                        |NOT removed — implemented and working; see §10.2 and SCOPE.md       
 
 An author who meets one of these once writes correct Legate for the remainder of the session. That is the cheapest documentation channel available, and it is the same mechanism as the cap messages in §9.1.
 
@@ -890,6 +933,11 @@ Methods across all value types            |~48
 Stream operators and terminals            |~40 (all familiar Enumerable names)
 Grant kinds                               |6                                  
 Exception classes                         |10 (7 recoverable, 3 fatal)        
+
+> **These are the counts for the SPECIFIED surface, not the built
+> one.** As of 2026-09-02 there are **14 verbs** (§4.6's `run` and
+> §4.7's six ambient verbs do not exist), **no submodules**, and one
+> value type — `Legate::Exit` — that nothing yet produces. §0.
 
 Roughly **116 names**, of which about 40 are Enumerable methods the model already knows perfectly, and 10 are exception classes whose handling follows ordinary Ruby reflexes. The 6 submodules are optional and need not be learned at all. The genuinely novel vocabulary is the 21 verbs and 6 types — comfortably a single page of context.
 
