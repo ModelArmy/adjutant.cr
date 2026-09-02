@@ -172,28 +172,35 @@ module Adjutant
           raise ArgumentError.new("Legate::Grants — IPv6 literals are not supported in net.hosts yet: #{raw.inspect}")
         end
 
-        if str.includes?("://")
-          uri = URI.parse(str)
-          scheme = (uri.scheme || "https").downcase
-          validate_scheme!(scheme)
-          host = uri.host
-          raise ArgumentError.new("Legate::Grants — net.hosts entry #{raw.inspect} has no host") if host.nil? || host.empty?
-          port = uri.port
-          validate_port!(port) if port
-          return new(host: normalize_host(host), scheme: scheme, ports: port ? [port] : nil)
-        end
+        str.includes?("://") ? parse_uri_form(str, raw) : parse_host_port_form(str, raw)
+      end
 
+      # `scheme://host[:port]`. Split out from `parse` (2026-09-02)
+      # rather than disabling the complexity rule: the two accepted
+      # spellings share nothing but the validation helpers, and reading
+      # either one no longer means stepping over the other.
+      private def self.parse_uri_form(str : String, raw : String) : NetRule
+        uri = URI.parse(str)
+        scheme = (uri.scheme || "https").downcase
+        validate_scheme!(scheme)
+        host = uri.host
+        raise ArgumentError.new("Legate::Grants — net.hosts entry #{raw.inspect} has no host") if host.nil? || host.empty?
+        port = uri.port
+        validate_port!(port) if port
+        new(host: normalize_host(host), scheme: scheme, ports: port ? [port] : nil)
+      end
+
+      # The bare `host[:port]` spelling §7 shows, which takes the
+      # scheme default rather than stating one.
+      private def self.parse_host_port_form(str : String, raw : String) : NetRule
         host, _, port_str = str.partition(':')
         raise ArgumentError.new("Legate::Grants — net.hosts entry #{raw.inspect} has no host") if host.empty?
+        return new(host: normalize_host(host)) if port_str.empty?
 
-        if port_str.empty?
-          new(host: normalize_host(host))
-        else
-          port = port_str.to_i32?
-          raise ArgumentError.new("Legate::Grants — net.hosts entry #{raw.inspect} has a non-numeric port") unless port
-          validate_port!(port)
-          new(host: normalize_host(host), ports: [port])
-        end
+        port = port_str.to_i32?
+        raise ArgumentError.new("Legate::Grants — net.hosts entry #{raw.inspect} has a non-numeric port") unless port
+        validate_port!(port)
+        new(host: normalize_host(host), ports: [port])
       end
 
       # Hostnames are case-insensitive (RFC 4343) and a trailing dot

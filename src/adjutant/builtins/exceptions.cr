@@ -5,7 +5,7 @@ require "./helpers"
 
 module Adjutant::Builtins
   # Define the various Exception-derived error classes and yield each one
-  def self.bootstrap_exception_and_subclasses(interp : Interpreter, & : -> RubyClass) : Void
+  def self.bootstrap_exception_and_subclasses(interp : Interpreter, & : -> RubyClass) : Nil
     yield exception = define_exception_class(interp)
     yield standard_error = RubyClass.new("StandardError", exception)
     yield RubyClass.new("RuntimeError", standard_error)

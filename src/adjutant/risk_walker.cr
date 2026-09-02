@@ -148,7 +148,6 @@ module Adjutant
       owner = case ns
               when Constant  then resolve_class(ns.name)
               when ConstPath then resolve_const_path(ns)
-              else                nil
               end
       return unless owner
       sym = @interp.symbols.lookup(node.name)
@@ -162,7 +161,8 @@ module Adjutant
       RiskSequence.new(children, body.line)
     end
 
-    # ameba:disable Metrics/CyclomaticComplexity - one case per node kind, not tangled logic
+    # One case per node kind, not tangled logic — the branch count
+    # is the AST's shape, not this method's.
     def walk_node(node : Node, env : TypeInference::Env) : RiskNode
       case node
       when IfNode, UnlessNode, CaseNode, WhileNode, LoopNode, ForNode, ModifierIf, ModifierWhile, BeginNode
@@ -461,7 +461,6 @@ module Adjutant
       mod = case arg
             when Constant  then resolve_class(arg.name)
             when ConstPath then resolve_const_path(arg)
-            else                nil
             end
       cls.include_module(mod) if mod
     end
@@ -477,7 +476,6 @@ module Adjutant
       mod = case arg
             when Constant  then resolve_class(arg.name)
             when ConstPath then resolve_const_path(arg)
-            else                nil
             end
       cls.extend_module(mod) if mod
     end
@@ -788,43 +786,9 @@ module Adjutant
       sym = @interp.symbols.lookup(proc.name)
       return RiskUnresolved.new("super", node.line) unless sym
 
-      # Singleton-method `super` (`def self.foo; super; end`) — STEP 5
-      # of the extend-support build-out (see SCOPE.md's git history):
-      # now mirrors the instance-method branch below exactly, on the
-      # singleton side, via RubyClass#singleton_ancestors — see that
-      # method's own comment (ruby_class.cr) for why each of its
-      # entries carries a Bool (an extended module's own contribution
-      # needs its ORDINARY method table checked, not
-      # singleton_methods; self and its superclasses need the
-      # opposite) and VM#dispatch_super's own comment for the parallel
-      # fix there. No longer a fixed one-hop jump to `lex.superclass`
-      # — a module `extend`ed directly into `lex` now correctly sits
-      # BETWEEN it and its superclass in the search, matching what
-      # `include` already did for the instance side.
-      if @current_self_is_singleton
-        chain = cls.singleton_ancestors
-        idx = chain.index { |(c, _)| c == lex }
-        return RiskUnresolved.new("super", node.line) unless idx
-
-        chain[(idx + 1)..].each do |(candidate, use_singleton_table)|
-          if use_singleton_table
-            if script_method = candidate.singleton_methods[sym.value]?
-              return walk_script_method(script_method, node.line, cls, is_singleton: true)
-            end
-            if native = candidate.native_singleton_methods[sym.value]?
-              return RiskLeaf.new(native.risk, proc.name, node.line)
-            end
-          else
-            if script_method = candidate.methods[sym.value]?
-              return walk_script_method(script_method, node.line, cls, is_singleton: true)
-            end
-            if native = candidate.native_methods[sym.value]?
-              return RiskLeaf.new(native.risk, proc.name, node.line)
-            end
-          end
-        end
-        return RiskUnresolved.new("super", node.line)
-      end
+      # `def self.foo; super; end` searches a different chain and a
+      # different pair of method tables — see walk_super_singleton.
+      return walk_super_singleton(node, cls, lex, sym, proc) if @current_self_is_singleton
 
       chain = cls.ancestors
       idx = chain.index(lex)
@@ -836,6 +800,49 @@ module Adjutant
         end
         if native = candidate.native_methods[sym.value]?
           return RiskLeaf.new(native.risk, proc.name, node.line)
+        end
+      end
+      RiskUnresolved.new("super", node.line)
+    end
+
+    # Singleton-method `super` (`def self.foo; super; end`) — STEP 5
+    # of the extend-support build-out (see SCOPE.md's git history):
+    # mirrors walk_super_target's instance-method branch exactly, on
+    # the singleton side, via RubyClass#singleton_ancestors — see that
+    # method's own comment (ruby_class.cr) for why each of its entries
+    # carries a Bool (an extended module's own contribution needs its
+    # ORDINARY method table checked, not singleton_methods; self and
+    # its superclasses need the opposite) and VM#dispatch_super's own
+    # comment for the parallel fix there. No longer a fixed one-hop
+    # jump to `lex.superclass` — a module `extend`ed directly into
+    # `lex` now correctly sits BETWEEN it and its superclass in the
+    # search, matching what `include` already did for the instance
+    # side.
+    #
+    # Split out of walk_super_target on 2026-09-02. The two branches
+    # share only their guards, and holding both method tables in mind
+    # at once was the reason the method read as tangled.
+    private def walk_super_singleton(node : SuperNode, cls : RubyClass, lex : RubyClass,
+                                     sym : Sym, proc : ScriptProc) : RiskNode
+      chain = cls.singleton_ancestors
+      idx = chain.index { |(candidate, _)| candidate == lex }
+      return RiskUnresolved.new("super", node.line) unless idx
+
+      chain[(idx + 1)..].each do |(candidate, use_singleton_table)|
+        if use_singleton_table
+          if script_method = candidate.singleton_methods[sym.value]?
+            return walk_script_method(script_method, node.line, cls, is_singleton: true)
+          end
+          if native = candidate.native_singleton_methods[sym.value]?
+            return RiskLeaf.new(native.risk, proc.name, node.line)
+          end
+        else
+          if script_method = candidate.methods[sym.value]?
+            return walk_script_method(script_method, node.line, cls, is_singleton: true)
+          end
+          if native = candidate.native_methods[sym.value]?
+            return RiskLeaf.new(native.risk, proc.name, node.line)
+          end
         end
       end
       RiskUnresolved.new("super", node.line)

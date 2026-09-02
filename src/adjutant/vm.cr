@@ -493,7 +493,6 @@ module Adjutant
       saved_cur_block = @current_block
       saved_cur_block_locals = @current_block_locals
       saved_pending_kwargs = @pending_kwargs
-      result = Value.nil_value
       begin
         f = current_frame # before replacing @frames
         inherited_self = self_val || f.self_val
@@ -3234,8 +3233,6 @@ module Adjutant
         ValueOps.div(args[0], args[1], error_raiser(current_frame))
       when "%"
         ValueOps.mod(args[0], args[1], error_raiser(current_frame))
-      else
-        nil
       end
     end
 

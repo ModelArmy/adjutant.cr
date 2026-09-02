@@ -65,7 +65,6 @@ module Adjutant
       end
     end
 
-    # ameba:disable Metrics/CyclomaticComplexity
     def self.op(a : Value, b : Value, op : Symbol, on_error : OnError) : Value
       case
       when a.int? && b.int?
@@ -103,7 +102,6 @@ module Adjutant
       end
     end
 
-    # ameba:disable Metrics/CyclomaticComplexity
     def self.mod(a : Value, b : Value, on_error : OnError) : Value
       on_error.call("divided by 0", "ZeroDivisionError") if (b.int? && b.as_int == 0) || (b.float? && b.as_float == 0.0)
       case
@@ -202,7 +200,6 @@ module Adjutant
     # equal" with "genuinely incomparable" (both look like neither
     # `<` nor `>`), which real Ruby's own `<=>` (nil for incomparable)
     # distinguishes and script code can reasonably depend on.
-    # ameba:disable Metrics/CyclomaticComplexity
     def self.spaceship(a : Value, b : Value) : Int32?
       case
       when a.int? && b.int?
@@ -213,8 +210,6 @@ module Adjutant
         fa <=> fb
       when a.string? && b.string?
         a.as_string <=> b.as_string
-      else
-        nil
       end
     end
 

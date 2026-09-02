@@ -2212,7 +2212,6 @@ module Adjutant
       when Assign     then node.value.as?(BeginNode)
       when OpAssign   then node.value.as?(BeginNode)
       when CondAssign then node.value.as?(BeginNode)
-      else                 nil
       end
     end
 

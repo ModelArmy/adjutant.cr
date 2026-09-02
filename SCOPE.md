@@ -1318,37 +1318,29 @@ individually.
 
 ### Tooling
 
-- **Eleven ameba rule classes are excluded per-file rather than
+- **Eleven ameba rule classes were excluded per-file rather than
   fixed.** Added 2026-09-01, when the `Effect` rename forced an ameba
-  bump from 1.6.4 to 1.7.0 and the new version reported warnings across
-  a large part of `src/`. CI linting was briefly disabled entirely,
-  then restored by generating `.ameba.yml` with `--gen-config` so the
-  gate runs again and only the known-failing (rule, file) pairs are
-  skipped.
+  bump from 1.6.4 to 1.7.0 and the new version reported warnings
+  across a large part of `src/`. Deferred until after the `add-legate`
+  merge so the warnings would not have to be fixed twice, over two
+  partly-overlapping sets of files.
 
-  Why deferred rather than fixed on the spot: the warnings would have
-  to be fixed twice. `add-legate` carries eighteen source files that do
-  not exist on this branch and have never been linted by 1.7.0 either,
-  so a sweep now covers a set that only partly overlaps the one that
-  will need sweeping after the merge. One pass afterwards is strictly
-  less work and lands as a single reviewable commit rather than a
-  cleanup tangled into a refactor.
+  **Cleared 2026-09-02.** `.ameba.yml` now carries no exclusions at
+  all. Of the eighteen warnings that survived `--fix`: eight
+  `Lint/ElseNil` and six stale `Lint/UnneededDisableDirective` were
+  mechanical; `Lint/UselessAssign` and `Lint/VoidOutsideLib` were one
+  each; and three `Metrics/CyclomaticComplexity` were real. Two of
+  those three were split into genuinely separate methods
+  (`NetRule.parse` into its two accepted spellings,
+  `RiskWalker#walk_super_target` into its singleton and instance
+  branches) rather than silenced. The third, `bootstrap_regexp`, took
+  an inline `ameba:disable` with a stated reason, matching the
+  convention `range.cr` and `helpers.cr` already use: its branch count
+  comes from how many methods `Regexp` has, not from tangled logic.
 
-  **Trigger: the `add-legate` merge.** Do it as its own commit, then
-  delete the exclusions from `.ameba.yml` rule by rule as each is
-  cleared — the generated file's own header says the same thing, and
-  the file is worthless as a record once it stops shrinking.
-
-  Note the property that makes this safe to leave: exclusions are
-  scoped to individual files, so any NEW file is fully linted, and an
-  excluded file is still checked by every other rule. New code does not
-  inherit the debt. The rules currently excluded somewhere:
-  `Lint/ElseNil`, `Lint/UnneededDisableDirective`, `Lint/UselessAssign`,
-  `Lint/VoidOutsideLib`, `Lint/WhitespaceAroundMacroExpression`,
-  `Metrics/CyclomaticComplexity`, `Style/HeredocIndent`,
-  `Style/RedundantNilInControlExpression`, `Style/RedundantSelf`,
-  `Style/VerboseNilType`. `risk_walker.cr`, `vm.cr` and `compiler.cr`
-  account for most of the entries.
+  Keep the file empty. A per-file exclusion turns a rule off for code
+  nobody has looked at yet, including code written later — which is
+  how the 1.7.0 warnings reached eighteen files in the first place.
 
 ## Deliberate non-goals
 

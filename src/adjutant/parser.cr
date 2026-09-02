@@ -739,7 +739,6 @@ module Adjutant
       )
     end
 
-    # ameba:disable Metrics/CyclomaticComplexity
     private def parse_unary : Node
       l, c = line, col
       case current_kind
