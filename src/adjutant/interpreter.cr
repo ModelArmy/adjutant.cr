@@ -266,7 +266,7 @@ module Adjutant
                      format : DiagnosticRenderer::Format = DiagnosticRenderer::Format::Markdown,
                      filename : String? = nil) : String?
       diag = error.diagnostic
-      return nil unless diag
+      return unless diag
       DiagnosticRenderer.new(sources, report_url).render(diag, format, filename)
     end
 
@@ -357,10 +357,10 @@ module Adjutant
              when val.array?  then "Array"
              when val.hash?   then "Hash"
              when val.symbol? then "Symbol"
-             else                  return nil
+             else                  return
              end
       sym = @symbols.lookup(name)
-      return nil unless sym
+      return unless sym
       @globals[sym.value]?.try(&.as_rclass?)
     end
 
@@ -392,7 +392,7 @@ module Adjutant
     # bootstrap-ordering state, not necessarily a bug.
     def find_builtin_class(name : String) : RubyClass?
       sym = @symbols.lookup(name)
-      return nil unless sym
+      return unless sym
       @globals[sym.value]?.try(&.as_rclass?)
     end
 

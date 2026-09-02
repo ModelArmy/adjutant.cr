@@ -1,8 +1,8 @@
 module Adjutant
   # The raw storage union for a Value.
   # Crystal's union type carries its own discriminant — no separate tag needed.
-  alias ValueRaw = Nil | Bool | Int64 | Float64 | String | Sym | ScriptProc |
-                   LabeledArray | LabeledHash | RubyClass | RubyObject
+  alias ValueRaw = Bool | Int64 | Float64 | String | Sym | ScriptProc |
+                   LabeledArray | LabeledHash | RubyClass | RubyObject?
 
   # The core runtime value type for the Adjutant interpreter.
   #

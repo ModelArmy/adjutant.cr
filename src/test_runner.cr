@@ -220,10 +220,10 @@ end
 
 # main -------
 USAGE = <<-TEXT
-Usage: test_runner [--help] [SCRIPTS_PATH]
-  Run all scripts in the SCRIPTS_PATH folder
-  Searches in './spec/scripts' if SCRIPTS_PATH not specified
-TEXT
+  Usage: test_runner [--help] [SCRIPTS_PATH]
+    Run all scripts in the SCRIPTS_PATH folder
+    Searches in './spec/scripts' if SCRIPTS_PATH not specified
+  TEXT
 
 scripts_dir = ARGV.first? || File.join("spec/scripts")
 if Dir.exists?(scripts_dir)

@@ -344,8 +344,8 @@ module Adjutant
           # the common case and is passed through untouched.
           private def self.body_of(ncc : NativeCallContext) : String?
             given = ncc.kwargs.try(&.["body"]?)
-            return nil unless given
-            return nil if given.raw.nil?
+            return unless given
+            return if given.raw.nil?
             return given.as_string if given.string?
 
             if arr = given.as_array?
@@ -537,13 +537,13 @@ module Adjutant
 
         private def self.dotted_quad(text : String) : Array(Int32)?
           parts = text.split('.')
-          return nil unless parts.size == 4
+          return unless parts.size == 4
 
           octets = [] of Int32
           parts.each do |part|
             value = part.to_i32?
-            return nil unless value
-            return nil if value < 0 || value > 255
+            return unless value
+            return if value < 0 || value > 255
             octets << value
           end
           octets
@@ -553,11 +553,11 @@ module Adjutant
         # high group first, and either may be written short.
         private def self.hex_pair_octets(text : String) : Array(Int32)?
           groups = text.split(':')
-          return nil unless groups.size == 2
+          return unless groups.size == 2
           high = groups[0].to_i32?(16)
           low = groups[1].to_i32?(16)
-          return nil unless high && low
-          return nil if high < 0 || high > 0xFFFF || low < 0 || low > 0xFFFF
+          return unless high && low
+          return if high < 0 || high > 0xFFFF || low < 0 || low > 0xFFFF
           [(high >> 8) & 0xFF, high & 0xFF, (low >> 8) & 0xFF, low & 0xFF]
         end
 
@@ -732,7 +732,7 @@ module Adjutant
         # any body exists, which is the whole reason it can decide
         # whether to keep a connection or drop it.
         private def self.redirect_target_of(status : Int32, headers : Hash(String, String)) : String?
-          return nil unless {301, 302, 303, 307, 308}.includes?(status)
+          return unless {301, 302, 303, 307, 308}.includes?(status)
           location = headers["location"]? || headers["Location"]?
           location && !location.empty? ? location : nil
         end

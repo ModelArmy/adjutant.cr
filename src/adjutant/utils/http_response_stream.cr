@@ -131,7 +131,7 @@ module Adjutant
       # when the producer overwrites it with N+1. The allocation is
       # the price of the fiber boundary, and it is not optional.
       def next_chunk : Bytes?
-        return nil if @finished
+        return if @finished
 
         case message = @channel.receive
         in Chunk

@@ -131,7 +131,7 @@ module Adjutant
         private def self.build_entry(interp : Interpreter, entry_cls : RubyClass, path_cls : RubyClass,
                                      match : String, label : RiskFlowLabel?) : Value?
           info = File.info?(match, follow_symlinks: false)
-          return nil unless info
+          return unless info
           # `::Path.new(match).to_posix` — same fix, same reasoning as
           # `grep.cr`'s own identical line (added alongside this one,
           # once the SAME latent bug was confirmed there by a real

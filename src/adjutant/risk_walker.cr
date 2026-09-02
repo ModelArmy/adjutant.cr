@@ -150,9 +150,9 @@ module Adjutant
               when ConstPath then resolve_const_path(ns)
               else                nil
               end
-      return nil unless owner
+      return unless owner
       sym = @interp.symbols.lookup(node.name)
-      return nil unless sym
+      return unless sym
       owner.constants[sym.value]?.try(&.as_rclass?)
     end
 
@@ -1076,7 +1076,7 @@ module Adjutant
     # steps — nil here doesn't mean "unresolved," it means "not found
     # on self's own class specifically."
     private def walk_current_class_bare_call(sym_id : Int32, method : String, line : Int32) : RiskNode?
-      return nil unless cls = @current_self_class
+      return unless cls = @current_self_class
       if @current_self_is_singleton
         if script_method = cls.find_singleton_method(sym_id)
           return walk_script_method(script_method, line, cls, is_singleton: true)

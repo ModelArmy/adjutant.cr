@@ -2055,7 +2055,7 @@ module Adjutant
     # `begin`'s optional `else` clause. Split out of parse_begin purely
     # to keep its cyclomatic complexity down.
     private def parse_begin_else(rescue_clauses : Array(RescueClause)) : Body?
-      return nil unless at_kind?(TokenKind::KwElse)
+      return unless at_kind?(TokenKind::KwElse)
       # Matches real Ruby's own SyntaxError exactly (confirmed against
       # `irb`, 2026-08-07): `else` only means something as the "body
       # raised nothing" branch of an actual rescue/else pairing — a

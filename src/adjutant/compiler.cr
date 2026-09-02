@@ -167,7 +167,7 @@ module Adjutant
     # its lexical surroundings in Ruby, regardless of where it's
     # written), so that scope's own `parent` is already nil.
     def resolve_outer(name : String) : {Int32, Int32}?
-      return nil unless @is_block
+      return unless @is_block
       depth = 0
       scope = @parent
       while scope

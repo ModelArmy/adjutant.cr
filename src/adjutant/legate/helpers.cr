@@ -157,21 +157,21 @@ module Adjutant
       # `TypeError` — not a crash — if it's neither.
       def self.checked_int_kwarg(ncc : NativeCallContext, method : String, kwarg : String) : Int64?
         given = ncc.kwargs.try(&.[kwarg]?)
-        return nil unless given
+        return unless given
         return given.as_int if given.int?
         raise_kwarg_type_error(ncc, method, kwarg, "Integer", given)
       end
 
       def self.checked_bool_kwarg(ncc : NativeCallContext, method : String, kwarg : String) : Bool?
         given = ncc.kwargs.try(&.[kwarg]?)
-        return nil unless given
+        return unless given
         return given.as_bool if given.bool?
         raise_kwarg_type_error(ncc, method, kwarg, "true or false", given)
       end
 
       def self.checked_symbol_kwarg(ncc : NativeCallContext, method : String, kwarg : String) : Sym?
         given = ncc.kwargs.try(&.[kwarg]?)
-        return nil unless given
+        return unless given
         return given.as_sym if given.symbol?
         raise_kwarg_type_error(ncc, method, kwarg, "Symbol", given)
       end

@@ -2540,7 +2540,7 @@ module Adjutant
                             risk : RiskProfile, filename : String, line : Int32,
                             sensitivity : Sensitivity? = nil) : RiskFlowLabel?
       resolved_sensitivity = sensitivity || @risk_flow_policy.sensitivity_for(kind, origin)
-      return nil if resolved_sensitivity.none?
+      return if resolved_sensitivity.none?
 
       label = RiskFlowLabel.of(kind, origin, resolved_sensitivity)
 
@@ -3172,8 +3172,6 @@ module Adjutant
             end
           end
           copy_val
-        else
-          nil
         end
       when "to_s"
         recv = args.first? || Value.nil_value
@@ -3754,7 +3752,7 @@ module Adjutant
     # but VM shouldn't hard-fail if it does).
     private def builtin_class_by_name(name : String) : RubyClass?
       sym = @symbols.lookup(name)
-      return nil unless sym
+      return unless sym
       @globals[sym.value]?.try(&.as_rclass?)
     end
 
