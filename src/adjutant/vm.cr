@@ -6,7 +6,7 @@ require "./ast"
 require "./risk_flow_policy"
 require "./risk_flow_decision"
 require "./builtins/regexp"
-require "./legate/exceptions"
+require "./fatal_signal"
 
 module Adjutant
   # A compiled proc (method body or block).
@@ -2419,10 +2419,10 @@ module Adjutant
       # BlockBreakSignal's own comment for why this specific spot is
       # correct even for nested native calls with blocks of their own.
       ex.value
-    rescue ex : Legate::FatalSignal
-      # A fatal Legate condition (Denied/Exhausted/Aborted — LEGATE.md
-      # §9.2), raised by a Legate verb somewhere inside this native
-      # call (however deeply nested). Deliberately re-raised UNCHANGED,
+    rescue ex : FatalSignal
+      # A fatal condition (a denied grant, an exhausted budget, an
+      # abort — Legate's own tier is LEGATE.md §9.2), raised somewhere
+      # inside this native call, however deeply nested. Deliberately re-raised UNCHANGED,
       # not wrapped — the entire point of FatalSignal being a plain
       # Exception rather than a RuntimeError is that it must reach
       # past BOTH this method's own `rescue ex` catch-all below (which
@@ -2434,7 +2434,7 @@ module Adjutant
       # match it. This explicit clause exists only so the catch-all
       # below doesn't accidentally swallow it first; it does no
       # transformation of its own. See FatalSignal's own comment
-      # (legate/exceptions.cr) for the full reasoning.
+      # (fatal_signal.cr) for the full reasoning.
       raise ex
     rescue ex : RuntimeError
       raise ex

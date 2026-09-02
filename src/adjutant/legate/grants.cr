@@ -1,5 +1,6 @@
 require "yaml"
 require "../grants"
+require "../resource_limits"
 require "./net_rule"
 
 module Adjutant
@@ -55,7 +56,16 @@ module Adjutant
     # confirming this is the intended posture: the alternative (treat
     # an omitted per-run budget as an error, or as some implicit cap)
     # is defensible too, and the spec doesn't pin it down either way.
-    class Limits
+    # Extends the core per-run ceilings (`Adjutant::ResourceLimits` —
+    # wall clock, byte budgets, open-stream cap) with the PER-CALL
+    # caps, each named after the verb it bounds. Those stayed here on
+    # 2026-09-01 for the reason their names give away: `fetch_limit`
+    # cannot mean anything to a subsystem with no `fetch`.
+    #
+    # Subclassed rather than composed, matching Grants — a verb reads
+    # `grants.limits.read_limit` and `broker.budget` reads
+    # `limits.total_read` off the same object.
+    class Limits < ::Adjutant::ResourceLimits
       DEFAULT_READ_LIMIT  =  8_388_608_i64 # 8 MiB — §4.1
       DEFAULT_FETCH_LIMIT = 33_554_432_i64 # 32 MiB — §4.5
 
@@ -132,23 +142,18 @@ module Adjutant
       # endpoints in sequence, holds one or two), and far below any
       # ordinary process fd limit, so the cap bites long before the
       # OS does and says something useful when it does.
-      DEFAULT_MAX_OPEN_STREAMS = 64
 
       getter read_limit : Int64
       getter fetch_limit : Int64
       getter url_limit : Int64
       getter stream_limit : Int64
-      getter max_open_streams : Int32
-      getter memory : Int64?
-      getter wall_clock : Int32?
-      getter total_read : Int64?
-      getter total_write : Int64?
 
       def initialize(@read_limit = DEFAULT_READ_LIMIT, @fetch_limit = DEFAULT_FETCH_LIMIT,
                      @url_limit = DEFAULT_URL_LIMIT,
                      @stream_limit = DEFAULT_STREAM_LIMIT,
-                     @max_open_streams = DEFAULT_MAX_OPEN_STREAMS,
-                     @memory = nil, @wall_clock = nil, @total_read = nil, @total_write = nil)
+                     max_open_streams = DEFAULT_MAX_OPEN_STREAMS,
+                     memory = nil, wall_clock = nil, total_read = nil, total_write = nil)
+        super(max_open_streams, memory, wall_clock, total_read, total_write)
       end
     end
 

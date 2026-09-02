@@ -1,3 +1,4 @@
+require "../fatal_signal"
 require "../ruby_class"
 require "../native_callable"
 require "../risk_profile"
@@ -6,37 +7,14 @@ require "./helpers"
 
 module Adjutant
   module Legate
-    # A fatal Legate condition (`Legate::Denied`, `Legate::Exhausted`,
-    # `Legate::Aborted` — LEGATE.md §9.2). Deliberately a plain Crystal
-    # `Exception`, NOT `RuntimeError` — the same shape as `VM::BlockBreakSignal`
-    # (vm.cr) and for the same reason: the dispatch loop's per-instruction
-    # catch is typed `rescue ex : RuntimeError` specifically (vm.cr, the
-    # `execute` loop), and `call_native`'s own catch-all `rescue ex` (which
-    # would otherwise flatten an arbitrary Crystal exception into a
-    # script-catchable N001 diagnostic) is bypassed the same way
-    # `BlockBreakSignal` bypasses it — via an explicit, earlier `rescue ex :
-    # Legate::FatalSignal` clause in `call_native` that re-raises unchanged
-    # rather than wrapping. Neither catch point ever asks "does this match
-    # `Exception`" for a `FatalSignal` — the whole rescue-matching machinery
-    # (HandlerEntry, Op::PushError, RubyObject construction) is skipped
-    # entirely, not merely failed. This is what makes `rescue Exception => e`
-    # genuinely unable to catch it, not just discouraged from trying — the
-    # static gate (LEGATE.md §10.2) bans that syntax as the first line of
-    # defense, but the runtime guarantee does not depend on the gate being
-    # correct or even present.
-    #
-    # `kind` is one of `:denied`, `:exhausted`, `:aborted` — used by the
-    # single choke-point handler in call_native to know which Legate error
-    # class name to report under, and by specs to assert on cause without
-    # string-matching `message`.
-    class FatalSignal < Exception
-      getter kind : Symbol
-      getter data : Hash(String, String)
-
-      def initialize(@kind : Symbol, message : String, @data = Hash(String, String).new)
-        super(message)
-      end
-    end
+    # `FatalSignal` moved to core on 2026-09-01: `VM#call_native`
+    # rescues it by name, so core was reaching down into Legate for a
+    # type. Aliased here so `rescue Legate::FatalSignal` sites,
+    # LEGATE.md §9.2's naming and the verb comments referring to
+    # `Legate::FatalSignal` all stay accurate. See
+    # `src/adjutant/fatal_signal.cr` for the full reasoning on why it
+    # is a plain Exception rather than a RuntimeError.
+    alias FatalSignal = ::Adjutant::FatalSignal
 
     module Exceptions
       # Populates `legate`'s recoverable exception tier (`Legate::Error
