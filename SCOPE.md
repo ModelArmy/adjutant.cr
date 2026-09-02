@@ -324,23 +324,82 @@ forward.
 
   ### Interaction that does NOT move by itself
 
-  §10.1's grant inference walks the call graph for `Legate.*` names.
-  Once authorization is core with pluggable providers, that inference
-  must key on something REGISTERED rather than a hardcoded module
-  name — otherwise a second subsystem gets authorization but no static
-  manifest, which is exactly the asymmetry the manifest exists to
-  prevent.
+  §10.1's grant inference walks the call graph for `Legate.*` names,
+  emits the minimum policy a script requires, and refuses a run whose
+  offered policy grants more than that. It keys on the literal module
+  name. Once authorization is core with pluggable providers, that
+  inference must key on something REGISTERED instead — otherwise a
+  second provider gets full enforcement and no static manifest, which
+  is exactly the asymmetry the manifest exists to prevent.
+
+  Worked example, since one sentence understates it. Suppose a second
+  provider `Vault` gives scripts access to secrets, and a script does:
+
+      key = Vault.secret("stripe/live")
+      Legate.fetch("https://api.example.com", body: key)
+
+  At RUNTIME this is fully protected. `Vault.secret` is an
+  `EffectProvider`, so it goes through the same core Broker: same
+  wall-clock check, same perimeter decision, same
+  `declare_sensitivity`, same audit record, same RiskFlowPolicy. A
+  `Read`-authority rule on high-sensitivity data fires exactly as it
+  would for `Legate.read`.
+
+  STATICALLY it is misdescribed, three ways:
+
+  - The inferred minimum policy mentions only `net`. It never says the
+    script needs a `vault` grant, because the walk does not know
+    `Vault` exists.
+  - Over-grant refusal inverts. The offered policy grants
+    `vault: [stripe/*]`; the inferred minimum does not mention
+    `vault`; so the comparison sees a grant the script supposedly does
+    not need, and either refuses a legitimate run or quietly treats
+    the unknown section as noise.
+  - The manifest under-reports. Whoever decides whether to run this is
+    told the script makes a network request. They are NOT told it
+    reads a live payment credential first — precisely the fact that
+    would change the answer.
+
+  So the failure mode is not an unprotected provider. It is the
+  pre-run picture and the runtime enforcement disagreeing, with the
+  pre-run picture being the one a human reads before consenting. A
+  script can be completely enforced and still misdescribed, and
+  nothing goes red when that happens: a second provider is added,
+  every spec passes, and the manifest simply goes quiet about it.
+
+  Fix shape: the walk collects calls to any REGISTERED provider's
+  module rather than a hardcoded `Legate`, and each provider maps its
+  own verbs to the authorities it declares — which is what finally
+  makes `EffectProvider#authorities` load-bearing rather than
+  documentation.
+
+  **Do this WITH piece 4, not before it.** The walk needs to know
+  which providers exist and what each one's config section is called,
+  which is the same registry the config merge introduces; doing it
+  first would mean inventing half a registry and reworking it a step
+  later.
 
   ### Order, and why the config is last
 
   Four separable pieces, to be landed and tested independently:
 
   1. Perimeter to core (`Grants`, the `check_*` predicates,
-     `Decision`).
-  2. Run accounting to core (the run-level half of `Limits`,
-     `OpenSources`, `max_open_streams`).
-  3. The broker sequence to core, with pluggable resolvers and
-     `AuditRecord` rekeyed on `Authority`.
+     `Decision`). **Landed 2026-09-01.**
+  2. Run accounting to core (the run-level half of `Limits` as
+     `ResourceLimits`, plus `Budget`, `OpenSources` and
+     `FatalSignal`). **Landed 2026-09-01.**
+  3. The broker sequence to core as `Adjutant::Broker` — one per RUN,
+     shared by every provider, with `Legate::Broker` becoming the
+     first `EffectProvider` holding a reference to it, and
+     `AuditRecord` rekeyed on `Authority`. **Landed 2026-09-01.**
+
+     Note what piece 3 did NOT add, deliberately: a resolver registry.
+     Dispatch does not need one — a provider calls the broker itself
+     and supplies its perimeter decision through a block, which is
+     more precise than a lookup, since the provider knows which of its
+     own predicates applies and core does not. The registry earns its
+     place in piece 4, where the config and the inference need to
+     ITERATE providers rather than dispatch to them.
   4. **One config document.** `RiskFlowPolicy` is JSON and
      agent-constructed; `Grants` parses YAML. Two formats for one
      document is history, not design. Last because it is the only
