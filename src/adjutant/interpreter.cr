@@ -70,6 +70,10 @@ module Adjutant
     getter grants : Legate::Grants
     getter broker : Legate::Broker
 
+    # The run's shared authorization sequence. Legate is the only
+    # provider today; `broker` above is its provider wrapper.
+    getter effect_broker : Adjutant::Broker
+
     # Source of every script this interpreter has parsed, keyed by
     # filename. Populated by `eval`/`compile`, including files pulled
     # in by `require`, whose diagnostics name a different file than
@@ -108,7 +112,12 @@ module Adjutant
       @modules = ModuleRegistry.new
       @globals = {} of Int32 => Value
       @risk_flow_log = RiskFlowLog.new(enabled: risk_flow_tracking)
-      @broker = Legate::Broker.new(@grants)
+      # One authorization sequence per run, shared by every provider —
+      # see Adjutant::Broker's own comment on why per-provider brokers
+      # would split the run's budget and audit log. Legate is the only
+      # provider today; a second one takes this same instance.
+      @effect_broker = Adjutant::Broker.new(@grants.limits)
+      @broker = Legate::Broker.new(@grants, @effect_broker)
       bootstrap_core_hierarchy
       # @main must be assigned here, right after object_class first
       # becomes valid — NOT after bootstrap_error_classes/
@@ -226,7 +235,7 @@ module Adjutant
         # closed" would be strictly worse for whoever is debugging.
         # Nothing consumes the returned array yet — an embedder-facing
         # cleanup-failure hook is a real question and a separate one.
-        @broker.open_sources.close_all
+        @effect_broker.open_sources.close_all
       end
     end
 

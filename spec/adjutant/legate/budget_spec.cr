@@ -106,8 +106,8 @@ module Adjutant
 
     it "appends in call order" do
       log = Legate::AuditLog.new
-      log.append(Legate::AuditRecord.new("read", "/a", :read, :allowed))
-      log.append(Legate::AuditRecord.new("write", "/b", :write, :denied))
+      log.append(Legate::AuditRecord.new("read", "/a", Authority::Read, :allowed))
+      log.append(Legate::AuditRecord.new("write", "/b", Authority::Write, :denied))
       log.records.map(&.verb).should eq ["read", "write"]
     end
   end
@@ -123,7 +123,7 @@ module Adjutant
 
         record = broker.audit_log.records.last
         record.verb.should eq "read"
-        record.grant.should eq :read
+        record.authority.should eq Authority::Read
         record.decision.should eq :allowed
         record.exception_class.should be_nil
         record.subject.should eq file

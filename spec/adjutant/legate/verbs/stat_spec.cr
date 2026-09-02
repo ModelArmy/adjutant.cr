@@ -107,7 +107,7 @@ module Adjutant
         interp.eval(%(Legate.stat(#{(file).inspect})))
         record = interp.broker.audit_log.records.last
         record.verb.should eq "read"
-        record.grant.should eq :read
+        record.authority.should eq Authority::Read
         record.decision.should eq :allowed
       end
     end
