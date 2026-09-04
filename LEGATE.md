@@ -19,8 +19,8 @@ Section                                  |Status       |Notes
 §1–§3 principles, conventions, type index|Built        |                                                                               
 §4.1 reading                             |Built        |`read` `stat` `list` `grep`                                                    
 §4.2 streaming reads                     |Built        |`lines` `bytes` `records`                                                      
-§4.3 writing                             |Built        |`write` `append` `mkdir` `cp`                                                  
-§4.4 destruction                         |Built        |`rm` `mv`                                                                      
+§4.3 writing                             |Built        |`write` `write!` `append` `mkdir` `cp` `cp!`                                   
+§4.4 destruction                         |Built        |`rm` `rmdir` `rmdir!` `mv` `mv!`; "`rm` subsumes `rmdir`" reversed 2026-09-04  
 §4.5 network                             |Built        |`fetch`; streamed request body still open                                      
 §4.6 execution                           |NOT BUILT    |No `run` verb. `authorize_exec`/`check_binary` exist and are unused            
 §4.7 ambient                             |NOT BUILT    |None of `scratch` `env` `now` `random` `log` `fail`                            
@@ -39,8 +39,12 @@ Section                                  |Status       |Notes
 §10 static analyser                      |NOT BUILT    |No part of it. See §10's own note                                              
 §11 surface count                        |ASPIRATIONAL |Counts the specified surface, not the built one                                
 
-**What exists today is 14 verbs, not 21**, no submodules, and no static
-analyser. Everything else in §1–§9 is real.
+**What exists today is 19 verbs, not 21**, no submodules, and no static
+analyser. Everything else in §1–§9 is real. The 19 is not 2026-09-02's
+14 plus five new capabilities: `write!`/`cp!`/`mv!` are the old
+behaviour of `write`/`cp`/`mv` under a new name, and `rmdir`/`rmdir!`
+are the old `rm`'s directory cases. The verb COUNT grew; the surface's
+reach did not.
 
 ---
 
@@ -185,11 +189,15 @@ Because `rescue => e` catches only `StandardError`, idiomatic Ruby cannot accide
 
 Three cases where failure is an ordinary answer rather than an error. Each is a deliberate exception to §2.1 and MUST be documented as such at the call site.
 
-Case                            |Returns           |Why                                                                
---------------------------------|------------------|-------------------------------------------------------------------
-`Legate.stat` on a missing path |`nil`             |"Does this exist" is a question with a negative answer             
-HTTP non-2xx from `Legate.fetch`|`Legate::Response`|A status code is data about the response, not a failure of the call
-`Legate.rm` on a missing path   |`0`               |Removal is idempotent; the postcondition holds                     
+Case                             |Returns           |Why                                                                
+---------------------------------|------------------|-------------------------------------------------------------------
+`Legate.stat` on a missing path  |`nil`             |"Does this exist" is a question with a negative answer             
+HTTP non-2xx from `Legate.fetch` |`Legate::Response`|A status code is data about the response, not a failure of the call
+`Legate.rm` on a missing path    |`false`           |Removal is idempotent; the postcondition holds                     
+`Legate.rmdir` on a missing path |`false`           |As above                                                           
+`Legate.rmdir!` on a missing path|`0`               |As above; a count rather than a Bool, so `0` rather than `false`   
+
+All three delete verbs agree, and differ only in how they spell the non-result — which follows each one's return type, not any difference in meaning. Note the contrast with `Legate.cp`/`Legate.mv`, whose missing SOURCE raises `Legate::NotFound`: "make sure this isn't here" has already succeeded if it was never here, whereas "move this thing" with no thing to move is impossible. Deliberate, not an inconsistency.
 
 The general rule: **the outcome of the operation raises; the content of the result is data.**
 
@@ -249,8 +257,8 @@ write "out.json", rows.map { it[:id] }.to_json
 Submodule        |Grant    |Verbs                                                
 -----------------|---------|-----------------------------------------------------
 `Legate::Read`   |`read`   |`read` `stat` `list` `grep` `lines` `bytes` `records`
-`Legate::Write`  |`write`  |`write` `append` `mkdir` `cp`                        
-`Legate::Delete` |`delete` |`rm` `mv`                                            
+`Legate::Write`  |`write`  |`write` `write!` `append` `mkdir` `cp` `cp!`         
+`Legate::Delete` |`delete` |`rm` `rmdir` `rmdir!` `mv` `mv!`                     
 `Legate::Net`    |`net`    |`fetch`                                              
 `Legate::Exec`   |`exec`   |`run`                                                
 `Legate::Ambient`|`ambient`|`scratch` `env` `now` `random` `log` `fail`          
@@ -430,29 +438,64 @@ Note the timing: these verbs raise `NotFound` and `Denied` **eagerly**, at const
 
 ```ruby
 Legate.write(path, data)   -> Integer   # bytes written
+Legate.write!(path, data)  -> Integer
 Legate.append(path, data)  -> Integer
 ```
-`data` is a `String` or any Enumerable of Strings, including a Legate stream — so a pipeline never materialises merely to reach disk. Parent directories are created automatically. `write` MUST be atomic: temporary file in the same directory, `fsync`, then `rename`.
+`data` is a `String` or any Enumerable of Strings, including a Legate stream — so a pipeline never materialises merely to reach disk. Parent directories are created automatically. Both write verbs MUST be atomic: temporary file in the same directory, `fsync`, then `rename`.
 **Raises** `Conflict`, `Exhausted` (fatal, on write-budget breach).
 
 ```ruby
 Legate.mkdir(path)                       -> Legate::Path
 Legate.cp(from, to, recursive: false)    -> Legate::Path
+Legate.cp!(from, to, recursive: false)   -> Legate::Path
 ```
 `mkdir` is always recursive and always idempotent — it succeeds on an existing directory, removing the `unless exist?` dance from every script.
 **Raises** `NotFound` (`cp` source), `Conflict`.
 
+#### Replacement is opt-in: the bang convention
+
+**A verb that would destroy an existing destination refuses; its bang variant does it.** `write`, `cp` and `mv` (§4.4) raise `Legate::Conflict` when the destination already exists. `write!`, `cp!` and `mv!` replace it. The suffix means exactly one thing across the whole surface: *do the more destructive thing you would otherwise refuse.*
+
+The rule exists because the perimeter cannot catch this class of loss. A destination inside a granted write root is precisely what the grant permits, so `Grants` answers yes and the previous content is gone — there is no layer below the verb that notices. Making replacement the default meant a script that merely got a path wrong destroyed a file silently, while declaring itself `Reversibility::Yes` (§10) as it did so.
+
+Three consequences worth stating outright:
+
+- **The refusal is recoverable.** `Conflict` is a `StandardError` (§9.1), so a script can rescue it and choose another destination. Nothing has happened when it fires: a refused `mv` leaves the source where it was.
+- **A bang is not a way around the perimeter.** Both variants take identical authorizations. The bang governs what the verb will do to a destination it is already permitted to write.
+- **The bang does not lift every refusal.** `write!` still refuses a directory target; `cp!` and `mv!` still refuse to replace a file with a directory or the reverse. Replacing like with unlike is never what a caller meant. `cp!` replaces a non-empty destination directory wholesale — it does not merge into it — while `mv!` refuses one, because `rename`'s behaviour there depends on whether the two paths share a filesystem and a verb whose effect turns on that is worse than one that refuses.
+
+`cp`'s `recursive:` kwarg is unaffected and coexists with the bang, because the two ask different questions: `recursive:` governs the SOURCE (may I walk a tree), the bang governs the DESTINATION (may I destroy what is there). `cp!(from, to, recursive: true)` says both, separately. §4.4's delete verbs have no destination, so the two questions collapse there — which is why they split by name instead.
+
 ### 4.4 Destruction — grant `delete`
 
 ```ruby
-Legate.rm(path, recursive: false)  -> Integer   # entries removed
-Legate.mv(from, to)                -> Legate::Path
+Legate.rm(path)      -> Bool      # a file; true if one was removed
+Legate.rmdir(path)   -> Bool      # an EMPTY directory
+Legate.rmdir!(path)  -> Integer   # a whole tree; entries removed
+Legate.mv(from, to)  -> Legate::Path
+Legate.mv!(from, to) -> Legate::Path
 ```
-`rm` subsumes `rmdir` and `unlink`; without `recursive:` it raises `Legate::Conflict` on a non-empty directory. `rm` on a missing path returns `0` (§2.3).
+
+**Three delete verbs, not one with a flag.** This REVERSES an earlier version of this section, which specified a single `rm(path, recursive: false)` that subsumed `rmdir` and `unlink`. Recursion only ever means directory-tree walking, so `recursive:` was always mis-attached to a verb that also deletes single files — `rm("f.txt", recursive: true)` is a sentence with no meaning. That was tolerable while `recursive:` was Legate's only modifier. It stopped being tolerable once §4.3 established the bang, because `rm!` would then have had to mean "recursive": a second, unrelated sense of the same suffix, in the same module, three verbs apart. The extra names are what keep the bang meaning one thing.
+
+The three partition the target space exactly, and every refusal is a `Conflict` naming the verb that would have worked — a script that picks wrong is always one word from correct:
+
+Called on         |`rm`                |`rmdir`              |`rmdir!`             
+------------------|--------------------|---------------------|---------------------
+a file            |removes it, `true`  |`Conflict` → `rm`    |`Conflict` → `rm`    
+an empty directory|`Conflict` → `rmdir`|removes it, `true`   |removes it, `1`      
+a non-empty tree  |`Conflict` → `rmdir`|`Conflict` → `rmdir!`|removes it, the count
+nothing           |`false`             |`false`              |`0`                  
+
+`rm` returns a Bool rather than a count: a files-only verb can only ever remove one thing, and `if Legate.rm(p) > 0` is a clumsy spelling of a yes/no. The count survives on `rmdir!`, where "how many" is worth knowing. All three are idempotent on a missing path (§2.3).
+
+**Symlinks are never followed by any of the three** — they remove the LINK, never what it points at. For `rmdir!` this extends to the walk: it does not descend into a symlinked directory inside the tree. That last point is the load-bearing one, because the perimeter authorizes the tree's root, not every entry the walk reaches.
 
 `mv` requires **both** `delete` on the source and `write` on the destination, because a move both destroys and creates. A script holding `write` but not `delete` can achieve a move only as `cp` followed by `rm`, which it cannot do; a script holding `delete` but not `write` is equally refused, since otherwise it could place content at any path it can name while holding no write grant at all. The grants exist precisely to be separable, and that cuts both ways.
 
 Creating data and destroying it are different authorities, and policies routinely want to grant the first without the second. Splitting them also means a script that deletes announces the fact in its manifest line (§2.7).
+
+Note that this is an argument about the AUTHORITY a move needs, not about what survives one. A move destroys nothing: `mv` declares `Effect::MovesFiles` alone and is `Reversibility::Yes`, since `rename` preserves the information and the cross-device fallback is ordered copy-then-delete so a partway failure duplicates rather than loses. `mv!` additionally declares `DeletesFiles`, honestly, for the destination it clobbers. The asymmetry between authority and effect is deliberate; nothing infers one from the other.
 **Raises** `NotFound` (`mv` source), `Conflict`.
 
 ### 4.5 Network — grant `net`
@@ -926,7 +969,7 @@ Three uses:
 
 Group                                     |Count                              
 ------------------------------------------|-----------------------------------
-Verbs on `Legate`                         |21                                 
+Verbs on `Legate`                         |26                                 
 Submodules (one per grant, optional sugar)|6                                  
 Value types                               |6                                  
 Methods across all value types            |~48                                
@@ -935,10 +978,12 @@ Grant kinds                               |6
 Exception classes                         |10 (7 recoverable, 3 fatal)        
 
 > **These are the counts for the SPECIFIED surface, not the built
-> one.** As of 2026-09-02 there are **14 verbs** (§4.6's `run` and
+> one.** As of 2026-09-04 there are **19 verbs** (§4.6's `run` and
 > §4.7's six ambient verbs do not exist), **no submodules**, and one
 > value type — `Legate::Exit` — that nothing yet produces. §0.
 
-Roughly **116 names**, of which about 40 are Enumerable methods the model already knows perfectly, and 10 are exception classes whose handling follows ordinary Ruby reflexes. The 6 submodules are optional and need not be learned at all. The genuinely novel vocabulary is the 21 verbs and 6 types — comfortably a single page of context.
+Roughly **121 names**, of which about 40 are Enumerable methods the model already knows perfectly, and 10 are exception classes whose handling follows ordinary Ruby reflexes. The 6 submodules are optional and need not be learned at all. The genuinely novel vocabulary is the 26 verbs and 6 types — comfortably a single page of context.
+
+Five of those verbs are bangs, and they cost a reader almost nothing: the suffix means one thing everywhere it appears (§4.3), so learning it once covers `write!`, `cp!` and `mv!`, while `rmdir!` is the same idea applied to a tree. A script author who never writes a bang is never wrong, only occasionally refused.
 
 Nothing in §1.3 requires explanation, which is the point: a Legate script is a Ruby script whose standard library has been replaced. The only guidance an author needs is the verb table and the removal list, and the removal list teaches itself at the first collision (§8.6).
