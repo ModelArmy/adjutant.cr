@@ -1097,6 +1097,53 @@ individually.
   `Legate` design work (see `LEGATE.md`) — this entry can be removed
   once `Legate` implementation lands.
 
+### Static risk assessment
+
+- **A `RiskChoice` reports its worst branch, so effects reachable only
+  on a losing branch vanish from the manifest entirely.** Found
+  2026-09-04, while writing the step 4c sweep — the first draft of its
+  end-to-end assertion assumed a union and failed, which is how the
+  behaviour surfaced. `RiskAggregator.summarize_choice`
+  (`risk_aggregator.cr`) takes `max_by { rank }` across branches: one
+  summary wins whole, and the others contribute nothing.
+
+  **The reasoning is sound for severity and does not obviously extend
+  to effects.** Exactly one branch of an `if` runs, so reporting the
+  worst `Severity`/`Reversibility` is honest where unioning them would
+  overstate how bad a single run can be. But `rank` orders by those
+  two fields alone, and both are CONCLUSIONS drawn from effects — so
+  the effect SET is carried along by whichever branch happened to win
+  on other grounds, rather than being reasoned about at all. Where two
+  branches rank equally the tie goes to the first, which makes the
+  reported effects a function of source order.
+
+  The concrete case, now pinned in
+  `spec/adjutant/legate/risk_assessment_spec.cr`: a script whose
+  `else` branch calls `Legate.rmdir!` reports `NetworkEgress` and
+  nothing else, because the `if` branch's `Legate.fetch` ranks equal
+  and comes first. A user reading that manifest before running the
+  script is not told a recursive delete is reachable.
+
+  **The likely shape of a fix is worst-rank-with-full-effect-union** —
+  keep the current severity and reversibility semantics exactly, union
+  the effects across branches. That answers both questions the
+  manifest is actually asked ("how bad can one run be" and "what could
+  this script touch") without conflating them. Two things to check
+  before assuming it is that easy: `RiskSummary#path` currently
+  describes a single winning branch and would need to say something
+  coherent about effects that came from elsewhere, and
+  `summarize_deferred`/`RiskUnresolved` already deliberately over-
+  report on the "can't confirm, surface loudly" principle — which
+  points the same way, and is worth reconciling explicitly rather than
+  by coincidence.
+
+  Related to §10.1's provider-registry work: `SCOPE`'s own `Vault`
+  example is about a manifest going silent while enforcement keeps
+  working, and this is the same failure reached by a different route.
+  Not blocking anything today — the static pass is advisory, and
+  runtime enforcement is unaffected, since `VM#call_native` fires from
+  the call itself regardless of AST position.
+
 ### Legate
 
 - **The pinned socket's TLS path is only exercised when a transcript
