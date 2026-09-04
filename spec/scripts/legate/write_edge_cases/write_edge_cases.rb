@@ -7,16 +7,31 @@ require "assert"
 WORKSPACE = Legate::Path.new(__FILE__).parent / "workspace"
 Legate.mkdir(WORKSPACE)
 
-# --- write's atomicity: a failed write leaves ORIGINAL content untouched ---
+# --- write!'s atomicity: a failed write leaves ORIGINAL content untouched ---
 #
 # The 3rd element of the Array (42, not a String) makes this write
 # fail partway through — write.cr's own atomicity means the ALREADY-
 # EXISTING file at `target` is never touched at all by a write that
 # ultimately fails; only the discarded temp file ever saw the bad
 # data.
+#
+# `write!`, not `write`, and the bang is the whole point of the test:
+# the plain verb now refuses an existing destination outright, so it
+# could never reach the atomicity path this block exercises. Only the
+# replacing verb can fail PARTWAY THROUGH replacing something, which
+# is precisely the case where atomicity has to hold — the bang is the
+# one that needs this guarantee, and now the one that is checked for
+# it.
 target = WORKSPACE / "atomic.txt"
 Legate.write(target, "original content")
-assert_raise(TypeError) { Legate.write(target, ["a", 42, "c"]) }
+assert_raise(TypeError) { Legate.write!(target, ["a", 42, "c"]) }
+assert_equal("original content", Legate.read(target))
+
+# The plain verb's refusal, on the same already-occupied path — the
+# other half of the split, checked here rather than left to the
+# Crystal-level spec, since this file is where a script author reads
+# what the two verbs do differently.
+assert_raise(Legate::Conflict) { Legate.write(target, "clobbered") }
 assert_equal("original content", Legate.read(target))
 
 # --- no .tmp file is ever left behind, success or failure ---
