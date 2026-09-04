@@ -44,6 +44,34 @@ module Adjutant
       #     `write` performs; leaving it non-atomic would be a
       #     surprising regression for a verb whose entire point is
       #     "copy this file safely."
+      #
+      # ## Two verbs, not one: replacement is opt-in
+      #
+      # `cp` REFUSES an occupied destination; `cp!` replaces it. Both
+      # are registered here from one shared body, the same shape
+      # `write.cr` uses and for the same reason — the atomicity dance,
+      # the budget accounting and the chunk loop must not drift apart
+      # between them.
+      #
+      # This verb had TWO clobber sites, and the directory one was the
+      # more dangerous. `copy_file` renamed over an existing file, and
+      # `copy_directory` called `FileUtils.rm_rf(raw_to)` before its
+      # rename — so a recursive copy onto an existing directory
+      # DELETED THE WHOLE TREE and put its own in place. Not a merge,
+      # which is what a `cp -r` habit expects, and not recoverable.
+      # Both sites declared `Reversibility::Yes` / `Severity::Info`
+      # while doing it, and the perimeter cannot catch either: a
+      # destination inside a granted write root is exactly what the
+      # grant permits.
+      #
+      # `recursive:` STAYS on both verbs, and the two flags are
+      # orthogonal by design: `recursive:` is about the SOURCE (may I
+      # walk a tree), the bang is about the DESTINATION (may I destroy
+      # what is already there). `cp!(from, to, recursive: true)` says
+      # both, and says them separately. That orthogonality is exactly
+      # what `rm` lacks today — a single `recursive:` flag doing duty
+      # for both questions — and is why `rm` splits by NAME rather
+      # than growing a bang of its own.
       module Cp
         # 64 KiB — matches `bytes.cr`'s own `DEFAULT_CHUNK_SIZE`, for
         # the same reason: large enough to not be silly, small enough
@@ -57,12 +85,38 @@ module Adjutant
           conflict = Helpers.fetch(legate, interp, "Conflict")
           path_cls = Helpers.fetch(legate, interp, "Path")
 
+          register(interp, legate, broker, not_found, conflict, path_cls, clobber: false)
+          register(interp, legate, broker, not_found, conflict, path_cls, clobber: true)
+        end
+
+        # One body, registered twice — `clobber` selects the name, the
+        # risk profile and the destination rule, and nothing else.
+        private def self.register(interp : Interpreter, legate : RubyClass, broker : Broker,
+                                  not_found : RubyClass, conflict : RubyClass, path_cls : RubyClass,
+                                  clobber : Bool) : Nil
+          name = clobber ? "cp!" : "cp"
+
+          profile = if clobber
+                      # `DeletesFiles` is the honest declaration for
+                      # both clobber paths: a replaced file's previous
+                      # content is gone, and a replaced DIRECTORY is
+                      # an `rm_rf` of a tree the script never named.
+                      # Same reasoning `write!` and `mv!` carry it.
+                      RiskProfile.new(
+                        effects: Set{Effect::ReadsFiles, Effect::WritesFiles, Effect::DeletesFiles},
+                        reversible: Reversibility::No,
+                        severity: Severity::Warning,
+                      )
+                    else
+                      RiskProfile.new(effects: Set{Effect::ReadsFiles, Effect::WritesFiles})
+                    end
+
           legate.define_native_singleton_method(
-            interp.symbols.intern("cp").value,
-            RiskProfile.new(effects: Set{Effect::ReadsFiles, Effect::WritesFiles}),
+            interp.symbols.intern(name).value,
+            profile,
             Set{"recursive"},
           ) do |args, _blk, ncc|
-            recursive = recursive_flag(ncc)
+            recursive = recursive_flag(ncc, name)
 
             from_val = args[1]? || Value.nil_value
             from_str_val = ncc.call_method(from_val, "to_s", [] of Value)
@@ -93,18 +147,49 @@ module Adjutant
             end
 
             if from_info.directory?
-              copy_directory(raw_from, raw_to, recursive, broker, ncc, conflict)
+              copy_directory(raw_from, raw_to, recursive, broker, ncc, conflict, name, clobber)
             else
-              copy_file(raw_from, raw_to, broker, ncc, conflict)
+              copy_file(raw_from, raw_to, broker, ncc, conflict, name, clobber)
             end
 
             Legate::Path.from_string(interp, path_cls, ::Path.new(raw_to).to_posix.to_s, label)
           end
         end
 
-        private def self.recursive_flag(ncc : NativeCallContext) : Bool
-          given = Helpers.checked_bool_kwarg(ncc, "Legate.cp", "recursive")
+        private def self.recursive_flag(ncc : NativeCallContext, name : String) : Bool
+          given = Helpers.checked_bool_kwarg(ncc, "Legate.#{name}", "recursive")
           given.nil? ? false : given
+        end
+
+        # The destination rule for the non-clobbering verbs, shared by
+        # both the file and directory paths so they cannot disagree.
+        #
+        # `follow_symlinks: false`, matching `write.cr`'s own
+        # `check_destination` and for the same verified reason: a link
+        # pointing OUT of every granted root is already denied by
+        # `check_root_maybe_missing`, which realpaths the deepest
+        # existing ancestor. What not-following buys here is the
+        # DANGLING link, which resolves to a prospective in-root path
+        # and so is allowed by the perimeter — following it would
+        # report nothing at the destination and let the copy replace
+        # the link with a regular file.
+        #
+        # Called AFTER the source checks (`NotFound`, and the
+        # directory-without-`recursive:` refusal) deliberately. Both
+        # of those are about whether the call makes sense at all; an
+        # occupied destination is only interesting once it does, and a
+        # script that got `recursive:` wrong should be told that
+        # rather than being told about the destination.
+        private def self.refuse_occupied_destination(raw_to : String, name : String,
+                                                     ncc : NativeCallContext, conflict : RubyClass) : Nil
+          info = File.info?(raw_to, follow_symlinks: false)
+          return unless info
+
+          kind = info.directory? ? "a directory" : "a file"
+          ncc.raise_error_class(
+            "#{raw_to} already exists and is #{kind}; Legate.#{name} won't replace it — use Legate.cp! to overwrite",
+            conflict,
+          )
         end
 
         # `recursive: false` (the default) against a directory SOURCE
@@ -114,12 +199,18 @@ module Adjutant
         # (copying a huge directory tree because `from` happened to be
         # a directory would be a nasty surprise without this).
         private def self.copy_directory(raw_from : String, raw_to : String, recursive : Bool,
-                                        broker : Broker, ncc : NativeCallContext, conflict : RubyClass) : Nil
+                                        broker : Broker, ncc : NativeCallContext, conflict : RubyClass,
+                                        name : String, clobber : Bool) : Nil
           unless recursive
-            ncc.raise_error_class("#{raw_from} is a directory; Legate.cp needs recursive: true to copy it", conflict)
+            ncc.raise_error_class("#{raw_from} is a directory; Legate.#{name} needs recursive: true to copy it", conflict)
           end
+
+          unless clobber
+            refuse_occupied_destination(raw_to, name, ncc, conflict)
+          end
+
           if File.exists?(raw_to) && !File.directory?(raw_to)
-            ncc.raise_error_class("#{raw_to} exists and is not a directory; Legate.cp can't copy a directory there", conflict)
+            ncc.raise_error_class("#{raw_to} exists and is not a directory; Legate.#{name} can't copy a directory there", conflict)
           end
 
           dest_parent = File.dirname(raw_to)
@@ -152,6 +243,14 @@ module Adjutant
             # `temp_dir` living in `to`'s own parent directory is what
             # makes this hold, same reasoning as `write.cr`'s own temp
             # file placement.
+            # REPLACES the destination tree; it does not merge into
+            # it. Only reachable from `cp!` now — the plain verb
+            # refused an occupied destination above — but the
+            # distinction is worth stating outright even for the bang,
+            # because a `cp -r` habit expects a merge and this is the
+            # one place where an unexamined analogy to the shell tool
+            # costs a whole directory. `DeletesFiles` on `cp!`'s
+            # profile is this line.
             FileUtils.rm_rf(raw_to) if File.directory?(raw_to)
             File.rename(temp_dir, raw_to)
           rescue ex
@@ -194,9 +293,14 @@ module Adjutant
         # file copy can hit EITHER budget partway through, not only
         # once fully buffered.
         private def self.copy_file(raw_from : String, raw_to : String, broker : Broker,
-                                   ncc : NativeCallContext, conflict : RubyClass) : Nil
+                                   ncc : NativeCallContext, conflict : RubyClass,
+                                   name : String, clobber : Bool) : Nil
+          unless clobber
+            refuse_occupied_destination(raw_to, name, ncc, conflict)
+          end
+
           if File.directory?(raw_to)
-            ncc.raise_error_class("#{raw_to} is a directory; Legate.cp can't overwrite it with file content", conflict)
+            ncc.raise_error_class("#{raw_to} is a directory; Legate.#{name} can't overwrite it with file content", conflict)
           end
 
           dest_dir = File.dirname(raw_to)
