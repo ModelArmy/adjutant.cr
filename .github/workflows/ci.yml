@@ -43,7 +43,12 @@ jobs:
         run: shards check || shards install
 
       - name: Run tests
+        if: ${{ runner.os != 'Windows' }}
         run: crystal spec
+
+      - name: Run tests (Windows, verbose)
+        if: ${{ runner.os == 'Windows' }}
+        run: crystal spec --verbose
 
       # ---- Build and run test scripts
 
