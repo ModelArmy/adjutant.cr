@@ -43,7 +43,7 @@ jobs:
         run: shards check || shards install
 
       - name: Run tests
-        run: crystal spec -Dtest
+        run: crystal spec
 
       # ---- Build and run test scripts
 
