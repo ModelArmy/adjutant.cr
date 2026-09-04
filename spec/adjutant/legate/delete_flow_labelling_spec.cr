@@ -45,7 +45,7 @@ module Adjutant
   end
 
   describe "Legate delete-grant verbs and information flow control" do
-    it "Legate.rm: labels the returned count with the target's resolved sensitivity" do
+    it "Legate.rm: labels the returned Bool with the target's resolved sensitivity" do
       with_tmpdir do |dir|
         file = File.join(dir, "secret.txt")
         File.write(file, "shh")
@@ -53,7 +53,7 @@ module Adjutant
         interp, _ = make_interp(grants: delete_grants(dir), risk_flow_policy: policy)
 
         result = interp.eval(%(Legate.rm(#{file.inspect})))
-        result.as_int.should eq 1
+        result.as_bool.should be_true
         label = result.label.not_nil!
         label.sensitivity.should eq Sensitivity::High
         tag = label.tags.find! { |t| t.kind.file? }
@@ -61,24 +61,46 @@ module Adjutant
       end
     end
 
-    # The `0` path returns just as early as it can and still has to
-    # carry the label — a count of zero from a sensitive path is
-    # itself information about that path (it isn't there), and the
+    # The missing-path branch returns just as early as it can and
+    # still has to carry the label — a `false` from a sensitive path
+    # is itself information about that path (it isn't there), and the
     # early `next` in `rm.cr` is exactly the sort of place a label
-    # gets dropped by accident.
-    it "Legate.rm: labels the count even on the missing-path 0 return" do
+    # gets dropped by accident. Now checked on all three verbs, since
+    # each has its own early return with its own return type.
+    it "Legate.rm: labels the Bool even on the missing-path false return" do
       with_tmpdir do |dir|
         missing = File.join(dir, "gone.txt")
         policy = policy_for(missing, Authority::Delete, RiskFlowAction::Allow)
         interp, _ = make_interp(grants: delete_grants(dir), risk_flow_policy: policy)
 
         result = interp.eval(%(Legate.rm(#{missing.inspect})))
-        result.as_int.should eq 0
+        result.as_bool.should be_false
         result.label.not_nil!.sensitivity.should eq Sensitivity::High
       end
     end
 
-    it "Legate.rm: labels the count on the recursive-directory path too" do
+    it "Legate.rmdir: labels the Bool on both the removed and missing paths" do
+      with_tmpdir do |dir|
+        target = File.join(dir, "tree")
+        Dir.mkdir(target)
+        policy = policy_for(target, Authority::Delete, RiskFlowAction::Allow)
+        interp, _ = make_interp(grants: delete_grants(dir), risk_flow_policy: policy)
+
+        removed = interp.eval(%(Legate.rmdir(#{target.inspect})))
+        removed.as_bool.should be_true
+        removed.label.not_nil!.sensitivity.should eq Sensitivity::High
+
+        again = interp.eval(%(Legate.rmdir(#{target.inspect})))
+        again.as_bool.should be_false
+        again.label.not_nil!.sensitivity.should eq Sensitivity::High
+      end
+    end
+
+    # The count is the narrowest channel of the three and the one most
+    # worth labelling: "how many entries does this sensitive directory
+    # hold" is exactly what a High-sensitivity path should not answer
+    # into an unlabelled Integer that then flows freely onward.
+    it "Legate.rmdir!: labels the returned count" do
       with_tmpdir do |dir|
         target = File.join(dir, "tree")
         Dir.mkdir(target)
@@ -86,8 +108,20 @@ module Adjutant
         policy = policy_for(target, Authority::Delete, RiskFlowAction::Allow)
         interp, _ = make_interp(grants: delete_grants(dir), risk_flow_policy: policy)
 
-        result = interp.eval(%(Legate.rm(#{target.inspect}, recursive: true)))
+        result = interp.eval(%(Legate.rmdir!(#{target.inspect})))
         result.as_int.should eq 2
+        result.label.not_nil!.sensitivity.should eq Sensitivity::High
+      end
+    end
+
+    it "Legate.rmdir!: labels the count even on the missing-path 0 return" do
+      with_tmpdir do |dir|
+        missing = File.join(dir, "gone")
+        policy = policy_for(missing, Authority::Delete, RiskFlowAction::Allow)
+        interp, _ = make_interp(grants: delete_grants(dir), risk_flow_policy: policy)
+
+        result = interp.eval(%(Legate.rmdir!(#{missing.inspect})))
+        result.as_int.should eq 0
         result.label.not_nil!.sensitivity.should eq Sensitivity::High
       end
     end
@@ -149,7 +183,7 @@ module Adjutant
         )
 
         result = interp.eval(%(Legate.rm(#{file.inspect})))
-        result.as_int.should eq 1
+        result.as_bool.should be_true
         result.label.not_nil!.sensitivity.should eq Sensitivity::High
         File.exists?(file).should be_false
       end

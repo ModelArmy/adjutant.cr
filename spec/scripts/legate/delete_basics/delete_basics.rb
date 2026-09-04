@@ -52,35 +52,45 @@ Legate.mv(staging, WORKSPACE / "staging-old")
 assert_nil(Legate.stat(staging))
 assert_equal("temporary\n", Legate.read(WORKSPACE / "staging-old" / "scratch.txt"))
 
-# --- Legate.rm: a single file, returning the number of entries removed ---
+# --- Legate.rm: a single file, returning whether one was removed ---
+#
+# Bool, not a count: a files-only verb can only ever remove one thing,
+# and `if Legate.rm(p) > 0` is a clumsy spelling of a yes/no. The
+# count lives on `Legate.rmdir!`, where "how many" is worth knowing.
 
-assert_equal(1, Legate.rm(WORKSPACE / "staging-old" / "scratch.txt"))
+assert_equal(true, Legate.rm(WORKSPACE / "staging-old" / "scratch.txt"))
 assert_nil(Legate.stat(WORKSPACE / "staging-old" / "scratch.txt"))
 
-# --- Legate.rm: an EMPTY directory needs no recursive: flag ---
+# --- Legate.rmdir: an EMPTY directory ---
 #
-# §4.4's "`rm` subsumes `rmdir` and `unlink`" in practice —
-# `staging-old` is empty now that its only file is gone, so the plain
-# call is enough.
+# `staging-old` is empty now that its only file is gone. `rm` would
+# refuse it — the three delete verbs partition the target space, and
+# each refusal names the one that would have worked.
 
-assert_equal(1, Legate.rm(WORKSPACE / "staging-old"))
+assert_raise(Legate::Conflict) { Legate.rm(WORKSPACE / "staging-old") }
+assert_equal(true, Legate.rmdir(WORKSPACE / "staging-old"))
 assert_nil(Legate.stat(WORKSPACE / "staging-old"))
 
-# --- Legate.rm: a whole tree, with an explicit recursive: true ---
+# --- Legate.rmdir!: a whole tree, counting what it removed ---
 #
 # The count is every entry removed, the directory itself included:
 # `archive/` + `archive/2026/` + `archive/2026/report.txt` is 3.
+# `rmdir` would refuse this one for being non-empty.
 
-assert_equal(3, Legate.rm(WORKSPACE / "archive", recursive: true))
+assert_raise(Legate::Conflict) { Legate.rmdir(WORKSPACE / "archive") }
+assert_equal(3, Legate.rmdir!(WORKSPACE / "archive"))
 assert_nil(Legate.stat(WORKSPACE / "archive"))
 
 # --- Idempotence: removing what is already gone is not an error ---
 #
-# §4.4/§2.3 — a second `rm` returns 0 rather than raising, in the
-# same spirit `mkdir` succeeds on a directory that already exists.
-# "Make sure this isn't here" has already succeeded.
+# §2.3 — all three verbs agree, in the same spirit `mkdir` succeeds on
+# a directory that already exists. "Make sure this isn't here" has
+# already succeeded if it was never here. Only the SPELLING of the
+# non-result differs, following each verb's return type.
 
-assert_equal(0, Legate.rm(WORKSPACE / "archive", recursive: true))
+assert_equal(0, Legate.rmdir!(WORKSPACE / "archive"))
+assert_equal(false, Legate.rmdir(WORKSPACE / "archive"))
+assert_equal(false, Legate.rm(WORKSPACE / "archive" / "gone.txt"))
 
 # --- The fixtures were never touched ---
 #
