@@ -46,9 +46,44 @@ module Adjutant
       #   - `to` is a non-empty directory and `from` is a directory —
       #     the rename would either fail at the OS level or silently
       #     destroy unrelated content.
-      # A plain file-over-file `mv` OVERWRITES, matching what `write`
-      # and `cp` already do to an existing target rather than
-      # inventing a stricter rule for this verb alone.
+      # ## Two verbs, not one: replacement is opt-in
+      #
+      # `mv` REFUSES an occupied destination; `mv!` replaces it. The
+      # comment this replaces said a plain file-over-file `mv`
+      # overwrites "matching what `write` and `cp` already do" — which
+      # was true, and was the problem. All three now refuse, and all
+      # three offer a bang, so the consistency argument is preserved
+      # and merely points the other way.
+      #
+      # `check_destination` was already halfway here: it refused to
+      # replace a file with a directory or a directory with a file,
+      # and refused a non-empty directory. Only the same-kind file
+      # case renamed over the top. So this is a small extension of an
+      # existing refusal rather than new machinery — those three
+      # refusals survive on `mv!`, which lifts exactly one of them.
+      #
+      # ## The declaration CHANGES, and not only because of the split
+      #
+      # `mv` was `Reversibility::No` / `Severity::Warning` with
+      # effects `DeletesFiles` + `WritesFiles`. It is now `Yes` /
+      # `Info` with `MovesFiles` alone, and that would have been the
+      # right declaration even before the bang existed. A move
+      # preserves the information: `relocate` is `File.rename` on one
+      # filesystem, and the `EXDEV` fallback is deliberately ordered
+      # copy-then-delete so a partway failure duplicates rather than
+      # loses. Nothing is destroyed in either path; the entry ends up
+      # somewhere else.
+      #
+      # The old declaration came from §4.4's "a move both destroys and
+      # creates," which is an argument about the GRANTS a move needs,
+      # not about what survives it. Both authorizations below stay
+      # exactly as they were — the asymmetry between what this verb
+      # may do and what it consequently does is deliberate. See
+      # `Effect::MovesFiles`' own comment.
+      #
+      # `mv!` is `No`/`Warning` with `MovesFiles` + `DeletesFiles`,
+      # the latter about the clobbered destination, which is the same
+      # thing `cp!` does and declared the same way.
       module Mv
         # Matches `cp.cr`'s own `COPY_CHUNK_SIZE`, for the same
         # reason and used on the same code path shape — see the
@@ -60,18 +95,38 @@ module Adjutant
           conflict = Helpers.fetch(legate, interp, "Conflict")
           path_cls = Helpers.fetch(legate, interp, "Path")
 
+          register(interp, legate, broker, not_found, conflict, path_cls, clobber: false)
+          register(interp, legate, broker, not_found, conflict, path_cls, clobber: true)
+        end
+
+        # One body, registered twice — `clobber` selects the name, the
+        # risk profile and the destination rule, and nothing else.
+        # Same shape as `write.cr` and `cp.cr`, deliberately: the
+        # cross-device fallback below is the last thing that should
+        # drift between two verbs that share it.
+        private def self.register(interp : Interpreter, legate : RubyClass, broker : Broker,
+                                  not_found : RubyClass, conflict : RubyClass, path_cls : RubyClass,
+                                  clobber : Bool) : Nil
+          name = clobber ? "mv!" : "mv"
+
+          profile = if clobber
+                      RiskProfile.new(
+                        effects: Set{Effect::MovesFiles, Effect::DeletesFiles},
+                        reversible: Reversibility::No,
+                        severity: Severity::Warning,
+                      )
+                    else
+                      # `MovesFiles` alone, and the defaults
+                      # (`Yes`/`Info`) stated by omission the way every
+                      # non-destructive verb states them. See the
+                      # module comment for why this is a change of
+                      # declaration and not merely a change of verb.
+                      RiskProfile.new(effects: Set{Effect::MovesFiles})
+                    end
+
           legate.define_native_singleton_method(
-            interp.symbols.intern("mv").value,
-            # Both tags, for the same reason the verb takes both
-            # authorizations — a move genuinely does both things. See
-            # `rm.cr`'s own comment for why deletion is the point at
-            # which `reversible`/`severity` stop being safe to leave
-            # at their defaults.
-            RiskProfile.new(
-              effects: Set{Effect::DeletesFiles, Effect::WritesFiles},
-              reversible: Reversibility::No,
-              severity: Severity::Warning,
-            ),
+            interp.symbols.intern(name).value,
+            profile,
           ) do |args, _blk, ncc|
             from_val = args[1]? || Value.nil_value
             from_str_val = ncc.call_method(from_val, "to_s", [] of Value)
@@ -104,7 +159,7 @@ module Adjutant
               ncc.raise_error_class("#{raw_from} not found", not_found)
             end
 
-            check_destination(raw_from, raw_to, from_info.directory?, ncc, conflict)
+            check_destination(raw_from, raw_to, from_info.directory?, ncc, conflict, name, clobber)
 
             # "Parent directories are created automatically" is
             # §4.3's phrasing for the write grant, not §4.4's for this
@@ -122,20 +177,46 @@ module Adjutant
           end
         end
 
+        # The destination rule. `follow_symlinks: false` was already
+        # here and stays — for `mv` it is load-bearing in the same way
+        # `rm.cr` describes, since this verb relocates the ENTRY, not
+        # the content behind it.
+        #
+        # The plain verb refuses ANY occupied destination and stops
+        # there. `mv!` keeps the three refusals that were always here
+        # and lifts exactly one of them: same-kind file over file.
         private def self.check_destination(raw_from : String, raw_to : String, from_is_dir : Bool,
-                                           ncc : NativeCallContext, conflict : RubyClass) : Nil
+                                           ncc : NativeCallContext, conflict : RubyClass,
+                                           name : String, clobber : Bool) : Nil
           to_info = File.info?(raw_to, follow_symlinks: false)
           return unless to_info
 
           to_is_dir = to_info.directory?
 
-          if to_is_dir != from_is_dir
+          unless clobber
             kind = to_is_dir ? "a directory" : "a file"
-            ncc.raise_error_class("#{raw_to} exists and is #{kind}; Legate.mv can't replace it with #{raw_from}", conflict)
+            ncc.raise_error_class(
+              "#{raw_to} already exists and is #{kind}; Legate.#{name} won't replace it — use Legate.mv! to overwrite",
+              conflict,
+            )
           end
 
+          # Replacing like with unlike is never what a caller meant,
+          # so the bang does not offer it.
+          if to_is_dir != from_is_dir
+            kind = to_is_dir ? "a directory" : "a file"
+            ncc.raise_error_class("#{raw_to} exists and is #{kind}; Legate.#{name} can't replace it with #{raw_from}", conflict)
+          end
+
+          # A non-empty destination directory is a tree the script
+          # never named. `cp!` will replace one; `mv!` deliberately
+          # will not, because `relocate`'s rename would either fail at
+          # the OS level or destroy the contents depending on the
+          # path taken, and a verb whose behaviour depends on which
+          # filesystem the two paths happen to live on is worse than
+          # one that refuses.
           if to_is_dir && !Dir.children(raw_to).empty?
-            ncc.raise_error_class("#{raw_to} is a non-empty directory; Legate.mv won't replace it", conflict)
+            ncc.raise_error_class("#{raw_to} is a non-empty directory; Legate.#{name} won't replace it", conflict)
           end
         end
 

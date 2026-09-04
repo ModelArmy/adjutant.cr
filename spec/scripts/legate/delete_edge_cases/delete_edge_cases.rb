@@ -53,14 +53,24 @@ Legate.write(tree / "top.txt", "top\n")
 Legate.write(tree / "sub" / "deep.txt", "deep\n")
 assert_equal(4, Legate.rm(tree, recursive: true))
 
-# --- mv overwrites a file, the same as write and cp do ---
+# --- mv REFUSES an occupied destination; mv! replaces it ---
 #
-# No special stricter rule for this verb: an existing FILE at the
-# destination is replaced.
+# The same rule `write`/`write!` and `cp`/`cp!` follow, so the bang
+# means one thing across the whole verb surface: "do the more
+# destructive thing you would otherwise refuse."
+#
+# Note what a REFUSED move leaves behind: nothing has happened at
+# all. The source is still at its original path, which is what makes
+# `Legate::Conflict` recoverable in practice — a script can rescue it
+# and pick another destination.
 
 Legate.write(WORKSPACE / "new.txt", "new\n")
 Legate.write(WORKSPACE / "old.txt", "old\n")
-Legate.mv(WORKSPACE / "new.txt", WORKSPACE / "old.txt")
+assert_raise(Legate::Conflict) { Legate.mv(WORKSPACE / "new.txt", WORKSPACE / "old.txt") }
+assert_equal("old\n", Legate.read(WORKSPACE / "old.txt"))
+assert_equal("new\n", Legate.read(WORKSPACE / "new.txt"))
+
+Legate.mv!(WORKSPACE / "new.txt", WORKSPACE / "old.txt")
 assert_equal("new\n", Legate.read(WORKSPACE / "old.txt"))
 assert_nil(Legate.stat(WORKSPACE / "new.txt"))
 
