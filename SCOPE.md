@@ -39,6 +39,21 @@ currently blocking anything" no longer held. The remaining entries
 weren't re-evaluated against the promoted two on this axis, just carried
 forward.
 
+**Two entries removed 2026-09-04, on the same principle.** The
+destination-clobber entry (`write`/`cp`/`mv` silently destroying an
+existing destination while declaring themselves reversible) and the
+`rm` conflation entry (one verb doing both file deletion and tree
+walking) both shipped that day, along with the three loose ends the
+latter had deliberately left undecided: `rm` returns a Bool, all three
+delete verbs stay idempotent on a missing path, and LEGATE.md §4.4 was
+rewritten rather than left disagreeing with the code. The reasoning —
+why the perimeter cannot catch a clobbered destination, why
+`Effect::MovesFiles` had to exist, and why moving recursion from a
+kwarg into a verb name unblocked `Effect::Recursive` — is in
+DEVELOPMENT.md's "Destructive verbs" writeup. Removed here rather than
+marked done, since a completed entry in a list of open problems is
+just noise for the next reader.
+
 - **Runtime diagnostics have no carets** (`Frame` records a line but no
   column). Promoted from Error reporting 2026-08-05 on a
   turn-churn argument specific to this use case: the cost of an
@@ -126,95 +141,6 @@ forward.
   `RubyObject#shallow_copy : RubyObject` virtual method every subclass
   overrides, mirroring the pattern `RegexpObject`/`MatchDataObject`/
   `TimeObject` already use for their own typed-state constructors).
-
-- **`write`, `cp` and `mv` silently destroy an existing destination,
-  and declare themselves safe while doing it.** Found 2026-09-01, in
-  the design conversation preceding the step 4c risk sweep. §4.3
-  mandates write-as-atomic-rename, and both `write.cr` and `cp.cr`'s
-  `copy_file` rename over an existing file with no check — only a
-  DIRECTORY target is refused. `mv.cr`'s `check_destination` is
-  halfway there already: it refuses to replace a file with a directory
-  and refuses a non-empty directory, but renames over an existing
-  same-kind file. All three then declare `Reversibility::Yes` /
-  `Severity::Info` (`mv` declares `No`/`Warning`, but for the wrong
-  reason — see below). Must Fix rather than Will Fix on the failure
-  shape: the perimeter cannot catch this. A destination inside a
-  granted write root is exactly what the grant permits, so `Grants`
-  answers yes and the data is gone; there is no layer below this one
-  that notices.
-
-  Fix shape, decided in that conversation and not to be relitigated:
-  **replacement becomes opt-in via a bang variant.** `write`/`cp`/`mv`
-  raise `Legate::Conflict` (recoverable, and already named in §4.3 and
-  §4.4's Raises lines) when the destination exists; `write!`/`cp!`/
-  `mv!` do what the current verbs do. The bang is Ruby's own
-  dangerous-variant convention and reads consistently across all
-  three: "do the more destructive thing you would otherwise refuse."
-  For `mv!` this is a small extension of an existing refusal rather
-  than new machinery.
-
-  Declarations after the split:
-
-  - `write`, `cp` — genuinely `Yes`/`Info`. Once they cannot destroy,
-    there is nothing to declare.
-  - `write!`, `cp!` — `No`/`Warning`.
-  - `mv` — `Yes`/`Info`, and note this CHANGES its current
-    declaration. A move preserves the information: `relocate` is
-    `File.rename` whenever source and destination share a filesystem,
-    and the `EXDEV` fallback is deliberately ordered copy-then-delete
-    so a partway failure duplicates rather than loses. Nothing is
-    destroyed in either path; the entry ends up somewhere else. The
-    current `No`/`Warning` came from §4.4's "a move both destroys and
-    creates," which is about the GRANTS a move needs, not about what
-    survives it.
-  - `mv!` — `No`/`Warning`, because clobbering the destination
-    destroys that file, which is the same thing `cp!` does.
-
-  Also add an `Effect::MovesFiles` member (`RiskTag::MovesFiles` if
-  the `Effect` rename below has not landed yet). `mv` carries it
-  ALONE — saying `DeletesFiles` of a move implies destruction that
-  does not occur, and pairing the two is worse than either. `mv!`
-  carries `MovesFiles` and `DeletesFiles`, the latter honestly
-  referring to the clobbered destination — a real, unrecoverable loss
-  of a file the script never named as a source. This makes the
-  effect vocabulary deliberately ASYMMETRIC with the grants a verb
-  needs (`mv` still requires `delete` + `write`), which is correct
-  once the two enums are separated: grants answer "what authority,"
-  effects answer "what consequence." Nothing infers grants from
-  effects — §10.1 SPECIFIES inferring them by walking the call graph
-  for `Legate.*` names (unimplemented; see the §10 entry below) — so the asymmetry costs the analyser nothing.
-
-  Do this BEFORE writing the step 4c sweep. Writing assertions
-  against the current declarations would pin behaviour we have already
-  agreed is wrong.
-
-- **`rm` conflates deleting a file with deleting a tree.** Found
-  2026-09-01, same conversation, as a consequence of the bang
-  convention above. Recursion only ever means directory-tree walking,
-  so `recursive:` was always mis-attached to a verb that also deletes
-  single files — and `rm!` cannot mean "recursive" without the bang
-  meaning something different on `rm` than it does on `write`/`cp`/
-  `mv`. Split the verb instead: `rm` deletes files, `rmdir` deletes an
-  empty directory and raises `Legate::Conflict` on a non-empty one,
-  `rmdir!` takes the tree. The bang then reads identically everywhere.
-
-  This REVERSES §4.4's explicit "`rm` subsumes `rmdir` and `unlink`,"
-  which was a deliberate simplification. Recording why, since the spec
-  otherwise loses a decision without gaining a reason: the bang
-  convention did not exist when that line was written, and it is what
-  makes the extra name earn its place. Update §4.4 rather than leaving
-  the two in disagreement.
-
-  Three loose ends, deliberately NOT decided here — raise before
-  writing code:
-
-  - **`rm`'s return type.** §4.4 has it return the number of entries
-    removed, which is only interesting for a recursive delete. A
-    files-only `rm` returns 0 or 1; probably a Bool, possibly
-    nothing. `rmdir!` keeps the count.
-  - **§2.3's "`rm` on a missing path returns `0`"** needs restating
-    per verb once there are three of them.
-  - **§2.7's submodule table and §11's surface count** both move.
 
 - **The risk flow rule key has no slot for the sink's subject.** Found
   2026-09-01, in the same conversation, from the `Legate.env`
