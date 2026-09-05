@@ -1,10 +1,13 @@
-name: CI
+name: CI (Windows)
 
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
+  # The Windows crash investigation is re-run on demand far more
+  # often than it is pushed to.
+  workflow_dispatch:
 
 jobs:
   build-and-test:
@@ -40,7 +43,6 @@ jobs:
         run: shards check || shards install
 
       - name: Install ProcDump (Windows)
-        if: ${{ runner.os == 'Windows' }}
         run: choco install procdump -y --no-progress
 
       # The crash is a FAIL-FAST (0xC0000409, subcode FATAL_APP_EXIT):
@@ -57,13 +59,57 @@ jobs:
       #
       # `continue-on-error` so the artifact upload below still runs:
       # the whole point of this step is that it fails.
-      - name: Run tests and capture a crash dump (Windows)
-        if: ${{ runner.os == 'Windows' }}
+      # TWO binaries, both under ProcDump, because they answer
+      # different questions and only one of them is known to crash.
+      #
+      # The standalone repro is the one we WANT to crash: it uses only
+      # Crystal's stdlib, so if it does, the bug can be reported
+      # without Adjutant in the picture at all. It has survived every
+      # version so far.
+      #
+      # The spec binary is the one we KNOW crashes. Running it too
+      # means a surviving repro still leaves a dump to compare
+      # against — otherwise a survived run produces no artifact and no
+      # signal, which is exactly what happened on the run before this
+      # step was split.
+      #
+      # `continue-on-error` throughout: these steps are SUPPOSED to
+      # fail, and the analysis and upload below must still run.
+      - name: Build both binaries (Windows)
         continue-on-error: true
         run: |
           crystal build --debug spec/scratch/win_stream_crash_repro.cr -o win_stream_crash_repro.exe
-          procdump -accepteula -e -ma -x . .\win_stream_crash_repro.exe --verbose
+          crystal build --debug spec/adjutant/legate/verbs/fetch_stream_spec.cr -o fetch_str_spec.exe
+
+      # No `--verbose` here: the repro takes no arguments and prints
+      # its own progress table, one line per unwind depth. If it
+      # survives, that table IS the result — the last line printed
+      # names the deepest configuration that held.
+      - name: Standalone repro under ProcDump (Windows)
+        continue-on-error: true
+        run: |
+          procdump -accepteula -e -ma -x repro .\win_stream_crash_repro.exe
+          Write-Host "repro exit code: $LASTEXITCODE"
+
+      - name: Known-crashing spec under ProcDump (Windows)
+        continue-on-error: true
+        run: |
+          procdump -accepteula -e -ma -x spec .\fetch_str_spec.exe --verbose
           Write-Host "spec exit code: $LASTEXITCODE"
+
+      # Which of the two produced a dump is itself the headline
+      # result, so state it plainly rather than leaving it to be
+      # inferred from the artifact listing.
+      - name: Summarise what crashed (Windows)
+        continue-on-error: true
+        run: |
+          $repro = @(Get-ChildItem -Path repro -Filter *.dmp -ErrorAction SilentlyContinue)
+          $spec  = @(Get-ChildItem -Path spec  -Filter *.dmp -ErrorAction SilentlyContinue)
+          Write-Host "standalone repro crashed: $(if ($repro.Count) { 'YES' } else { 'no' })"
+          Write-Host "adjutant spec crashed:    $(if ($spec.Count)  { 'YES' } else { 'no' })"
+          if (-not $repro.Count -and $spec.Count) {
+            Write-Host "-> The repro still does not reproduce it. Compare the two stacks."
+          }
 
       # Analysed ON THE RUNNER rather than by downloading the dump.
       # Everything analysis needs is already here — the exact binary,
@@ -83,16 +129,14 @@ jobs:
       # called abort, which is the symptom. The interesting frames are
       # further up: Crystal's unwinding functions, or an MSVC
       # `terminate`/`__C_specific_handler`.
-      - name: Analyse the crash dump (Windows)
-        if: ${{ runner.os == 'Windows' }}
+      - name: Analyse the crash dumps (Windows)
         continue-on-error: true
         run: |
-          $dump = Get-ChildItem -Filter *.dmp | Select-Object -First 1
-          if (-not $dump) {
-            Write-Host "No dump file was produced — nothing to analyse."
+          $dumps = @(Get-ChildItem -Path repro, spec -Filter *.dmp -Recurse -ErrorAction SilentlyContinue)
+          if (-not $dumps.Count) {
+            Write-Host "Neither binary crashed — no dump to analyse."
             exit 0
           }
-          Write-Host "Analysing $($dump.Name) ($([math]::Round($dump.Length / 1MB, 1)) MB)"
           choco install windbg -y --no-progress
           $cdb = "C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe"
           if (-not (Test-Path $cdb)) {
@@ -108,20 +152,30 @@ jobs:
           # `crystal build --debug` leaves it. Without symbols every
           # Crystal frame resolves to a bare offset and the whole
           # exercise is pointless.
-          & $cdb -z $dump.FullName -y . -c "!analyze -v; ~*k; q"
+          # Every dump that exists gets analysed, labelled by which
+          # binary produced it, so the two stacks can be read side by
+          # side in one log.
+          foreach ($dump in $dumps) {
+            Write-Host ""
+            Write-Host "=============================================================="
+            Write-Host "$($dump.Directory.Name): $($dump.Name) ($([math]::Round($dump.Length / 1MB, 1)) MB)"
+            Write-Host "=============================================================="
+            & $cdb -z $dump.FullName -y . -c "!analyze -v; ~*k; q"
+          }
 
       # The PDB rides along with the dump so the artifact stays usable
       # offline — e.g. with `minidump-stackwalk` on macOS or Linux —
       # if the cdb output above turns out to be thin.
-      - name: Upload crash dump (Windows)
-        if: ${{ runner.os == 'Windows' }}
+      - name: Upload crash dumps (Windows)
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: windows-crash-dump-crystal-${{ matrix.crystal }}
           path: |
-            *.dmp
+            repro/*.dmp
+            spec/*.dmp
             *.pdb
-            win_stream_crash_repro.exe
+            *.exe
           if-no-files-found: warn
           retention-days: 7
 
