@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, crystal: latest }
+          - { os: ubuntu-24.04-arm, crystal: latest }
+          - { os: macos-latest, crystal: latest }
+          - { os: ubuntu-latest, crystal: "1.20" }
+          - { os: ubuntu-24.04-arm, crystal: "1.19" }
+          - { os: macos-latest, crystal: "1.20" }
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Install Crystal
+        uses: crystal-lang/install-crystal@v1
+        with:
+          crystal: ${{matrix.crystal}}
+
+      - name: Cache shards
+        uses: actions/cache@v5
+        with:
+          path: |
+            lib
+            bin/ameba*
+          key: ${{ matrix.os }}-shards-${{ hashFiles('**/shard.lock') }}
+
+      # ---- Build debug release and check code quality on all platforms
+
+      - name: Install shards
+        run: shards check || shards install
+
+      - name: Run tests
+        run: crystal spec
+
+      - name: Try to reproduce Windows streaming crash (non-Windows)
+        run: |
+          crystal run --debug spec/scratch/win_stream_crash_repro.cr
+
+      # ---- Build and run test scripts
+
+      - name: Setup release environment
+        run: mkdir -p bin/release
+
+      - name: Build Release
+        run: SHARDS_BIN_PATH=bin/release shards --production build --release
+
+      - name: Run test script runner
+        run: bin/release/test_runner
+
+      # ---- format and lint check on Linux only
+
+      - name: Setup ameba (Linux)
+        if: ${{ runner.os == 'Linux' }}
+        run: |
+          mkdir -p bin;
+          cp lib/ameba/bin/ameba.cr bin && crystal build -Dpreview_mt -o bin/ameba bin/ameba.cr
+
+      - name: Check formatting (Linux)
+        if: ${{ runner.os == 'Linux' }}
+        run: crystal tool format; git diff --exit-code src
+
+      - name: Build ameba  (Linux)
+        if: ${{ runner.os == 'Linux' }}
+        run: mkdir -p bin; cp lib/ameba/bin/ameba.cr bin && crystal build -Dpreview_mt -o bin/ameba bin/ameba.cr
+
+      - name: Run static code analysis (Linux)
+        if: ${{ runner.os == 'Linux' }}
+        run: bin/ameba src/

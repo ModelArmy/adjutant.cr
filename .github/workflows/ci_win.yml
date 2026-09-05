@@ -12,14 +12,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest, crystal: latest }
-          - { os: ubuntu-24.04-arm, crystal: latest }
-          - { os: macos-latest, crystal: latest }
-          - { os: macos-15-intel, crystal: latest }
-          # Two Windows rows on purpose. 1.20 is the version the
-          # streaming crash was found on and is kept so the
-          # investigation stays reproducible; `latest` answers, for
-          # free, whether the crash is already fixed upstream.
           - { os: windows-latest, crystal: "1.20" }
           - { os: windows-latest, crystal: latest }
 
@@ -47,25 +39,6 @@ jobs:
       - name: Install shards
         run: shards check || shards install
 
-      - name: Run tests
-        if: ${{ runner.os != 'Windows' }}
-        run: crystal spec
-
-      - name: Try to reproduce Windows streaming crash (non-Windows)
-        if: ${{ runner.os != 'Windows' }}
-        run: |
-          crystal run --debug spec/scratch/win_stream_crash_repro.cr
-
-      - name: Try to reproduce Windows streaming crash (Windows)
-        if: ${{ runner.os == 'Windows' }}
-        # Never crashed so far — kept as the control. If it ever DOES
-        # crash, the bug is reachable without the VM and the whole
-        # picture changes.
-        continue-on-error: true
-        run: |
-          crystal run --debug spec/scratch/win_stream_crash_repro.cr
-          Write-Host "repro exit code: $LASTEXITCODE"
-
       - name: Install ProcDump (Windows)
         if: ${{ runner.os == 'Windows' }}
         run: choco install procdump -y --no-progress
@@ -88,8 +61,8 @@ jobs:
         if: ${{ runner.os == 'Windows' }}
         continue-on-error: true
         run: |
-          crystal build --debug spec/adjutant/legate/verbs/fetch_stream_spec.cr -o fetch_str_spec.exe
-          procdump -accepteula -e -ma -x . .\fetch_str_spec.exe --verbose
+          crystal build --debug spec/scratch/win_stream_crash_repro.cr -o win_stream_crash_repro.exe
+          procdump -accepteula -e -ma -x . .\win_stream_crash_repro.exe --verbose
           Write-Host "spec exit code: $LASTEXITCODE"
 
       # Analysed ON THE RUNNER rather than by downloading the dump.
@@ -148,40 +121,40 @@ jobs:
           path: |
             *.dmp
             *.pdb
-            fetch_str_spec.exe
+            win_stream_crash_repro.exe
           if-no-files-found: warn
           retention-days: 7
 
-      # ---- Build and run test scripts
+      # # ---- Build and run test scripts
 
-      - name: Setup release environment
-        if: ${{ runner.os != 'Windows' }}
-        run: mkdir -p bin/release
+      # - name: Setup release environment
+      #   if: ${{ runner.os != 'Windows' }}
+      #   run: mkdir -p bin/release
 
-      - name: Build Release
-        if: ${{ runner.os != 'Windows' }}
-        run: SHARDS_BIN_PATH=bin/release shards --production build --release
+      # - name: Build Release
+      #   if: ${{ runner.os != 'Windows' }}
+      #   run: SHARDS_BIN_PATH=bin/release shards --production build --release
 
-      - name: Run test script runner
-        if: ${{ runner.os != 'Windows' }}
-        run: bin/release/test_runner
+      # - name: Run test script runner
+      #   if: ${{ runner.os != 'Windows' }}
+      #   run: bin/release/test_runner
 
-      # ---- format and lint check on Linux only
+      # # ---- format and lint check on Linux only
 
-      - name: Setup ameba (Linux)
-        if: ${{ runner.os == 'Linux' }}
-        run: |
-          mkdir -p bin;
-          cp lib/ameba/bin/ameba.cr bin && crystal build -Dpreview_mt -o bin/ameba bin/ameba.cr
+      # - name: Setup ameba (Linux)
+      #   if: ${{ runner.os == 'Linux' }}
+      #   run: |
+      #     mkdir -p bin;
+      #     cp lib/ameba/bin/ameba.cr bin && crystal build -Dpreview_mt -o bin/ameba bin/ameba.cr
 
-      - name: Check formatting (Linux)
-        if: ${{ runner.os == 'Linux' }}
-        run: crystal tool format; git diff --exit-code src
+      # - name: Check formatting (Linux)
+      #   if: ${{ runner.os == 'Linux' }}
+      #   run: crystal tool format; git diff --exit-code src
 
-      - name: Build ameba  (Linux)
-        if: ${{ runner.os == 'Linux' }}
-        run: mkdir -p bin; cp lib/ameba/bin/ameba.cr bin && crystal build -Dpreview_mt -o bin/ameba bin/ameba.cr
+      # - name: Build ameba  (Linux)
+      #   if: ${{ runner.os == 'Linux' }}
+      #   run: mkdir -p bin; cp lib/ameba/bin/ameba.cr bin && crystal build -Dpreview_mt -o bin/ameba bin/ameba.cr
 
-      - name: Run static code analysis (Linux)
-        if: ${{ runner.os == 'Linux' }}
-        run: bin/ameba src/
+      # - name: Run static code analysis (Linux)
+      #   if: ${{ runner.os == 'Linux' }}
+      #   run: bin/ameba src/
