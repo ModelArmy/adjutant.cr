@@ -127,6 +127,51 @@ module Adjutant
         end
       end
 
+      # DIAGNOSTIC, added 2026-09-04, and placed BEFORE the raising
+      # test on purpose: that one hard-crashes the process on Windows
+      # (exit 0xC0000409), so anything after it never reports. Order
+      # is the only way to learn this one's result from the same run.
+      #
+      # Identical to the raising test below except that the walk exits
+      # by `break` rather than by an exception. Same live producer
+      # fiber, same cancellation, same teardown — no unwinding. Which
+      # separates the two candidate causes:
+      #
+      #   survives -> unwinding is REQUIRED, and the bug is an
+      #               exception crossing the cancellation of a stream
+      #               whose producer fiber is parked in a socket read.
+      #   crashes  -> the raise is irrelevant; cancelling a
+      #               fiber-parked-on-read stream is enough on its
+      #               own, and the "abandoned" test above has been
+      #               passing by luck.
+      #
+      # Everything cheaper has already been eliminated by tests that
+      # PASS on Windows: `begin_rescue_ensure/vm_spec.cr` unwinds
+      # script exceptions through VM frames, and
+      # `open_sources_spec.cr`'s "closes a stream whose walk raised" is
+      # structurally identical to the test below with a FILE-backed
+      # stream instead of a socket-backed one. The producer fiber is
+      # the only remaining difference.
+      it "closes the connection when the walk breaks early" do
+        with_stream_server(->(context : HTTP::Server::Context) {
+          context.response.print("w" * 40_000)
+        }) do |port|
+          interp, _ = make_interp(grants: loopback_grants(port))
+          # A `do ... end` block with `break` on its own line, not
+          # `{ |c| break }`: `parse_break` only terminates on
+          # Newline/Semi/EOF, so it reads `}` as the start of a value
+          # and the one-line form is a P002 parse error. An incidental
+          # parser find, unrelated to what this test is for — filed
+          # separately rather than worked around silently.
+          interp.eval(<<-RUBY)
+          Legate.fetch("http://127.0.0.1:#{port}/", stream: true).body.each do |c|
+            break
+          end
+          RUBY
+          interp.broker.open_sources.size.should eq 0
+        end
+      end
+
       it "closes the connection when the script raises mid-walk" do
         with_stream_server(->(context : HTTP::Server::Context) {
           context.response.print("w" * 40_000)
