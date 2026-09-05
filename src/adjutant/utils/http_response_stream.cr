@@ -91,6 +91,10 @@ module Adjutant
       # body is.
       private def initialize(@client : HTTP::Client, request : HTTP::Request, @chunk_size : Int32)
         @channel = Channel(Message).new
+        # Closed by the producer's own `ensure`, never sent on. A
+        # receive on it therefore blocks until the producer has
+        # genuinely finished — see `close`.
+        @done = Channel(Nil).new
         @closed = false
         @finished = false
 
@@ -167,21 +171,42 @@ module Adjutant
       # teardown path, rather than cancellation needing machinery of
       # its own.
       #
-      # The `Fiber.yield` is what makes that shutdown observable to
-      # the caller rather than merely eventual. Crystal's default
-      # scheduler is cooperative, so without it this method could
-      # return while the producer is still parked, having not yet
-      # noticed the close — and a caller that immediately asserts the
-      # connection is closed (or an embedder tearing down a run and
-      # then counting open sockets) would see a stale answer. One
-      # yield is enough: the producer's next scheduled step is the
-      # raise.
+      # WAITING FOR THE PRODUCER, rather than assuming when it will
+      # run. Shutdown has to be observable to the caller and not
+      # merely eventual: an embedder tearing down a run and then
+      # counting open sockets must not see a stale answer.
+      #
+      # This used to be a single `Fiber.yield`, justified as "the
+      # producer's next scheduled step is the raise". That holds only
+      # when the producer is parked on `@channel.send`. When it is
+      # parked in a SOCKET READ — which it is for most of a body's
+      # life — closing a channel does not wake it at all, the yield
+      # returns immediately, and `close` returns with the connection
+      # still open. Corrected 2026-09-05.
+      #
+      # `@done` is closed by `produce`'s `ensure` and never sent on,
+      # so receiving from it raises `Channel::ClosedError` the moment
+      # the producer has actually finished — after `exec` has
+      # returned or unwound and the client is closed. That is the
+      # guarantee the yield was standing in for.
+      #
+      # Waiting is safe because the producer cannot deadlock against
+      # us: it is either parked on a send (which the channel close
+      # below breaks), or in a read bounded by the client's
+      # `read_timeout`. A client configured with no read timeout can
+      # still park indefinitely — the same caveat this class already
+      # documents at the top, now reaching `close` as well as
+      # `next_chunk`.
       def close : Nil
         return if @closed
         @closed = true
         @finished = true
         @channel.close
-        Fiber.yield
+        begin
+          @done.receive
+        rescue Channel::ClosedError
+          # The producer finished. The expected path.
+        end
       end
 
       def closed? : Bool
@@ -216,6 +241,10 @@ module Adjutant
         # By the time this line runs, `exec` has returned or unwound,
         # so the connection is genuinely idle.
         @client.close rescue nil
+        # LAST, and after the client is closed: this is what `close`
+        # waits on, so anything that must be true before `close`
+        # returns has to happen above this line.
+        @done.close
       end
 
       # Reads the body and sends it on, one chunk at a time.

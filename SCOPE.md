@@ -1097,6 +1097,42 @@ individually.
   `Legate` design work (see `LEGATE.md`) — this entry can be removed
   once `Legate` implementation lands.
 
+### Streamed fetch on Windows
+
+- **A script that raises inside a streamed `Legate.fetch` walk
+  terminates the host process on Windows.** Found 2026-09-04 via CI.
+  Exit `0xC0000409` — a fail-fast during exception unwinding, aborting
+  inside MSVC's `FindAndUnlinkFrame`, which is an integrity check on
+  the registered SEH frame list. Uncatchable by construction: it fires
+  before any handler, and rescuing every exception changes nothing.
+
+  **Believed to be a Crystal runtime defect rather than an Adjutant
+  one**, on this evidence. Each of the three ingredients passes alone
+  and only the combination dies: a raise unwinding through VM frames
+  is fine (`begin_rescue_ensure/vm_spec.cr`), the same shape over a
+  FILE-backed stream is fine (`open_sources_spec.cr`'s "closes a
+  stream whose walk raised"), and cancelling a socket-backed stream
+  without unwinding is fine (a `break` instead of a `raise`). It
+  reproduces on Crystal 1.20 and latest, and does NOT need the test's
+  in-process server — it crashes just the same against a static file
+  server in another process, so it reaches real deployments rather
+  than only the harness. Six standalone reproductions were attempted
+  and none crashed; the trigger needs something structural the VM
+  supplies that a small program does not.
+
+  `verbs/fetch_stream_spec.cr`'s "closes the connection when the
+  script raises mid-walk" is `pending` under `flag?(:windows)` —
+  skipped, not deleted, so the coverage returns when the runtime is
+  fixed. **Windows is therefore not a supported host for streamed
+  `fetch`.** Buffered `fetch` was never tested and may or may not be
+  affected. Not blocking on macOS or Linux, which is where the early
+  access work is aimed.
+
+  Parked deliberately: there is no sound fix available in this repo,
+  and the investigation has already cost more than the platform is
+  currently worth. To pick it up, the route that worked was cutting
+  DOWN from the crashing spec, not building UP from a small program.
+
 ### Static risk assessment
 
 - **A `RiskChoice` reports its worst branch, so effects reachable only
