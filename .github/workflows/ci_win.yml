@@ -189,45 +189,32 @@ jobs:
       # The GitHub Windows image usually ships the Windows Kits
       # debuggers already, so the install is often unnecessary as well
       # as slow. This looks first and only falls back to Chocolatey.
-      - name: Locate or install a debugger (Windows)
+      - name: Locate a debugger (Windows)
         continue-on-error: true
         timeout-minutes: 10
         run: |
-          function Find-Cdb {
-            $fixed = "C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe"
-            if (Test-Path $fixed) { return $fixed }
+          # Separate from the analysis step so a hang or failure here
+          # is attributable: while install and analysis shared a step
+          # there was no way to tell which had wedged.
+          #
+          # No Chocolatey. The `windbg` package has been REMOVED from
+          # the community feed ("not found with the source(s) listed"),
+          # so that call could only ever fail — and it was never
+          # needed: the runner image ships cdb at the fixed Windows
+          # Kits path, which the last run confirmed.
+          $cdb = "C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe"
+          if (-not (Test-Path $cdb)) {
             $found = Get-ChildItem -Path "C:\Program Files (x86)\Windows Kits" `
                        -Filter cdb.exe -Recurse -ErrorAction SilentlyContinue |
                      Where-Object { $_.FullName -like "*x64*" } |
                      Select-Object -First 1
-            if ($found) { return $found.FullName }
-            return $null
-          }
-          $cdb = Find-Cdb
-          if ($cdb) {
-            Write-Host "Found an existing debugger; skipping the install."
-          } else {
-            Write-Host "No debugger on the image; installing via Chocolatey."
-            # LOCAL-ONLY SYMBOLS, and the likely fix for this step
-          # hanging: with `_NT_SYMBOL_PATH` unset, `!analyze -v`
-          # reaches out to Microsoft's symbol server and can block
-          # indefinitely with no output. `.` restricts cdb to the PDB
-          # beside our own binary. System frames then show as
-          # `module+0xNNNN`, which is acceptable — the frames we need
-          # named are ours, and the system side is already known.
-          $env:_NT_SYMBOL_PATH = "."
-          if (-not $env:CDB_PATH) {
-            Write-Host "No debugger available; skipping analysis."
-            exit 0
-          }
-          $cdb = $env:CDB_PATH
-            $cdb = Find-Cdb
+            $cdb = if ($found) { $found.FullName } else { $null }
           }
           if ($cdb) {
             Write-Host "cdb: $cdb"
             "CDB_PATH=$cdb" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           } else {
-            Write-Host "No cdb found; dumps are still uploaded for offline analysis."
+            Write-Host "No cdb on this image; dumps are still uploaded for offline analysis."
           }
 
       - name: Analyse the crash dumps (Windows)
@@ -236,17 +223,28 @@ jobs:
         run: |
           $dumps = @(Get-ChildItem -Path repro, spec, external -Filter *.dmp -Recurse -ErrorAction SilentlyContinue)
           if (-not $dumps.Count) {
-            Write-Host "Neither binary crashed — no dump to analyse."
+            Write-Host "Nothing crashed — no dump to analyse."
             exit 0
           }
-          choco install windbg -y --no-progress
-          # `-y .` looks for the PDB next to the binary, which is where
-          # `crystal build --debug` leaves it. Without symbols every
-          # Crystal frame resolves to a bare offset and the whole
-          # exercise is pointless.
-          # Every dump that exists gets analysed, labelled by which
-          # binary produced it, so the two stacks can be read side by
-          # side in one log.
+          if (-not $env:CDB_PATH) {
+            Write-Host "No debugger available; dumps are still uploaded."
+            exit 0
+          }
+          $cdb = $env:CDB_PATH
+
+          # LOCAL-ONLY SYMBOLS. With `_NT_SYMBOL_PATH` unset,
+          # `!analyze -v` reaches Microsoft's symbol server and can
+          # block with no output — the likeliest cause of this step
+          # hanging twice. `.` restricts cdb to the PDB beside our own
+          # binary, where `crystal build --debug` leaves it. System
+          # frames then show as `module+0xNNNN`, which is acceptable:
+          # the frames we need named are ours, and the system side of
+          # the faulting stack is already known from the run that did
+          # resolve.
+          $env:_NT_SYMBOL_PATH = "."
+
+          # Every dump gets analysed, labelled by which binary
+          # produced it, so the stacks can be read side by side.
           foreach ($dump in $dumps) {
             Write-Host ""
             Write-Host "=============================================================="
