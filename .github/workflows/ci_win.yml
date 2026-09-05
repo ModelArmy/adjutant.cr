@@ -19,11 +19,6 @@ jobs:
           - { os: windows-latest, crystal: latest }
 
     runs-on: ${{ matrix.os }}
-    # A diagnostic job must never be able to hang a runner. Every step
-    # below that can block on a subprocess or the network also carries
-    # its own tighter ceiling, so a stall is attributed to the step
-    # that caused it rather than to the job as a whole.
-    timeout-minutes: 30
 
     steps:
       - name: Checkout code
@@ -92,14 +87,12 @@ jobs:
       # names the deepest configuration that held.
       - name: Standalone repro under ProcDump (Windows)
         continue-on-error: true
-        timeout-minutes: 5
         run: |
           procdump -accepteula -e -ma -x repro .\win_stream_crash_repro.exe
           Write-Host "repro exit code: $LASTEXITCODE"
 
       - name: Known-crashing spec under ProcDump (Windows)
         continue-on-error: true
-        timeout-minutes: 5
         run: |
           procdump -accepteula -e -ma -x spec .\fetch_str_spec.exe --verbose
           Write-Host "spec exit code: $LASTEXITCODE"
@@ -107,15 +100,54 @@ jobs:
       # Which of the two produced a dump is itself the headline
       # result, so state it plainly rather than leaving it to be
       # inferred from the artifact listing.
+      # THE EXPERIMENT: the crashing spec, with the server moved out
+      # of the process and nothing else changed. A static file server
+      # in another OS process, serving a 40KB body to match what the
+      # in-process handler writes.
+      #
+      # Python ships on the GitHub Windows image. `-Filter` on the
+      # dump directory keeps this run's dumps separate from the other
+      # two so the summary below can tell them apart.
+      - name: Streamed fetch against an EXTERNAL server (Windows)
+        continue-on-error: true
+        timeout-minutes: 8
+        run: |
+          New-Item -ItemType Directory -Force -Path serve | Out-Null
+          $bytes = [byte[]]::new(40000)
+          [System.IO.File]::WriteAllBytes("serve\big.bin", $bytes)
+          $server = Start-Process python -PassThru -WorkingDirectory serve `
+            -ArgumentList "-m","http.server","8099"
+          try {
+            Start-Sleep -Seconds 3
+            crystal build --debug spec/scratch/external_server_crash_spec.cr -o external_spec.exe
+            $env:ADJUTANT_EXTERNAL_PORT = "8099"
+            $env:ADJUTANT_EXTERNAL_PATH = "/big.bin"
+            procdump -accepteula -e -ma -x external .\external_spec.exe --verbose
+            Write-Host "external-server spec exit code: $LASTEXITCODE"
+          } finally {
+            Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
+          }
+
       - name: Summarise what crashed (Windows)
         continue-on-error: true
         run: |
-          $repro = @(Get-ChildItem -Path repro -Filter *.dmp -ErrorAction SilentlyContinue)
-          $spec  = @(Get-ChildItem -Path spec  -Filter *.dmp -ErrorAction SilentlyContinue)
-          Write-Host "standalone repro crashed: $(if ($repro.Count) { 'YES' } else { 'no' })"
-          Write-Host "adjutant spec crashed:    $(if ($spec.Count)  { 'YES' } else { 'no' })"
-          if (-not $repro.Count -and $spec.Count) {
-            Write-Host "-> The repro still does not reproduce it. Compare the two stacks."
+          $repro    = @(Get-ChildItem -Path repro    -Filter *.dmp -ErrorAction SilentlyContinue)
+          $spec     = @(Get-ChildItem -Path spec     -Filter *.dmp -ErrorAction SilentlyContinue)
+          $external = @(Get-ChildItem -Path external -Filter *.dmp -ErrorAction SilentlyContinue)
+          Write-Host "standalone repro (in-process server):  $(if ($repro.Count)    { 'CRASHED' } else { 'survived' })"
+          Write-Host "adjutant spec    (in-process server):  $(if ($spec.Count)     { 'CRASHED' } else { 'survived' })"
+          Write-Host "adjutant spec    (external server):    $(if ($external.Count) { 'CRASHED' } else { 'survived' })"
+          Write-Host ""
+          if ($spec.Count -and $external.Count) {
+            Write-Host "-> Server location is IRRELEVANT. Real deployments are affected;"
+            Write-Host "   Windows is blocking, and the upstream report needs no HTTP::Server."
+          } elseif ($spec.Count -and -not $external.Count) {
+            Write-Host "-> Only the in-process server crashes. Two servers sharing a thread"
+            Write-Host "   matters; likely a harness artefact rather than a production risk."
+            Write-Host "   Confirm by re-running before trusting it — this crash is a race."
+          } elseif (-not $spec.Count) {
+            Write-Host "-> The known-crashing spec did NOT crash this run. Nothing below is"
+            Write-Host "   conclusive; the race did not fire. Re-run."
           }
 
       # Analysed ON THE RUNNER rather than by downloading the dump.
@@ -136,31 +168,14 @@ jobs:
       # called abort, which is the symptom. The interesting frames are
       # further up: Crystal's unwinding functions, or an MSVC
       # `terminate`/`__C_specific_handler`.
-      # SYMBOLS ARE LOCAL-ONLY, and that is the fix for this step
-      # hanging forever. With `_NT_SYMBOL_PATH` unset, `!analyze -v`
-      # reaches out to Microsoft's symbol server for ntdll,
-      # VCRUNTIME140 and the rest, and on a runner with no configured
-      # proxy that fetch can block indefinitely with no output. `.`
-      # restricts cdb to the PDB sitting next to our own binary.
-      #
-      # The cost is that system frames show as `module+0xNNNN` rather
-      # than named functions. That is acceptable here: the frames we
-      # need named are OURS, and the system side of the faulting stack
-      # is already known from the run that did resolve
-      # (abort <- FindAndUnlinkFrame <- _C_specific_handler <-
-      # RtlUnwindEx). If richer system symbols are wanted later, set
-      # the path to `srv*C:\symbols*https://msdl.microsoft.com/download/symbols`
-      # and keep the timeout.
       - name: Analyse the crash dumps (Windows)
         continue-on-error: true
-        timeout-minutes: 10
         run: |
-          $dumps = @(Get-ChildItem -Path repro, spec -Filter *.dmp -Recurse -ErrorAction SilentlyContinue)
+          $dumps = @(Get-ChildItem -Path repro, spec, external -Filter *.dmp -Recurse -ErrorAction SilentlyContinue)
           if (-not $dumps.Count) {
             Write-Host "Neither binary crashed — no dump to analyse."
             exit 0
           }
-          $env:_NT_SYMBOL_PATH = "."
           choco install windbg -y --no-progress
           $cdb = "C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe"
           if (-not (Test-Path $cdb)) {
@@ -184,21 +199,7 @@ jobs:
             Write-Host "=============================================================="
             Write-Host "$($dump.Directory.Name): $($dump.Name) ($([math]::Round($dump.Length / 1MB, 1)) MB)"
             Write-Host "=============================================================="
-            # Each dump is analysed in its own bounded process, with
-            # output tee'd to a file that is uploaded even if cdb
-            # wedges: one stuck debugger should cost its own dump, not
-            # every dump after it. `-lines` maps frames to source
-            # lines, which the --debug PDB supports.
-            $log = "$($dump.Directory.Name)-analysis.txt"
-            $proc = Start-Process -FilePath $cdb -PassThru -NoNewWindow `
-              -ArgumentList @("-z", $dump.FullName, "-y", ".", "-lines",
-                              "-c", "!analyze -v; ~*k; q") `
-              -RedirectStandardOutput $log
-            if (-not $proc.WaitForExit(240000)) {
-              Write-Host "cdb did not finish within 4 minutes; killing it."
-              $proc.Kill()
-            }
-            if (Test-Path $log) { Get-Content $log }
+            & $cdb -z $dump.FullName -y . -c "!analyze -v; ~*k; q"
           }
 
       # The PDB rides along with the dump so the artifact stays usable
@@ -212,9 +213,9 @@ jobs:
           path: |
             repro/*.dmp
             spec/*.dmp
+            external/*.dmp
             *.pdb
             *.exe
-            *-analysis.txt
           if-no-files-found: warn
           retention-days: 7
 
