@@ -97,13 +97,6 @@ jobs:
       # its own progress table, one line per unwind depth. If it
       # survives, that table IS the result — the last line printed
       # names the deepest configuration that held.
-      - name: Standalone repro under ProcDump (Windows)
-        continue-on-error: true
-        timeout-minutes: 5
-        run: |
-          procdump -accepteula -e -ma -x repro .\win_stream_crash_repro.exe
-          Write-Host "procdump exit: $LASTEXITCODE (0 = target ran to completion)"
-
       - name: Known-crashing spec under ProcDump (Windows)
         continue-on-error: true
         timeout-minutes: 5
@@ -137,6 +130,11 @@ jobs:
             $env:ADJUTANT_EXTERNAL_PORT = "8099"
             $env:ADJUTANT_EXTERNAL_PATH = "/big.bin"
             procdump -accepteula -e -ma -x external .\external_spec.exe --verbose
+            Write-Host "external spec procdump exit: $LASTEXITCODE"
+            # v5 of the standalone repro also needs this server: it has
+            # no HTTP::Server of its own, since the external-server
+            # spec proved one is not required to crash.
+            procdump -accepteula -e -ma -x repro .\win_stream_crash_repro.exe
             Write-Host "procdump exit: $LASTEXITCODE (0 = target ran to completion)"
           } finally {
             Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue

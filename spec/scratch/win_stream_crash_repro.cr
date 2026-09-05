@@ -1,91 +1,81 @@
-# Windows crash repro, v4. Uses only Crystal's stdlib — no Adjutant at
-# all, so a maintainer can run it directly.
+# Windows crash repro, v5 — the last attempt before Windows is parked.
 #
-# ## The crash being chased
+# ## What changed, and why v1-v4 could not have worked
 #
-# On Windows, `spec/adjutant/legate/verbs/fetch_stream_spec.cr`'s
-# "closes the connection when the script raises mid-walk" terminates
-# the process with 0xC0000409 (fail-fast, FATAL_APP_EXIT). Both
-# Crystal 1.20 and latest. The dump's faulting stack:
+# Four earlier versions varied the wrong things: whether the body was
+# read synchronously, whether a producer fiber existed, how deep the
+# unwind was, how many `ensure` frames it crossed. All survived.
 #
-#     ucrtbase!abort
-#     VCRUNTIME140!FindAndUnlinkFrame        <-- aborts here
-#     VCRUNTIME140!_C_specific_handler
-#     ntdll!RtlUnwindEx
-#     ...
-#     KERNELBASE!RaiseException
-#     <application frames>
+# The one structure they never had is what Adjutant's VM puts in the
+# unwind path. `VM#call_native` (vm.cr) wraps EVERY native call in a
+# four-clause rescue chain that CATCHES AND RE-RAISES:
 #
-# `FindAndUnlinkFrame` maintains MSVC's linked list of registered SEH
-# frames and aborts when the frame it unlinks is not the one it
-# expects. So this is an integrity CHECK failing during unwinding, not
-# a memory error — which is why nothing in-process can catch it.
+#     rescue ex : BlockBreakSignal   ex.value          # swallow
+#     rescue ex : FatalSignal        raise ex          # re-raise
+#     rescue ex : RuntimeError       raise ex          # re-raise
+#     rescue ex                      raise Wrapped.new # translate
 #
-# ## What is already known, from bisection against the real suite
+# So when a script raises inside a streamed walk, the exception is
+# caught mid-unwind on a frame that also spans a fiber switch, and
+# then thrown again. `FindAndUnlinkFrame` — which is where the process
+# aborts — maintains MSVC's list of registered SEH frames and fails
+# when the frame it unlinks is not the one it expects. Catch-and-
+# rethrow manipulates that list; a plain `ensure` does not. v4's depth
+# sweep was varying cleanup frames, which never re-register a handler.
 #
-#   VM   socket-backed   unwinding   result
-#   ---  -------------   ---------   ------
-#   yes  no (file)       yes         passes
-#   no   yes             yes         passes   <-- repro v3, case C
-#   yes  yes             no (break)  passes
-#   yes  yes             yes         DIES
+# ## Also new: an EXTERNAL server
 #
-# All three ingredients necessary, none sufficient. Body size and the
-# producer fiber's parked state make no difference.
+# `spec/scratch/external_server_crash_spec.cr` established that the
+# crash does NOT need an in-process `HTTP::Server` — it crashes just
+# the same against a static file server in another OS process. So
+# there is no server fiber here at all, which removes a whole class of
+# scheduling coincidence from the picture and makes this a cleaner
+# thing to hand upstream if it fires.
 #
-# ## What v3 got wrong, and what v4 changes
+# ## The four variants
 #
-# v3 called `next_chunk`, let it RETURN, and then raised. So the frame
-# that spanned the fiber switch had already popped, and the unwind
-# never travelled through it. The real code raises from inside a block
-# that a walk loop yields to, while that loop's frame — which parked
-# on a channel receive and switched to the producer fiber — is still
-# on the stack below.
+#   none        no rescue chain at all — v4's shape, the control
+#   reraise     catch and `raise ex` (VM's FatalSignal/RuntimeError path)
+#   translate   catch and raise a NEW exception (VM's N001 path)
+#   both        a translate frame inside a re-raise frame, as the VM
+#               produces when a native call nests inside another
 #
-# v4 mirrors that: `walk` loops, receives (switching fibers), and
-# yields; the raise happens in the yielded block and unwinds back
-# through `walk`.
+# Each runs at several nesting depths, because one re-raise frame may
+# not be enough — the VM stacks one per native call in the chain.
 #
-# ## Why this sweeps rather than asserts
+# Expected on Linux/macOS: the whole table prints, exit 0.
+# On Windows, if the hypothesis holds: the run stops partway and the
+# last line printed names the variant and depth that died.
 #
-# Two candidates remain for why the real test dies where v3 lived:
-# how DEEP the unwind is, and how many `ensure`/`rescue` frames it
-# crosses. Rather than pick one, this varies both and reports which
-# combination dies. On Windows the expectation is that a run stops
-# mid-table; the last line printed names the crashing configuration.
+# ## Running it
 #
-# Expected on Linux/macOS: the whole table prints, then ALL DONE,
-# exit 0.
+#   python -m http.server 8099        # in a dir containing big.bin
+#   ADJUTANT_EXTERNAL_PORT=8099 crystal run --debug win_stream_crash_repro.cr
 #
-# Run:   crystal run --debug win_stream_crash_repro.cr
-# Then:  echo $LASTEXITCODE     (PowerShell)
+# `big.bin` needs to be a few tens of KB so the body arrives in
+# several chunks.
 
-require "http/server"
 require "http/client"
 
-BODY_SIZE  = 40_000
-CHUNK_SIZE =  8_192
-REPEATS    =     10
+CHUNK_SIZE = 8_192
+REPEATS    =     8
+DEPTHS     = [1, 3, 10]
 
-DEPTHS = [0, 1, 5, 20, 50]
+PORT = (ENV["ADJUTANT_EXTERNAL_PORT"]? || "8099").to_i
+PATH = ENV["ADJUTANT_EXTERNAL_PATH"]? || "/big.bin"
 
-def with_server(&)
-  server = HTTP::Server.new do |context|
-    context.response.print("y" * BODY_SIZE)
-  end
-  address = server.bind_unused_port("127.0.0.1")
-  spawn { server.listen }
-  Fiber.yield
-  begin
-    yield address.port
-  ensure
-    server.close rescue nil
-  end
+# Stands in for `Legate::FatalSignal`: a plain Exception, deliberately
+# NOT a subclass of the type the middle clause matches, so the rescue
+# chain below has to fall through more than one clause.
+class SignalLike < Exception
+end
+
+class WrappedError < Exception
 end
 
 # The essential shape of `Utils::HttpResponseStream`: an HTTP read
-# loop on a spawned producer fiber, handing chunks to the consumer
-# over an UNBUFFERED channel, cancelled by closing that channel.
+# loop on a producer fiber, chunks over an unbuffered channel,
+# cancelled by closing it.
 class ChunkStream
   def initialize(@client : HTTP::Client, request : HTTP::Request)
     @channel = Channel(Bytes?).new
@@ -99,10 +89,8 @@ class ChunkStream
     nil
   end
 
-  # THE FRAME THAT MATTERS. It parks on `receive`, which switches to
-  # the producer fiber, then yields to the caller's block while still
-  # on the stack. An exception raised in that block unwinds back
-  # through this frame — the one that spanned the fiber switch.
+  # The frame that spans the fiber switch AND stays on the stack while
+  # the caller's block runs.
   def walk(&) : Nil
     loop do
       chunk = next_chunk
@@ -129,7 +117,6 @@ class ChunkStream
       @channel.send(nil)
     end
   rescue Channel::ClosedError
-    # Consumer abandoned the stream.
   rescue ex
     begin
       @channel.send(nil)
@@ -140,48 +127,90 @@ class ChunkStream
   end
 end
 
-def open_stream(port : Int32) : ChunkStream
-  client = HTTP::Client.new("127.0.0.1", port)
+def open_stream : ChunkStream
+  client = HTTP::Client.new("127.0.0.1", PORT)
   client.read_timeout = 5.seconds
-  ChunkStream.new(client, HTTP::Request.new("GET", "/", HTTP::Headers.new))
+  ChunkStream.new(client, HTTP::Request.new("GET", PATH, HTTP::Headers.new))
 end
 
-# Adds `depth` frames between the raise and the rescue, each carrying
-# an `ensure` so the unwind must run cleanup at every level. This is
-# what stands in for the VM's own nested frames in the real failure.
-def nested(depth : Int32, &block : -> Nil) : Nil
+# `VM#call_native`'s rescue chain, reproduced in shape: several
+# clauses, the matching one re-raising the SAME object unchanged.
+def reraise_frame(&) : Nil
+  yield
+rescue ex : SignalLike
+  raise ex
+rescue ex : ArgumentError
+  raise ex
+rescue ex
+  raise ex
+end
+
+# `VM#call_native`'s catch-all, which raises a NEW exception built
+# from the old one rather than re-raising it — the N001 path.
+def translate_frame(&) : Nil
+  yield
+rescue ex : SignalLike
+  raise ex
+rescue ex
+  raise WrappedError.new(ex.message)
+end
+
+def plain_frame(&) : Nil
+  yield
+end
+
+def nest(kind : Symbol, depth : Int32, &block : -> Nil) : Nil
   if depth <= 0
     block.call
   else
-    begin
-      nested(depth - 1, &block)
-    ensure
-      # Deliberately non-empty: an ensure the optimiser cannot drop.
-      Fiber.current.name
+    inner = -> { nest(kind, depth - 1, &block) }
+    case kind
+    when :reraise   then reraise_frame { inner.call }
+    when :translate then translate_frame { inner.call }
+    when :both
+      # A translate frame inside a re-raise frame, as the VM produces
+      # when one native call nests inside another.
+      reraise_frame { translate_frame { inner.call } }
+    else plain_frame { inner.call }
     end
   end
 end
 
-def attempt(port : Int32, depth : Int32) : Nil
-  stream = open_stream(port)
+def attempt(kind : Symbol, depth : Int32) : Nil
+  stream = open_stream
   begin
     stream.walk do |chunk|
-      nested(depth) { raise "boom" }
+      nest(kind, depth) { raise "boom" }
     end
   rescue
-    # Swallowed, as the spec's expect_raises would.
+    # Swallowed, as expect_raises would.
   ensure
     # Mirrors `interpreter.cr`'s `ensure ... open_sources.close_all`.
     stream.close
   end
 end
 
-with_server do |port|
+# Fail early and clearly if the server is not up, rather than
+# reporting a misleading survival.
+begin
+  probe = HTTP::Client.new("127.0.0.1", PORT)
+  probe.read_timeout = 5.seconds
+  response = probe.get(PATH)
+  raise "unexpected status #{response.status_code}" unless response.status_code == 200
+  probe.close
+  puts "server ok on port #{PORT}#{PATH}"
+rescue ex
+  puts "CANNOT REACH SERVER on 127.0.0.1:#{PORT}#{PATH} — #{ex.message}"
+  puts "Start one with: python -m http.server #{PORT}"
+  exit 1
+end
+
+[:none, :reraise, :translate, :both].each do |kind|
   DEPTHS.each do |depth|
-    print "depth #{depth.to_s.rjust(2)}: "
+    print "#{kind.to_s.ljust(10)} depth #{depth.to_s.rjust(2)}: "
     STDOUT.flush
     REPEATS.times do
-      attempt(port, depth)
+      attempt(kind, depth)
       print "."
       STDOUT.flush
     end
