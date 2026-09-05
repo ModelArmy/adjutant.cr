@@ -57,6 +57,13 @@ jobs:
           crystal run --debug spec/scratch/win_stream_crash_repro.cr
           echo $LASTEXITCODE
 
+      - name: Run tests (Windows, verbose)
+        if: ${{ runner.os == 'Windows' }}
+        run: |
+          crystal build --debug spec/adjutant/legate/verbs/fetch_stream_spec.cr -o fetch_str_spec.exe
+          .\fetch_str_spec.exe
+          echo $LASTEXITCODE
+
       # ---- Build and run test scripts
 
       - name: Setup release environment
