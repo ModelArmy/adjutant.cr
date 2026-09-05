@@ -61,7 +61,7 @@ jobs:
         if: ${{ runner.os == 'Windows' }}
         run: |
           crystal build --debug spec/adjutant/legate/verbs/fetch_stream_spec.cr -o fetch_str_spec.exe
-          .\fetch_str_spec.exe
+          .\fetch_str_spec.exe --verbose
           echo $LASTEXITCODE
 
       # ---- Build and run test scripts

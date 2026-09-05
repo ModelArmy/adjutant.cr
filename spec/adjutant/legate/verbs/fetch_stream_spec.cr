@@ -172,6 +172,44 @@ module Adjutant
         end
       end
 
+      # DIAGNOSTIC 2, and again placed BEFORE the crashing test so its
+      # result survives the crash. Identical to that test except the
+      # body is 8 bytes rather than 40_000 — small enough to arrive in
+      # ONE chunk, so the producer fiber has already sent `Done` and
+      # run to completion by the time the block raises.
+      #
+      # What each outcome means:
+      #
+      #   survives -> a LIVE producer fiber is required. The bug is an
+      #               exception unwinding while another fiber is
+      #               parked mid-read, and the report is about fiber
+      #               cancellation during unwind.
+      #   crashes  -> the producer's state is irrelevant, and merely
+      #               having had a socket-backed stream in the frame
+      #               is enough. That would point at the HTTP client
+      #               teardown itself rather than at concurrency.
+      #
+      # Established so far, all from tests that PASS on Windows:
+      # unwinding IS required (the break variant above survives), the
+      # VM sandwich alone is not enough (`open_sources_spec.cr`'s
+      # file-backed "closes a stream whose walk raised"), and the real
+      # socket-backed stream alone is not enough
+      # (`spec/scratch/win_stream_crash_repro.cr` case C, same raise
+      # and same ensure-teardown, no VM). Only the combination dies.
+      it "closes the connection when the script raises mid-walk on a single-chunk body" do
+        with_stream_server(->(context : HTTP::Server::Context) {
+          context.response.print("tiny")
+        }) do |port|
+          interp, _ = make_interp(grants: loopback_grants(port))
+          expect_raises(Exception) do
+            interp.eval(<<-RUBY)
+            Legate.fetch("http://127.0.0.1:#{port}/", stream: true).body.each { |c| raise "boom" }
+            RUBY
+          end
+          interp.broker.open_sources.size.should eq 0
+        end
+      end
+
       it "closes the connection when the script raises mid-walk" do
         with_stream_server(->(context : HTTP::Server::Context) {
           context.response.print("w" * 40_000)
