@@ -15,10 +15,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: windows-latest, crystal: "1.20" }
           - { os: windows-latest, crystal: latest }
 
     runs-on: ${{ matrix.os }}
+    # A diagnostic job must never be able to hang a runner.
+    timeout-minutes: 30
 
     steps:
       - name: Checkout code
@@ -75,6 +76,17 @@ jobs:
       #
       # `continue-on-error` throughout: these steps are SUPPOSED to
       # fail, and the analysis and upload below must still run.
+      # `procdump -x <dir>` does NOT create the directory — it exits
+      # with "The directory does not exist" and never launches the
+      # target at all. That silently invalidated an earlier run: the
+      # standalone repro and the external-server spec were reported as
+      # having survived when neither had actually been executed.
+      - name: Create dump directories (Windows)
+        run: |
+          foreach ($d in "repro", "spec", "external") {
+            New-Item -ItemType Directory -Force -Path $d | Out-Null
+          }
+
       - name: Build both binaries (Windows)
         continue-on-error: true
         run: |
@@ -87,15 +99,17 @@ jobs:
       # names the deepest configuration that held.
       - name: Standalone repro under ProcDump (Windows)
         continue-on-error: true
+        timeout-minutes: 5
         run: |
           procdump -accepteula -e -ma -x repro .\win_stream_crash_repro.exe
-          Write-Host "repro exit code: $LASTEXITCODE"
+          Write-Host "procdump exit: $LASTEXITCODE (0 = target ran to completion)"
 
       - name: Known-crashing spec under ProcDump (Windows)
         continue-on-error: true
+        timeout-minutes: 5
         run: |
           procdump -accepteula -e -ma -x spec .\fetch_str_spec.exe --verbose
-          Write-Host "spec exit code: $LASTEXITCODE"
+          Write-Host "procdump exit: $LASTEXITCODE (0 = target ran to completion)"
 
       # Which of the two produced a dump is itself the headline
       # result, so state it plainly rather than leaving it to be
@@ -123,7 +137,7 @@ jobs:
             $env:ADJUTANT_EXTERNAL_PORT = "8099"
             $env:ADJUTANT_EXTERNAL_PATH = "/big.bin"
             procdump -accepteula -e -ma -x external .\external_spec.exe --verbose
-            Write-Host "external-server spec exit code: $LASTEXITCODE"
+            Write-Host "procdump exit: $LASTEXITCODE (0 = target ran to completion)"
           } finally {
             Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
           }
@@ -168,8 +182,57 @@ jobs:
       # called abort, which is the symptom. The interesting frames are
       # further up: Crystal's unwinding functions, or an MSVC
       # `terminate`/`__C_specific_handler`.
+      # SPLIT OUT of the analysis step so a hang can be attributed:
+      # while install and analysis shared a step there was no way to
+      # tell whether Chocolatey or cdb was the thing wedging.
+      #
+      # The GitHub Windows image usually ships the Windows Kits
+      # debuggers already, so the install is often unnecessary as well
+      # as slow. This looks first and only falls back to Chocolatey.
+      - name: Locate or install a debugger (Windows)
+        continue-on-error: true
+        timeout-minutes: 10
+        run: |
+          function Find-Cdb {
+            $fixed = "C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe"
+            if (Test-Path $fixed) { return $fixed }
+            $found = Get-ChildItem -Path "C:\Program Files (x86)\Windows Kits" `
+                       -Filter cdb.exe -Recurse -ErrorAction SilentlyContinue |
+                     Where-Object { $_.FullName -like "*x64*" } |
+                     Select-Object -First 1
+            if ($found) { return $found.FullName }
+            return $null
+          }
+          $cdb = Find-Cdb
+          if ($cdb) {
+            Write-Host "Found an existing debugger; skipping the install."
+          } else {
+            Write-Host "No debugger on the image; installing via Chocolatey."
+            # LOCAL-ONLY SYMBOLS, and the likely fix for this step
+          # hanging: with `_NT_SYMBOL_PATH` unset, `!analyze -v`
+          # reaches out to Microsoft's symbol server and can block
+          # indefinitely with no output. `.` restricts cdb to the PDB
+          # beside our own binary. System frames then show as
+          # `module+0xNNNN`, which is acceptable — the frames we need
+          # named are ours, and the system side is already known.
+          $env:_NT_SYMBOL_PATH = "."
+          if (-not $env:CDB_PATH) {
+            Write-Host "No debugger available; skipping analysis."
+            exit 0
+          }
+          $cdb = $env:CDB_PATH
+            $cdb = Find-Cdb
+          }
+          if ($cdb) {
+            Write-Host "cdb: $cdb"
+            "CDB_PATH=$cdb" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          } else {
+            Write-Host "No cdb found; dumps are still uploaded for offline analysis."
+          }
+
       - name: Analyse the crash dumps (Windows)
         continue-on-error: true
+        timeout-minutes: 10
         run: |
           $dumps = @(Get-ChildItem -Path repro, spec, external -Filter *.dmp -Recurse -ErrorAction SilentlyContinue)
           if (-not $dumps.Count) {
@@ -177,16 +240,6 @@ jobs:
             exit 0
           }
           choco install windbg -y --no-progress
-          $cdb = "C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe"
-          if (-not (Test-Path $cdb)) {
-            $cdb = (Get-ChildItem -Path "C:\Program Files (x86)\Windows Kits" -Filter cdb.exe -Recurse -ErrorAction SilentlyContinue |
-                    Where-Object { $_.FullName -like "*x64*" } |
-                    Select-Object -First 1).FullName
-          }
-          if (-not $cdb) {
-            Write-Host "cdb.exe not found; the dump artifact is still uploaded."
-            exit 0
-          }
           # `-y .` looks for the PDB next to the binary, which is where
           # `crystal build --debug` leaves it. Without symbols every
           # Crystal frame resolves to a bare offset and the whole
@@ -199,7 +252,19 @@ jobs:
             Write-Host "=============================================================="
             Write-Host "$($dump.Directory.Name): $($dump.Name) ($([math]::Round($dump.Length / 1MB, 1)) MB)"
             Write-Host "=============================================================="
-            & $cdb -z $dump.FullName -y . -c "!analyze -v; ~*k; q"
+            # Bounded, and logged to a file that is uploaded even if
+            # cdb wedges: one stuck debugger should cost its own dump,
+            # not every dump after it.
+            $log = "$($dump.Directory.Name)-analysis.txt"
+            $proc = Start-Process -FilePath $cdb -PassThru -NoNewWindow `
+              -ArgumentList @("-z", $dump.FullName, "-y", ".",
+                              "-c", "!analyze -v; ~*k; q") `
+              -RedirectStandardOutput $log
+            if (-not $proc.WaitForExit(240000)) {
+              Write-Host "cdb did not finish within 4 minutes; killing it."
+              $proc.Kill()
+            }
+            if (Test-Path $log) { Get-Content $log }
           }
 
       # The PDB rides along with the dump so the artifact stays usable
@@ -215,6 +280,7 @@ jobs:
             spec/*.dmp
             external/*.dmp
             *.pdb
+            *-analysis.txt
             *.exe
           if-no-files-found: warn
           retention-days: 7
