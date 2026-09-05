@@ -45,7 +45,8 @@ private def with_stream_server(handler : Handler, &)
   server = HTTP::Server.new do |context|
     begin
       handler.call(context)
-    rescue IO::Error
+    rescue ex
+      STDERR.puts ex.inspect
       # The client went away mid-response. Expected here.
     end
   end
@@ -53,7 +54,8 @@ private def with_stream_server(handler : Handler, &)
   spawn do
     begin
       server.listen
-    rescue IO::Error
+    rescue ex
+      STDERR.puts ex.inspect
       # As above, from the accept/read side.
     end
   end
@@ -63,10 +65,13 @@ private def with_stream_server(handler : Handler, &)
   ensure
     begin
       server.close
-    rescue IO::Error
+    rescue ex
+      STDERR.puts ex.inspect
       # Closing while a connection is already broken.
     end
   end
+rescue ex
+  STDERR.puts ex.inspect
 end
 
 # `local: true` because the server is on 127.0.0.1, which §8.2 refuses
