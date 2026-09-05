@@ -1,68 +1,73 @@
-# Windows crash repro, v3. Versions 1 and 2 both exited 0 everywhere.
+# Windows crash repro, v4. Uses only Crystal's stdlib — no Adjutant at
+# all, so a maintainer can run it directly.
 #
-# ## Why the first two were wrong, since that is the useful part
+# ## The crash being chased
 #
-# v1 read the body synchronously — no producer fiber at all. v2 added
-# a producer fiber and a channel, but as a HAND-COPY of
-# `Utils::HttpResponseStream` rather than the class itself. I rebuilt
-# the SHAPE and assumed the shape was the thing. This version uses the
-# real class, and nothing else from Adjutant.
+# On Windows, `spec/adjutant/legate/verbs/fetch_stream_spec.cr`'s
+# "closes the connection when the script raises mid-walk" terminates
+# the process with 0xC0000409 (fail-fast, FATAL_APP_EXIT). Both
+# Crystal 1.20 and latest. The dump's faulting stack:
 #
-# ## What the suite has already ruled out, for free
+#     ucrtbase!abort
+#     VCRUNTIME140!FindAndUnlinkFrame        <-- aborts here
+#     VCRUNTIME140!_C_specific_handler
+#     ntdll!RtlUnwindEx
+#     ...
+#     KERNELBASE!RaiseException
+#     <application frames>
 #
-# Nothing here needs to test these; they are green on Windows today:
+# `FindAndUnlinkFrame` maintains MSVC's linked list of registered SEH
+# frames and aborts when the frame it unlinks is not the one it
+# expects. So this is an integrity CHECK failing during unwinding, not
+# a memory error — which is why nothing in-process can catch it.
 #
-#   - Script exceptions unwinding through VM frames.
-#     `begin_rescue_ensure/vm_spec.cr` has ten cases escaping `eval`
-#     uncaught, one of them several call frames deep.
-#   - The Crystal -> VM -> Crystal -> VM -> raise sandwich, with a
-#     stream in the middle, teardown in an `ensure`, and an
-#     `open_sources` assertion afterwards.
-#     `open_sources_spec.cr:305` ("closes a stream whose walk raised")
-#     is STRUCTURALLY IDENTICAL to the crashing test and passes.
+# ## What is already known, from bisection against the real suite
 #
-# The only difference between that passing test and the crashing one
-# is what feeds the stream. `Legate.bytes` reads a file inline on the
-# consumer's own fiber. `HttpResponseStream` has a PRODUCER FIBER that
-# is still live — and parked inside a socket read — when cancellation
-# arrives.
+#   VM   socket-backed   unwinding   result
+#   ---  -------------   ---------   ------
+#   yes  no (file)       yes         passes
+#   no   yes             yes         passes   <-- repro v3, case C
+#   yes  yes             no (break)  passes
+#   yes  yes             yes         DIES
 #
-# ## The hypothesis
+# All three ingredients necessary, none sufficient. Body size and the
+# producer fiber's parked state make no difference.
 #
-# Cancelling an `HttpResponseStream` whose producer fiber is parked in
-# a socket read terminates the process on Windows. `close` closes the
-# channel and does a single `Fiber.yield`, on the stated assumption
-# that "the producer's next scheduled step is the raise" — which holds
-# for a fiber parked on `send`, not one parked on I/O.
+# ## What v3 got wrong, and what v4 changes
 #
-# ## The three cases, and why each is here
+# v3 called `next_chunk`, let it RETURN, and then raised. So the frame
+# that spanned the fiber switch had already popped, and the unwind
+# never travelled through it. The real code raises from inside a block
+# that a walk loop yields to, while that loop's frame — which parked
+# on a channel receive and switched to the producer fiber — is still
+# on the stack below.
 #
-#   A  Exhaust the body fully, then close. Producer already finished.
-#      The control: if this dies, cancellation is not the issue.
-#   B  Take one chunk, then close. Producer most likely parked on
-#      SEND. Mirrors the PASSING "stream is abandoned" test.
-#   C  Take one chunk, then close from an `ensure` while an exception
-#      unwinds. Mirrors the CRASHING "raises mid-walk" test.
+# v4 mirrors that: `walk` loops, receives (switching fibers), and
+# yields; the raise happens in the yielded block and unwinds back
+# through `walk`.
 #
-# B and C differ ONLY by the unwinding. If C dies and B lives, the
-# unwind is required and that is the upstream report. If both die, the
-# raise is irrelevant and it is purely fiber-parked-on-read
-# cancellation — which would ALSO mean the passing "abandoned" test is
-# passing by luck, and is the more alarming outcome.
+# ## Why this sweeps rather than asserts
 #
-# Each case repeats, because a scheduler race will not show every run.
+# Two candidates remain for why the real test dies where v3 lived:
+# how DEEP the unwind is, and how many `ensure`/`rescue` frames it
+# crosses. Rather than pick one, this varies both and reports which
+# combination dies. On Windows the expectation is that a run stops
+# mid-table; the last line printed names the crashing configuration.
 #
-# Expected on Linux/macOS: all three print DONE, exit 0.
-# Run:  crystal run --debug spec/scratch/win_stream_crash_repro.cr
-# Then: echo $LASTEXITCODE   (PowerShell)
+# Expected on Linux/macOS: the whole table prints, then ALL DONE,
+# exit 0.
+#
+# Run:   crystal run --debug win_stream_crash_repro.cr
+# Then:  echo $LASTEXITCODE     (PowerShell)
 
 require "http/server"
 require "http/client"
-require "../../src/adjutant/utils/http_response_stream"
 
 BODY_SIZE  = 40_000
 CHUNK_SIZE =  8_192
-REPEATS    =     25
+REPEATS    =     10
+
+DEPTHS = [0, 1, 5, 20, 50]
 
 def with_server(&)
   server = HTTP::Server.new do |context|
@@ -78,58 +83,110 @@ def with_server(&)
   end
 end
 
-# The real class, opened exactly as `fetch.cr`'s `perform_streaming`
-# does — minus the pinning, which is a plain socket detail and cannot
-# matter here (the address IS 127.0.0.1 either way).
-def open_stream(port : Int32) : Adjutant::Utils::HttpResponseStream
+# The essential shape of `Utils::HttpResponseStream`: an HTTP read
+# loop on a spawned producer fiber, handing chunks to the consumer
+# over an UNBUFFERED channel, cancelled by closing that channel.
+class ChunkStream
+  def initialize(@client : HTTP::Client, request : HTTP::Request)
+    @channel = Channel(Bytes?).new
+    @closed = false
+    spawn produce(request)
+  end
+
+  def next_chunk : Bytes?
+    @channel.receive
+  rescue Channel::ClosedError
+    nil
+  end
+
+  # THE FRAME THAT MATTERS. It parks on `receive`, which switches to
+  # the producer fiber, then yields to the caller's block while still
+  # on the stack. An exception raised in that block unwinds back
+  # through this frame — the one that spanned the fiber switch.
+  def walk(&) : Nil
+    loop do
+      chunk = next_chunk
+      break unless chunk
+      yield chunk
+    end
+  end
+
+  def close : Nil
+    return if @closed
+    @closed = true
+    @channel.close
+    Fiber.yield
+  end
+
+  private def produce(request : HTTP::Request) : Nil
+    @client.exec(request) do |response|
+      if body = response.body_io?
+        buffer = Bytes.new(CHUNK_SIZE)
+        while (count = body.read(buffer)) > 0
+          @channel.send(buffer[0, count])
+        end
+      end
+      @channel.send(nil)
+    end
+  rescue Channel::ClosedError
+    # Consumer abandoned the stream.
+  rescue ex
+    begin
+      @channel.send(nil)
+    rescue Channel::ClosedError
+    end
+  ensure
+    @client.close rescue nil
+  end
+end
+
+def open_stream(port : Int32) : ChunkStream
   client = HTTP::Client.new("127.0.0.1", port)
   client.read_timeout = 5.seconds
-  request = HTTP::Request.new("GET", "/", HTTP::Headers.new)
-  Adjutant::Utils::HttpResponseStream.open(client, request, CHUNK_SIZE)
+  ChunkStream.new(client, HTTP::Request.new("GET", "/", HTTP::Headers.new))
 end
 
-# --- A: producer already finished -------------------------------
-puts "A: exhaust fully, then close"
-with_server do |port|
-  REPEATS.times do
-    stream = open_stream(port)
-    while stream.next_chunk
-    end
-    stream.close
-  end
-end
-puts "A: DONE"
-
-# --- B: producer parked on SEND ---------------------------------
-# The passing "stream is abandoned" test.
-puts "B: one chunk, then close"
-with_server do |port|
-  REPEATS.times do
-    stream = open_stream(port)
-    stream.next_chunk
-    stream.close
-  end
-end
-puts "B: DONE"
-
-# --- C: producer parked, close during unwind --------------------
-# The crashing "raises mid-walk" test. The `ensure` mirrors
-# `interpreter.cr`'s `ensure ... open_sources.close_all`.
-puts "C: one chunk, raise, close from ensure"
-with_server do |port|
-  REPEATS.times do |i|
-    stream = open_stream(port)
+# Adds `depth` frames between the raise and the rescue, each carrying
+# an `ensure` so the unwind must run cleanup at every level. This is
+# what stands in for the VM's own nested frames in the real failure.
+def nested(depth : Int32, &block : -> Nil) : Nil
+  if depth <= 0
+    block.call
+  else
     begin
-      stream.next_chunk
-      raise "boom"
-    rescue
-      # Swallowed as expect_raises would.
+      nested(depth - 1, &block)
     ensure
-      stream.close
+      # Deliberately non-empty: an ensure the optimiser cannot drop.
+      Fiber.current.name
     end
-    puts "C: iteration #{i} survived" if i % 5 == 0
   end
 end
-puts "C: DONE"
+
+def attempt(port : Int32, depth : Int32) : Nil
+  stream = open_stream(port)
+  begin
+    stream.walk do |chunk|
+      nested(depth) { raise "boom" }
+    end
+  rescue
+    # Swallowed, as the spec's expect_raises would.
+  ensure
+    # Mirrors `interpreter.cr`'s `ensure ... open_sources.close_all`.
+    stream.close
+  end
+end
+
+with_server do |port|
+  DEPTHS.each do |depth|
+    print "depth #{depth.to_s.rjust(2)}: "
+    STDOUT.flush
+    REPEATS.times do
+      attempt(port, depth)
+      print "."
+      STDOUT.flush
+    end
+    puts " ok"
+  end
+end
 
 puts "ALL DONE"
