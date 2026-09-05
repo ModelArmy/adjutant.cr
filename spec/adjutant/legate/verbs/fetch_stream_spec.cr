@@ -11,15 +11,61 @@ private alias Handler = HTTP::Server::Context ->
 # that, so a transcript would be testing the harness rather than the
 # verb. The buffered path's own specs stay on transcripts, where the
 # interesting part is policy rather than sockets.
+# Every socket-facing part of this helper swallows `IO::Error`, and
+# that is load-bearing rather than defensive habit — it is what these
+# specs are FOR.
+#
+# Several tests here abandon a response mid-write on purpose: the
+# server prints 40_000 bytes, the script pulls one chunk and drops the
+# connection. That is the behaviour under test. From the SERVER's side
+# it is a peer that vanished mid-write, which raises. Unix gives
+# `EPIPE`/`ECONNRESET`, which `HTTP::Server` already swallows; Windows
+# gives `WSAECONNABORTED`/`WSAECONNRESET`, which escaped and — because
+# an unhandled exception in a SPAWNED FIBER terminates the whole
+# process in Crystal — killed the run with no failure message and no
+# test name attached to it. Diagnosed 2026-09-04 from a Windows CI run
+# that reported only "Process terminated abnormally"; it is a race, so
+# WHICH abandoning test dies varies.
+#
+# Three separate places can raise, and all three need covering — a
+# rescue on only `listen` still lets the handler's own `print` to a
+# dead socket through:
+#
+#   1. `handler.call` — writing the response body to a closed peer.
+#   2. `server.listen` — accepting or reading from one.
+#   3. `server.close` — tearing down with a connection still in a bad
+#      state.
+#
+# Only `IO::Error` (which `Socket::Error` is under) is swallowed, and
+# only here in the scaffolding. A bare `rescue` would hide a genuine
+# assertion failure raised from inside a handler, which would turn a
+# real bug into a silent pass — the opposite of the problem this is
+# fixing.
 private def with_stream_server(handler : Handler, &)
-  server = HTTP::Server.new { |context| handler.call(context) }
+  server = HTTP::Server.new do |context|
+    begin
+      handler.call(context)
+    rescue IO::Error
+      # The client went away mid-response. Expected here.
+    end
+  end
   address = server.bind_unused_port("127.0.0.1")
-  spawn { server.listen }
+  spawn do
+    begin
+      server.listen
+    rescue IO::Error
+      # As above, from the accept/read side.
+    end
+  end
   Fiber.yield
   begin
     yield address.port
   ensure
-    server.close
+    begin
+      server.close
+    rescue IO::Error
+      # Closing while a connection is already broken.
+    end
   end
 end
 
