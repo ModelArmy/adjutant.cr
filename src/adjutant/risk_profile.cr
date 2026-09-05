@@ -18,6 +18,22 @@ module Adjutant
     ReadsFiles
     WritesFiles
     DeletesFiles
+    # Relocation, which is NOT destruction. `Legate.mv` carries this
+    # ALONE and declares itself reversible: `File.rename` preserves
+    # the information, and the cross-device fallback is deliberately
+    # ordered copy-then-delete so a partway failure duplicates rather
+    # than loses. Saying `DeletesFiles` of a move would imply a loss
+    # that does not occur, and pairing the two is worse than either.
+    #
+    # `Legate.mv!` carries this AND `DeletesFiles`, the latter
+    # honestly about the clobbered destination — a real,
+    # unrecoverable loss of a file the script never named as a
+    # source. That asymmetry with the AUTHORITY a move needs (both
+    # Delete and Write, either way) is correct rather than an
+    # oversight: authorities answer "what may this call do", effects
+    # answer "what did it consequently do", and nothing infers one
+    # from the other.
+    MovesFiles
     Recursive
     ExecutesCode
     NetworkEgress

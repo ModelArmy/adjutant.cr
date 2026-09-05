@@ -4,3 +4,7 @@ shards:
     git: https://github.com/crystal-ameba/ameba.git
     version: 1.7.0
 
+  wiretap:
+    git: https://github.com/nogginly/wiretap.cr.git
+    version: 0.4.2
+

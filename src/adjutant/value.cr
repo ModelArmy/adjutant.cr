@@ -1,8 +1,8 @@
 module Adjutant
   # The raw storage union for a Value.
   # Crystal's union type carries its own discriminant — no separate tag needed.
-  alias ValueRaw = Nil | Bool | Int64 | Float64 | String | Sym | ScriptProc |
-                   LabeledArray | LabeledHash | RubyClass | RubyObject
+  alias ValueRaw = Bool | Int64 | Float64 | String | Sym | ScriptProc |
+                   LabeledArray | LabeledHash | RubyClass | RubyObject?
 
   # The core runtime value type for the Adjutant interpreter.
   #
@@ -33,6 +33,56 @@ module Adjutant
       else
         @label
       end
+    end
+
+    # --- Equality / hashing (Crystal-level, NOT Ruby's own ==) ---------
+
+    # Deliberately compares/hashes ONLY `@raw`, ignoring `@label`
+    # entirely — WITHOUT this override, `struct`'s default
+    # field-by-field equality/hash would include `@label`, which
+    # breaks the moment this `Value` is used as a Crystal `Hash` key
+    # (every script-level Ruby `Hash` literal's own internal storage,
+    # `hash.cr`'s own comment confirms — Crystal's `Hash(Value,
+    # Value)#[]` hashes via exactly this method) with a LABELED key: a
+    # freshly-constructed unlabeled lookup key would silently fail to
+    # match a differently-labeled stored key, returning a false `nil`
+    # rather than an error. Found 2026-08-24 in
+    # `Legate::Response#json`'s own construction of a decoded-JSON
+    # Hash (`legate/response.cr`) — fixed there by simply not labeling
+    # keys, but that's a convention a future native-code author could
+    # easily forget; this is the real, permanent fix, removing the
+    # whole class of bug rather than relying on everyone remembering
+    # not to trip over it (see `LabeledHash`'s own comment,
+    # `labeled_container.cr`, which predates this fix and is still
+    # worth reading for the full story).
+    #
+    # Matches Adjutant's own SCRIPT-VISIBLE `==` semantics
+    # (`ValueOps.equal?`) on purpose: real Ruby's hash-key equality has
+    # nothing to do with taint, and a label making two otherwise-
+    # identical values act as different dictionary keys would itself
+    # have been a second, independent bug. For the overwhelming
+    # majority of values (unlabeled — `@label` is `nil` on both sides
+    # already) this changes nothing; for container values (`raw` is a
+    # `LabeledArray`/`LabeledHash`, a REFERENCE type), Crystal's
+    # default reference equality/hash already ignores the STRUCT's own
+    # `@label` field in favor of object identity, so this override is
+    # a no-op there too — the only real behavior change is for
+    # LABELED scalars/objects, exactly the case that was broken.
+    def ==(other : Value) : Bool
+      @raw == other.raw
+    end
+
+    # NOTE ON VERIFICATION: Crystal's struct-hash-override convention
+    # (`def hash(hasher)`, delegating to `@raw.hash(hasher)`) is
+    # written from recollection, not independently confirmed against
+    # a live toolchain here — same caveat this codebase already
+    # attaches to other Crystal stdlib API assumptions
+    # (`builtins/regexp.cr`, `builtins/time.cr`). If `ops build`
+    # reports a signature mismatch, this is the first place to look;
+    # the INTENT (hash by `@raw` alone, ignore `@label`) is what's
+    # actually load-bearing here, not this exact method signature.
+    def hash(hasher)
+      @raw.hash(hasher)
     end
 
     # --- Constructors ---------------------------------------------------

@@ -6,6 +6,7 @@ require "./ast"
 require "./risk_flow_policy"
 require "./risk_flow_decision"
 require "./builtins/regexp"
+require "./fatal_signal"
 
 module Adjutant
   # A compiled proc (method body or block).
@@ -492,7 +493,6 @@ module Adjutant
       saved_cur_block = @current_block
       saved_cur_block_locals = @current_block_locals
       saved_pending_kwargs = @pending_kwargs
-      result = Value.nil_value
       begin
         f = current_frame # before replacing @frames
         inherited_self = self_val || f.self_val
@@ -578,6 +578,17 @@ module Adjutant
       cls = start_cls.as(RubyClass?)
       while cls
         return true if cls == target
+        # `included_modules` — found missing while building
+        # Legate::Stream (a real `include`d module, not simulated;
+        # `find_native_method` already correctly walks this same list
+        # for METHOD RESOLUTION, confirmed earlier — `is_a?` simply
+        # never got the equivalent check). Direct includes only, not
+        # a module's own nested includes expanded transitively — real
+        # Ruby's `ancestors` does expand those, but nothing in
+        # Adjutant includes-a-module-that-itself-includes-a-module yet
+        # for that gap to matter in practice; worth revisiting if one
+        # ever does.
+        return true if cls.included_modules.includes?(target)
         cls = cls.superclass
       end
       false
@@ -1185,10 +1196,10 @@ module Adjutant
             push(result) unless @frames.empty?
 
             # --- Arithmetic -----------------------------------------------------
-          when Op::Add    then exec_binary(inst) { |lhs, rhs| ValueOps.add(lhs, rhs, error_raiser(f)) }
-          when Op::Sub    then exec_binary(inst) { |lhs, rhs| ValueOps.op(lhs, rhs, :-, error_raiser(f)) }
+          when Op::Add    then exec_binary(inst) { |lhs, rhs| exec_add(lhs, rhs, f) }
+          when Op::Sub    then exec_binary(inst) { |lhs, rhs| exec_sub(lhs, rhs, f) }
           when Op::Mul    then exec_binary(inst) { |lhs, rhs| ValueOps.op(lhs, rhs, :*, error_raiser(f)) }
-          when Op::Div    then exec_binary(inst) { |lhs, rhs| ValueOps.div(lhs, rhs, error_raiser(f)) }
+          when Op::Div    then exec_binary(inst) { |lhs, rhs| exec_div(lhs, rhs, f) }
           when Op::Mod    then exec_binary(inst) { |lhs, rhs| ValueOps.mod(lhs, rhs, error_raiser(f)) }
           when Op::BitAnd then exec_binary(inst) { |lhs, rhs| ValueOps.int_op(lhs, rhs, :&, error_raiser(f)) }
           when Op::BitOr  then exec_binary(inst) { |lhs, rhs| ValueOps.int_op(lhs, rhs, :|, error_raiser(f)) }
@@ -2407,6 +2418,23 @@ module Adjutant
       # BlockBreakSignal's own comment for why this specific spot is
       # correct even for nested native calls with blocks of their own.
       ex.value
+    rescue ex : FatalSignal
+      # A fatal condition (a denied grant, an exhausted budget, an
+      # abort — Legate's own tier is LEGATE.md §9.2), raised somewhere
+      # inside this native call, however deeply nested. Deliberately re-raised UNCHANGED,
+      # not wrapped — the entire point of FatalSignal being a plain
+      # Exception rather than a RuntimeError is that it must reach
+      # past BOTH this method's own `rescue ex` catch-all below (which
+      # would otherwise flatten it into a script-catchable N001
+      # diagnostic, exactly like any other unexpected native failure)
+      # AND the dispatch loop's per-instruction `rescue ex :
+      # RuntimeError` (execute, above) — so no `rescue` clause of any
+      # class, INCLUDING `rescue Exception`, ever gets a chance to
+      # match it. This explicit clause exists only so the catch-all
+      # below doesn't accidentally swallow it first; it does no
+      # transformation of its own. See FatalSignal's own comment
+      # (fatal_signal.cr) for the full reasoning.
+      raise ex
     rescue ex : RuntimeError
       raise ex
     rescue ex
@@ -2485,6 +2513,23 @@ module Adjutant
     # `sensitivity` lets a native function that already knows the
     # sensitivity (e.g. it just computed it) skip the lookup; when nil,
     # this method performs the lookup itself via `sensitivity_for`.
+    #
+    # RETURNS the resolved label (`nil` if `sensitivity_for` came back
+    # `None` — nothing worth tagging) — added 2026-08-26, fixing a real
+    # gap this session's audit found: this method used to just gate the
+    # CALL (Allow/Ask/Reject) and throw the resolved sensitivity away
+    # once that decision was made. Every Legate read-grant verb needs
+    # that sensitivity back to tag the DATA it's about to return (see
+    # `Legate::Broker#authorize`'s own updated comment) — otherwise
+    # policy correctly stops/gates the READ of a sensitive file, but
+    # the CONTENT it hands back carries no taint, so a later sink check
+    # (LEGATE.md's argv-taint rule, say) can never catch it. Building
+    # the label BEFORE the Allow/Ask/Reject branch below (rather than
+    # only in the `action.allow?` early-return) matters: an Ask that
+    # resolves to Allow still needs the SAME label as a direct Allow —
+    # the data's provenance doesn't change based on which branch
+    # granted the call.
+    #
     # `risk` is the calling native's own RiskProfile, passed through
     # from NativeFunctionCall rather than reconstructed here: the
     # authority that triggered the decision says nothing about what the
@@ -2492,16 +2537,24 @@ module Adjutant
     # effect set in front of whoever answers the prompt.
     def declare_sensitivity(authority : Authority, kind : ProvenanceKind, origin : String, name : String,
                             risk : RiskProfile, filename : String, line : Int32,
-                            sensitivity : Sensitivity? = nil) : Nil
+                            sensitivity : Sensitivity? = nil) : RiskFlowLabel?
       resolved_sensitivity = sensitivity || @risk_flow_policy.sensitivity_for(kind, origin)
       return if resolved_sensitivity.none?
 
+      label = RiskFlowLabel.of(kind, origin, resolved_sensitivity)
+
       action, rule = @risk_flow_policy.action_for(authority, resolved_sensitivity)
-      return if action.allow?
+      return label if action.allow?
 
       provenance_tag = ProvenanceTag.new(kind, origin, resolved_sensitivity)
       matches = [RiskFlowMatch.new(action, rule, provenance_tag)]
+      # `resolve_risk_flow_matches` either raises (Reject, or an Ask
+      # resolved to Reject — see its own comment) or returns normally
+      # (an Ask resolved to Allow) — reaching the line after it here
+      # means the latter, so returning `label` below is reachable and
+      # correct, not dead code.
       resolve_risk_flow_matches(matches, name, risk, Set{authority}, filename, line)
+      label
     end
 
     # Shared by check_risk_flow (automatic, label-driven) and
@@ -3118,8 +3171,6 @@ module Adjutant
             end
           end
           copy_val
-        else
-          nil
         end
       when "to_s"
         recv = args.first? || Value.nil_value
@@ -3182,8 +3233,6 @@ module Adjutant
         ValueOps.div(args[0], args[1], error_raiser(current_frame))
       when "%"
         ValueOps.mod(args[0], args[1], error_raiser(current_frame))
-      else
-        nil
       end
     end
 
@@ -3223,8 +3272,7 @@ module Adjutant
       end
     end
 
-    # NativeCallContext#add's own implementation — the same
-    # `error_raiser` wiring Op::Add itself uses (see this file's own
+    # NativeCallContext#add's own implementation — the same    # `error_raiser` wiring Op::Add itself uses (see this file's own
     # `when Op::Add` case), just reachable from native code. Doesn't
     # attempt a RubyObject `+` dispatch the way `compare`/`compare_via_spaceship`
     # does for `<=>` — no current native caller needs a user-defined
@@ -3286,19 +3334,111 @@ module Adjutant
     protected def values_equal?(a : Value, b : Value) : Bool
       if range_receiver?(a) && range_receiver?(b)
         range_values_equal?(a, b)
+      elsif a.robject? && b.robject? && script_responds_to?(a, "<=>")
+        # Real Ruby: `Object#==` is identity by default, but a class
+        # that mixes in `Comparable` gets `==` DERIVED from `<=>`
+        # instead — `(a <=> b) == 0`, with `<=>` returning anything
+        # other than an Integer (including nil, for a genuinely
+        # unorderable pair) or raising treated as simply "not equal"
+        # rather than propagating, matching Comparable#=='s own
+        # non-raising contract (confirmed against MRI: `<`/`<=`/`>`/
+        # `>=` DO raise ArgumentError on a bad `<=>` result — see
+        # compare_via_spaceship above — but `==` never does; only
+        # identity-vs-value differs, this asymmetry is real Ruby
+        # behavior, not an Adjutant simplification). Adjutant has no
+        # mixin system to hang this off an actual `Comparable`
+        # inclusion, so — same as compare_via_spaceship already does
+        # for `<`/`<=`/`>`/`>=` — this is the fixed VM rule standing
+        # in for it: ANY RubyObject with its own `<=>` gets `==`
+        # derived from it for free, without needing `include
+        # Comparable` to opt in. `script_responds_to?` gates this on
+        # `<=>` genuinely being defined (native or script), so a
+        # plain RubyObject with no `<=>` still falls through to
+        # ordinary identity below, unchanged from before this existed.
+        robject_equal_via_spaceship?(a, b)
       else
         ValueOps.equal?(a, b)
       end
     end
 
+    # See values_equal?'s own comment for the full reasoning — this is
+    # just the "call `<=>`, swallow anything that isn't a clean zero
+    # result" mechanics, split out to keep values_equal? itself
+    # readable. Deliberately rescues RuntimeError (a script-level
+    # `raise` inside the `<=>` method itself, e.g. comparing against
+    # an incompatible type) into `false` rather than letting it
+    # propagate — the one place in this codebase a script-raised
+    # error is intentionally swallowed rather than surfaced, because
+    # that's genuinely how Comparable#== behaves in real Ruby, not an
+    # Adjutant-specific leniency.
+    private def robject_equal_via_spaceship?(a : Value, b : Value) : Bool
+      sign_val = call_method(a, "<=>", [b])
+      sign_val.int? && sign_val.as_int == 0
+    rescue RuntimeError
+      false
+    end
+
+    # `Op::Add`/`Op::Sub`'s own dispatch — mirrors compare/
+    # values_equal?'s "left receiver's own method wins when it has
+    # one" rule, but for `+`/`-` specifically. Unlike `<=>` (dispatched
+    # unconditionally, per SCOPE.md's decision — an absent `<=>` fails
+    # like any other undefined method call) and unlike `==` (silently
+    # falls back to identity when no `<=>` exists), `+`/`-` fall back
+    # to `ValueOps`'s own base-type handling whenever the LEFT operand
+    # isn't a `RubyObject` with its own defined `+`/`-` — this is
+    # additive to the base-type arithmetic already there, not a
+    # replacement for it, so `1 + 2` and `"a" + "b"` are completely
+    # unaffected and never even reach `script_responds_to?`.
+    #
+    # Found necessary while building a real `Time` builtin (`t + 60`)
+    # — before this, arithmetic operators were opcode-only with no
+    # method-table consultation for ANY receiver, base type or
+    # RubyObject alike (see DEVELOPMENT.md's "Some operators are
+    # overloaded across base types" section, which explicitly left
+    # this open: "no equivalent yet exists for -/*/, since nothing
+    # native has needed them generically yet — follow the same
+    # pattern... if one does"). `Time` is that first real need for
+    # `+`/`-`; `Legate::Path#/` (`legate/path.cr`) is the first real
+    # need for `/` too (see `exec_div`, below) — `*` alone remains
+    # untouched, since nothing needs it yet either — same "don't build
+    # ahead of a real user" convention, not an oversight. SCOPE.md's
+    # Will Fix entry for this updated accordingly (`/` moved from
+    # "still a gap" to "closed", only `*`/`%` remain).
+    private def exec_add(lhs : Value, rhs : Value, f : Frame) : Value
+      if lhs.robject? && script_responds_to?(lhs, "+")
+        call_method(lhs, "+", [rhs], f.filename, f.line)
+      else
+        ValueOps.add(lhs, rhs, error_raiser(f))
+      end
+    end
+
+    private def exec_sub(lhs : Value, rhs : Value, f : Frame) : Value
+      if lhs.robject? && script_responds_to?(lhs, "-")
+        call_method(lhs, "-", [rhs], f.filename, f.line)
+      else
+        ValueOps.op(lhs, rhs, :-, error_raiser(f))
+      end
+    end
+
+    # See exec_add's own comment — same dispatch shape, for `/`.
+    # `Legate::Path#/` (LEGATE.md §5.1) is what made this a real,
+    # not speculative, need.
+    private def exec_div(lhs : Value, rhs : Value, f : Frame) : Value
+      if lhs.robject? && script_responds_to?(lhs, "/")
+        call_method(lhs, "/", [rhs], f.filename, f.line)
+      else
+        ValueOps.div(lhs, rhs, error_raiser(f))
+      end
+    end
+
     # Real Ruby's Range#== (and #eql?, defined identically for Range)
-    # compares by CONTENT — same min/max/exclusive — not identity.
-    # `ValueOps.equal?`'s own `a.robject? && b.robject?` case is
-    # correctly documented as reference identity (Adjutant has no
-    # user-defined `==` dispatch yet) — but that's the right default
-    # for a USER class with no override, not for a BUILTIN class like
-    # Range that has real equality semantics baked in, the same
-    # exception Array/Hash already get in that same case statement.
+    # compares by CONTENT — same min/max/exclusive — not identity, and
+    # NOT via `<=>` either (Range has no `<=>` of its own). checked
+    # ahead of the `<=>`-derivation branch above (values_equal?) since
+    # Range predates that mechanism and would need its own `<=>` to
+    # use it anyway — this stays a direct special case, the same
+    # exception Array/Hash already get in ValueOps.equal?'s own case
+    # statement.
     # Lives here rather than in ValueOps itself because identifying
     # "is this specifically a Range" needs `range_receiver?`
     # (`builtin_class_by_name`, VM-only), and reading the ivars needs
@@ -3465,6 +3605,31 @@ module Adjutant
       )
     end
 
+    # Same as raise_native_error, but for a target class that can't be
+    # resolved by name (see NativeCallContext#raise_error_class's own
+    # comment — a nested class like Legate::Malformed has no flat
+    # global entry for builtin_class_by_name to find) AND for a
+    # dynamically-COMPUTED message rather than an ErrorCatalog-coded
+    # one — Legate's own error messages are built per-call (a path, a
+    # byte count, LEGATE.md §9.1's "message MUST hint at" column), not
+    # fixed templates, so routing them through Diagnostic/ErrorCatalog
+    # (which requires a REGISTERED catalog entry per code, and exists
+    # for ADJUTANT'S OWN coded diagnostics — parse/compile/core-
+    # runtime errors) would be the wrong fit entirely, not just an
+    # awkward one. Mirrors exec_builtin's own "raise" case (the
+    # `raise ClassName, "msg"` script-level path) instead: build the
+    # error object directly from the given class and a plain message
+    # string, no Diagnostic/code involved at all — `code` here is
+    # NOT an ErrorCatalog key, just a label for whoever reads
+    # `RuntimeError#message`/logs, matching how a script's own
+    # `raise Foo, "msg"` carries no code either.
+    protected def raise_native_error_class(message : String, error_class : RubyClass,
+                                           filename : String, line : Int32,
+                                           attributes : Hash(String, Value)? = nil) : NoReturn
+      err_val = make_error_object(error_class, message, attributes)
+      raise RuntimeError.new(message, filename, line, error_value: err_val)
+    end
+
     # An unresolved constant. Reports a deliberately excluded name as
     # such, and anything else as an ordinary uninitialized constant.
     #
@@ -3584,7 +3749,7 @@ module Adjutant
     # but VM shouldn't hard-fail if it does).
     private def builtin_class_by_name(name : String) : RubyClass?
       sym = @symbols.lookup(name)
-      return nil unless sym
+      return unless sym
       @globals[sym.value]?.try(&.as_rclass?)
     end
 
@@ -3712,10 +3877,21 @@ module Adjutant
     # Build a RubyObject of `cls` with its `message` ivar set — the
     # shape both explicit `raise` and internal VM errors use so a
     # rescue variable can call `.message` on either uniformly.
-    private def make_error_object(cls : RubyClass, message : String) : Value
+    private def make_error_object(cls : RubyClass, message : String,
+                                  attributes : Hash(String, Value)? = nil) : Value
       obj = RubyObject.new(cls)
       msg_sym = @symbols.intern("message")
       obj.ivars[msg_sym.value] = Value.string(message)
+      # Set AFTER `message`, and deliberately not guarded against
+      # overwriting it: a caller passing `"message"` here is asking
+      # for a different message than the one it also passed
+      # positionally, which is a caller bug worth surfacing as
+      # confusing behaviour rather than hiding behind a silent skip.
+      # Nothing in the tree does it, and a guard would be a rule a
+      # reader has to learn for a case that does not arise.
+      attributes.try &.each do |name, value|
+        obj.ivars[@symbols.intern(name).value] = value
+      end
       Value.robject(obj)
     end
 

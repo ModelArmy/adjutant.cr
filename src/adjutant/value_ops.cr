@@ -65,7 +65,6 @@ module Adjutant
       end
     end
 
-    # ameba:disable Metrics/CyclomaticComplexity
     def self.op(a : Value, b : Value, op : Symbol, on_error : OnError) : Value
       case
       when a.int? && b.int?
@@ -103,7 +102,6 @@ module Adjutant
       end
     end
 
-    # ameba:disable Metrics/CyclomaticComplexity
     def self.mod(a : Value, b : Value, on_error : OnError) : Value
       on_error.call("divided by 0", "ZeroDivisionError") if (b.int? && b.as_int == 0) || (b.float? && b.as_float == 0.0)
       case
@@ -202,7 +200,6 @@ module Adjutant
     # equal" with "genuinely incomparable" (both look like neither
     # `<` nor `>`), which real Ruby's own `<=>` (nil for incomparable)
     # distinguishes and script code can reasonably depend on.
-    # ameba:disable Metrics/CyclomaticComplexity
     def self.spaceship(a : Value, b : Value) : Int32?
       case
       when a.int? && b.int?
@@ -213,8 +210,6 @@ module Adjutant
         fa <=> fb
       when a.string? && b.string?
         a.as_string <=> b.as_string
-      else
-        nil
       end
     end
 
@@ -240,12 +235,17 @@ module Adjutant
         # not a placeholder pending a real override.
         a.as_rclass == b.as_rclass
       when a.robject? && b.robject?
-        # Reference identity too, for now — real Ruby lets a class
-        # override `==` for value-style comparison (two Points with
-        # the same x/y), but Adjutant has no user-defined `==`
-        # dispatch yet. Matches default Ruby Object#== (identity)
-        # before any override, so this is the correct default, not a
-        # simplification silently diverging from Ruby.
+        # Reference identity — the correct DEFAULT for a plain
+        # RubyObject, matching real Ruby's own Object#== before any
+        # override. A RubyObject whose class defines `<=>` gets `==`
+        # derived from it instead (Comparable-style, `(a <=> b) == 0`)
+        # — but that dispatch needs VM access (call_method,
+        # script_responds_to?) ValueOps deliberately never has, so it
+        # lives one layer up: VM#values_equal? checks for a `<=>`
+        # first and only falls through to this plain identity case
+        # when none is defined. See VM#values_equal?/
+        # #robject_equal_via_spaceship? (vm.cr) for the full mechanism
+        # — this line itself is still exactly identity, unchanged.
         a.as_robject == b.as_robject
       when a.array? && b.array?
         # Deep, element-wise equality — real Ruby's Array#== compares

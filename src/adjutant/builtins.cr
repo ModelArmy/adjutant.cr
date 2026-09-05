@@ -9,6 +9,7 @@ require "./builtins/hash"
 require "./builtins/range"
 require "./builtins/regexp"
 require "./builtins/proc"
+require "./builtins/time"
 require "./builtins/exceptions"
 require "./builtins/mixins"
 

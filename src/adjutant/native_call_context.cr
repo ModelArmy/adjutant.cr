@@ -186,8 +186,14 @@ module Adjutant
     # (the native function already knows it, e.g. it just computed a
     # value rather than looking one up); when nil, this method
     # performs the lookup itself.
+    #
+    # Returns the resolved `RiskFlowLabel` (`nil` if policy doesn't
+    # consider `origin` sensitive at all) — see `VM#declare_sensitivity`'s
+    # own comment for why this return value exists and matters: a
+    # caller (a Legate verb, typically) needs it to tag the DATA it's
+    # about to return, not just to have gated the call.
     abstract def declare_sensitivity(authority : Authority, kind : ProvenanceKind, origin : String,
-                                     sensitivity : Sensitivity? = nil) : Nil
+                                     sensitivity : Sensitivity? = nil) : RiskFlowLabel?
 
     # Lets a native method raise a real, script-catchable diagnostic —
     # the SAME kind of error a script-level construct raises (an
@@ -208,5 +214,50 @@ module Adjutant
     # code, rather than each one inventing its own ad hoc raise.
     abstract def raise_error(code : String, data : Hash(String, String) = {} of String => String,
                              error_class : String = "RuntimeError") : NoReturn
+
+    # Same as `raise_error`, but for raising a real, dynamically-
+    # computed message against a class that can't be resolved by name
+    # — a NESTED class like `Legate::Malformed`, which is deliberately
+    # never registered as a flat global (see Legate::Helpers.nest — it
+    # resolves only via real `ConstPath` lookup, the same as any
+    # script-defined `class A; class B; end; end`'s `A::B`), so
+    # `raise_error`'s name-based `builtin_class_by_name` lookup can
+    # never find it. Also deliberately NOT ErrorCatalog/Diagnostic-
+    # coded like `raise_error` — that system is for ADJUTANT's OWN
+    # fixed-template diagnostics; a caller needing this method
+    # (Legate's own error messages: a path, a byte count, LEGATE.md
+    # §9.1's "message MUST hint at" column) already has a real,
+    # specific message computed and just needs it turned into a
+    # real, catchable error object of the right class — the same
+    # thing `raise ClassName, "msg"` does at the script level.
+    # `attributes` attaches extra ivars to the error object alongside
+    # its `message`, so a raised error can carry STRUCTURED data a
+    # script reads programmatically rather than parses back out of a
+    # sentence.
+    #
+    # Every native-raised error carried nothing but `message` before
+    # this, which is fine for most of them — a `NotFound` has nothing
+    # to say that the path in its message doesn't already say. It
+    # stops being fine as soon as a script is expected to BRANCH on
+    # something the error knows: an HTTP status, an exit code, a byte
+    # count. Recovering those from a message means string-matching
+    # prose that exists to be read by a human, and any rewording of
+    # that prose silently breaks the script.
+    #
+    # The keys are plain ivar names WITHOUT a leading `@` or `__`
+    # prefix (`"status"`, not `"@status"`), matching how
+    # `message` itself is stored. Reader methods are the raising
+    # side's responsibility: attaching an ivar makes the value
+    # present, but a script can only reach it if the error's CLASS
+    # defines a method returning it — see `Legate::Redirect` for the
+    # pattern.
+    #
+    # Nothing validates that a class defines readers for the
+    # attributes it is given. That is deliberate: an ivar with no
+    # reader is inert rather than harmful, and requiring the two to
+    # be declared together would mean this method needed to know
+    # about class definitions.
+    abstract def raise_error_class(message : String, error_class : RubyClass,
+                                   attributes : Hash(String, Value)? = nil) : NoReturn
   end
 end

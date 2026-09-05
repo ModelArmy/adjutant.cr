@@ -739,7 +739,6 @@ module Adjutant
       )
     end
 
-    # ameba:disable Metrics/CyclomaticComplexity
     private def parse_unary : Node
       l, c = line, col
       case current_kind
@@ -911,6 +910,31 @@ module Adjutant
       when TokenKind::KwSelf
         advance
         SelfNode.new(l, c)
+      when TokenKind::KwFile
+        # Resolved directly to a StringLiteral HERE, at parse time —
+        # not a dedicated runtime-resolved node the way `KwMethodName`/
+        # `KwCalleeName` below are. Those need the VM's call stack
+        # (the current method name isn't known until a call actually
+        # happens); `__FILE__` is a property of the SOURCE TEXT itself
+        # — the same filename for every token in this parse, already
+        # sitting on `@lexer` (it's what `Lexer.new` was constructed
+        # with) — so there's nothing to defer to runtime. Matches
+        # `KwNil`/`KwTrue`/`KwFalse` just above: a keyword that's
+        # already fully known information at parse time compiles to
+        # an ordinary literal, no new AST node or VM opcode needed.
+        advance
+        StringLiteral.new(@lexer.filename, l, c)
+      when TokenKind::KwLine
+        # Same reasoning as `KwFile` just above — `l` here IS this
+        # `__LINE__` token's own source line (set at the top of
+        # `parse_primary`, before this `case`), so it's a compile-time
+        # constant, not something the VM resolves. `IntLiteral` stores
+        # its value as a raw LEXEME STRING (parsed to Int64 at compile
+        # time, matching `TokenKind::Integer`'s own case below) —
+        # `l.to_s` produces exactly that shape from an already-parsed
+        # Int32, not a re-lex of anything.
+        advance
+        IntLiteral.new(l.to_s, l, c)
       when TokenKind::KwMethodName, TokenKind::KwCalleeName
         advance
         MethodName.new(l, c)
@@ -1222,6 +1246,7 @@ module Adjutant
            TokenKind::Regex, TokenKind::RegexPart,
            TokenKind::Symbol, TokenKind::KwSelf,
            TokenKind::KwNil, TokenKind::KwTrue, TokenKind::KwFalse,
+           TokenKind::KwFile, TokenKind::KwLine,
            TokenKind::Bang, TokenKind::Tilde,
            TokenKind::LParen, TokenKind::LBracket,
            TokenKind::Identifier, TokenKind::Constant
@@ -2029,7 +2054,7 @@ module Adjutant
     # `begin`'s optional `else` clause. Split out of parse_begin purely
     # to keep its cyclomatic complexity down.
     private def parse_begin_else(rescue_clauses : Array(RescueClause)) : Body?
-      return nil unless at_kind?(TokenKind::KwElse)
+      return unless at_kind?(TokenKind::KwElse)
       # Matches real Ruby's own SyntaxError exactly (confirmed against
       # `irb`, 2026-08-07): `else` only means something as the "body
       # raised nothing" branch of an actual rescue/else pairing — a

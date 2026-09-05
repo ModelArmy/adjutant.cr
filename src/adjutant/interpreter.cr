@@ -13,6 +13,7 @@ require "./native_callable"
 require "./native_call_context"
 require "./native_function_call"
 require "./builtins"
+require "./legate"
 
 module Adjutant
   # Top-level entry point for the Adjutant interpreter.
@@ -52,6 +53,27 @@ module Adjutant
     getter risk_flow_policy : RiskFlowPolicy
     getter on_risk_flow_decision : RiskFlowDecisionRequest -> RiskFlowDecision
 
+    # Legate's own policy/enforcement pair, threaded through the same
+    # way risk_flow_policy is (a safe, explicit default rather than an
+    # implicit allow-everything one) — `grants` is fixed at
+    # construction (LEGATE.md §7's "fixed before execution, never
+    # escalatable"), and `broker` is the ONE Broker instance every
+    # Legate verb bootstrap (Legate::Verbs::*) closes over, so budget/
+    # audit state genuinely accumulates across the whole run rather
+    # than resetting per call. Unlike risk_flow_policy, `grants`
+    # DOES have a default (`Grants.deny_all`) rather than being
+    # required — an embedder not using Legate's effectful verbs at
+    # all (many scripts won't) shouldn't have to think about grants
+    # to construct an Interpreter; the default is still the fully
+    # closed policy, not a silent allow-everything one, so nothing
+    # about "safe by default" is lost.
+    getter grants : Legate::Grants
+    getter broker : Legate::Broker
+
+    # The run's shared authorization sequence. Legate is the only
+    # provider today; `broker` above is its provider wrapper.
+    getter effect_broker : Adjutant::Broker
+
     # Source of every script this interpreter has parsed, keyed by
     # filename. Populated by `eval`/`compile`, including files pulled
     # in by `require`, whose diagnostics name a different file than
@@ -84,11 +106,18 @@ module Adjutant
       @effect : EffectHandler? = nil,
       @limits : ExecutionLimits = ExecutionLimits.new,
       risk_flow_tracking : Bool = false,
+      @grants : Legate::Grants = Legate::Grants.deny_all,
     )
       @symbols = SymbolTable.new
       @modules = ModuleRegistry.new
       @globals = {} of Int32 => Value
       @risk_flow_log = RiskFlowLog.new(enabled: risk_flow_tracking)
+      # One authorization sequence per run, shared by every provider —
+      # see Adjutant::Broker's own comment on why per-provider brokers
+      # would split the run's budget and audit log. Legate is the only
+      # provider today; a second one takes this same instance.
+      @effect_broker = Adjutant::Broker.new(@grants.limits)
+      @broker = Legate::Broker.new(@grants, @effect_broker)
       bootstrap_core_hierarchy
       # @main must be assigned here, right after object_class first
       # becomes valid — NOT after bootstrap_error_classes/
@@ -176,7 +205,38 @@ module Adjutant
     def eval(body : Body, filename : String) : Value
       chunk, local_count = Compiler.compile(body, @symbols)
       vm = make_vm
-      vm.run(chunk, filename, local_count)
+      begin
+        vm.run(chunk, filename, local_count)
+      ensure
+        # Run teardown. Every Legate stream still holding an open file
+        # handle (or, once `Legate.fetch stream: true` lands, an open
+        # socket) is closed here — see `legate/open_sources.cr` for why
+        # a registry is needed and why the iterators' own
+        # close-on-exhaustion cannot cover every exit.
+        #
+        # THE `ensure` IS THE POINT. A script that raises is the case
+        # that leaks: the exception propagates out through
+        # `Stream.walk`, past the iterator's close, and out of `run`.
+        # Adjutant is embedded in a host application that keeps
+        # running, so "the OS will clean up when the process exits" —
+        # true for a command-line interpreter — is not available here.
+        #
+        # Deliberately NOT `at_exit`: the process belongs to the
+        # embedder and outlives any one script. The scope that matters
+        # is this single `eval`, so the next script on this same
+        # Interpreter starts with nothing of the last one's still open.
+        #
+        # All three `eval` overloads funnel here, so this is the one
+        # place it is needed.
+        #
+        # Failures are collected, not raised: this frequently runs
+        # while a real exception is already unwinding, and replacing
+        # the script's error with an incidental "socket was already
+        # closed" would be strictly worse for whoever is debugging.
+        # Nothing consumes the returned array yet — an embedder-facing
+        # cleanup-failure hook is a real question and a separate one.
+        @effect_broker.open_sources.close_all
+      end
     end
 
     # Compile a source string without executing — for pre-validation.
@@ -206,7 +266,7 @@ module Adjutant
                      format : DiagnosticRenderer::Format = DiagnosticRenderer::Format::Markdown,
                      filename : String? = nil) : String?
       diag = error.diagnostic
-      return nil unless diag
+      return unless diag
       DiagnosticRenderer.new(sources, report_url).render(diag, format, filename)
     end
 
@@ -297,10 +357,10 @@ module Adjutant
              when val.array?  then "Array"
              when val.hash?   then "Hash"
              when val.symbol? then "Symbol"
-             else                  return nil
+             else                  return
              end
       sym = @symbols.lookup(name)
-      return nil unless sym
+      return unless sym
       @globals[sym.value]?.try(&.as_rclass?)
     end
 
@@ -332,7 +392,7 @@ module Adjutant
     # bootstrap-ordering state, not necessarily a bug.
     def find_builtin_class(name : String) : RubyClass?
       sym = @symbols.lookup(name)
-      return nil unless sym
+      return unless sym
       @globals[sym.value]?.try(&.as_rclass?)
     end
 
@@ -400,14 +460,61 @@ module Adjutant
     # Interpreter; @globals is shared with every VM it creates, and
     # persists across eval calls on the same interpreter.
     #
-    # rescue ClassName filtering (matching a raised object's class,
-    # or an ancestor, against the rescue clause) is not yet
-    # implemented — this hierarchy exists so `raise`/`.message` work
-    # and so that filtering has real classes to check against later.
+    # `rescue ClassName` filtering matches a raised object's class, or
+    # an ancestor, against the clause's class list — see
+    # `Compiler#compile_rescue_clause_test` and DEVELOPMENT.md's
+    # exception-handling section. This hierarchy is what those checks
+    # resolve against, so a script can `rescue Legate::TooMany` or
+    # `rescue RiskFlowRejectedError` and have it mean something.
     private def bootstrap_error_classes : Nil
+      standard_error = nil
       Builtins.bootstrap_exception_and_subclasses(self) do |cls|
+        standard_error = cls if cls.name == "StandardError"
         register_builtin_class(cls)
       end
+      unless standard_error
+        raise InternalError.new("StandardError not bootstrapped before Legate::Exceptions.bootstrap ran")
+      end
+      bootstrap_legate(standard_error)
+    end
+
+    # Builds the `Legate` module once (Legate::Helpers.build_module)
+    # and populates it — exception tier first (needs `standard_error`,
+    # just built above), then every value type. Each submodule nests
+    # its own classes into the SAME shared `legate` instance via
+    # `Legate::Helpers.nest`, rather than each building a competing
+    # "Legate" module of its own — see that helper's own comment for
+    # the full ConstPath-resolution reasoning. Only `legate` itself
+    # gets registered as a top-level global (via `define_global_class`,
+    # NOT `register_builtin_class` — the latter defaults an unset
+    # `superclass` to `Object`, correct for a builtin CLASS but wrong
+    # for a module).
+    private def bootstrap_legate(standard_error : RubyClass) : Nil
+      legate = Legate::Helpers.build_module(self)
+      Legate::Exceptions.bootstrap(self, legate, standard_error)
+      Legate::Path.bootstrap(self, legate)
+      Legate::Stat.bootstrap(self, legate)
+      Legate::Entry.bootstrap(self, legate)
+      Legate::Match.bootstrap(self, legate)
+      Legate::Response.bootstrap(self, legate)
+      Legate::Exit.bootstrap(self, legate)
+      Legate::Chunk.bootstrap(self, legate)
+      Legate::Stream.bootstrap(self, legate)
+      Legate::Verbs::Stat.bootstrap(self, legate, @broker)
+      Legate::Verbs::Read.bootstrap(self, legate, @broker)
+      Legate::Verbs::List.bootstrap(self, legate, @broker)
+      Legate::Verbs::Bytes.bootstrap(self, legate, @broker)
+      Legate::Verbs::Lines.bootstrap(self, legate, @broker)
+      Legate::Verbs::Records.bootstrap(self, legate, @broker)
+      Legate::Verbs::Grep.bootstrap(self, legate, @broker)
+      Legate::Verbs::Write.bootstrap(self, legate, @broker)
+      Legate::Verbs::Append.bootstrap(self, legate, @broker)
+      Legate::Verbs::Mkdir.bootstrap(self, legate, @broker)
+      Legate::Verbs::Cp.bootstrap(self, legate, @broker)
+      Legate::Verbs::Rm.bootstrap(self, legate, @broker)
+      Legate::Verbs::Mv.bootstrap(self, legate, @broker)
+      Legate::Verbs::Fetch.bootstrap(self, legate, @broker)
+      define_global_class(legate)
     end
 
     # Bootstraps every builtin type's RubyClass into `interp`'s globals,
@@ -437,6 +544,7 @@ module Adjutant
       register_builtin_class(Builtins.bootstrap_regexp(self))
       register_builtin_class(Builtins.bootstrap_match_data(self))
       register_builtin_class(Builtins.bootstrap_proc(self))
+      register_builtin_class(Builtins.bootstrap_time(self))
       Builtins.register_module_methods(module_class, self)
     end
 

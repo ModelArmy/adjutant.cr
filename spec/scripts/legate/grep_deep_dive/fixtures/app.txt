@@ -1,0 +1,8 @@
+# comment line 1
+def foo
+  TODO: fix this bug 42
+end
+
+def bar
+  # TODO: another one 7
+end

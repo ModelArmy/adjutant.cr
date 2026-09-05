@@ -1,5 +1,23 @@
 require "spec"
+require "wiretap"
 require "../src/adjutant"
+
+# Wiretap records real HTTP interactions once, to JSON transcripts under
+# `spec/transcripts/`, then replays them offline forever after. Only
+# `Legate.fetch`'s specs use it; every other spec in this suite is
+# untouched by it.
+#
+# `record_mode` is the important line. Locally it is `:once`, so a
+# missing transcript is recorded against a real server the first time
+# and committed. **In CI it is `:none`**, which forbids recording
+# outright and fails on any request that has no matching transcript.
+# That is deliberate: a CI run that silently reached the network would
+# be non-deterministic, would depend on a third party's uptime, and —
+# worst — would quietly paper over a spec whose transcript someone
+# forgot to commit. Failing loudly is the point.
+Wiretap.configure do |c|
+  c.record_mode = ENV["CI"]? ? :none : :once
+end
 
 module Adjutant
   # Shared test default: reject_all, since most specs aren't testing IFC
@@ -20,6 +38,7 @@ module Adjutant
     limits : ExecutionLimits = ExecutionLimits.new,
     risk_flow_policy : RiskFlowPolicy = TEST_REJECT_ALL_POLICY,
     on_risk_flow_decision : RiskFlowDecisionRequest -> RiskFlowDecision = TEST_UNEXPECTED_ASK_CALLBACK,
+    grants : Legate::Grants = Legate::Grants.deny_all,
   ) : {Interpreter, TestEffectHandler}
     ef = TestEffectHandler.new
     interp = Interpreter.new(
@@ -27,6 +46,7 @@ module Adjutant
       on_risk_flow_decision: on_risk_flow_decision,
       effect: ef,
       limits: limits,
+      grants: grants,
     )
     {interp, ef}
   end
@@ -182,7 +202,8 @@ module Adjutant
     # risk_flow_enforcement_spec.cr for real declare_sensitivity
     # coverage, which goes through the actual VM.
     def declare_sensitivity(authority : Authority, kind : ProvenanceKind, origin : String,
-                            sensitivity : Sensitivity? = nil) : Nil
+                            sensitivity : Sensitivity? = nil) : RiskFlowLabel?
+      nil
     end
 
     # No-op raise — a real diagnostic needs a VM (builtin_class_by_name,
@@ -197,6 +218,18 @@ module Adjutant
     def raise_error(code : String, data : Hash(String, String) = {} of String => String,
                     error_class : String = "RuntimeError") : NoReturn
       raise "#{error_class} (#{code}): #{data}"
+    end
+
+    # No-op raise, matching raise_error's own reasoning above — this
+    # harness has no real VM to build a real error object through.
+    # `attributes` is rendered into the message rather than attached,
+    # since there is no error object here to attach it to; a spec that
+    # needs to assert on a real attribute should go through the real
+    # VM (interp.eval), as native_error_attributes_spec.cr does.
+    def raise_error_class(message : String, error_class : RubyClass,
+                          attributes : Hash(String, Value)? = nil) : NoReturn
+      suffix = attributes && !attributes.empty? ? " #{attributes}" : ""
+      raise "#{error_class.name}: #{message}#{suffix}"
     end
   end
 end

@@ -360,6 +360,52 @@ module Adjutant
         help: "Pass a Regexp: `str =~ /pattern/`."
       ),
 
+      "R034" => Entry.new(
+        code: "R034",
+        summary: "Legate.records given an unknown format: {format}",
+        why: "`Legate.records(path, format:)` only knows how to parse " \
+             "`:jsonl` and `:csv` — there's no general-purpose record " \
+             "format beyond those two.",
+        help: "Pass `format: :jsonl` or `format: :csv`."
+      ),
+
+      "R035" => Entry.new(
+        code: "R035",
+        summary: "Legate.grep called with no paths argument",
+        why: "`Legate.grep(pattern, paths)` needs to know WHERE to " \
+             "search — `paths` is required, not optional, even though " \
+             "`context:`/`limit:` both have defaults.",
+        help: "Pass a glob string or an Array of paths, e.g. " \
+              "`Legate.grep(pattern, \"src/**/*.rb\")`."
+      ),
+
+      "R036" => Entry.new(
+        code: "R036",
+        summary: "`{method}` given a non-{expected} value for {kwarg}: ({class_name})",
+        why: "`{kwarg}:` on `{method}` only accepts a {expected} — " \
+             "passing anything else can't be interpreted as one.",
+        help: "Check the value you're passing for `{kwarg}:`."
+      ),
+
+      "R037" => Entry.new(
+        code: "R037",
+        summary: "`{method}`'s data argument is neither a String nor an Enumerable ({class_name})",
+        why: "`{method}(path, data)` only accepts a String, an Array " \
+             "of Strings, or a Legate stream for `data` — nothing " \
+             "else can be written out a piece at a time.",
+        help: "Pass a String, an Array of Strings, or a Legate stream."
+      ),
+
+      "R038" => Entry.new(
+        code: "R038",
+        summary: "`{method}`'s data argument yielded a non-String element ({class_name})",
+        why: "Every element of `{method}`'s `data` — whether from an " \
+             "Array or a Legate stream — must itself be a String; " \
+             "there's no implicit `#to_s` conversion for what gets " \
+             "written to a file.",
+        help: "Make sure every element is already a String, e.g. via `.map { |x| x.to_s }`."
+      ),
+
       # --- L: limits reached ----------------------------------------
       #
       # The script is valid; it is just larger than something Adjutant

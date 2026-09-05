@@ -133,6 +133,7 @@ module Adjutant
       end
     end
 
+    # ameba:disable Metrics/CyclomaticComplexity - one `define` call per native method, each an independent registration; the count comes from how many methods Regexp has, not from tangled branching
     def self.bootstrap_regexp(interp : Interpreter) : RubyClass
       cls = RubyClass.new("Regexp")
       cls.constants[interp.symbols.intern("IGNORECASE").value] = Value.int(IGNORECASE)
