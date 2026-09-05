@@ -2,12 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, add-legate]
+    branches: [main]
   pull_request:
     branches: [main]
-  # Lets the Windows investigation be re-run on demand without
-  # pushing a commit each time.
-  workflow_dispatch:
 
 jobs:
   build-and-test:
@@ -95,6 +92,54 @@ jobs:
           procdump -accepteula -e -ma -x . .\fetch_str_spec.exe --verbose
           Write-Host "spec exit code: $LASTEXITCODE"
 
+      # Analysed ON THE RUNNER rather than by downloading the dump.
+      # Everything analysis needs is already here — the exact binary,
+      # its PDB, and a Windows debugger — and none of it travels well
+      # to another platform. The output is log text, readable in the
+      # browser, with no 22MB round trip and no symbol-path fiddling.
+      #
+      # `!analyze -v` names the faulting frame and the fail-fast
+      # subcode. `~*k` dumps EVERY thread's stack, which is the part
+      # that actually matters here: the standing theory is an
+      # exception unwinding across a boundary belonging to another
+      # fiber's machinery, so the crashing thread's stack alone is
+      # unlikely to tell the whole story.
+      #
+      # Read the output with `!analyze`'s own verdict treated
+      # sceptically — on a fail-fast it tends to blame whichever frame
+      # called abort, which is the symptom. The interesting frames are
+      # further up: Crystal's unwinding functions, or an MSVC
+      # `terminate`/`__C_specific_handler`.
+      - name: Analyse the crash dump (Windows)
+        if: ${{ runner.os == 'Windows' }}
+        continue-on-error: true
+        run: |
+          $dump = Get-ChildItem -Filter *.dmp | Select-Object -First 1
+          if (-not $dump) {
+            Write-Host "No dump file was produced — nothing to analyse."
+            exit 0
+          }
+          Write-Host "Analysing $($dump.Name) ($([math]::Round($dump.Length / 1MB, 1)) MB)"
+          choco install windbg -y --no-progress
+          $cdb = "C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe"
+          if (-not (Test-Path $cdb)) {
+            $cdb = (Get-ChildItem -Path "C:\Program Files (x86)\Windows Kits" -Filter cdb.exe -Recurse -ErrorAction SilentlyContinue |
+                    Where-Object { $_.FullName -like "*x64*" } |
+                    Select-Object -First 1).FullName
+          }
+          if (-not $cdb) {
+            Write-Host "cdb.exe not found; the dump artifact is still uploaded."
+            exit 0
+          }
+          # `-y .` looks for the PDB next to the binary, which is where
+          # `crystal build --debug` leaves it. Without symbols every
+          # Crystal frame resolves to a bare offset and the whole
+          # exercise is pointless.
+          & $cdb -z $dump.FullName -y . -c "!analyze -v; ~*k; q"
+
+      # The PDB rides along with the dump so the artifact stays usable
+      # offline — e.g. with `minidump-stackwalk` on macOS or Linux —
+      # if the cdb output above turns out to be thin.
       - name: Upload crash dump (Windows)
         if: ${{ runner.os == 'Windows' }}
         uses: actions/upload-artifact@v4
@@ -102,6 +147,8 @@ jobs:
           name: windows-crash-dump-crystal-${{ matrix.crystal }}
           path: |
             *.dmp
+            *.pdb
+            fetch_str_spec.exe
           if-no-files-found: warn
           retention-days: 7
 
