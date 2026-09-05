@@ -84,6 +84,11 @@ module Adjutant
       # `mv!` is `No`/`Warning` with `MovesFiles` + `DeletesFiles`,
       # the latter about the clobbered destination, which is the same
       # thing `cp!` does and declared the same way.
+      #
+      # Note `mv!` replaces FILES ONLY. Unlike `cp!` it will not
+      # replace a destination directory of any kind — see
+      # `check_destination` for why, and for the platform difference
+      # that forced the rule to be stated that plainly.
       module Mv
         # Matches `cp.cr`'s own `COPY_CHUNK_SIZE`, for the same
         # reason and used on the same code path shape — see the
@@ -208,15 +213,36 @@ module Adjutant
             ncc.raise_error_class("#{raw_to} exists and is #{kind}; Legate.#{name} can't replace it with #{raw_from}", conflict)
           end
 
-          # A non-empty destination directory is a tree the script
-          # never named. `cp!` will replace one; `mv!` deliberately
-          # will not, because `relocate`'s rename would either fail at
-          # the OS level or destroy the contents depending on the
-          # path taken, and a verb whose behaviour depends on which
-          # filesystem the two paths happen to live on is worse than
-          # one that refuses.
-          if to_is_dir && !Dir.children(raw_to).empty?
-            ncc.raise_error_class("#{raw_to} is a non-empty directory; Legate.#{name} won't replace it", conflict)
+          # NO destination directory is replaced, empty or not. `cp!`
+          # will replace a tree; `mv!` deliberately will not.
+          #
+          # This was originally "non-empty directories only", on the
+          # reasoning that `relocate`'s rename would either fail at the
+          # OS level or destroy the contents depending on which
+          # filesystem the paths shared — and a verb whose effect turns
+          # on that is worse than one that refuses. Correct as far as
+          # it went, but it left the EMPTY case turning on the platform
+          # instead: POSIX `rename(2)` happily replaces an empty
+          # destination directory, while Windows `MoveFile` refuses
+          # with "Access is denied". Found on Windows CI, 2026-09-05,
+          # by a spec asserting the POSIX behaviour.
+          #
+          # So the rule now covers directories outright, and the
+          # principle is the one the original comment was reaching for:
+          # a verb should not behave differently depending on where it
+          # happens to be running. `mv!` lifts EXACTLY ONE refusal —
+          # same-kind file over file — and no others.
+          #
+          # A script that genuinely wants to replace a directory can
+          # say so in two steps it already has: `Legate.rmdir` (or
+          # `rmdir!`) then `Legate.mv`. Two verbs, both declared, both
+          # audited — which is a better record of intent than one verb
+          # quietly doing both.
+          if to_is_dir
+            ncc.raise_error_class(
+              "#{raw_to} is a directory; Legate.#{name} won't replace one — remove it first with Legate.rmdir, then move",
+              conflict,
+            )
           end
         end
 

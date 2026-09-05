@@ -373,9 +373,14 @@ module Adjutant
       end
     end
 
-    # An EMPTY destination directory is the one case the bang lifts on
-    # the directory side.
-    it "replaces an empty destination directory" do
+    # Replacing a directory is NOT among the refusals the bang lifts,
+    # and this test used to assert the opposite. It passed on POSIX,
+    # where `rename(2)` replaces an empty destination directory, and
+    # failed on Windows, where `MoveFile` refuses with "Access is
+    # denied". A verb that behaves differently by platform is worse
+    # than one that refuses everywhere, so `mv!` now refuses — see
+    # `mv.cr`'s `check_destination`.
+    it "refuses an EMPTY destination directory too, not just a non-empty one" do
       with_tmpdir do |dir|
         from = File.join(dir, "src")
         Dir.mkdir(from)
@@ -383,9 +388,17 @@ module Adjutant
         to = File.join(dir, "dest")
         Dir.mkdir(to)
         interp, _ = make_interp(grants: move_grants(dir))
-        interp.eval(%(Legate.mv!(#{(from).inspect}, #{(to).inspect})))
-        File.read(File.join(to, "a.txt")).should eq "a"
-        File.exists?(from).should be_false
+        eval = interp.eval(<<-RUBY)
+        begin
+          Legate.mv!(#{(from).inspect}, #{(to).inspect})
+          "no error"
+        rescue Legate::Conflict => e
+          e.message
+        end
+        RUBY
+        eval.as_string.should contain "Legate.rmdir"
+        File.exists?(File.join(from, "a.txt")).should be_true
+        Dir.children(to).should be_empty
       end
     end
 

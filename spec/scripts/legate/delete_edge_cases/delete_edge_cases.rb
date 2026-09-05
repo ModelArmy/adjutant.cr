@@ -96,15 +96,29 @@ other_dir = WORKSPACE / "other"
 Legate.mkdir(other_dir)
 assert_raise(Legate::Conflict) { Legate.mv(other_dir, WORKSPACE / "loose.txt") }
 
-# --- ...and refuses to replace a NON-EMPTY directory ---
+# --- ...and refuses to replace ANY directory, empty or not ---
 #
-# An empty destination directory is fine to move over; one with
-# content in it would mean destroying unrelated data as a side effect
-# of a move nobody asked to be destructive.
+# Not even `mv!` will replace a destination directory. `cp!` will
+# replace a tree; `mv!` deliberately will not, because `rename`'s
+# behaviour on a directory destination varies by filesystem AND by
+# platform — POSIX replaces an empty one, Windows refuses. A verb
+# that behaves differently depending on where it runs is worse than
+# one that refuses everywhere.
+#
+# Two steps say it explicitly instead, both declared and audited:
+# remove the destination, then move.
 
 Legate.write(occupied_dir / "keep.txt", "keep\n")
 assert_raise(Legate::Conflict) { Legate.mv(other_dir, occupied_dir) }
+assert_raise(Legate::Conflict) { Legate.mv!(other_dir, occupied_dir) }
 assert_equal("keep\n", Legate.read(occupied_dir / "keep.txt"))
+
+empty_dest = WORKSPACE / "empty-dest"
+Legate.mkdir(empty_dest)
+assert_raise(Legate::Conflict) { Legate.mv!(other_dir, empty_dest) }
+assert_equal(true, Legate.rmdir(empty_dest))
+Legate.mv(other_dir, empty_dest)
+assert_nil(Legate.stat(other_dir))
 
 # --- mv into a path whose parents don't exist yet ---
 #
