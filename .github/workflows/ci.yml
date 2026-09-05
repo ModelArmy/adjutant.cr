@@ -2,9 +2,12 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, add-legate]
   pull_request:
     branches: [main]
+  # Lets the Windows investigation be re-run on demand without
+  # pushing a commit each time.
+  workflow_dispatch:
 
 jobs:
   build-and-test:
@@ -16,7 +19,12 @@ jobs:
           - { os: ubuntu-24.04-arm, crystal: latest }
           - { os: macos-latest, crystal: latest }
           - { os: macos-15-intel, crystal: latest }
+          # Two Windows rows on purpose. 1.20 is the version the
+          # streaming crash was found on and is kept so the
+          # investigation stays reproducible; `latest` answers, for
+          # free, whether the crash is already fixed upstream.
           - { os: windows-latest, crystal: "1.20" }
+          - { os: windows-latest, crystal: latest }
 
     runs-on: ${{ matrix.os }}
 
@@ -53,16 +61,49 @@ jobs:
 
       - name: Try to reproduce Windows streaming crash (Windows)
         if: ${{ runner.os == 'Windows' }}
+        # Never crashed so far — kept as the control. If it ever DOES
+        # crash, the bug is reachable without the VM and the whole
+        # picture changes.
+        continue-on-error: true
         run: |
           crystal run --debug spec/scratch/win_stream_crash_repro.cr
-          echo $LASTEXITCODE
+          Write-Host "repro exit code: $LASTEXITCODE"
 
-      - name: Run tests (Windows, verbose)
+      - name: Install ProcDump (Windows)
         if: ${{ runner.os == 'Windows' }}
+        run: choco install procdump -y --no-progress
+
+      # The crash is a FAIL-FAST (0xC0000409, subcode FATAL_APP_EXIT):
+      # the process kills itself during exception unwinding, before
+      # any handler runs. Nothing inside the program can observe it —
+      # rescuing every exception changed nothing — so a dump is the
+      # only way to see the faulting frame, and it will name whichever
+      # runtime function called abort/terminate.
+      #
+      # `-e` waits for an unhandled exception rather than dumping
+      # immediately; `-ma` takes a full dump so the fiber stacks are
+      # present, which matters because the suspicion is unwinding
+      # across a frame belonging to another fiber's machinery.
+      #
+      # `continue-on-error` so the artifact upload below still runs:
+      # the whole point of this step is that it fails.
+      - name: Run tests and capture a crash dump (Windows)
+        if: ${{ runner.os == 'Windows' }}
+        continue-on-error: true
         run: |
           crystal build --debug spec/adjutant/legate/verbs/fetch_stream_spec.cr -o fetch_str_spec.exe
-          .\fetch_str_spec.exe --verbose
-          echo $LASTEXITCODE
+          procdump -accepteula -e -ma -x . .\fetch_str_spec.exe --verbose
+          Write-Host "spec exit code: $LASTEXITCODE"
+
+      - name: Upload crash dump (Windows)
+        if: ${{ runner.os == 'Windows' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-crash-dump-crystal-${{ matrix.crystal }}
+          path: |
+            *.dmp
+          if-no-files-found: warn
+          retention-days: 7
 
       # ---- Build and run test scripts
 
