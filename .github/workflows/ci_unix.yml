@@ -43,10 +43,6 @@ jobs:
       - name: Run tests
         run: crystal spec
 
-      - name: Try to reproduce Windows streaming crash (non-Windows)
-        run: |
-          crystal run --debug spec/scratch/win_stream_crash_repro.cr
-
       # ---- Build and run test scripts
 
       - name: Setup release environment
