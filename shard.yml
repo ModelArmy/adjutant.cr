@@ -7,6 +7,8 @@ description: >
   with a controlled effect boundary, module capability registry,
   and information flow control.
 
+crystal: ">= 1.21"
+
 authors:
   - nogginly@icloud.com
 
