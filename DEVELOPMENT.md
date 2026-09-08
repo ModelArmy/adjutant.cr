@@ -878,7 +878,7 @@ tags + reversible + severity] --> NC[NativeCallable]
     NC -.planned.-> RC[RubyClass native methods]
 ```
 
-`Effect` and `Authority` are two enums answering two questions. `Authority` (`Read`, `Write`, `Delete`, `Net`, `Exec`, `Ambient`) names what a call is *permitted* to do — enforced, and the key a `RiskFlowRule` matches on. `Effect` names *what a call does to the world outside the VM*, and so *why* it is risky (`ReadsFiles`, `WritesFiles`, `DeletesFiles`, `MovesFiles`, `Recursive`, `ExecutesCode`, `NetworkEgress`, `ElevatedPrivilege`, `ModifiesEnvironment`). `Reversibility` (`Yes`/`No`/`Depends`) and `Severity` (`Info`/`Warning`/`Error`) are *conclusions* drawn from those effects.
+`Effect` and `Authority` are two enums answering two questions. `Authority` (`Read`, `Write`, `Delete`, `Net`, `Ambient`) names what a call is *permitted* to do — enforced, and the key a `RiskFlowRule` matches on. `Effect` names *what a call does to the world outside the VM*, and so *why* it is risky (`ReadsFiles`, `WritesFiles`, `DeletesFiles`, `MovesFiles`, `Recursive`, `ExecutesCode`, `NetworkEgress`, `ElevatedPrivilege`, `ModifiesEnvironment`). `Reversibility` (`Yes`/`No`/`Depends`) and `Severity` (`Info`/`Warning`/`Error`) are *conclusions* drawn from those effects.
 
 Effects are the reason; reversibility and severity are consequences — a `RiskProfile` with no effects must be `Reversibility::Yes` and `Severity::Info`. Setting either otherwise on an effect-less profile raises immediately, by design: it means an `Effect` is missing, not that the fields should be set freely.
 

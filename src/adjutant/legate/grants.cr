@@ -181,10 +181,9 @@ module Adjutant
     # against `read_roots`/etc at call time; this class only holds and
     # parses the data it needs to do that.
     # Extends the core perimeter (`Adjutant::Grants` — filesystem
-    # roots and the binary allowlist, plus the checks over them) with
-    # the parts that are Legate's own: network rules, the top-level
-    # method ceiling, the ambient-env allowlist, and the per-verb
-    # limits.
+    # roots and the checks over them) with the parts that are
+    # Legate's own: network rules, the top-level method ceiling, the
+    # ambient-env allowlist, and the per-verb limits.
     #
     # Subclassed rather than composed so a Broker still holds ONE
     # grants object. Splitting it into "the core half" and "the Legate
@@ -208,10 +207,10 @@ module Adjutant
 
       def initialize(read_roots = [] of String, write_roots = [] of String,
                      delete_roots = [] of String, @net_rules = [] of NetRule,
-                     @net_methods = [] of String, exec_binaries = [] of String,
+                     @net_methods = [] of String,
                      @ambient_env = [] of String,
                      @limits = Limits.new)
-        super(read_roots, write_roots, delete_roots, exec_binaries)
+        super(read_roots, write_roots, delete_roots)
       end
 
       # The fully-closed policy — every category empty, every per-run
@@ -242,7 +241,6 @@ module Adjutant
           delete_roots: string_array(grants_node, "delete", "roots"),
           net_rules: net_rules_of(grants_node),
           net_methods: string_array(grants_node, "net", "methods").map(&.downcase),
-          exec_binaries: string_array(grants_node, "exec", "binaries"),
           ambient_env: string_array(grants_node, "ambient", "env"),
           limits: limits_of(limits_node),
         )

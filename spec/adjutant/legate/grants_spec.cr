@@ -56,7 +56,6 @@ module Adjutant
         grants.delete_roots.should be_empty
         grants.net_rules.should be_empty
         grants.net_methods.should be_empty
-        grants.exec_binaries.should be_empty
         grants.ambient_env.should be_empty
       end
 
@@ -90,8 +89,6 @@ module Adjutant
           net:
             hosts: ["api.example.com"]
             methods: [get, post]
-          exec:
-            binaries: ["/usr/bin/git", "/usr/bin/rg"]
           ambient:
             env: ["TZ", "LANG"]
             now: pinned
@@ -120,7 +117,6 @@ module Adjutant
         grants.net_rules.first.ports.should eq [443]
         grants.net_rules.first.subdomains?.should be_false
         grants.net_methods.should eq ["get", "post"]
-        grants.exec_binaries.should eq ["/usr/bin/git", "/usr/bin/rg"]
         grants.ambient_env.should eq ["TZ", "LANG"]
       end
 
@@ -168,7 +164,6 @@ module Adjutant
           YAML
         grants.read_roots.should eq ["/work/input"]
         grants.write_roots.should be_empty
-        grants.exec_binaries.should be_empty
       end
 
       it "downcases net methods" do

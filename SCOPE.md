@@ -383,10 +383,12 @@ just noise for the next reader.
   All three subsections are unbuilt:
 
   - **§10.1 Dataflow.** No grant inference, so no minimum policy and
-    no over-grant refusal. Checks 2–5 (taint to argv, taint to path,
-    unbounded materialisation, double consumption) likewise. Note that
-    checks 2 and 3 are the ones §10.1 itself calls "the
-    security-critical pair."
+    no over-grant refusal. Checks 2–4 (taint to path, unbounded
+    materialisation, double consumption) likewise. Note that check 2
+    is the one §10.1 itself calls security-critical — its former
+    sibling, taint to `argv`, was retired 2026-09-05 along with
+    `Legate.run` itself (§4.6), which is also why this is four checks
+    now, not five.
   - **§10.2 Exception discipline.** None of the six rules is enforced.
     Worse than absent for one of them: `retry` is not merely ungated
     but fully implemented (`Compiler#compile_retry`), and §10.2
@@ -1324,6 +1326,25 @@ individually.
   `LEGATE.md` (e.g. via a machine-extractable annotation convention on
   verb signatures) rather than hand-authoring a parallel prose doc, so
   the two can't silently drift apart.
+
+- **`Legate::Exit`'s fate is now an open question, not just an
+  unused type.** Found 2026-09-05, while removing `Legate.run`'s
+  scaffolding (§4 step 1). The value type itself
+  (`code`/`ok?`/`out`/`err`/`truncated?`/`duration`) was left
+  bootstrapped rather than deleted — it's real, tested, and
+  IFC-labeled — but `raise!` had to go: its only exception class,
+  `Legate::NonZeroExit`, was removed as unused scaffolding, and
+  nothing produces a `Legate::Exit` at all now that `run` is retired
+  from the spec (§4.6). Two honest options, neither decided here:
+  retire the whole type alongside `run` (consistent — there is
+  genuinely no producer, and won't be while exec stays out of scope),
+  or leave it as a plain, producer-less record shape against the
+  chance a future non-process source wants the same
+  `code`/`out`/`err`/`duration` shape. Leaning toward the latter only
+  because deleting it touches `interpreter.cr`'s bootstrap call and
+  several IFC-propagation specs that exercise it for reasons
+  unrelated to `run` — the risk of leaving it is a shape kept alive by
+  inertia rather than by a real second producer in view.
 
 ### Tooling
 

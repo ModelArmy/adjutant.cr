@@ -61,7 +61,7 @@ module Adjutant
         # stream: true`, §3's own type-index diagram) the same way it
         # covers a file — not `Legate::StreamConsumed` or similar,
         # which would only make sense for files.
-        %w[NotFound Malformed TooLarge TooMany Timeout Transport Conflict NonZeroExit EOF].each do |name|
+        %w[NotFound Malformed TooLarge TooMany Timeout Transport Conflict EOF].each do |name|
           Helpers.nest(legate, interp, name, error)
         end
 

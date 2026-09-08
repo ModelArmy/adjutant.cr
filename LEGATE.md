@@ -22,15 +22,15 @@ Section                                  |Status       |Notes
 §4.3 writing                             |Built        |`write` `write!` `append` `mkdir` `cp` `cp!`                                   
 §4.4 destruction                         |Built        |`rm` `rmdir` `rmdir!` `mv` `mv!`; "`rm` subsumes `rmdir`" reversed 2026-09-04  
 §4.5 network                             |Built        |`fetch`; streamed request body still open                                      
-§4.6 execution                           |NOT BUILT    |No `run` verb. `authorize_exec`/`check_binary` exist and are unused            
+§4.6 execution                           |RETIRED      |No `exec` grant, no `run` verb — removed 2026-09-05 as unused scaffolding; see SCOPE.md
 §4.7 ambient                             |NOT BUILT    |None of `scratch` `env` `now` `random` `log` `fail`                            
 §5 value types                           |Built        |All seven                                                                      
-§5.6 `Legate::Exit`                      |Built, UNUSED|Bootstrapped, but nothing produces one — it is `run`'s return type             
+§5.6 `Legate::Exit`                      |Built, UNUSED|Bootstrapped, but nothing produces one. `raise!` removed 2026-09-05 alongside `NonZeroExit`; whether the rest goes too is open — see SCOPE.md
 §6 stream protocol                       |Built        |                                                                               
 §7 grants and policy                     |Built        |`ambient.now` removed 2026-09-01; see SCOPE.md                                 
 §8.1 path resolution / TOCTOU            |Built        |                                                                               
 §8.2 network hardening                   |Built        |Resolved-address checks in `fetch.cr`                                          
-§8.3 execution sandboxing                |NOT BUILT    |Nothing to sandbox until §4.6 exists                                           
+§8.3 execution sandboxing                |RETIRED      |No `exec` grant to sandbox — see §4.6                                         
 §8.4 caps                                |Built        |                                                                               
 §8.5 exception construction              |Built        |                                                                               
 §8.6 diagnostics for removed constructs  |PARTIAL      |`retry` and bare `rescue` are implemented, not removed — see §10.2 and SCOPE.md
@@ -140,8 +140,7 @@ flowchart TB
         G2["Legate::Write -> grant write"]
         G3["Legate::Delete -> grant delete"]
         G4["Legate::Net -> grant net"]
-        G5["Legate::Exec -> grant exec"]
-        G6["Legate::Ambient -> grant ambient"]
+        G5["Legate::Ambient -> grant ambient"]
     end
 
     MAN --> CHK
@@ -154,7 +153,7 @@ flowchart TB
         K4["includes appear before any statement"]
     end
 
-    CHK --> WARN["'include Legate::Exec' at line 1<br/>is a louder warning label<br/>than 'Legate.' on line 140"]
+    CHK --> WARN["'include Legate::Delete' at line 1<br/>is a louder warning label<br/>than 'Legate.' on line 140"]
 ```
 *Execution model: why a per-script anonymous class, and how the submodules relate to the inclusion ledger.*
 
@@ -260,10 +259,9 @@ Submodule        |Grant    |Verbs
 `Legate::Write`  |`write`  |`write` `write!` `append` `mkdir` `cp` `cp!`         
 `Legate::Delete` |`delete` |`rm` `rmdir` `rmdir!` `mv` `mv!`                     
 `Legate::Net`    |`net`    |`fetch`                                              
-`Legate::Exec`   |`exec`   |`run`                                                
 `Legate::Ambient`|`ambient`|`scratch` `env` `now` `random` `log` `fail`          
 
-> **Not built.** None of the six submodules exists, so no script can
+> **Not built.** None of the five submodules exists, so no script can
 > write `include Legate::Read` today. The constraints below are
 > specified for §10.4, which is also unbuilt. §0.
 
@@ -276,7 +274,7 @@ Two constraints apply when a manifest is used, both statically checked (§10.4):
 - Includes MUST precede any executable statement. Ruby's `include` mutates the ancestor chain where it executes, so a mid-script include changes the meaning of the lines above it on a second reading.
 - No local variable, method definition, parameter or block parameter may shadow an imported verb name. Ruby resolves the script's own definitions ahead of an included module, so a stray `def read` silently displaces a capability with a lookalike.
 
-`Legate::Exec` and `Legate::Delete` are importable like the rest, rather than permanently qualified as a warning label — an asymmetric rule is one more thing to misremember, and `include Legate::Exec` on line 1 is a louder, policy-checkable warning than a `Legate.` prefix on line 140.
+`Legate::Delete` is importable like the rest, rather than permanently qualified as a warning label — an asymmetric rule is one more thing to misremember, and `include Legate::Delete` on line 1 is a louder, policy-checkable warning than a `Legate.` prefix on line 140.
 
 ### 2.8 Determinism
 
@@ -297,7 +295,7 @@ Type                          |Returned by             |Kind
 `Legate::Entry`               |`Legate.list` (elements)|frozen value
 `Legate::Match`               |`Legate.grep` (elements)|frozen value
 `Legate::Response`            |`Legate.fetch`          |frozen value
-`Legate::Exit`                |`Legate.run`            |frozen value
+`Legate::Exit`                |*(none — §0)*           |frozen value
 `Legate::Lines`               |`Legate.lines`          |stream      
 `Legate::Bytes`               |`Legate.bytes`          |stream      
 `Legate::Records`             |`Legate.records`        |stream      
@@ -338,10 +336,6 @@ flowchart LR
         V11["Legate.fetch"]
     end
 
-    subgraph G4["Grant: exec"]
-        V12["Legate.run"]
-    end
-
     subgraph G5["Grant: ambient"]
         V13["Legate.scratch · env · now · random"]
     end
@@ -379,14 +373,13 @@ flowchart LR
     V10 --> T8
     V10B --> T7
     V11 --> T5
-    V12 --> T6
     V13 --> T7
 
     STR -->|"streams may be passed<br/>directly to sinks"| V8
     V11 -->|"stream: true"| S2
 
     ERR["Legate::Error hierarchy<br/>recoverable (StandardError) vs fatal (Exception)<br/>every verb raises, never returns an error value"]
-    G1 & G2 & G2D & G3 & G4 -.->|"on failure"| ERR
+    G1 & G2 & G2D & G3 -.->|"on failure"| ERR
 ```
 *Grants, verbs, and the value types each verb returns.*
 
@@ -419,7 +412,7 @@ Glob. `Legate.list("src/*")` is `ls`; `Legate.list("**/*.rb")` is `find`. Result
 ```ruby
 Legate.grep(pattern, paths, context: 0, limit: 10_000)  -> Array<Legate::Match>
 ```
-Content search. `pattern` is a `Regexp` or `String`; `paths` is a glob string or an Array. Binary files skipped. This verb exists so that scripts do not need the `exec` grant to run `rg`.
+Content search. `pattern` is a `Regexp` or `String`; `paths` is a glob string or an Array. Binary files skipped. This verb exists so that scripts do not need to shell out to `rg`.
 **Raises** `TooMany`, `Timeout`.
 
 ### 4.2 Streaming reads — grant `read`
@@ -522,15 +515,9 @@ The rule is deliberately uniform across 301, 302, 303, 307 and 308 rather than f
 
 **Raises** `Transport` (DNS, TLS, connection, redirect loop), `Redirect`, `Timeout`, `TooLarge`.
 
-### 4.6 Execution — grant `exec`
+### 4.6 Execution — retired
 
-```ruby
-Legate.run(argv, stdin: nil, timeout: 60, cwd: nil, limit: 8_388_608)  -> Legate::Exit
-```
-`argv` MUST be an Array of Strings. A String argument is a **parse-time** error, not a runtime one — there is no shell, so there is no shell injection. `argv[0]` is resolved to an absolute path and checked against the binary allowlist after resolution.
-
-A nonzero exit code does **not** raise; it is reported on `Legate::Exit#code`. The subprocess failing is data about the subprocess.
-**Raises** `Timeout`, `NotFound` (binary absent).
+Legate grants no process execution. There is no `run` verb, no `exec` grant, and no binary allowlist. `Legate.run` was specified here but never built; the scaffolding around it (`Authority::Exec`, the allowlist checks, the broker boundary) was removed 2026-09-05 as dead code, and this section is removed with it rather than left describing a verb nobody can call. A script that needs a subprocess is out of scope for Legate — see `Legate.grep` (§4.1) for the common case (content search) that used to motivate reaching for one.
 
 ### 4.7 Ambient — grant `ambient`
 
@@ -623,7 +610,6 @@ exit.out         -> String
 exit.err         -> String
 exit.truncated?  -> Boolean
 exit.duration    -> Float
-exit.raise!      -> self      # raises Legate::NonZeroExit unless ok?
 ```
 
 ---
@@ -703,8 +689,6 @@ grants:
         methods: [get]             #   narrows net.methods, never widens
         subdomains: false          #   default: exact host match only
         local: true                #   default: internal addresses refused
-  exec:
-    binaries: ["/usr/bin/git", "/usr/bin/rg"]
   ambient:
     env: ["TZ", "LANG"]
 limits:
@@ -756,12 +740,9 @@ Steps 2–3 are check-then-open, not atomic — a real, accepted gap, not an ove
 - Enforce `limit` on the response as bytes arrive, not after.
 - TLS verification is mandatory and not configurable.
 
-### 8.3 Execution
+### 8.3 Execution — retired
 
-- Reject a String `argv` statically. There is no shell, no `sh -c`, no `PATH` search.
-- Resolve `argv[0]` to an absolute path and compare against the allowlist after resolution.
-- Run with a clean environment containing only allowlisted variables.
-- Enforce `timeout` with a process-group kill, not a signal to the leader.
+No exec grant exists to sandbox. See §4.6.
 
 ### 8.4 Caps
 
@@ -780,7 +761,7 @@ Enforce at three levels, on the assumption that the higher ones will eventually 
 The vocabulary in §4 is novel, so priors do not fight it. The **removals** in §1.2 are where habit will collide with the language, and no amount of design avoids that. Three requirements make the collision cheap:
 
 1. **Remove, never cripple.** Undefine the constant or method entirely. A partially-implemented `File` invites the author to assume the other thirty-nine methods exist.
-2. **Fail at parse time where possible.** `File.read`, `send`, `eval`, `retry`, bare `rescue` and a String `argv` are all detectable statically. A diagnostic before execution costs one turn; a failure on line 340 of a long run costs the whole run. (Detectable, but not currently detected for `retry` and bare `rescue`, both of which are implemented — §0.)
+2. **Fail at parse time where possible.** `File.read`, `send`, `eval`, `retry`, and bare `rescue` are all detectable statically. A diagnostic before execution costs one turn; a failure on line 340 of a long run costs the whole run. (Detectable, but not currently detected for `retry` and bare `rescue`, both of which are implemented — §0.)
 3. **Name the replacement.** Every removal diagnostic MUST state the Legate equivalent, or state plainly that none exists.
 
 Written                        |Diagnostic                                                          
@@ -788,7 +769,7 @@ Written                        |Diagnostic
 `File.read(p)`                 |not available — use `Legate.read(p)`                                
 `File.open(p) { }`             |not available — use `Legate.lines(p)` to stream, or `Legate.read(p)`
 `Dir.glob(p)`                  |not available — use `Legate.list(p)`                                
-`` `git log` `` / `system(…)`  |not available — use `Legate.run(["git", "log"])`                    
+`` `git log` `` / `system(…)`  |removed; no equivalent — see §4.6                                   
 `Net::HTTP…`                   |not available — use `Legate.fetch(url)`                             
 `arr << x`, `s.gsub!`          |mutation removed — use `arr + [x]`, `s.gsub`                        
 `eval`, `send`, `define_method`|removed; no equivalent                                              
@@ -824,7 +805,6 @@ flowchart TB
         TO["Legate::Timeout<br/>per-call wall clock"]
         TR["Legate::Transport<br/>DNS, TLS, connection"]
         CF["Legate::Conflict<br/>exists, non-empty dir"]
-        NZ["Legate::NonZeroExit<br/>Legate::Exit#raise! on a non-zero exit code"]
         TL["Legate::TooLarge<br/>per-call cap — message names the streaming verb"]
         TM["Legate::TooMany<br/>per-call cardinality cap"]
     end
@@ -878,7 +858,6 @@ Class                |Meaning                                        |Message MU
 `Legate::Transport`  |DNS, TLS, connection, redirect loop            |—                                            
 `Legate::Redirect`   |redirect on a request that carried a body      |`status`, `location`, and re-issuing it      
 `Legate::Conflict`   |destination exists, non-empty directory        |`recursive:`                                 
-`Legate::NonZeroExit`|`Legate::Exit#raise!` on a non-zero exit code  |the exit code and truncated `err`            
 
 A `TooLarge` message MUST read like: *"config.json is 1.4 GB, over the 8 MiB read limit — use `Legate.lines(path)` to stream."* Models reliably read exception messages and unreliably read specifications; this is the cheapest documentation channel available.
 
@@ -916,12 +895,11 @@ The specification is shaped to make these checks cheap. An implementation SHOULD
 ### 10.1 Dataflow
 
 1. **Grant inference.** Walk the call graph, collect every `Legate.*` call, and emit the minimum policy the script requires. Compare against the offered policy and refuse over-granted runs.
-2. **Taint to argv.** Any value derived from `read`, `fetch`, `lines`, `records` or `env` reaching `Legate.run`'s `argv` is a hard error, not a warning.
-3. **Taint to path.** The same value reaching a path argument requires an intervening `Path#under?` check or construction via `Path#/`.
-4. **Unbounded materialisation.** Flag any stream reaching a §6.4 terminal without an explicit bound.
-5. **Double consumption.** Flag a stream iterated twice; legal, but almost always a mistake.
+2. **Taint to path.** A value derived from `read`, `fetch`, `lines`, `records` or `env` reaching a path argument requires an intervening `Path#under?` check or construction via `Path#/`.
+3. **Unbounded materialisation.** Flag any stream reaching a §6.4 terminal without an explicit bound.
+4. **Double consumption.** Flag a stream iterated twice; legal, but almost always a mistake.
 
-Checks 2 and 3 are the security-critical pair. Checks 4 and 5 exist because size, like taint, propagates along data edges — one machinery, two purposes.
+Check 2 is the security-critical one — its sibling, taint reaching an `argv`, was retired 2026-09-05 along with `Legate.run` itself (§4.6). Checks 3 and 4 exist because size, like taint, propagates along data edges — one machinery, two purposes.
 
 ### 10.2 Exception discipline
 
@@ -969,20 +947,21 @@ Three uses:
 
 Group                                     |Count                              
 ------------------------------------------|-----------------------------------
-Verbs on `Legate`                         |26                                 
-Submodules (one per grant, optional sugar)|6                                  
+Verbs on `Legate`                         |25                                 
+Submodules (one per grant, optional sugar)|5                                  
 Value types                               |6                                  
-Methods across all value types            |~48                                
+Methods across all value types            |~47                                
 Stream operators and terminals            |~40 (all familiar Enumerable names)
-Grant kinds                               |6                                  
-Exception classes                         |10 (7 recoverable, 3 fatal)        
+Grant kinds                               |5                                  
+Exception classes                         |11 (8 recoverable, 3 fatal)        
 
 > **These are the counts for the SPECIFIED surface, not the built
-> one.** As of 2026-09-04 there are **19 verbs** (§4.6's `run` and
-> §4.7's six ambient verbs do not exist), **no submodules**, and one
-> value type — `Legate::Exit` — that nothing yet produces. §0.
+> one.** As of 2026-09-05 there are **19 verbs** (§4.7's six ambient
+> verbs do not exist), **no submodules**, and one value type —
+> `Legate::Exit` — that nothing yet produces (§4.6, its only
+> would-be producer, was retired). §0.
 
-Roughly **121 names**, of which about 40 are Enumerable methods the model already knows perfectly, and 10 are exception classes whose handling follows ordinary Ruby reflexes. The 6 submodules are optional and need not be learned at all. The genuinely novel vocabulary is the 26 verbs and 6 types — comfortably a single page of context.
+Roughly **120 names**, of which about 40 are Enumerable methods the model already knows perfectly, and 11 are exception classes whose handling follows ordinary Ruby reflexes. The 5 submodules are optional and need not be learned at all. The genuinely novel vocabulary is the 25 verbs and 6 types — comfortably a single page of context.
 
 Five of those verbs are bangs, and they cost a reader almost nothing: the suffix means one thing everywhere it appears (§4.3), so learning it once covers `write!`, `cp!` and `mv!`, while `rmdir!` is the same idea applied to a tree. A script author who never writes a bang is never wrong, only occasionally refused.
 

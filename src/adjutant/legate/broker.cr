@@ -24,7 +24,7 @@ module Adjutant
     #
     # What stays here is what only Legate knows: which roots, rules
     # and binaries make up its perimeter (`@grants`), that a denial
-    # reports as `Legate::Denied`, and the five verb-facing
+    # reports as `Legate::Denied`, and the four verb-facing
     # `authorize_*` wrappers below — each of which knows about
     # `allow_missing`, about which §4 verb it serves, and about what a
     # missing path means for that verb. Fourteen verbs talking to a
@@ -55,15 +55,14 @@ module Adjutant
         "Legate::Denied"
       end
 
-      # The five grant categories §7 defines. `Ambient` is absent
+      # The four grant categories §7 defines. `Ambient` is absent
       # deliberately: it is a SOURCE of sensitivity rather than a
       # sink, so nothing authorizes against it.
       def authorities : Set(Authority)
         AUTHORITIES
       end
 
-      AUTHORITIES = Set{Authority::Read, Authority::Write, Authority::Delete,
-                        Authority::Net, Authority::Exec}
+      AUTHORITIES = Set{Authority::Read, Authority::Write, Authority::Delete, Authority::Net}
 
       # Public so a VERB can read policy limits directly (e.g.
       # `Legate.read`'s own `limit:` kwarg has to be clamped to
@@ -244,25 +243,6 @@ module Adjutant
         subject = "#{scheme}://#{host}:#{port}"
         @core.authorize(self, Authority::Net, "net", subject, ProvenanceKind::Host, ncc) do
           @grants.check_net(scheme, host, port, method)
-        end
-      end
-
-      # §4.something's `exec`-grant boundary — binary allowlist only
-      # (4b's `check_binary`). §8.3's exec sandboxing (argv/env
-      # scrubbing, working directory confinement) is NOT part of this
-      # boundary check, same reasoning as `authorize_net` above — it
-      # needs the real subprocess call the `exec` verb is about to
-      # make, not just the resolved binary path this method checks.
-      #
-      # Uses ProvenanceKind::File for the resolved binary path — there
-      # is no dedicated "Binary" ProvenanceKind (risk_flow_label.cr
-      # only defines File/Host/Env/UserInput), and a binary's absolute
-      # path is, at the provenance-tracking level, still a filesystem
-      # path. Worth flagging as a judgment call rather than something
-      # the spec states outright.
-      def authorize_exec(binary : String, ncc : NativeCallContext) : RiskFlowLabel?
-        @core.authorize(self, Authority::Exec, "exec", binary, ProvenanceKind::File, ncc) do
-          @grants.check_binary(binary)
         end
       end
     end

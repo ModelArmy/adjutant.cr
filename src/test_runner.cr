@@ -139,17 +139,16 @@ module Testing
       # `_policy.yaml`'s own directory. That's exactly the class of
       # bug `list.cr`'s own Windows path-separator fix (earlier this
       # session) was about — fragile across machines/CI/OS — so every
-      # path-like entry (roots, exec binaries; NOT `net_hosts`/
-      # `ambient_env`, which aren't filesystem paths at all) is
-      # expanded HERE, against `dir`, before building the real Grants
-      # a script actually runs under.
+      # path-like entry (the roots; NOT `net_hosts`/`ambient_env`,
+      # which aren't filesystem paths at all) is expanded HERE,
+      # against `dir`, before building the real Grants a script
+      # actually runs under.
       Adjutant::Legate::Grants.new(
         read_roots: raw.read_roots.map { |root| File.expand_path(root, dir) },
         write_roots: raw.write_roots.map { |root| File.expand_path(root, dir) },
         delete_roots: raw.delete_roots.map { |root| File.expand_path(root, dir) },
         net_rules: raw.net_rules,
         net_methods: raw.net_methods,
-        exec_binaries: raw.exec_binaries.map { |root| File.expand_path(root, dir) },
         ambient_env: raw.ambient_env,
         limits: raw.limits,
       )

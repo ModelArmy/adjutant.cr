@@ -22,15 +22,18 @@ module Adjutant
   #
   # Ambient is a SOURCE, not a sink: `env` reading an allowlisted name
   # is where sensitivity gets attached, and the authority a value
-  # eventually reaches is Net (or Write, or Exec). So Ambient will
-  # legitimately never appear in a RiskFlowRule row. That is a property
-  # of what the authority means, not a gap in the rule table.
+  # eventually reaches is Net (or Write). So Ambient will legitimately
+  # never appear in a RiskFlowRule row. That is a property of what the
+  # authority means, not a gap in the rule table.
+  #
+  # `Exec` removed 2026-09-05: `Legate.run` was never built, and the
+  # scaffolding around it (this member, the binary allowlist, the
+  # broker boundary) was unused. See SCOPE.md and LEGATE.md §4.6.
   enum Authority
     Read
     Write
     Delete
     Net
-    Exec
     Ambient
   end
 end

@@ -11,8 +11,8 @@ module Adjutant
     module Verbs
       # `Legate.grep(pattern, paths, context: 0, limit: 10_000) ->
       # Array<Legate::Match>` — LEGATE.md §4.1. "This verb exists so
-      # that scripts do not need the `exec` grant to run `rg`" (§4.1's
-      # own words) — the whole point is doing content search WITHOUT
+      # that scripts do not need to shell out to `rg`" (§4.1's own
+      # words) — the whole point is doing content search WITHOUT
       # shelling out, so this is real Crystal-side line scanning, not
       # a wrapper around a `grep`/`rg` binary.
       #

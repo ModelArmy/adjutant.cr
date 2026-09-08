@@ -1,7 +1,6 @@
 module Adjutant
-  # The static perimeter: which filesystem roots and which executables
-  # a run is permitted to touch, and the checks that answer "is this
-  # subject inside it".
+  # The static perimeter: which filesystem roots a run is permitted to
+  # touch, and the checks that answer "is this subject inside it".
   #
   # Core rather than Legate (moved 2026-09-01 — see SCOPE.md's
   # "Authorization is a Legate-private mechanism, but it is not a
@@ -28,9 +27,8 @@ module Adjutant
   # `RiskFlowPolicy`'s dynamic, taint-driven check is a separate step
   # the broker runs AFTER these pass, never instead of them. It also
   # excludes the runtime hardening LEGATE.md §8.2 (resolved-address
-  # checks) and §8.3 (exec sandboxing) call for: those need a live
-  # connection or a real process, so they belong to whatever is
-  # actually making one.
+  # checks) calls for: that needs a live connection, so it belongs to
+  # whatever is actually making one.
   class Grants
     # A static-check outcome. `allowed?` is the broker's fast-path
     # branch; `reason` is a human-readable explanation of a denial,
@@ -58,10 +56,9 @@ module Adjutant
     getter read_roots : Array(String)
     getter write_roots : Array(String)
     getter delete_roots : Array(String)
-    getter exec_binaries : Array(String)
 
     def initialize(@read_roots = [] of String, @write_roots = [] of String,
-                   @delete_roots = [] of String, @exec_binaries = [] of String)
+                   @delete_roots = [] of String)
     end
 
     # LEGATE.md §8.1 steps 1–2 (amended check-then-open approach — see
@@ -117,19 +114,6 @@ module Adjutant
       under_root = roots.any? { |root| under_maybe_missing?(prospective, root) }
 
       under_root ? Decision.allow : Decision.deny("#{path} (prospective: #{prospective}) is not under any granted root")
-    end
-
-    # Allowlist membership for an executable, compared resolved-path to
-    # resolved-path so a bare name, a relative path and a symlink to
-    # the same binary all decide identically.
-    def check_binary(binary : String) : Decision
-      return Decision.deny("no binaries granted") if exec_binaries.empty?
-
-      real_binary = resolve_binary(binary)
-      return Decision.deny("#{binary} could not be resolved to an executable path") unless real_binary
-
-      allowed = exec_binaries.any? { |candidate| resolve(candidate) == real_binary }
-      allowed ? Decision.allow : Decision.deny("#{binary} (resolved: #{real_binary}) is not in the granted binary allowlist")
     end
 
     # `File.realpath` wrapped to return nil instead of raising — every
@@ -222,30 +206,6 @@ module Adjutant
         trailing.unshift(File.basename(current))
         current = parent
       end
-    end
-
-    # `binary` with a directory component (per `Path#parts.size > 1` —
-    # portable across POSIX `/` and Windows `\`/drive-letter paths,
-    # unlike a plain `binary.includes?('/')` check) is resolved
-    # directly, no `PATH` search. A BARE name (`"git"`, no directory
-    # component at all) is searched across `PATH` the way a shell
-    # resolves `argv[0]`/`CreateProcess` does, checking each directory
-    # in order and taking the first existing, executable match. Either
-    # way the result is realpath'd before returning, so
-    # `check_binary`'s comparison above is always resolved-path-to-
-    # resolved-path.
-    private def resolve_binary(binary : String) : String?
-      return resolve(binary) if ::Path.new(binary).parts.size > 1
-
-      path_env = ENV["PATH"]? || ""
-      # `Process::PATH_DELIMITER` — `:` on POSIX, `;` on Windows.
-      path_env.split(Process::PATH_DELIMITER).each do |dir|
-        next if dir.empty?
-        candidate = File.join(dir, binary)
-        real = resolve(candidate)
-        return real if real && File.file?(real) && File::Info.executable?(real)
-      end
-      nil
     end
   end
 end

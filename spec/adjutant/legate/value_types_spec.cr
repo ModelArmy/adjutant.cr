@@ -53,11 +53,6 @@ module Adjutant
         cls = legate.constants[i.symbols.intern("Exit").value].as_rclass
         Legate::Exit.build(i, cls, 0, "hello\n", "", false, 0.42)
       end
-
-      i.define_native("make_exit_failed") do |_args, _blk, _ncc|
-        cls = legate.constants[i.symbols.intern("Exit").value].as_rclass
-        Legate::Exit.build(i, cls, 1, "", "boom\n", false, 0.05)
-      end
     end
     interp.modules.require("test/legate_value_type_triggers", interp)
     interp
@@ -250,35 +245,6 @@ module Adjutant
         interp.eval(<<-RUBY).as_bool.should eq true
         e = make_exit
         e.code == 0 && e.ok? && e.out == "hello\n" && e.err == "" && !e.truncated?
-        RUBY
-      end
-
-      it "raise! is a no-op (returns self) when ok?" do
-        interp = interp_with_value_type_triggers
-        interp.eval("make_exit.raise!.code").as_int.should eq 0
-      end
-
-      it "raise! raises Legate::NonZeroExit — NOT Legate::Transport (the spec bug fixed this session)" do
-        interp = interp_with_value_type_triggers
-        interp.eval(<<-RUBY).as_string.should eq "caught"
-        begin
-          make_exit_failed.raise!
-        rescue Legate::NonZeroExit
-          "caught"
-        end
-        RUBY
-      end
-
-      it "raise!'s NonZeroExit is NOT also a Legate::Transport (distinct branches of the recoverable tier)" do
-        interp = interp_with_value_type_triggers
-        interp.eval(<<-RUBY).as_string.should eq "correctly NOT transport"
-        begin
-          make_exit_failed.raise!
-        rescue Legate::Transport
-          "wrongly caught as transport"
-        rescue Legate::NonZeroExit
-          "correctly NOT transport"
-        end
         RUBY
       end
     end

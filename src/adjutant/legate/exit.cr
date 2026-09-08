@@ -11,9 +11,9 @@ module Adjutant
     # `RubyObject` + `__`-prefixed ivars).
     #
     # IFC: `out`/`err` (actual subprocess output — arguably the
-    # highest-stakes data any Legate value type carries, given
-    # `Legate::Exec`'s own grant weight) and the outer object are
-    # labeled with an explicit `label`. Unlike `Entry`/`Match`, there's
+    # highest-stakes data any Legate value type carries, given how
+    # much a subprocess can see) and the outer object are labeled with
+    # an explicit `label`. Unlike `Entry`/`Match`, there's
     # no natural "input Value" here to derive a default from (a
     # command's OUTPUT isn't naturally the same taint as whatever
     # tainted argv produced it — real Ruby has no automatic notion of
@@ -29,7 +29,6 @@ module Adjutant
         err_sym = interp.symbols.intern("__err").value
         truncated_sym = interp.symbols.intern("__truncated").value
         duration_sym = interp.symbols.intern("__duration").value
-        non_zero_exit = Helpers.fetch(legate, interp, "NonZeroExit")
 
         Builtins.define(cls, interp, "code") { |args| args.first.as_robject.ivars[code_sym] }
         Builtins.define(cls, interp, "ok?") { |args| Value.bool(args.first.as_robject.ivars[code_sym].as_int.zero?) }
@@ -37,20 +36,6 @@ module Adjutant
         Builtins.define(cls, interp, "err") { |args| args.first.as_robject.ivars[err_sym] }
         Builtins.define(cls, interp, "truncated?") { |args| args.first.as_robject.ivars[truncated_sym] }
         Builtins.define(cls, interp, "duration") { |args| args.first.as_robject.ivars[duration_sym] }
-
-        # Raises Legate::NonZeroExit unless ok?, else returns self —
-        # same "common case wants this fatal" reasoning as
-        # Legate::Response#raise! (LEGATE.md §5.5/§5.6), and the exact
-        # gap that surfaced the spec fix from Legate::Transport (a
-        # network-scoped class — wrong domain entirely for a failed
-        # subprocess) to a dedicated Legate::NonZeroExit class.
-        Builtins.define(cls, interp, "raise!") do |args, _blk, ncc|
-          code = args.first.as_robject.ivars[code_sym].as_int
-          unless code.zero?
-            ncc.raise_error_class("Legate::Exit#raise! — exit code #{code}", non_zero_exit)
-          end
-          args.first
-        end
       end
 
       def self.build(interp : Interpreter, rclass : RubyClass, code : Int32, out_text : String,

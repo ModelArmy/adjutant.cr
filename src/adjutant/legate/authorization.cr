@@ -19,10 +19,10 @@ module Adjutant
     #
     # Deliberately narrow: this covers exactly what a Grants config
     # can decide on its own, not the runtime hardening §8.2
-    # (SSRF/DNS-range checks, which need a real network call) or §8.3
-    # (exec sandboxing) call for, nor §8.1's own step 3
-    # (immediately-before-use re-check right at the open() call) —
-    # those need a live connection or a real process to attach to.
+    # (SSRF/DNS-range checks, which need a real network call) calls
+    # for, nor §8.1's own step 3 (immediately-before-use re-check
+    # right at the open() call) — those need a live connection to
+    # attach to.
     class Grants
       # Replaces the old `check_host`, which matched a hostname string
       # and nothing else. A connection is now authorized against all
@@ -91,16 +91,6 @@ module Adjutant
           Decision.deny("#{method.upcase} #{scheme}://#{host}:#{port} denied: method #{method.upcase} is not granted for this host")
         end
       end
-
-      # Resolves `binary` to an absolute path — a bare name (no `/`)
-      # is searched for on `PATH`, same as a shell would; anything
-      # containing `/` is realpath'd directly — then compares that
-      # resolution against `exec_binaries` (also realpath'd, so an
-      # allowlist entry that's itself a symlink still matches).
-      # Comparing POST-resolution on both sides is the point: it's
-      # what stops a `PATH` trick or a symlinked allowlist entry from
-      # producing a false allow or a false deny.
-
     end
   end
 end
