@@ -406,6 +406,33 @@ module Adjutant
         help: "Make sure every element is already a String, e.g. via `.map { |x| x.to_s }`."
       ),
 
+      "R039" => Entry.new(
+        code: "R039",
+        summary: "`{method}`'s `{arg}` argument isn't a {expected} ({class_name})",
+        why: "`{method}` needs `{arg}` to be a {expected} — passing " \
+             "anything else can't be interpreted as one.",
+        help: "Check the value you're passing for `{arg}`."
+      ),
+
+      "R040" => Entry.new(
+        code: "R040",
+        summary: "Legate.fail called with no message argument",
+        why: "`Legate.fail(message)` needs `message` — an abort with " \
+             "no explanation defeats the point of choosing to abort " \
+             "rather than letting some other error surface.",
+        help: "Pass a String explaining why the script is aborting, " \
+              "e.g. `Legate.fail(\"missing required config\")`."
+      ),
+
+      "R041" => Entry.new(
+        code: "R041",
+        summary: "Legate.log called with no message argument",
+        why: "`Legate.log(message, fields = {})` needs `message` — " \
+             "`fields` alone, with nothing to say, isn't a log line.",
+        help: "Pass a String as the first argument, e.g. " \
+              "`Legate.log(\"starting step 2\", {step: 2})`."
+      ),
+
       # --- L: limits reached ----------------------------------------
       #
       # The script is valid; it is just larger than something Adjutant

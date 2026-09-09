@@ -70,6 +70,14 @@ module Adjutant
     getter grants : Legate::Grants
     getter broker : Legate::Broker
 
+    # `log:` (the constructor parameter above) has no getter of its
+    # own here, unlike `grants`/`broker` — it is used exactly once,
+    # forwarded straight into `Legate::Broker.new` below, and reachable
+    # afterward at `broker.log` for anything that needs it (a verb's
+    # own bootstrap, a spec). A second getter for the same one value
+    # would be a second place for it to go stale relative to the
+    # other.
+
     # The run's shared authorization sequence. Legate is the only
     # provider today; `broker` above is its provider wrapper.
     getter effect_broker : Adjutant::Broker
@@ -107,6 +115,7 @@ module Adjutant
       @limits : ExecutionLimits = ExecutionLimits.new,
       risk_flow_tracking : Bool = false,
       @grants : Legate::Grants = Legate::Grants.deny_all,
+      log : ::Log = ::Log.for("adjutant.legate"),
     )
       @symbols = SymbolTable.new
       @modules = ModuleRegistry.new
@@ -117,7 +126,7 @@ module Adjutant
       # would split the run's budget and audit log. Legate is the only
       # provider today; a second one takes this same instance.
       @effect_broker = Adjutant::Broker.new(@grants.limits)
-      @broker = Legate::Broker.new(@grants, @effect_broker)
+      @broker = Legate::Broker.new(@grants, @effect_broker, log: log)
       bootstrap_core_hierarchy
       # @main must be assigned here, right after object_class first
       # becomes valid — NOT after bootstrap_error_classes/
@@ -236,6 +245,15 @@ module Adjutant
         # Nothing consumes the returned array yet — an embedder-facing
         # cleanup-failure hook is a real question and a separate one.
         @effect_broker.open_sources.close_all
+
+        # `Legate.scratch`'s backing directory (§4.7), if this run
+        # created one — same "the scope that matters is this single
+        # eval" reasoning as open_sources just above, see
+        # `Legate::Broker#cleanup_scratch!`'s own comment for why
+        # scratch's lifetime is tied to ONE eval call rather than the
+        # whole Interpreter/session. Also failure-collecting rather
+        # than raising, for the identical reason.
+        @broker.cleanup_scratch!
       end
     end
 
@@ -514,6 +532,9 @@ module Adjutant
       Legate::Verbs::Rm.bootstrap(self, legate, @broker)
       Legate::Verbs::Mv.bootstrap(self, legate, @broker)
       Legate::Verbs::Fetch.bootstrap(self, legate, @broker)
+      Legate::Verbs::Scratch.bootstrap(self, legate, @broker)
+      Legate::Verbs::Log.bootstrap(self, legate, @broker)
+      Legate::Verbs::Fail.bootstrap(self, legate, @broker)
       define_global_class(legate)
     end
 

@@ -39,6 +39,7 @@ module Adjutant
     risk_flow_policy : RiskFlowPolicy = TEST_REJECT_ALL_POLICY,
     on_risk_flow_decision : RiskFlowDecisionRequest -> RiskFlowDecision = TEST_UNEXPECTED_ASK_CALLBACK,
     grants : Legate::Grants = Legate::Grants.deny_all,
+    log : ::Log = ::Log.for("adjutant.legate"),
   ) : {Interpreter, TestEffectHandler}
     ef = TestEffectHandler.new
     interp = Interpreter.new(
@@ -47,6 +48,7 @@ module Adjutant
       effect: ef,
       limits: limits,
       grants: grants,
+      log: log,
     )
     {interp, ef}
   end

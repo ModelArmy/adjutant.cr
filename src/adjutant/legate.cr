@@ -28,6 +28,9 @@ require "./legate/verbs/cp"
 require "./legate/verbs/rm"
 require "./legate/verbs/mv"
 require "./legate/verbs/fetch"
+require "./legate/verbs/scratch"
+require "./legate/verbs/log"
+require "./legate/verbs/fail"
 
 module Adjutant::Legate
 end

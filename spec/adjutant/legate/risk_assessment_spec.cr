@@ -60,15 +60,15 @@ module Adjutant
     # is implied by them, because the failure messages are different
     # and the count one is the clearer signal when a whole bootstrap
     # call goes missing.
-    it "registers exactly the 19 verbs the spec's §0 records as built" do
+    it "registers exactly the 22 verbs the spec's §0 records as built" do
       interp, _ = make_interp
       verbs = legate_verbs(interp)
 
-      verbs.size.should eq 19
+      verbs.size.should eq 22
       verbs.keys.sort.should eq [
-        "append", "bytes", "cp", "cp!", "fetch", "grep", "lines", "list",
-        "mkdir", "mv", "mv!", "read", "records", "rm", "rmdir", "rmdir!",
-        "stat", "write", "write!",
+        "append", "bytes", "cp", "cp!", "fail", "fetch", "grep", "lines",
+        "list", "log", "mkdir", "mv", "mv!", "read", "records", "rm",
+        "rmdir", "rmdir!", "scratch", "stat", "write", "write!",
       ]
     end
 
@@ -119,6 +119,16 @@ module Adjutant
         "mv!"    => Set{Effect::MovesFiles, Effect::DeletesFiles},
         # Net.
         "fetch" => Set{Effect::NetworkEgress},
+        # Ambient. `scratch` still declares WritesFiles — it's
+        # unconditional, not grant-gated, but it's still real
+        # filesystem activity a report reader should see (see that
+        # verb's own comment). `log` and `fail` are effect-free:
+        # neither touches the filesystem, network, or process in a
+        # way `Effect` currently has a category for — see SCOPE.md's
+        # open question on whether `log` should get one of its own.
+        "scratch" => Set{Effect::WritesFiles},
+        "log"     => Set(Effect).new,
+        "fail"    => Set(Effect).new,
       })
     end
 

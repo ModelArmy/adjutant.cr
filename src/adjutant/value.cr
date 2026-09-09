@@ -4,6 +4,16 @@ module Adjutant
   alias ValueRaw = Bool | Int64 | Float64 | String | Sym | ScriptProc |
                    LabeledArray | LabeledHash | RubyClass | RubyObject?
 
+  # The restricted, native-Crystal subset a Value can coerce INTO via
+  # `Value#to_plain`/`#to_plain?` — no RiskFlowLabel, no
+  # LabeledArray/LabeledHash wrapper, no ScriptProc/RubyClass/
+  # RubyObject. Deliberately shaped to match `Log::Metadata::Value::
+  # Type` (Crystal's stdlib, `log/metadata.cr`) almost exactly — see
+  # `Value#to_plain`'s own comment for why and for what a Sym/
+  # RubyObject/etc. does when asked to become one of these.
+  alias PlainValue = Bool | Int64 | Float64 | String |
+                     Array(PlainValue) | Hash(String, PlainValue)?
+
   # The core runtime value type for the Adjutant interpreter.
   #
   # Implemented as a struct so values are stack-allocated and copied
@@ -263,6 +273,117 @@ module Adjutant
 
     def as_robject? : RubyObject?
       @raw.as?(RubyObject)
+    end
+
+    # --- Plain conversion -------------------------------------------------
+
+    # How deep `to_plain`/`to_plain?` will recurse into nested
+    # Arrays/Hashes before giving up. A script builds these
+    # PROGRAMMATICALLY (`h = {} of Value => Value; 100_000.times { h
+    # = wrap(h) }`), not just by literal nesting in source text, so
+    # "how deeply can a script's own source nest a literal" is not a
+    # bound on how deep the actual VALUE can get — this recursion is
+    # plain Crystal call-stack recursion, not the VM's own
+    # frame-tracked, `call_depth_limit`-guarded kind, so it needs its
+    # own bound or a script can drive it into a real Crystal stack
+    # overflow. 32 is comfortably past any legitimate structured-
+    # logging payload and comfortably short of where that becomes a
+    # risk.
+    PLAIN_MAX_DEPTH = 32
+
+    # Recursively converts this Value into `PlainValue` — nil,
+    # true/false, an Integer, a Float, a String, or an Array/Hash of
+    # the same — or raises if it has no such representation. `to_plain?`
+    # below is the nil-on-failure counterpart, matching this
+    # codebase's own `as_int`/`as_int?`-style pairing (raise vs nil),
+    # just extended to a conversion that can fail partway through a
+    # container rather than only at the top.
+    #
+    # EXTRACTED here (not written directly into `legate/verbs/log.cr`,
+    # its first real caller) because "give me the plain form of this
+    # Value, if it has one" is a general enough question — the next
+    # native/builtin author needing the same thing (structured error
+    # data, an embedder-facing inspection API, some future non-Legate
+    # provider) should find it on `Value` itself rather than writing a
+    # second, silently-drifting copy. Mirrors `Legate::Helpers.
+    # json_to_value`'s own reasoning for being shared (`legate/
+    # helpers.cr`) — same shape of problem, opposite direction.
+    #
+    # A `Sym` coerces to its `name` — neither `Log::Metadata` nor JSON
+    # has a Symbol variant, and refusing to represent `status: :ok` as
+    # `status: "ok"` would cost real ergonomics for no benefit; the
+    # distinction between a Symbol and a String is a Ruby-level
+    # concern that has nothing left to say once the value leaves the
+    # interpreter entirely, which is exactly what this conversion is
+    # for. This applies to a Hash's KEYS too, not just plain values —
+    # `{ok: true}` is exactly as common a Ruby literal as `{"ok" =>
+    # true}`, and a NESTED Hash (a value inside another Hash/Array
+    # being converted) hits this just as often as a top-level one.
+    # Found missing here, 2026-09-08, by a spec that nested a
+    # Symbol-keyed Hash inside `Legate.log`'s `fields` argument
+    # (`legate/verbs/log_spec.cr`) — `Legate::Verbs::Log.fields_of`
+    # already accepted either spelling for `fields`' OWN keys, but
+    # this method, which every key one level deeper actually goes
+    # through, did not yet. `ScriptProc`, `RubyClass`, and
+    # `RubyObject` all raise
+    # rather than falling back to some `#inspect`-shaped string:
+    # LEGATE.md's own "no implicit #to_s" stance (`write_io_piece`,
+    # `legate/helpers.cr`) applies here too — an arbitrary object's
+    # default representation silently ending up in a log line (or
+    # wherever else a future caller sends `to_plain`'s result) is more
+    # surprising than making the caller convert explicitly, and unlike
+    # a String/Symbol/number there is no single unsurprising fallback
+    # — producing one would mean dispatching a real method call
+    # (`#to_s`, possibly script-overridden), with everything that
+    # implies about `NativeCallContext` and reentrancy, which this
+    # plain Crystal struct method has no way to do and should not
+    # start trying to.
+    def to_plain(depth : Int32 = 0) : PlainValue
+      raise ArgumentError.new("Value#to_plain: nesting exceeds #{PLAIN_MAX_DEPTH}") if depth > PLAIN_MAX_DEPTH
+
+      case r = @raw
+      when Nil, Bool, Int64, Float64, String
+        r
+      when Sym
+        r.name
+      when LabeledArray
+        # Built into an explicitly `[] of PlainValue`-typed Array,
+        # NOT `r.map(&.to_plain(depth + 1))` — tried first, and
+        # rejected by the compiler: `LabeledArray#map`'s generic
+        # `forall U` infers `U` as the fully expanded recursive union
+        # rather than folding it back into the `PlainValue` alias
+        # name, and Crystal's return-type check treats that expanded
+        # union as a mismatch against the declared `PlainValue`
+        # return type even though they're the same type structurally.
+        # Confirmed against a live `crystal build`, 2026-09-08 — the
+        # Hash branch just below was already written this same
+        # explicit-container way and compiled fine the first time,
+        # which is why only this branch needed the fix.
+        out = [] of PlainValue
+        r.each { |item| out << item.to_plain(depth + 1) }
+        out
+      when LabeledHash
+        out = {} of String => PlainValue
+        r.each do |k, v|
+          key_name = if k.string?
+                       k.as_string
+                     elsif k.symbol?
+                       k.as_sym.name
+                     else
+                       raise ArgumentError.new("Value#to_plain: Hash key #{k.inspect} is neither a String nor a Symbol")
+                     end
+          out[key_name] = v.to_plain(depth + 1)
+        end
+        out
+      else
+        raise ArgumentError.new("Value#to_plain: #{r.class} has no plain representation")
+      end
+    end
+
+    def to_plain? : PlainValue?
+      to_plain
+    rescue ArgumentError
+      nil
     end
 
     # --- Truthiness -----------------------------------------------------

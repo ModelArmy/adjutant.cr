@@ -192,6 +192,25 @@ module Adjutant
         )
       end
 
+      # POSITIONAL-argument counterpart to `raise_kwarg_type_error`
+      # just above — same R0xx-catalog shape (R039, not R036: a
+      # positional argument has no `kwarg:` name to report), for a
+      # verb whose wrong-typed argument arrived as a plain argument
+      # rather than a keyword one. `Legate.fail`'s `message` and
+      # `Legate.log`'s `fields` are the first two callers; shared from
+      # the start rather than waiting for a third, since it is the
+      # exact same shape `raise_kwarg_type_error` already established
+      # and splitting it later would just mean finding both call
+      # sites again.
+      def self.raise_arg_type_error(ncc : NativeCallContext, method : String, arg : String,
+                                    expected : String, given : Value) : NoReturn
+        ncc.raise_error(
+          "R039",
+          {"method" => method, "arg" => arg, "expected" => expected, "class_name" => Builtins.builtin_type_name(given)},
+          "TypeError",
+        )
+      end
+
       # Dispatches on `data`'s actual shape — String (single write),
       # Array (each element, Crystal-level iteration — LEGATE.md's own
       # "Enumerable of Strings" example is an Array, and an Array's

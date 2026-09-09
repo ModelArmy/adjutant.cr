@@ -1346,6 +1346,90 @@ individually.
   unrelated to `run` — the risk of leaving it is a shape kept alive by
   inertia rather than by a real second producer in view.
 
+- **`Legate.log` is `Legate.log(message, fields = {})`, not the
+  spec'd `Legate.log(message, **fields)`.** Built 2026-09-08 (§4 step
+  2). Adjutant's native-call dispatch has no wildcard-kwarg mechanism
+  — every native method declares a FIXED `kwarg_names : Set(String)`
+  (`NativeCallable#kwarg_names`), and `VM#check_unknown_native_
+  keywords!` rejects any name outside it; an empty declared set (the
+  default, and every native method until now) rejects every kwarg
+  name outright. There is no "accept anything" escape hatch. Building
+  real support for that — a sentinel `kwarg_names` value, or a
+  parallel dispatch path — would be a genuine VM-level change, and
+  doing it for the sake of one convenience verb's exact spelling felt
+  disproportionate; the positional-Hash form carries identical
+  information (`Legate.log("done", {status: "ok"})` vs the spec'd
+  `Legate.log("done", status: "ok")` — same data, different
+  punctuation). Worth doing properly — generalized native kwarg
+  support — if a second verb ever wants the same thing; not before.
+  `legate/verbs/log.cr`'s own top comment has the full reasoning.
+
+  **Addendum, confirmed against a live `crystal build` the same day:**
+  the positional-Hash form turned out not to be merely a dispatch
+  workaround — it's load-bearing for a SECOND, independent reason.
+  `Log::Metadata`'s own top-level entries are `Symbol`-keyed
+  (`Log::Metadata#setup`, Crystal stdlib), and Crystal symbols cannot
+  be created dynamically at runtime AT ALL — only from a literal
+  known at compile time. `fields`' keys are chosen by the SCRIPT at
+  runtime, so they could never have been Metadata's own top-level
+  entry names regardless of how they arrived (kwarg spray or Hash
+  argument) — a real `**fields` implementation would have hit this
+  exact wall too. The fix (`legate/verbs/log.cr`): nest the whole
+  `fields` Hash one level down, under the single Symbol key `:fields`
+  — a literal in that file, known at compile time — since `Log::
+  Metadata::Value::Type` explicitly allows a String-keyed Hash as a
+  NESTED value, just not as Metadata's own top-level keys. Worth
+  knowing for whoever eventually builds generalized native kwarg
+  support per the paragraph above: it would face the identical
+  Symbol-key wall at the Log layer, unrelated to and not solved by
+  fixing VM dispatch.
+
+- **`Legate.scratch`'s directory is emptied at the end of every
+  `Interpreter#eval` call, not at the end of an agent's whole
+  session.** Built 2026-09-08. §4.7 says scratch "is emptied when the
+  script exits," and this codebase's own existing vocabulary already
+  settles what "the script" means for exactly this kind of resource:
+  `OpenSources`'s own comment ("SCOPE IS THE RUN, NOT THE PROCESS")
+  defines it as one `eval` call, specifically because an Interpreter
+  is long-lived and may run many. Applied the same rule to scratch
+  for consistency, but it is a real product decision with a real
+  cost: an agent doing multi-step work across several `eval` calls on
+  one Interpreter (exactly DEVELOPMENT.md's own description of the
+  intended use) gets a FRESH scratch directory every call, so
+  anything written to scratch in one step is gone by the next. If
+  that turns out to matter in practice, the fix is either a
+  session-scoped scratch dir with its own (currently nonexistent)
+  session-end teardown hook, or leaning on a real `write:` root for
+  anything meant to survive across steps and reserving `scratch` for
+  genuinely single-call incidental space. `legate/broker.cr`'s
+  `@scratch_dir` comment has the full reasoning; not revisited here.
+
+- **Whether `Legate.log` should declare an `Effect` of its own is
+  unresolved.** Built 2026-09-08. None of `Effect`'s current members
+  (`ReadsFiles`/`WritesFiles`/`DeletesFiles`/`MovesFiles`/
+  `Recursive`/`NetworkEgress`/`ExecutesCode`/`ElevatedPrivilege`/
+  `ModifiesEnvironment` — `risk_profile.cr`) describes "emits
+  structured data to a caller-configured sink," so `Legate.log`
+  ships with `RiskProfile.none` — the static risk sweep (step 4c)
+  will report it as effect-free, which undersells it a little: an
+  embedder-configured log is still somewhere a script's data can end
+  up, and a report reader arguably ought to see that. Minting a new
+  `Effect` member for one verb felt like a bigger call than this
+  session should make unilaterally — it touches the enum other code
+  pattern-matches over (`risk_assessment_spec.cr`'s whole-set
+  comparisons, notably), not just this one file. Flagged rather than
+  decided.
+
+- **§10.1's own worked claim ("the effectful surface is 21 verbs")
+  is stale, independent of anything this session touched.** Noticed
+  2026-09-08 while updating nearby verb counts for the ambient-verb
+  work; not fixed, since it belongs to §10 (the static analyser),
+  which is entirely unbuilt and out of scope for this session, and
+  chasing it would mean first deciding what "effectful surface"
+  should even count (all 25 specified verbs? Just the ones with a
+  declared `Authority`? Something narrower?) rather than just
+  correcting a number. Left as a marker for whoever next touches §10.
+
 ### Tooling
 
 - **Eleven ameba rule classes were excluded per-file rather than

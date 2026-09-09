@@ -1,3 +1,5 @@
+require "log"
+require "file_utils"
 require "./grants"
 require "./authorization"
 require "./budget"
@@ -24,12 +26,24 @@ module Adjutant
     #
     # What stays here is what only Legate knows: which roots, rules
     # and binaries make up its perimeter (`@grants`), that a denial
-    # reports as `Legate::Denied`, and the four verb-facing
-    # `authorize_*` wrappers below — each of which knows about
-    # `allow_missing`, about which §4 verb it serves, and about what a
-    # missing path means for that verb. Fourteen verbs talking to a
-    # generic `authorize` directly would have to re-derive all of
-    # that.
+    # reports as `Legate::Denied`, the four verb-facing `authorize_*`
+    # wrappers below — each of which knows about `allow_missing`,
+    # about which §4 verb it serves, and about what a missing path
+    # means for that verb — and two more Legate-only concerns that
+    # earned a slot here rather than on core `Adjutant::Broker`
+    # (`budget`/`audit_log`/`open_sources`'s own home): `log` (§4.7,
+    # `Legate.log`'s destination) and the scratch directory (§4.7,
+    # `Legate.scratch`'s backing store). Both stayed LOCAL rather than
+    # being promoted to core the way `AuditLog`/`Budget` were on
+    # 2026-09-01 — that promotion was driven by a real second
+    # consumer (a hypothetical second EffectProvider would otherwise
+    # split a run's budget and fragment its audit log); no second
+    # provider exists today and only `Legate.log`/`Legate.scratch`
+    # need either of these, so promoting them ahead of that need would
+    # be generalising on the strength of an argument rather than
+    # evidence — the exact thing this file's own history (see
+    # `AuditLog`'s comment) already argues against doing. Revisit if a
+    # second provider ever needs either.
     #
     # Every effectful verb calls exactly one `authorize_*` method at
     # its own boundary, before doing anything to the outside world.
@@ -72,6 +86,40 @@ module Adjutant
       # the broker.
       getter grants : Grants
 
+      # `Legate.log`'s destination (§4.7). An embedder supplies its
+      # own `::Log.for("...")` — a source it chose, in ITS OWN
+      # dotted-name space — so several Adjutant embeddings in the
+      # same process can route to different sources/backends the way
+      # any other Crystal subsystem's logging would; defaults to a
+      # library-owned source so a script that never calls
+      # `Legate.log` costs nothing and one that does is a silent
+      # no-op until the embedder actually configures a backend for
+      # it (`Log.setup`/`Log::Builder`), matching Crystal's own
+      # "unconfigured sources emit nothing" default rather than
+      # writing anywhere on its own initiative.
+      getter log : ::Log
+
+      # `Legate.scratch`'s backing directory (§4.7) — nil until the
+      # first `Legate.scratch` call THIS run, created lazily rather
+      # than up front so a script that never calls it never touches
+      # disk. "This run" here means one `Interpreter#eval` call, same
+      # as `OpenSources` (see that class's own "SCOPE IS THE RUN, NOT
+      # THE PROCESS" comment) — `Interpreter#eval`'s `ensure` block
+      # calls `cleanup_scratch!` alongside `open_sources.close_all`,
+      # and `scratch_dir` below is what (re-)creates it lazily on the
+      # next run's first use. Deliberately NOT scoped to the whole
+      # Interpreter/session: an Interpreter is long-lived and may run
+      # many `eval` calls, and nothing here ever tears it down except
+      # this same per-eval cleanup — durable, cross-eval working
+      # space is what a real `write:` grant is for; `scratch` is
+      # framed by §4.7 as incidental working space for the run at
+      # hand, not the agent's persistent workspace, and giving it an
+      # unbounded lifetime with no corresponding teardown hook would
+      # leak a directory per Interpreter in a long-running embedder
+      # process. Worth revisiting if a real use wants otherwise — see
+      # SCOPE.md.
+      @scratch_dir : String? = nil
+
       # `core` is the run's shared broker. Defaulted so the common
       # case ("one run, one provider") needs no caller-side wiring,
       # and so every existing `Legate::Broker.new(grants)` call site
@@ -84,9 +132,65 @@ module Adjutant
       # broker this constructs, and ignored when `core` is supplied
       # (the shared broker already has its own).
       def initialize(grants : Grants, core : ::Adjutant::Broker? = nil,
-                     budget : Budget? = nil, audit_log : AuditLog = AuditLog.new)
+                     budget : Budget? = nil, audit_log : AuditLog = AuditLog.new,
+                     @log : ::Log = ::Log.for("adjutant.legate"))
         @grants = grants
         @core = core || ::Adjutant::Broker.new(grants.limits, budget, audit_log)
+      end
+
+      # Get-or-create. `File.tempname` returns a unique path WITHOUT
+      # creating anything (Crystal stdlib, `file/tempfile.cr`) —
+      # `FileUtils.mkdir_p` is what actually makes it a real,
+      # existing directory; both are already used elsewhere in this
+      # codebase (mkdir.cr, write.cr, ...), just not yet in this
+      # exact combination, so flag this specific pairing as the
+      # first thing to check if `ops build` disagrees.
+      def scratch_dir : String
+        @scratch_dir ||= begin
+          dir = File.tempname("adjutant-legate-scratch", nil)
+          FileUtils.mkdir_p(dir)
+          dir
+        end
+      end
+
+      # Removes the scratch directory if this run ever created one,
+      # and forgets it either way, so the NEXT run's first
+      # `Legate.scratch` call starts fresh rather than reusing (or
+      # trying to re-delete) a directory that belonged to whichever
+      # run just ended. Returns the exception rather than raising —
+      # same reasoning as `OpenSources#close_all`, which this is
+      # meant to run alongside: this typically runs from an `ensure`,
+      # often while a real script exception is already unwinding, and
+      # a cleanup failure must not replace it.
+      def cleanup_scratch! : Exception?
+        return unless dir = @scratch_dir
+        FileUtils.rm_rf(dir)
+        nil
+      rescue ex
+        ex
+      ensure
+        @scratch_dir = nil
+      end
+
+      # The roots an `authorize_*` check actually authorizes against:
+      # `@grants`' own configured list, PLUS the scratch directory if
+      # this run has created one. Deliberately NOT implemented by
+      # mutating `@grants.read_roots`/etc — LEGATE.md §7 is explicit
+      # that "grants cannot be acquired, escalated or delegated at
+      # runtime," and adding a root mid-run, however narrow the
+      # reason, is exactly that. This sidesteps the conflict instead
+      # of relaxing it: `@grants` itself never changes, and scratch
+      # access was never an escalation to begin with — "scratch is
+      # always writable" is true from the first line of every run
+      # (§4.7's own "granted by default"), the same as any other
+      # ambient default; only the PATH it resolves to is generated
+      # lazily. The broker (enforcement) folding that permanent
+      # allowance in at check time, rather than `Grants` (config)
+      # growing to include it, keeps `Grants` a genuinely immutable,
+      # embedder-authored value object throughout the run.
+      private def ambient_roots(configured : Array(String)) : Array(String)
+        return configured unless dir = @scratch_dir
+        configured + [dir]
       end
 
       # Refuses to let the run open one more stream once
@@ -151,8 +255,9 @@ module Adjutant
       # (authorization.cr). Defaults false, matching every OTHER
       # read-grant verb, where a missing path really is just missing.
       def authorize_read(path : String, ncc : NativeCallContext, allow_missing : Bool = false) : RiskFlowLabel?
+        roots = ambient_roots(@grants.read_roots)
         @core.authorize(self, Authority::Read, "read", path, ProvenanceKind::File, ncc) do
-          allow_missing ? @grants.check_root_maybe_missing(path, @grants.read_roots) : @grants.check_root(path, @grants.read_roots)
+          allow_missing ? @grants.check_root_maybe_missing(path, roots) : @grants.check_root(path, roots)
         end
       end
 
@@ -171,8 +276,9 @@ module Adjutant
       # the target to already exist can still get the stricter
       # existing-only check by leaving the default.
       def authorize_write(path : String, ncc : NativeCallContext, allow_missing : Bool = false) : RiskFlowLabel?
+        roots = ambient_roots(@grants.write_roots)
         @core.authorize(self, Authority::Write, "write", path, ProvenanceKind::File, ncc) do
-          allow_missing ? @grants.check_root_maybe_missing(path, @grants.write_roots) : @grants.check_root(path, @grants.write_roots)
+          allow_missing ? @grants.check_root_maybe_missing(path, roots) : @grants.check_root(path, roots)
         end
       end
 
@@ -200,8 +306,9 @@ module Adjutant
       # genuinely requires the target to already exist still gets the
       # stricter check by saying nothing.
       def authorize_delete(path : String, ncc : NativeCallContext, allow_missing : Bool = false) : RiskFlowLabel?
+        roots = ambient_roots(@grants.delete_roots)
         @core.authorize(self, Authority::Delete, "delete", path, ProvenanceKind::File, ncc) do
-          allow_missing ? @grants.check_root_maybe_missing(path, @grants.delete_roots) : @grants.check_root(path, @grants.delete_roots)
+          allow_missing ? @grants.check_root_maybe_missing(path, roots) : @grants.check_root(path, roots)
         end
       end
 

@@ -23,7 +23,7 @@ Section                                  |Status       |Notes
 §4.4 destruction                         |Built        |`rm` `rmdir` `rmdir!` `mv` `mv!`; "`rm` subsumes `rmdir`" reversed 2026-09-04  
 §4.5 network                             |Built        |`fetch`; streamed request body still open                                      
 §4.6 execution                           |RETIRED      |No `exec` grant, no `run` verb — removed 2026-09-05 as unused scaffolding; see SCOPE.md
-§4.7 ambient                             |NOT BUILT    |None of `scratch` `env` `now` `random` `log` `fail`                            
+§4.7 ambient                             |PARTIAL      |`scratch` `log` `fail` built (2026-09-08). `env` `now` `random` do not exist
 §5 value types                           |Built        |All seven                                                                      
 §5.6 `Legate::Exit`                      |Built, UNUSED|Bootstrapped, but nothing produces one. `raise!` removed 2026-09-05 alongside `NonZeroExit`; whether the rest goes too is open — see SCOPE.md
 §6 stream protocol                       |Built        |                                                                               
@@ -39,12 +39,15 @@ Section                                  |Status       |Notes
 §10 static analyser                      |NOT BUILT    |No part of it. See §10's own note                                              
 §11 surface count                        |ASPIRATIONAL |Counts the specified surface, not the built one                                
 
-**What exists today is 19 verbs, not 21**, no submodules, and no static
-analyser. Everything else in §1–§9 is real. The 19 is not 2026-09-02's
-14 plus five new capabilities: `write!`/`cp!`/`mv!` are the old
-behaviour of `write`/`cp`/`mv` under a new name, and `rmdir`/`rmdir!`
-are the old `rm`'s directory cases. The verb COUNT grew; the surface's
-reach did not.
+**What exists today is 22 verbs**, no submodules, and no static
+analyser. Everything else in §1–§9 is real. The 19-to-22 step
+(2026-09-08) is `scratch`/`log`/`fail`, the first three of §4.7's six
+ambient verbs; `env`/`now`/`random` remain unbuilt. The earlier
+14-to-19 step (2026-09-05) was not 2026-09-02's 14 plus five new
+capabilities: `write!`/`cp!`/`mv!` are the old behaviour of
+`write`/`cp`/`mv` under a new name, and `rmdir`/`rmdir!` are the old
+`rm`'s directory cases. The verb COUNT has grown twice; the surface's
+reach grew only the second time.
 
 ---
 
@@ -526,13 +529,15 @@ Legate.scratch                -> Legate::Path    # writable temp dir, granted by
 Legate.env(name)              -> String | nil # allowlisted names only; nil if unset
 Legate.now                    -> Time         # frozen
 Legate.random(n = nil)        -> Float | Integer
-Legate.log(message, **fields) -> nil          # structured, to the audit stream
+Legate.log(message, fields = {}) -> nil       # structured, routed through the embedder's own Log
 Legate.fail(message)          -> no return    # raises Legate::Aborted (fatal)
 ```
 
-`Legate.scratch` is pre-granted precisely so that a script needing working space does not have to ask for a broader `write` grant. It is emptied when the script exits.
+`Legate.scratch` is pre-granted precisely so that a script needing working space does not have to ask for a broader `write` grant. It is emptied at the end of the current run — one `Interpreter#eval` call, not necessarily the whole session an embedder's Interpreter may span; a script that needs its working files to survive into a LATER `eval` on the same Interpreter needs a real `write:` root, not `scratch`.
 
 `Legate.env` returns `nil` for an unset-but-allowlisted name and raises `Legate::Denied` for a name outside the allowlist — the distinction between "no value" and "not your business".
+
+`Legate.log`'s destination is chosen by the embedder, not this spec — a `::Log` (Crystal's own stdlib logging source) supplied when the Interpreter is constructed, defaulting to a library-owned source if the embedder never configures one, in which case a call to `Legate.log` is a no-op rather than writing anywhere on its own initiative. `fields`' values must each be a String, Integer, Float, `true`/`false`, `nil`, or an Array/Hash of the same — anything else raises `TypeError`, the same as a wrong-typed argument to any other verb (ERRORS.md's R039). `message` is required for both `Legate.log` and `Legate.fail`; there is no default for either.
 
 ---
 
@@ -956,9 +961,11 @@ Grant kinds                               |5
 Exception classes                         |11 (8 recoverable, 3 fatal)        
 
 > **These are the counts for the SPECIFIED surface, not the built
-> one.** As of 2026-09-05 there are **19 verbs** (§4.7's six ambient
-> verbs do not exist), **no submodules**, and one value type —
-> `Legate::Exit` — that nothing yet produces (§4.6, its only
+> one.** As of 2026-09-08 there are **22 verbs** (§4.7's `env`/`now`/
+> `random` do not exist), **no submodules** (the six submodules are
+> sugar over the grant categories — §2.7 — and none is built even
+> though three of the verbs it would wrap now are), and one value
+> type — `Legate::Exit` — that nothing yet produces (§4.6, its only
 > would-be producer, was retired). §0.
 
 Roughly **120 names**, of which about 40 are Enumerable methods the model already knows perfectly, and 11 are exception classes whose handling follows ordinary Ruby reflexes. The 5 submodules are optional and need not be learned at all. The genuinely novel vocabulary is the 25 verbs and 6 types — comfortably a single page of context.
