@@ -215,7 +215,12 @@ module Adjutant
 
           dest_parent = File.dirname(raw_to)
           FileUtils.mkdir_p(dest_parent)
-          temp_dir = File.join(dest_parent, ".legate-cp-#{Random::Secure.hex(8)}.tmp")
+          # `::Random::Secure` — this namespace also has a
+          # `Legate::Verbs::Random` module (the `random` verb),
+          # which shadows the stdlib one for an unqualified
+          # reference; `::` reaches past it. Confirmed via a live
+          # build, 2026-09-09.
+          temp_dir = File.join(dest_parent, ".legate-cp-#{::Random::Secure.hex(8)}.tmp")
           begin
             # NOT independently verified against a live toolchain:
             # `FileUtils.cp_r` is written from recollection of
@@ -305,7 +310,10 @@ module Adjutant
 
           dest_dir = File.dirname(raw_to)
           FileUtils.mkdir_p(dest_dir)
-          temp_path = File.join(dest_dir, ".legate-cp-#{Random::Secure.hex(8)}.tmp")
+          # `::Random::Secure` — see this file's other occurrence
+          # (copy_directory, above) for why the `::` is load-bearing
+          # here.
+          temp_path = File.join(dest_dir, ".legate-cp-#{::Random::Secure.hex(8)}.tmp")
 
           begin
             File.open(raw_from, "rb") do |src|

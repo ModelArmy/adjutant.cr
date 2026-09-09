@@ -60,15 +60,16 @@ module Adjutant
     # is implied by them, because the failure messages are different
     # and the count one is the clearer signal when a whole bootstrap
     # call goes missing.
-    it "registers exactly the 22 verbs the spec's §0 records as built" do
+    it "registers exactly the 25 verbs the spec's §0 records as built" do
       interp, _ = make_interp
       verbs = legate_verbs(interp)
 
-      verbs.size.should eq 22
+      verbs.size.should eq 25
       verbs.keys.sort.should eq [
-        "append", "bytes", "cp", "cp!", "fail", "fetch", "grep", "lines",
-        "list", "log", "mkdir", "mv", "mv!", "read", "records", "rm",
-        "rmdir", "rmdir!", "scratch", "stat", "write", "write!",
+        "append", "bytes", "cp", "cp!", "env", "fail", "fetch", "grep",
+        "lines", "list", "log", "mkdir", "mv", "mv!", "now", "random",
+        "read", "records", "rm", "rmdir", "rmdir!", "scratch", "stat",
+        "write", "write!",
       ]
     end
 
@@ -122,13 +123,19 @@ module Adjutant
         # Ambient. `scratch` still declares WritesFiles — it's
         # unconditional, not grant-gated, but it's still real
         # filesystem activity a report reader should see (see that
-        # verb's own comment). `log` and `fail` are effect-free:
-        # neither touches the filesystem, network, or process in a
-        # way `Effect` currently has a category for — see SCOPE.md's
-        # open question on whether `log` should get one of its own.
+        # verb's own comment). `log`, `fail`, `env`, `now`, and
+        # `random` are all effect-free: none touches the filesystem,
+        # network, or process in a way `Effect` currently has a
+        # category for — see SCOPE.md's open question on whether
+        # `log`/`env` should get one of their own (an env READ is at
+        # least arguably closer to `ReadsFiles`'s spirit than `log`'s
+        # own gap, though it isn't a file).
         "scratch" => Set{Effect::WritesFiles},
         "log"     => Set(Effect).new,
         "fail"    => Set(Effect).new,
+        "env"     => Set(Effect).new,
+        "now"     => Set(Effect).new,
+        "random"  => Set(Effect).new,
       })
     end
 

@@ -1430,6 +1430,48 @@ individually.
   declared `Authority`? Something narrower?) rather than just
   correcting a number. Left as a marker for whoever next touches §10.
 
+- **`Legate.env`'s allowlist denial produces no `AuditRecord`, unlike
+  a normal grant denial.** Built 2026-09-08 (§4.7, completing it).
+  Every ambient verb skips `Broker#authorize`'s whole sequence,
+  `scratch`/`fail` included, and this matches that for consistency —
+  but it's a closer call here than for those two. `scratch`/`fail`
+  have no interesting "why did this fail" to record (a resource that
+  always succeeds; an abort whose reason is already in the script's
+  own `FatalSignal#message`). An env-allowlist denial is different in
+  kind: it's a real policy-enforcement event, much closer to a normal
+  grant denial than to `scratch`'s own provisioning, and env
+  allowlists commonly gate secrets — exactly the situation an
+  embedder reviewing "what did this script try and fail to do" would
+  want visibility into. Not fixed here because doing it properly
+  means either exposing `AuditLog.append` outside `Broker#authorize`
+  (a real API change to core `Adjutant::Broker`, not a Legate-local
+  one) or hand-constructing an `AuditRecord` from `legate/verbs/
+  env.cr` against a currently-append-only-via-authorize class — both
+  bigger than this one verb's denial path should force unilaterally.
+  `legate/verbs/env.cr`'s own comment has the same flag, closer to
+  the code it's about.
+
+- **`Legate.now` reuses the core `Time` class rather than a
+  `Legate::Time`, and its RubyClass is looked up at CALL time, not
+  bootstrap time.** Built 2026-09-08. Worth recording as a pattern,
+  not just a fact about this one verb: `Interpreter#bootstrap_
+  builtin_classes` registers `Time` (and any other core builtin
+  reached via `register_builtin_class` outside `bootstrap_legate`
+  itself) AFTER `bootstrap_legate` runs, not before — so any FUTURE
+  Legate verb that needs to construct a value of some OTHER
+  core-builtin type will hit the identical ordering hazard, and the
+  identical fix (`interp.get_global(name)` inside the native block,
+  deferred to call time) applies. Didn't reorder `bootstrap_builtin_
+  classes` itself to register `Time` earlier — it's a shared sequence
+  this file doesn't own, and the call-time lookup sidesteps the
+  problem entirely for a fraction of the risk. Also: `Legate.now`'s
+  "frozen" is aspirational, same as `Legate::Response`'s own
+  documented "frozen" claim (`legate/response.cr`) — Adjutant has no
+  real `freeze`/`frozen?` mechanism at all (`vm.cr`'s `dup`/`clone`
+  comment says the same); a script can still mutate the returned
+  value via `#utc`/`#gmtime`/`#localtime`. Not specific to this verb,
+  just newly relevant to it.
+
 ### Tooling
 
 - **Eleven ameba rule classes were excluded per-file rather than

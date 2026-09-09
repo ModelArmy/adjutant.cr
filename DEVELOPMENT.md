@@ -799,6 +799,14 @@ end
 
 Scripts load the module with `require "agent/mymodule"`. Each module is loaded at most once per interpreter instance regardless of how many times the script calls `require`.
 
+#### Naming collisions with Crystal's own stdlib are expected, not exceptional
+
+Adjutant mirrors Ruby's own vocabulary on purpose — `Log`, `Random`, `Match`, and others all name real Crystal stdlib types too, and Adjutant's own modules/classes for the same concepts live in the same `Adjutant` namespace tree as everything else, not some separate sandbox. A module named to match its Ruby-facing surface will periodically collide with a Crystal stdlib name some OTHER, unrelated file already relies on unqualified.
+
+**Convention: keep the Adjutant-side name matching its Ruby-facing surface even when it collides.** Do not rename the Adjutant side to dodge a collision — qualify (`::`) whichever Crystal stdlib reference actually needs the real one, at the specific call sites that need it, with a short comment explaining why the `::` is load-bearing there (so a later reader doesn't "clean it up"). The alternative — renaming the Adjutant side — trades a small, well-understood cost (a few `::`-qualified call sites elsewhere) for a standing one (every reader of the Adjutant module has to learn and remember a name that doesn't match what a script actually calls it).
+
+Found and fixed this way, 2026-09-09: `Legate::Verbs::Random` (the `random` verb) shadows top-level `::Random` for every OTHER file in `legate/verbs/`, not just its own — `cp.cr`'s two temp-name sites and `write.cr`'s own needed `::Random::Secure` once `Random` existed as a sibling module in the same namespace, confirmed by a live build. Renaming `Random` to something collision-free was tried first and reverted for the reason above. Not audited exhaustively for every OTHER stdlib-shadowing name already in the tree (`Log`, checked at the same time, currently has no such site) — the fix is cheap and local wherever the NEXT one turns up, which is the point of the convention.
+
 For risk flow tracking, a module has two responsibilities depending on what kind of function it's writing:
 
 **A function that produces data** (reads a file, fetches a URL, ...) attaches a label to the value it returns, looking up sensitivity from the interpreter's policy (native code closes over `interp` already, via the `define`/`define_native` block, so no extra plumbing is needed):

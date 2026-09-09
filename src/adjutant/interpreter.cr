@@ -535,6 +535,9 @@ module Adjutant
       Legate::Verbs::Scratch.bootstrap(self, legate, @broker)
       Legate::Verbs::Log.bootstrap(self, legate, @broker)
       Legate::Verbs::Fail.bootstrap(self, legate, @broker)
+      Legate::Verbs::Env.bootstrap(self, legate, @broker)
+      Legate::Verbs::Now.bootstrap(self, legate, @broker)
+      Legate::Verbs::Random.bootstrap(self, legate, @broker)
       define_global_class(legate)
     end
 

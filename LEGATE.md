@@ -23,7 +23,7 @@ Section                                  |Status       |Notes
 §4.4 destruction                         |Built        |`rm` `rmdir` `rmdir!` `mv` `mv!`; "`rm` subsumes `rmdir`" reversed 2026-09-04  
 §4.5 network                             |Built        |`fetch`; streamed request body still open                                      
 §4.6 execution                           |RETIRED      |No `exec` grant, no `run` verb — removed 2026-09-05 as unused scaffolding; see SCOPE.md
-§4.7 ambient                             |PARTIAL      |`scratch` `log` `fail` built (2026-09-08). `env` `now` `random` do not exist
+§4.7 ambient                             |Built        |`scratch` `log` `fail` (2026-09-08), `env` `now` `random` (2026-09-08)
 §5 value types                           |Built        |All seven                                                                      
 §5.6 `Legate::Exit`                      |Built, UNUSED|Bootstrapped, but nothing produces one. `raise!` removed 2026-09-05 alongside `NonZeroExit`; whether the rest goes too is open — see SCOPE.md
 §6 stream protocol                       |Built        |                                                                               
@@ -39,15 +39,18 @@ Section                                  |Status       |Notes
 §10 static analyser                      |NOT BUILT    |No part of it. See §10's own note                                              
 §11 surface count                        |ASPIRATIONAL |Counts the specified surface, not the built one                                
 
-**What exists today is 22 verbs**, no submodules, and no static
-analyser. Everything else in §1–§9 is real. The 19-to-22 step
-(2026-09-08) is `scratch`/`log`/`fail`, the first three of §4.7's six
-ambient verbs; `env`/`now`/`random` remain unbuilt. The earlier
-14-to-19 step (2026-09-05) was not 2026-09-02's 14 plus five new
-capabilities: `write!`/`cp!`/`mv!` are the old behaviour of
-`write`/`cp`/`mv` under a new name, and `rmdir`/`rmdir!` are the old
-`rm`'s directory cases. The verb COUNT has grown twice; the surface's
-reach grew only the second time.
+**What exists today is 25 verbs**, no submodules, and no static
+analyser — every verb §1–§4 specifies is now real; only §4.6's
+retired `run` was ever missing from that count, and it is gone from
+the spec entirely rather than counted as absent. The 22-to-25 step
+(2026-09-08) is `env`/`now`/`random`, the last three of §4.7's six
+ambient verbs, completing it. The 19-to-22 step (also 2026-09-08) was
+`scratch`/`log`/`fail`, the first three. The earlier 14-to-19 step
+(2026-09-05) was not 2026-09-02's 14 plus five new capabilities:
+`write!`/`cp!`/`mv!` are the old behaviour of `write`/`cp`/`mv` under
+a new name, and `rmdir`/`rmdir!` are the old `rm`'s directory cases.
+The verb COUNT has grown three times now; the surface's reach grew
+the second and third times, not the first.
 
 ---
 
@@ -537,6 +540,10 @@ Legate.fail(message)          -> no return    # raises Legate::Aborted (fatal)
 
 `Legate.env` returns `nil` for an unset-but-allowlisted name and raises `Legate::Denied` for a name outside the allowlist — the distinction between "no value" and "not your business".
 
+`Legate.now` returns the same `Time` an unrestricted, ungated `Time.now` already does — this verb exists for §4.7's own completeness, not because wall-clock access was ever actually gated. "frozen" is aspirational, matching every other Legate value type described that way: Adjutant has no real `freeze`/`frozen?` mechanism yet, so the value this returns can still be mutated via `#utc`/`#gmtime`/`#localtime` like any other `Time`.
+
+`Legate.random` with no `n` (or an explicit `nil`) returns a Float in `[0.0, 1.0)`, matching real Ruby's bare `Kernel#rand`; a positive Integer or Float `n` returns a value of the same type in `[0, n)`. `n <= 0` raises rather than following real Ruby's own "treat non-positive as absent" quirk. Uses Crystal's plain `Random`, not a cryptographic one — same as real Ruby's own `rand`.
+
 `Legate.log`'s destination is chosen by the embedder, not this spec — a `::Log` (Crystal's own stdlib logging source) supplied when the Interpreter is constructed, defaulting to a library-owned source if the embedder never configures one, in which case a call to `Legate.log` is a no-op rather than writing anywhere on its own initiative. `fields`' values must each be a String, Integer, Float, `true`/`false`, `nil`, or an Array/Hash of the same — anything else raises `TypeError`, the same as a wrong-typed argument to any other verb (ERRORS.md's R039). `message` is required for both `Legate.log` and `Legate.fail`; there is no default for either.
 
 ---
@@ -961,12 +968,12 @@ Grant kinds                               |5
 Exception classes                         |11 (8 recoverable, 3 fatal)        
 
 > **These are the counts for the SPECIFIED surface, not the built
-> one.** As of 2026-09-08 there are **22 verbs** (§4.7's `env`/`now`/
-> `random` do not exist), **no submodules** (the six submodules are
-> sugar over the grant categories — §2.7 — and none is built even
-> though three of the verbs it would wrap now are), and one value
-> type — `Legate::Exit` — that nothing yet produces (§4.6, its only
-> would-be producer, was retired). §0.
+> one.** As of 2026-09-08 all **25 verbs** are built — the gap
+> between specified and built is down to **no submodules** (the six
+> submodules are sugar over the grant categories — §2.7 — and none is
+> built despite every verb they would wrap now existing) and one
+> value type — `Legate::Exit` — that nothing yet produces (§4.6, its
+> only would-be producer, was retired). §0.
 
 Roughly **120 names**, of which about 40 are Enumerable methods the model already knows perfectly, and 11 are exception classes whose handling follows ordinary Ruby reflexes. The 5 submodules are optional and need not be learned at all. The genuinely novel vocabulary is the 25 verbs and 6 types — comfortably a single page of context.
 

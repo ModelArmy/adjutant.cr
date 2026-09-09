@@ -141,8 +141,12 @@ module Adjutant
             # in-progress temp file, not a mystery file. The random
             # hex suffix is what actually prevents a collision between
             # two concurrent `Legate.write` calls targeting the same
-            # directory.
-            temp_path = File.join(dir, ".legate-write-#{Random::Secure.hex(8)}.tmp")
+            # directory. `::Random::Secure` — this namespace also has
+            # a `Legate::Verbs::Random` module (the `random` verb),
+            # which shadows the stdlib one for an unqualified
+            # reference; `::` reaches past it. Confirmed via a live
+            # build, 2026-09-09.
+            temp_path = File.join(dir, ".legate-write-#{::Random::Secure.hex(8)}.tmp")
             data_val = args[2]? || Value.nil_value
 
             bytes_written = 0_i64

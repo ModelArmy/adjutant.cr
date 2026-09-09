@@ -433,6 +433,27 @@ module Adjutant
               "`Legate.log(\"starting step 2\", {step: 2})`."
       ),
 
+      "R042" => Entry.new(
+        code: "R042",
+        summary: "`{method}` given an `n` that isn't positive",
+        why: "`n <= 0` doesn't get real Ruby's own \"treat it as " \
+             "absent\" quirk here — a value that looks like a " \
+             "deliberate argument silently changing the shape of the " \
+             "result (Integer vs Float) is worse than a clean error.",
+        help: "Pass a positive Integer or Float, or omit `n` entirely " \
+              "for a Float in [0.0, 1.0)."
+      ),
+
+      "R043" => Entry.new(
+        code: "R043",
+        summary: "Legate.env called with no name argument",
+        why: "`Legate.env(name)` needs to know WHICH variable to " \
+             "look up — there's no sensible default name to fall " \
+             "back to.",
+        help: "Pass the environment variable's name as a String, " \
+              "e.g. `Legate.env(\"TZ\")`."
+      ),
+
       # --- L: limits reached ----------------------------------------
       #
       # The script is valid; it is just larger than something Adjutant

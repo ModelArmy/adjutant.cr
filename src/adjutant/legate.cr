@@ -31,6 +31,9 @@ require "./legate/verbs/fetch"
 require "./legate/verbs/scratch"
 require "./legate/verbs/log"
 require "./legate/verbs/fail"
+require "./legate/verbs/env"
+require "./legate/verbs/now"
+require "./legate/verbs/random"
 
 module Adjutant::Legate
 end
