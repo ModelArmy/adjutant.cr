@@ -548,6 +548,20 @@ module Adjutant
              "Excluded by design, not a missing feature.",
         help: "Use `lambda { ... }` or `->(...) { ... }` instead."
       ),
+      "U020" => Entry.new(
+        code: "U020",
+        summary: "retry is not supported",
+        why: "Real Ruby's `retry` re-executes the nearest enclosing " \
+             "`begin` block, from its start — which requires tracking " \
+             "where that block's own body starts, separately from its " \
+             "`rescue`/`ensure` targets. This VM doesn't track that. " \
+             "Excluded by design (see UNSUPPORTED.md, U020) rather " \
+             "than left half-working.",
+        help: "Use a loop with an explicit attempt counter instead — " \
+              "break on success inside the loop, and re-raise once " \
+              "the counter's used up, rather than relying on an " \
+              "implicit repeat."
+      ),
       "U007" => Entry.new(
         code: "U007",
         summary: "`{construct}` is not available",

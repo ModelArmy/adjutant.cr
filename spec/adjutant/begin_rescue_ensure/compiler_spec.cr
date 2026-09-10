@@ -74,6 +74,31 @@ module Adjutant
         o = ops("y = 1\ny -= 1 while false")
         o.should contain(Op::JumpIfFalse)
       end
+
+      # `retry` is a deliberate exclusion (see UNSUPPORTED.md, U020),
+      # not merely unimplemented — the PRIOR implementation (Op::Retry,
+      # now removed) restarted the whole enclosing frame rather than
+      # just the nearest `begin` block, correct only when the two
+      # happen to coincide. `retry` still PARSES (unlike a construct
+      # excluded from the grammar entirely) — rejection happens here,
+      # in the compiler, once a real RetryNode exists to point at.
+      it "rejects retry at compile time" do
+        expect_raises(CompileError, /retry is not supported/) do
+          compile("begin\n1\nrescue StandardError\nretry\nend")
+        end
+      end
+
+      it "carries a U020 diagnostic spanning the retry keyword itself" do
+        error = expect_raises(CompileError) do
+          compile("begin\n1\nrescue StandardError\nretry\nend")
+        end
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("U020")
+        span = diag.primary.not_nil!
+        span.line.should eq(4)
+        span.column.should eq(1)
+        span.length.should eq(5) # "retry"
+      end
     end
 
     describe "method-body (implicit) rescue/else/ensure" do

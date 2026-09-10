@@ -1581,9 +1581,6 @@ module Adjutant
             # a typed RubyObject when available (see RuntimeError#error_value),
             # else a plain string.
             push(@last_error)
-          when Op::Retry
-            # Jump back to start of begin body — stub
-            f.ip = 0
             # --- Misc -----------------------------------------------------------
 
           when Op::MultiUnpack

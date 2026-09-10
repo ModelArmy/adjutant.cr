@@ -201,6 +201,7 @@ U016|`begin...end while`/`until` (do-while)          |—
 U017|Operator-method overloading (`def ==`, ...)     |`operator`       
 U018|`extend`/`include` via an explicit receiver     |`construct`      
 U019|`proc { ... }`                                  |`construct`      
+U020|`retry`                                         |—                
 
 U005 and U006 are reported when a name that would resolve to one of them
 resolves to nothing else. A script is still free to define its own method
@@ -228,6 +229,12 @@ each and what to write instead.
 `def ===`, and every other operator method except `<=>` are rejected
 before the method is ever defined. See
 [UNSUPPORTED.md](./UNSUPPORTED.md) for the reasoning.
+
+**U020 status: actively enforced, since 2026-09-09.** `retry` is
+rejected at compile time, wherever it appears. Previously implemented
+(`Op::Retry`) but incorrectly — see
+[UNSUPPORTED.md](./UNSUPPORTED.md) for what it actually did and why
+that made removal the right call rather than a fix.
 
 ## F — Risk flow
 

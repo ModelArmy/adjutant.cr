@@ -853,6 +853,67 @@ fails). A script defining its own `proc` method is unaffected — this
 table is only ever consulted once ordinary resolution has already
 failed to find one.
 
+### U020 — `retry`
+
+Real Ruby's `retry`, used inside a `rescue` clause, re-executes the
+nearest enclosing `begin` block from its start — not the whole
+enclosing method, just that block. It was previously implemented here
+(`Op::Retry`) and is now removed.
+
+**Why:** decided 2026-09-09, while settling LEGATE.md §8.6/§10.2's own
+standing contradiction — §10.2 called `retry` forbidden while the VM
+actually implemented and allowed it. Deciding whether to resolve that
+by rewriting §10.2 to permit `retry` permanently, rather than by
+finishing enforcement, meant first checking that what existed was
+worth keeping. It wasn't: correctly implementing `retry` means
+knowing where the enclosing `begin` block's OWN body starts, distinct
+from its `rescue`/`ensure` targets — and `HandlerEntry` (`vm.cr`)
+never tracked that, only `rescue_ip`/`ensure_ip`. `Op::Retry`'s own
+handler comment already called it a "stub"; what it actually did was
+`f.ip = 0`, restarting the ENTIRE enclosing frame (method, block, or
+top-level script) from its first instruction — correct only when the
+`begin` block happens to BE the whole frame body, and silently wrong
+otherwise, re-running whatever code preceded the `begin` block a
+second time. Nothing in the spec suite exercised `retry` beyond a
+comment mentioning the English word, so this had never surfaced.
+Fixing it properly — giving `HandlerEntry` a genuine "begin body
+start" target and having `Op::Retry` jump there — was considered and
+set aside in favor of removal: this file's own standing principle is
+that Adjutant should be, at worst, a proper subset of Ruby, never a
+same-named construct that behaves differently, and `retry` is
+real, commonly-relied-on control flow a script author would
+reasonably trust to work correctly without testing it themselves.
+Shipping a construct that only sometimes does what its name promises
+is worse than not offering it.
+
+**Instead:** a loop with an explicit attempt counter, breaking on
+success and re-raising once the counter is exhausted:
+
+```ruby
+attempts = 0
+loop do
+  attempts += 1
+  begin
+    risky_operation
+    break
+  rescue StandardError
+    raise if attempts >= 3
+  end
+end
+```
+
+**Enforcement — active since 2026-09-09, compile time.** `retry`
+still PARSES (`TokenKind::KwRetry`/`RetryNode` are unchanged) — unlike
+a construct excluded from the grammar entirely, real Ruby's own
+grammar is preserved here so the diagnostic can name `retry`
+specifically, at its own source location, rather than surfacing as an
+unrelated, confusing parse error somewhere else. `Compiler#
+compile_retry` rejects it immediately instead of emitting bytecode —
+U020. The prior runtime opcode (`Op::Retry`) is removed entirely from
+`bytecode.cr`, not merely left unreachable: nothing emits it, so
+nothing needs to interpret it, per this file's own "remove, never
+cripple" standard. Verified via `begin_rescue_ensure/compiler_spec.cr`.
+
 ---
 
 ## 2. Design decisions with no script-visible surface

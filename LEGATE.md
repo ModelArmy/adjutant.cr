@@ -33,7 +33,7 @@ Section                                  |Status       |Notes
 §8.3 execution sandboxing                |RETIRED      |No `exec` grant to sandbox — see §4.6                                         
 §8.4 caps                                |Built        |                                                                               
 §8.5 exception construction              |Built        |                                                                               
-§8.6 diagnostics for removed constructs  |PARTIAL      |`retry` and bare `rescue` are implemented, not removed — see §10.2 and SCOPE.md
+§8.6 diagnostics for removed constructs  |Built        |`retry` resolved 2026-09-09 (UNSUPPORTED.md, U020); every table row now enforced
 §8.7 audit log                           |Built        |Narrower than specified: no bytes/duration                                     
 §9 exception taxonomy                    |Built        |                                                                               
 §10 static analyser                      |NOT BUILT    |No part of it. See §10's own note                                              
@@ -773,7 +773,7 @@ Enforce at three levels, on the assumption that the higher ones will eventually 
 The vocabulary in §4 is novel, so priors do not fight it. The **removals** in §1.2 are where habit will collide with the language, and no amount of design avoids that. Three requirements make the collision cheap:
 
 1. **Remove, never cripple.** Undefine the constant or method entirely. A partially-implemented `File` invites the author to assume the other thirty-nine methods exist.
-2. **Fail at parse time where possible.** `File.read`, `send`, `eval`, `retry`, and bare `rescue` are all detectable statically. A diagnostic before execution costs one turn; a failure on line 340 of a long run costs the whole run. (Detectable, but not currently detected for `retry` and bare `rescue`, both of which are implemented — §0.)
+2. **Fail at parse time where possible.** `File.read`, `send`, `eval`, `retry`, and bare `rescue` are all detectable statically. A diagnostic before execution costs one turn; a failure on line 340 of a long run costs the whole run. (`retry` is now detected and rejected — U020, since 2026-09-09, UNSUPPORTED.md. Bare `rescue` is detectable but not currently detected: it is implemented and works, unrestricted — §0.)
 3. **Name the replacement.** Every removal diagnostic MUST state the Legate equivalent, or state plainly that none exists.
 
 Written                        |Diagnostic                                                          
@@ -785,7 +785,7 @@ Written                        |Diagnostic
 `Net::HTTP…`                   |not available — use `Legate.fetch(url)`                             
 `arr << x`, `s.gsub!`          |mutation removed — use `arr + [x]`, `s.gsub`                        
 `eval`, `send`, `define_method`|removed; no equivalent                                              
-`retry`                        |NOT removed — implemented and working; see §10.2 and SCOPE.md       
+`retry`                        |removed; no equivalent — see UNSUPPORTED.md, U020                   
 
 An author who meets one of these once writes correct Legate for the remainder of the session. That is the cheapest documentation channel available, and it is the same mechanism as the cap messages in §9.1.
 
@@ -842,8 +842,7 @@ flowchart TB
         B1["rescue Exception"]
         B2["rescue Legate::Denied / Exhausted / Aborted"]
         B3["bare rescue with no class"]
-        B4["retry (turns a cap into a loop)"]
-        B5["ensure that swallows"]
+        B4["ensure that swallows"]
     end
 
     FAT -.->|"enforced by"| GATE
@@ -900,9 +899,14 @@ The specification is shaped to make these checks cheap. An implementation SHOULD
 > no exception gate and no inclusion ledger. Read what follows as the
 > intended design. Where §9 previously described these checks as
 > guarantees already in force, that was wrong and has been corrected;
-> see SCOPE.md's entry on §10 for the full status and for the two
-> rules (`retry`, bare `rescue`) the language currently implements in
-> direct contradiction of §10.2.
+> see SCOPE.md's entry on §10 for the full status and for the one
+> remaining rule (bare `rescue`) the language currently implements in
+> direct contradiction of §10.2. `retry`'s own contradiction (the
+> same entry) was resolved 2026-09-09 by removing `retry` — see
+> UNSUPPORTED.md, U020 — rather than by building the analyser around
+> it; that rule has moved out of §10.2's table below into a baseline
+> exclusion enforced unconditionally, the same as `eval`/`send`/
+> `File`, not contingent on §10 ever being built.
 
 ### 10.1 Dataflow
 
@@ -915,14 +919,13 @@ Check 2 is the security-critical one — its sibling, taint reaching an `argv`, 
 
 ### 10.2 Exception discipline
 
-Exceptions are worse for flow analysis than return values: every call site gains a control-flow edge to every enclosing handler, so the CFG stops being a tree. Five restrictions recover most of the tractability, and each is independently justified.
+Exceptions are worse for flow analysis than return values: every call site gains a control-flow edge to every enclosing handler, so the CFG stops being a tree. Four restrictions recover most of the tractability, and each is independently justified. (A fifth, `retry` being forbidden, was here too until 2026-09-09 — it's now a baseline exclusion enforced unconditionally, not one contingent on this analyser existing; see UNSUPPORTED.md, U020, and this section's own status note above.)
 
 Rule                                                          |Reason                                                               
 --------------------------------------------------------------|---------------------------------------------------------------------
 `rescue` MUST name one or more classes                        |a bare `rescue` makes the handler edge set universal and uncomputable
 `rescue Exception` is forbidden                               |it is the only syntax that catches the fatal tier                    
 `rescue Legate::Denied` / `Exhausted` / `Aborted` is forbidden|direct evasion of §9.2                                               
-`retry` is forbidden                                          |converts a cap into a loop; makes budget analysis undecidable        
 `ensure` MUST NOT return, raise, or `break`                   |silently discards an in-flight exception, including a fatal one      
 re-raising as a different class is forbidden                  |would permit laundering a fatal exception into a recoverable one     
 

@@ -374,7 +374,7 @@ just noise for the next reader.
   subsystem should inherit rather than reinvent.
 
 - **LEGATE.md §10's static analysis layer does not exist, and §9/§10
-  lean on it in the present tense as though it did.** Found
+  leaned on it in the present tense as though it did.** Found
   2026-09-02, while checking what piece 4 of the authorization work
   would have to rekey. Nothing in `src/` implements any part of §10 —
   there is no analyser file, `risk_walker.cr` contains no reference to
@@ -389,80 +389,125 @@ just noise for the next reader.
     sibling, taint to `argv`, was retired 2026-09-05 along with
     `Legate.run` itself (§4.6), which is also why this is four checks
     now, not five.
-  - **§10.2 Exception discipline.** None of the six rules is enforced.
-    Worse than absent for one of them: `retry` is not merely ungated
-    but fully implemented (`Compiler#compile_retry`), and §10.2
-    forbids it outright as something that "converts a cap into a
-    loop." Bare `rescue` and `rescue Exception` are both accepted and
-    exercised by existing specs.
+  - **§10.2 Exception discipline.** None of the four rules is
+    enforced. Bare `rescue` and `rescue Exception` are both accepted
+    and exercised by existing specs — see the still-open note on bare
+    `rescue` at the end of this entry. (`retry` was the fifth rule
+    here; resolved 2026-09-09 — see below — and moved out of §10.2's
+    scope entirely rather than left as a sixth unenforced row.)
   - **§10.3 The inclusion ledger.** No ledger, no sealing, no
     unqualified-call check.
 
-  Why this is Must Fix even though the analyser is a large feature:
-  the DOCUMENTATION defect is live and separable from it. §9.2's own
-  text says "the static gate ensures it cannot deliberately swallow
-  one either," and §9's design-intent paragraph says "§10.2 ensures it
-  cannot do so on purpose." Both assert a guarantee that nothing
-  provides. A reader — including a model reading the spec to decide
-  how defensively to write — is being told a boundary is enforced that
-  is not.
+  Why this was Must Fix even though the analyser is a large feature:
+  the DOCUMENTATION defect was live and separable from it. §9.2's own
+  text used to say "the static gate ensures it cannot deliberately
+  swallow one either," and §9's design-intent paragraph used to say
+  "§10.2 ensures it cannot do so on purpose." Both asserted a
+  guarantee that nothing provided. A reader — including a model
+  reading the spec to decide how defensively to write — was being
+  told a boundary was enforced that was not.
 
-  What actually holds today is the RUNTIME property, and it holds
+  What actually holds is the RUNTIME property, and it holds
   independently: `FatalSignal` is a plain `Exception`, not a
   `RuntimeError`, so no script `rescue` of any class can catch it
   regardless of syntax. `fatal_signal.cr`'s own comment already states
   this correctly — the gate is a first line of defence and the runtime
   guarantee "does not depend on the gate being correct or even
-  present." §9 should say the same rather than the reverse.
+  present."
 
-  Fix in two parts, the first cheap and the second not:
+  Fix, in the two parts originally planned:
 
-  1. **Correct the claims now.** §9.2 and §9's design-intent paragraph
-     state the runtime property as the guarantee and describe §10.2 as
-     an intended additional check, not a current one. Anywhere else
-     that says the analyser does something, say it SPECIFIES it.
+  1. **Correct the claims — DONE, before this session.** §9.2 and
+     §9's design-intent paragraph now state the runtime property as
+     the guarantee and describe §10.2 as an intended additional
+     check, not a current one. Verified against the actual current
+     LEGATE.md text, 2026-09-09, before touching anything else in
+     this entry.
   2. **Build it later, as its own scoped piece of work**, with §10.1
      keyed on the provider registry from the start (see the
-     authorization entry above).
+     authorization entry above). Still not done; §10.1/§10.3 remain
+     exactly as unbuilt as the day this entry was written.
 
-  ### The `retry` contradiction, and why its stated reason is half wrong
+  ### `retry` — resolved 2026-09-09 by removal, not by keeping it
 
-  `retry` is a working language feature — `Compiler#compile_retry`
-  emits `Op::Retry`, and scripts can use it today. §10.2 forbids it
-  outright. Implementing that rule as written is therefore a breaking
-  change, not a new check, and it needs deciding rather than
-  discovering mid-implementation.
+  This entry originally described `retry` as "a working language
+  feature" and recommended deciding whether to keep it (rewriting
+  §10.2 around it) or plan its removal — reasoning from `Compiler#
+  compile_retry` emitting `Op::Retry`, from `retry` scripts running
+  without error, and from a citation of "exactly one spec
+  (`classes_and_modules/vm_spec.cr`)" as evidence it was implemented
+  but barely exercised. **That citation was itself wrong** — checked
+  properly this session, it turned out to be an English sentence in a
+  comment about an unrelated feature (excluded-method diagnostics),
+  not a test of `retry`'s runtime behavior at all. Nothing anywhere
+  actually exercised `retry` beyond the trivial case, which is exactly
+  why the real problem stayed hidden: `Op::Retry`'s own handler
+  comment in `vm.cr` already called it a "stub," and what it actually
+  did — `f.ip = 0` — restarts the ENTIRE enclosing frame (method,
+  block, or top-level script), not the nearest `begin` block the way
+  real Ruby's `retry` does. `HandlerEntry` (`vm.cr`) never tracked
+  where a `begin` block's own body starts, only its `rescue`/`ensure`
+  targets, so there was nothing for a correct implementation to jump
+  to even if `Op::Retry` had tried. Correct only when the `begin`
+  block happens to be the entire frame body; silently wrong (re-running
+  whatever preceded it) otherwise.
 
-  §10.2 gives two reasons; only the second survives §9.2.
+  This doesn't overturn the tractability analysis below — that
+  reasoning about WHY §10.2 wants to forbid `retry` still holds, and
+  is preserved as-is since it's independently useful design reasoning
+  — but it does replace the CONCLUSION. "A working feature, decide
+  whether to keep it" was the wrong frame; it was a broken stub, and
+  the choice became "fix a real VM gap (track a begin-body-start
+  target) to keep it, or remove it." Removed — see UNSUPPORTED.md,
+  U020, for the full decision and reasoning, and
+  `begin_rescue_ensure/compiler_spec.cr` for the enforcement spec.
+  `retry` still parses; `Compiler#compile_retry` rejects it (U020)
+  rather than emitting bytecode; `Op::Retry` no longer exists in
+  `bytecode.cr` at all.
 
-  - *"Converts a cap into a loop"* — largely FALSE as things now
-    stand. It would matter if a script could catch a budget
-    exhaustion and retry past it, but per-run budgets raise
-    `FatalSignal`, which no `rescue` of any class can catch (see
-    `fatal_signal.cr`). So `retry` can only loop on the RECOVERABLE
-    tier, where retrying is usually pointless and sometimes correct: a
-    `TooLarge` on an over-limit read fails identically the second
-    time, and a `TooMany` on `max_open_streams` is the case where
-    retrying is legitimate BY DESIGN — that limit caps simultaneous
-    holdings rather than cumulative consumption, so a script that
-    finishes a stream and tries again has genuinely freed the
-    resource. This reason reads as a leftover from before §9.2 made
-    the fatal tier uncatchable.
+  Worth being honest about, since this file exists to catch exactly
+  this failure mode elsewhere: this entry's own prior analysis relied
+  on a citation nobody had actually checked, in a document whose
+  entire premise is not doing that.
+
+  ### The tractability reasoning, preserved from the original analysis
+
+  §10.2 gave two reasons for forbidding `retry`; only the second ever
+  survived §9.2, independent of the correctness question above.
+
+  - *"Converts a cap into a loop"* — largely FALSE as things stood.
+    It would matter if a script could catch a budget exhaustion and
+    retry past it, but per-run budgets raise `FatalSignal`, which no
+    `rescue` of any class can catch (see `fatal_signal.cr`). So
+    `retry` could only ever loop on the RECOVERABLE tier, where
+    retrying is usually pointless and sometimes correct: a `TooLarge`
+    on an over-limit read fails identically the second time, and a
+    `TooMany` on `max_open_streams` is the case where retrying is
+    legitimate BY DESIGN — that limit caps simultaneous holdings
+    rather than cumulative consumption, so a script that finishes a
+    stream and tries again has genuinely freed the resource. This
+    reason read as a leftover from before §9.2 made the fatal tier
+    uncatchable.
   - *"Makes budget analysis undecidable"* — TRUE, and sufficient on
     its own. `retry` puts a back-edge in the control-flow graph, and
     §10.2's whole preamble is about keeping the CFG tractable.
 
-  So the rule is justified, but by tractability rather than by
-  security. Whether that justifies banning a working feature outright,
-  versus bounding it or accepting reduced analysis precision where it
-  appears, is the actual question. Cheaper to answer than it sounds:
-  `retry` appears in exactly one spec
-  (`classes_and_modules/vm_spec.cr`), so it is implemented but barely
-  exercised.
+  ### Bare `rescue` — still open, not addressed by the retry decision
 
-  Recorded rather than fixed wholesale because the analyser is a
-  feature, not a bug — but the spec claiming it exists IS a bug, and
-  that half should not wait for the other.
+  A genuinely different question from `retry`'s, and NOT resolved by
+  it: bare `rescue` isn't broken the way `retry` was — it's
+  correctly, fully implemented and exercised by existing specs; §10.2
+  simply doesn't gate it yet. Whether it should eventually be removed
+  (matching `retry`'s fate) or whether §10.2's rule should instead be
+  softened once the analyser exists is not decided here, and
+  shouldn't be assumed to follow `retry`'s precedent just because the
+  two were adjacent in this entry — `retry`'s removal was driven by a
+  correctness bug specific to it, not by the tractability argument
+  alone, and tractability alone is a weaker case for an outright ban
+  (bounded/reduced-precision analysis is a real alternative for bare
+  `rescue` in a way it never quite was for `retry`, which needed a
+  target IP that plain didn't exist). Recorded here rather than
+  decided, same as before.
 
 ## Will Fix
 
