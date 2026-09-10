@@ -90,14 +90,42 @@ module Adjutant
       # own `::Log.for("...")` — a source it chose, in ITS OWN
       # dotted-name space — so several Adjutant embeddings in the
       # same process can route to different sources/backends the way
-      # any other Crystal subsystem's logging would; defaults to a
-      # library-owned source so a script that never calls
-      # `Legate.log` costs nothing and one that does is a silent
-      # no-op until the embedder actually configures a backend for
-      # it (`Log.setup`/`Log::Builder`), matching Crystal's own
-      # "unconfigured sources emit nothing" default rather than
-      # writing anywhere on its own initiative.
+      # any other Crystal subsystem's logging would; defaults to
+      # `DEFAULT_LOG` (below) when the embedder never configures one.
+      #
+      # CORRECTED 2026-09-10, found via a real `ops test` run
+      # printing log lines this comment used to claim couldn't
+      # happen: Crystal's own stdlib default is NOT silence.
+      # "By default entries from all sources with Info and above
+      # severity will be logged to STDOUT using the Log::IOBackend"
+      # (Crystal's own `Log` docs, unchanged from 0.35.1 through at
+      # least 1.19) — true for EVERY source bound to the global
+      # default builder (`Log.builder`), including a plain
+      # `::Log.for("adjutant.legate")`, unless something ELSEWHERE in
+      # the process has already called `Log.setup` to override it.
+      # `Legate.log` emits at `.info`, so this was never a no-op —
+      # every call printed to STDOUT in any process that never
+      # touched `Log.setup`, which describes most embedders and
+      # every one of this repo's own script-tests
+      # (`spec/scripts/legate/ambient_basics/`).
+      #
+      # `DEFAULT_LOG` fixes this by construction rather than by
+      # convention: bound to a PRIVATE `Log::Builder` with NO
+      # bindings at all, not `Log.builder` (Crystal's shared global
+      # one), so there is genuinely nothing for an unconfigured
+      # `Legate.log` call to reach — silence that holds regardless of
+      # what any OTHER, unrelated part of the same process has done
+      # with `Log.setup` for ITS OWN purposes, which the old
+      # global-builder-based default was never actually independent
+      # of.
       getter log : ::Log
+
+      # See `getter log` above for why this exists and is NOT just
+      # `::Log.for("adjutant.legate")`. A module-level constant, not
+      # rebuilt per `Broker.new` call, since an empty `Log::Builder`
+      # has no per-instance state worth re-creating.
+      DEFAULT_LOG_BUILDER = ::Log::Builder.new
+      DEFAULT_LOG         = DEFAULT_LOG_BUILDER.for("adjutant.legate")
 
       # `Legate.scratch`'s backing directory (§4.7) — nil until the
       # first `Legate.scratch` call THIS run, created lazily rather
@@ -133,7 +161,7 @@ module Adjutant
       # (the shared broker already has its own).
       def initialize(grants : Grants, core : ::Adjutant::Broker? = nil,
                      budget : Budget? = nil, audit_log : AuditLog = AuditLog.new,
-                     @log : ::Log = ::Log.for("adjutant.legate"))
+                     @log : ::Log = DEFAULT_LOG)
         @grants = grants
         @core = core || ::Adjutant::Broker.new(grants.limits, budget, audit_log)
       end

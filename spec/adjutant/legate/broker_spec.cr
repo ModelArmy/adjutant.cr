@@ -158,5 +158,38 @@ module Adjutant
         end
       end
     end
+
+    describe "#log default" do
+      # Regression coverage for a real bug, not a hypothetical one:
+      # shipped 2026-09-08 claiming an unconfigured `Legate.log` was
+      # a silent no-op ("matching Crystal's own 'unconfigured
+      # sources emit nothing' default"), found wrong 2026-09-10 when
+      # a real `ops test` run printed log lines to STDOUT from every
+      # script that calls `Legate.log` without an embedder ever
+      # configuring anything. Crystal's actual stdlib default is the
+      # opposite of silent: Info-and-above logs to STDOUT for any
+      # source on the GLOBAL default builder (`Log.builder`) unless
+      # something in the process calls `Log.setup` — true of a plain
+      # `::Log.for("adjutant.legate")`, which is what the broker used
+      # to default to. The fix (`Legate::Broker::DEFAULT_LOG`) binds
+      # the default to a PRIVATE `Log::Builder` with no bindings at
+      # all, so there's genuinely nothing to reach — this test
+      # exists so that fix can't silently regress back to the global
+      # builder the way it shipped wrong the first time.
+      it "is bound to a PRIVATE Log::Builder, not Crystal's shared global one" do
+        Legate::Broker::DEFAULT_LOG_BUILDER.should_not eq(::Log.builder)
+      end
+
+      it "Legate::Broker.new with no log: argument uses that same default" do
+        broker = Legate::Broker.new(Legate::Grants.deny_all)
+        broker.log.should eq(Legate::Broker::DEFAULT_LOG)
+      end
+
+      it "Interpreter.new with no log: argument reaches the same default, " \
+         "not a fresh ::Log.for(...) tied to the global builder" do
+        interp, _ = make_interp
+        interp.broker.log.should eq(Legate::Broker::DEFAULT_LOG)
+      end
+    end
   end
 end

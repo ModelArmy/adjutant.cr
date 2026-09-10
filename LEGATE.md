@@ -14,30 +14,30 @@ a casual read, and by 2026-09-02 that had caused real confusion twice.
 This table is the index of what is actually built. Add to it when a
 section lands; correct it when it drifts.
 
-Section                                  |Status       |Notes                                                                          
------------------------------------------|-------------|-------------------------------------------------------------------------------
-§1–§3 principles, conventions, type index|Built        |                                                                               
-§4.1 reading                             |Built        |`read` `stat` `list` `grep`                                                    
-§4.2 streaming reads                     |Built        |`lines` `bytes` `records`                                                      
-§4.3 writing                             |Built        |`write` `write!` `append` `mkdir` `cp` `cp!`                                   
-§4.4 destruction                         |Built        |`rm` `rmdir` `rmdir!` `mv` `mv!`; "`rm` subsumes `rmdir`" reversed 2026-09-04  
-§4.5 network                             |Built        |`fetch`; streamed request body still open                                      
-§4.6 execution                           |RETIRED      |No `exec` grant, no `run` verb — removed 2026-09-05 as unused scaffolding; see SCOPE.md
-§4.7 ambient                             |Built        |`scratch` `log` `fail` (2026-09-08), `env` `now` `random` (2026-09-08)
-§5 value types                           |Built        |All seven                                                                      
+Section                                  |Status       |Notes                                                                                                                                        
+-----------------------------------------|-------------|---------------------------------------------------------------------------------------------------------------------------------------------
+§1–§3 principles, conventions, type index|Built        |                                                                                                                                             
+§4.1 reading                             |Built        |`read` `stat` `list` `grep`                                                                                                                  
+§4.2 streaming reads                     |Built        |`lines` `bytes` `records`                                                                                                                    
+§4.3 writing                             |Built        |`write` `write!` `append` `mkdir` `cp` `cp!`                                                                                                 
+§4.4 destruction                         |Built        |`rm` `rmdir` `rmdir!` `mv` `mv!`; "`rm` subsumes `rmdir`" reversed 2026-09-04                                                                
+§4.5 network                             |Built        |`fetch`; streamed request body still open                                                                                                    
+§4.6 execution                           |RETIRED      |No `exec` grant, no `run` verb — removed 2026-09-05 as unused scaffolding; see SCOPE.md                                                      
+§4.7 ambient                             |Built        |`scratch` `log` `fail` (2026-09-08), `env` `now` `random` (2026-09-08)                                                                       
+§5 value types                           |Built        |All seven                                                                                                                                    
 §5.6 `Legate::Exit`                      |Built, UNUSED|Bootstrapped, but nothing produces one. `raise!` removed 2026-09-05 alongside `NonZeroExit`; whether the rest goes too is open — see SCOPE.md
-§6 stream protocol                       |Built        |                                                                               
-§7 grants and policy                     |Built        |`ambient.now` removed 2026-09-01; see SCOPE.md                                 
-§8.1 path resolution / TOCTOU            |Built        |                                                                               
-§8.2 network hardening                   |Built        |Resolved-address checks in `fetch.cr`                                          
-§8.3 execution sandboxing                |RETIRED      |No `exec` grant to sandbox — see §4.6                                         
-§8.4 caps                                |Built        |                                                                               
-§8.5 exception construction              |Built        |                                                                               
-§8.6 diagnostics for removed constructs  |Built        |`retry` resolved 2026-09-09 (UNSUPPORTED.md, U020); every table row now enforced
-§8.7 audit log                           |Built        |Narrower than specified: no bytes/duration                                     
-§9 exception taxonomy                    |Built        |                                                                               
-§10 static analyser                      |NOT BUILT    |No part of it. See §10's own note                                              
-§11 surface count                        |ASPIRATIONAL |Counts the specified surface, not the built one                                
+§6 stream protocol                       |Built        |                                                                                                                                             
+§7 grants and policy                     |Built        |`ambient.now` removed 2026-09-01; see SCOPE.md                                                                                               
+§8.1 path resolution / TOCTOU            |Built        |                                                                                                                                             
+§8.2 network hardening                   |Built        |Resolved-address checks in `fetch.cr`                                                                                                        
+§8.3 execution sandboxing                |RETIRED      |No `exec` grant to sandbox — see §4.6                                                                                                        
+§8.4 caps                                |Built        |                                                                                                                                             
+§8.5 exception construction              |Built        |                                                                                                                                             
+§8.6 diagnostics for removed constructs  |Built        |`retry` resolved 2026-09-09 (UNSUPPORTED.md, U020); every table row now enforced                                                             
+§8.7 audit log                           |Built        |Narrower than specified: no bytes/duration                                                                                                   
+§9 exception taxonomy                    |Built        |                                                                                                                                             
+§10 static analyser                      |NOT BUILT    |No part of it. See §10's own note                                                                                                            
+§11 surface count                        |ASPIRATIONAL |Counts the specified surface, not the built one                                                                                              
 
 **What exists today is 25 verbs**, no submodules, and no static
 analyser — every verb §1–§4 specifies is now real; only §4.6's
@@ -544,7 +544,7 @@ Legate.fail(message)          -> no return    # raises Legate::Aborted (fatal)
 
 `Legate.random` with no `n` (or an explicit `nil`) returns a Float in `[0.0, 1.0)`, matching real Ruby's bare `Kernel#rand`; a positive Integer or Float `n` returns a value of the same type in `[0, n)`. `n <= 0` raises rather than following real Ruby's own "treat non-positive as absent" quirk. Uses Crystal's plain `Random`, not a cryptographic one — same as real Ruby's own `rand`.
 
-`Legate.log`'s destination is chosen by the embedder, not this spec — a `::Log` (Crystal's own stdlib logging source) supplied when the Interpreter is constructed, defaulting to a library-owned source if the embedder never configures one, in which case a call to `Legate.log` is a no-op rather than writing anywhere on its own initiative. `fields`' values must each be a String, Integer, Float, `true`/`false`, `nil`, or an Array/Hash of the same — anything else raises `TypeError`, the same as a wrong-typed argument to any other verb (ERRORS.md's R039). `message` is required for both `Legate.log` and `Legate.fail`; there is no default for either.
+`Legate.log`'s destination is chosen by the embedder, not this spec — a `::Log` (Crystal's own stdlib logging source) supplied when the Interpreter is constructed, defaulting to a genuinely silent library-owned source (bound to a private, empty `Log::Builder`, not Crystal's own shared default one — see `Legate::Broker::DEFAULT_LOG`) if the embedder never configures one. That construction matters: Crystal's OWN stdlib default is not silent — every source logs Info-and-above to STDOUT unless something in the process calls `Log.setup`, so a naive default would have made every unconfigured `Legate.log` call print. `fields`' values must each be a String, Integer, Float, `true`/`false`, `nil`, or an Array/Hash of the same — anything else raises `TypeError`, the same as a wrong-typed argument to any other verb (ERRORS.md's R039). `message` is required for both `Legate.log` and `Legate.fail`; there is no default for either.
 
 ---
 
@@ -859,16 +859,16 @@ flowchart TB
 
 Caught by an ordinary `rescue => e`. These are expected conditions a script should handle.
 
-Class                |Meaning                                        |Message MUST hint at                         
----------------------|-----------------------------------------------|---------------------------------------------
-`Legate::NotFound`   |path or binary absent                          |—                                            
-`Legate::Malformed`  |bad JSON, CSV, encoding, or path construction  |—                                            
-`Legate::TooLarge`   |per-call byte or memory cap                    |the streaming verb or `each_slice`           
-`Legate::TooMany`    |per-call cardinality cap, or `max_open_streams`|`limit:`, `each_slice`, or finishing a stream
-`Legate::Timeout`    |per-call wall clock                            |—                                            
-`Legate::Transport`  |DNS, TLS, connection, redirect loop            |—                                            
-`Legate::Redirect`   |redirect on a request that carried a body      |`status`, `location`, and re-issuing it      
-`Legate::Conflict`   |destination exists, non-empty directory        |`recursive:`                                 
+Class              |Meaning                                        |Message MUST hint at                         
+-------------------|-----------------------------------------------|---------------------------------------------
+`Legate::NotFound` |path or binary absent                          |—                                            
+`Legate::Malformed`|bad JSON, CSV, encoding, or path construction  |—                                            
+`Legate::TooLarge` |per-call byte or memory cap                    |the streaming verb or `each_slice`           
+`Legate::TooMany`  |per-call cardinality cap, or `max_open_streams`|`limit:`, `each_slice`, or finishing a stream
+`Legate::Timeout`  |per-call wall clock                            |—                                            
+`Legate::Transport`|DNS, TLS, connection, redirect loop            |—                                            
+`Legate::Redirect` |redirect on a request that carried a body      |`status`, `location`, and re-issuing it      
+`Legate::Conflict` |destination exists, non-empty directory        |`recursive:`                                 
 
 A `TooLarge` message MUST read like: *"config.json is 1.4 GB, over the 8 MiB read limit — use `Legate.lines(path)` to stream."* Models reliably read exception messages and unreliably read specifications; this is the cheapest documentation channel available.
 

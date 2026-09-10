@@ -1,0 +1,12 @@
+# No read/write/delete roots at all — ambient verbs need none of
+# them. `Legate.scratch`'s own directory is authorized automatically
+# (`Legate::Broker#ambient_roots`, LEGATE.md §4.7's "granted by
+# default"), and everything else this suite exercises (`log`/`now`/
+# `random`, `fail`'s input validation) touches no filesystem grant at
+# all. The one real grant here is `ambient.env`'s allowlist, for
+# `Legate.env` — the var it names is deliberately never set (see
+# `ambient_basics.rb`'s own comment for why).
+grants:
+  ambient:
+    env:
+      - ADJUTANT_AMBIENT_TEST_UNSET_VAR

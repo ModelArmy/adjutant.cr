@@ -115,7 +115,7 @@ module Adjutant
       @limits : ExecutionLimits = ExecutionLimits.new,
       risk_flow_tracking : Bool = false,
       @grants : Legate::Grants = Legate::Grants.deny_all,
-      log : ::Log = ::Log.for("adjutant.legate"),
+      log : ::Log = Legate::Broker::DEFAULT_LOG,
     )
       @symbols = SymbolTable.new
       @modules = ModuleRegistry.new

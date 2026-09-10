@@ -1517,6 +1517,67 @@ individually.
   value via `#utc`/`#gmtime`/`#localtime`. Not specific to this verb,
   just newly relevant to it.
 
+- **`Legate::Broker`'s default `log:` printed to STDOUT for every
+  `Legate.log` call, in direct contradiction of what shipped
+  documenting it.** Found 2026-09-10, via a real `ops test` run —
+  not a code review, an actual observed symptom (`ambient_basics.rb`/
+  `ambient_edge_cases.rb`'s own `Legate.log` calls printing during
+  the test run). The broker's default was `::Log.for("adjutant.
+  legate")`, and every comment/spec-text describing it (`broker.cr`,
+  LEGATE.md §4.7) confidently asserted this was a silent no-op,
+  "matching Crystal's own 'unconfigured sources emit nothing'
+  default." That default doesn't exist — checked properly this time:
+  Crystal's stdlib docs state plainly, and have since at least
+  0.35.1, that "by default entries from all sources with Info and
+  above severity will be logged to STDOUT using the Log::IOBackend."
+  `::Log.for(name)` binds to `Log.builder`, the process's ONE shared
+  global builder, so ANY unrelated code anywhere in the same process
+  calling (or not calling) `Log.setup` affects every Adjutant
+  embedding's `Legate.log` output too — the opposite of the isolation
+  the whole design was supposed to provide. Fixed by binding the
+  default to `Legate::Broker::DEFAULT_LOG`, a private `Log::Builder`
+  with no bindings at all, genuinely independent of the rest of the
+  process. Regression spec added (`broker_spec.cr`, `"#log
+  default"`) checking the builder identity directly, since capturing
+  real STDOUT output reliably in a spec is its own source of
+  flakiness this fix doesn't need to take on.
+
+  **Addendum, same day: the first fix was itself incomplete.** The
+  new regression spec caught it immediately — `Interpreter.new` with
+  no `log:` failed to match `DEFAULT_LOG`. `Legate::Broker#initialize`
+  was fixed, but `Interpreter#initialize` and `spec_helper.cr`'s
+  `make_interp` each carried their OWN independent copy of the same
+  `log : ::Log = ::Log.for("adjutant.legate")` default expression,
+  written separately when `log:` was first threaded through each
+  layer (step 2, `scratch`/`log`/`fail`). Since both always pass
+  `log:` through EXPLICITLY to the layer below, their own stale
+  default silently overrode the fix for any caller that doesn't pass
+  `log:` itself — which includes `test_runner.cr`, meaning the actual
+  script-test suites (`ambient_basics.rb`/`ambient_edge_cases.rb`)
+  were probably STILL printing to STDOUT even after the first "fix"
+  shipped. Both now reference `Legate::Broker::DEFAULT_LOG` directly
+  rather than re-deriving their own copy — the actual lesson here
+  isn't "remember every call site," it's that a default value worth
+  getting right belongs in exactly ONE place, referenced everywhere
+  else, precisely so a fix like this one can't fail to propagate.
+
+  Worth being blunt about: this is the same failure mode as the
+  `retry` entry above (a confident, specific, wrong claim about
+  runtime behavior, shipped and repeated across multiple files) and
+  the `SCOPE.md` citation error in that same entry — except this one
+  was caught by the person running the tests, not by re-reading the
+  code. All three came from the same root cause: asserting how a
+  Crystal stdlib API behaves from confident recollection rather than
+  checking, in a codebase whose own stated practice — see this file's
+  own repeated "not independently verified against a live toolchain"
+  flags elsewhere — exists specifically to catch this. The `Log`
+  module in particular has now produced three separate mistakes this
+  session (the `Hash` vs `NamedTuple`/Symbol-key question in
+  `log.cr`'s `emit` call, this default, and almost a fourth just now
+  in scoping this very regression spec) — worth treating any future
+  claim about `Log`'s behavior as unverified until checked against
+  the actual docs or a real run, not just this one.
+
 ### Tooling
 
 - **Eleven ameba rule classes were excluded per-file rather than
