@@ -39,6 +39,19 @@ module Adjutant
     NetworkEgress
     ElevatedPrivilege
     ModifiesEnvironment
+    # Data leaves the sandbox via a destination this call does not
+    # itself reveal or control — unlike NetworkEgress, where the
+    # destination IS the call's own explicit argument (a URL the
+    # script wrote), the embedder chose `Legate.log`'s destination at
+    # Interpreter-construction time, and the script calling it has no
+    # way to know what that destination is or whether it's local
+    # (STDOUT, a file another tool call can read) or remote. Added
+    # 2026-09-10 for exactly one verb so far — see SCOPE.md's entry
+    # on `Legate.log` and `Authority::Log` for the full reasoning,
+    # including why this alone doesn't prevent anything (that's
+    # `Authority::Log`'s job) and only makes the risk visible in a
+    # static report.
+    ExternalOutput
   end
 
   # Whether a native call's effect can be undone.

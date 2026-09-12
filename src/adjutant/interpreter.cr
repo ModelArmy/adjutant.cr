@@ -515,7 +515,6 @@ module Adjutant
       Legate::Entry.bootstrap(self, legate)
       Legate::Match.bootstrap(self, legate)
       Legate::Response.bootstrap(self, legate)
-      Legate::Exit.bootstrap(self, legate)
       Legate::Chunk.bootstrap(self, legate)
       Legate::Stream.bootstrap(self, legate)
       Legate::Verbs::Stat.bootstrap(self, legate, @broker)

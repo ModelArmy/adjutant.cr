@@ -134,4 +134,77 @@ module Adjutant
       backend.entries.size.should eq 1
     end
   end
+
+  # `Authority::Log` is what actually PREVENTS the exfiltration
+  # scenario `Effect::ExternalOutput` (above) only makes visible in a
+  # static report: a script reading a sensitive value and handing it
+  # to `Legate.log` verbatim. Real source (`Legate.env`, not a
+  # synthetic trigger — this is the actual shape of the risk, not a
+  # standalone unit test of `VM#check_risk_flow`, which
+  # `risk_flow_enforcement_spec.cr` already covers in isolation).
+  describe "risk-flow enforcement (the actual exfiltration fix, not just the Effect)" do
+    it "rejects a High-sensitivity value read via Legate.env reaching Legate.log" do
+      ENV["ADJUTANT_SPEC_SECRET"] = "hunter2"
+      begin
+        policy = RiskFlowPolicy.new(
+          sensitivity_patterns: [SensitivityPattern.new(ProvenanceKind::Env, "ADJUTANT_SPEC_SECRET", 1, Sensitivity::High)],
+          risk_flow_rules: [RiskFlowRule.new(Authority::Log, Sensitivity::High, RiskFlowAction::Reject)],
+        )
+        interp, _ = make_interp(
+          risk_flow_policy: policy,
+          grants: Legate::Grants.new(ambient_env: ["ADJUTANT_SPEC_SECRET"]),
+        )
+        expect_raises(RuntimeError, /risk flow policy rejected/) do
+          interp.eval(<<-RUBY)
+          secret = Legate.env("ADJUTANT_SPEC_SECRET")
+          Legate.log("leaking", {data: secret})
+          RUBY
+        end
+      ensure
+        ENV.delete("ADJUTANT_SPEC_SECRET")
+      end
+    end
+
+    it "does NOT reject an untainted value under the identical rule — no false positive" do
+      policy = RiskFlowPolicy.new(
+        risk_flow_rules: [RiskFlowRule.new(Authority::Log, Sensitivity::High, RiskFlowAction::Reject)],
+      )
+      interp, _ = make_interp(risk_flow_policy: policy, grants: Legate::Grants.deny_all)
+      eval = interp.eval(<<-RUBY)
+      begin
+        Legate.log("fine", {data: "nothing sensitive here"})
+        "no error"
+      rescue
+        "errored"
+      end
+      RUBY
+      eval.as_string.should eq "no error"
+    end
+
+    it "a policy that Allows this Authority/Sensitivity pair lets it through" do
+      ENV["ADJUTANT_SPEC_SECRET"] = "hunter2"
+      begin
+        policy = RiskFlowPolicy.new(
+          sensitivity_patterns: [SensitivityPattern.new(ProvenanceKind::Env, "ADJUTANT_SPEC_SECRET", 1, Sensitivity::High)],
+          risk_flow_rules: [RiskFlowRule.new(Authority::Log, Sensitivity::High, RiskFlowAction::Allow)],
+        )
+        interp, _ = make_interp(
+          risk_flow_policy: policy,
+          grants: Legate::Grants.new(ambient_env: ["ADJUTANT_SPEC_SECRET"]),
+        )
+        eval = interp.eval(<<-RUBY)
+        begin
+          secret = Legate.env("ADJUTANT_SPEC_SECRET")
+          Legate.log("leaking", {data: secret})
+          "no error"
+        rescue
+          "errored"
+        end
+        RUBY
+        eval.as_string.should eq "no error"
+      ensure
+        ENV.delete("ADJUTANT_SPEC_SECRET")
+      end
+    end
+  end
 end

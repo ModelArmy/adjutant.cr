@@ -91,7 +91,6 @@ module Adjutant
             methods: [get, post]
           ambient:
             env: ["TZ", "LANG"]
-            now: pinned
         limits:
           read_limit: 8MiB
           fetch_limit: 32MiB

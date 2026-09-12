@@ -14,30 +14,29 @@ a casual read, and by 2026-09-02 that had caused real confusion twice.
 This table is the index of what is actually built. Add to it when a
 section lands; correct it when it drifts.
 
-Section                                  |Status       |Notes                                                                                                                                        
------------------------------------------|-------------|---------------------------------------------------------------------------------------------------------------------------------------------
-§1–§3 principles, conventions, type index|Built        |                                                                                                                                             
-§4.1 reading                             |Built        |`read` `stat` `list` `grep`                                                                                                                  
-§4.2 streaming reads                     |Built        |`lines` `bytes` `records`                                                                                                                    
-§4.3 writing                             |Built        |`write` `write!` `append` `mkdir` `cp` `cp!`                                                                                                 
-§4.4 destruction                         |Built        |`rm` `rmdir` `rmdir!` `mv` `mv!`; "`rm` subsumes `rmdir`" reversed 2026-09-04                                                                
-§4.5 network                             |Built        |`fetch`; streamed request body still open                                                                                                    
-§4.6 execution                           |RETIRED      |No `exec` grant, no `run` verb — removed 2026-09-05 as unused scaffolding; see SCOPE.md                                                      
-§4.7 ambient                             |Built        |`scratch` `log` `fail` (2026-09-08), `env` `now` `random` (2026-09-08)                                                                       
-§5 value types                           |Built        |All seven                                                                                                                                    
-§5.6 `Legate::Exit`                      |Built, UNUSED|Bootstrapped, but nothing produces one. `raise!` removed 2026-09-05 alongside `NonZeroExit`; whether the rest goes too is open — see SCOPE.md
-§6 stream protocol                       |Built        |                                                                                                                                             
-§7 grants and policy                     |Built        |`ambient.now` removed 2026-09-01; see SCOPE.md                                                                                               
-§8.1 path resolution / TOCTOU            |Built        |                                                                                                                                             
-§8.2 network hardening                   |Built        |Resolved-address checks in `fetch.cr`                                                                                                        
-§8.3 execution sandboxing                |RETIRED      |No `exec` grant to sandbox — see §4.6                                                                                                        
-§8.4 caps                                |Built        |                                                                                                                                             
-§8.5 exception construction              |Built        |                                                                                                                                             
-§8.6 diagnostics for removed constructs  |Built        |`retry` resolved 2026-09-09 (UNSUPPORTED.md, U020); every table row now enforced                                                             
-§8.7 audit log                           |Built        |Narrower than specified: no bytes/duration                                                                                                   
-§9 exception taxonomy                    |Built        |                                                                                                                                             
-§10 static analyser                      |NOT BUILT    |No part of it. See §10's own note                                                                                                            
-§11 surface count                        |ASPIRATIONAL |Counts the specified surface, not the built one                                                                                              
+Section                                  |Status      |Notes                                                                                  
+-----------------------------------------|------------|---------------------------------------------------------------------------------------
+§1–§3 principles, conventions, type index|Built       |                                                                                       
+§4.1 reading                             |Built       |`read` `stat` `list` `grep`                                                            
+§4.2 streaming reads                     |Built       |`lines` `bytes` `records`                                                              
+§4.3 writing                             |Built       |`write` `write!` `append` `mkdir` `cp` `cp!`                                           
+§4.4 destruction                         |Built       |`rm` `rmdir` `rmdir!` `mv` `mv!`; "`rm` subsumes `rmdir`" reversed 2026-09-04          
+§4.5 network                             |Built       |`fetch`; streamed request body still open                                              
+§4.6 execution                           |RETIRED     |No `exec` grant, no `run` verb — removed 2026-09-05 as unused scaffolding; see SCOPE.md
+§4.7 ambient                             |Built       |`scratch` `log` `fail` (2026-09-08), `env` `now` `random` (2026-09-08)                 
+§5 value types                           |Built       |All six — `Legate::Exit` retired 2026-09-10, see SCOPE.md                              
+§6 stream protocol                       |Built       |                                                                                       
+§7 grants and policy                     |Built       |`ambient.now` removed 2026-09-01; see SCOPE.md                                         
+§8.1 path resolution / TOCTOU            |Built       |                                                                                       
+§8.2 network hardening                   |Built       |Resolved-address checks in `fetch.cr`                                                  
+§8.3 execution sandboxing                |RETIRED     |No `exec` grant to sandbox — see §4.6                                                  
+§8.4 caps                                |Built       |                                                                                       
+§8.5 exception construction              |Built       |                                                                                       
+§8.6 diagnostics for removed constructs  |Built       |`retry` resolved 2026-09-09 (UNSUPPORTED.md, U020); every table row now enforced       
+§8.7 audit log                           |Built       |Narrower than specified: no bytes/duration                                             
+§9 exception taxonomy                    |Built       |                                                                                       
+§10 static analyser                      |NOT BUILT   |No part of it. See §10's own note                                                      
+§11 surface count                        |ASPIRATIONAL|Counts the specified surface, not the built one                                        
 
 **What exists today is 25 verbs**, no submodules, and no static
 analyser — every verb §1–§4 specifies is now real; only §4.6's
@@ -301,7 +300,6 @@ Type                          |Returned by             |Kind
 `Legate::Entry`               |`Legate.list` (elements)|frozen value
 `Legate::Match`               |`Legate.grep` (elements)|frozen value
 `Legate::Response`            |`Legate.fetch`          |frozen value
-`Legate::Exit`                |*(none — §0)*           |frozen value
 `Legate::Lines`               |`Legate.lines`          |stream      
 `Legate::Bytes`               |`Legate.bytes`          |stream      
 `Legate::Records`             |`Legate.records`        |stream      
@@ -352,7 +350,6 @@ flowchart LR
         T3["Array&lt;Legate::Entry&gt;"]
         T4["Array&lt;Legate::Match&gt;"]
         T5["Legate::Response"]
-        T6["Legate::Exit"]
         T7["Legate::Path"]
         T8["Integer"]
     end
@@ -546,6 +543,8 @@ Legate.fail(message)          -> no return    # raises Legate::Aborted (fatal)
 
 `Legate.log`'s destination is chosen by the embedder, not this spec — a `::Log` (Crystal's own stdlib logging source) supplied when the Interpreter is constructed, defaulting to a genuinely silent library-owned source (bound to a private, empty `Log::Builder`, not Crystal's own shared default one — see `Legate::Broker::DEFAULT_LOG`) if the embedder never configures one. That construction matters: Crystal's OWN stdlib default is not silent — every source logs Info-and-above to STDOUT unless something in the process calls `Log.setup`, so a naive default would have made every unconfigured `Legate.log` call print. `fields`' values must each be a String, Integer, Float, `true`/`false`, `nil`, or an Array/Hash of the same — anything else raises `TypeError`, the same as a wrong-typed argument to any other verb (ERRORS.md's R039). `message` is required for both `Legate.log` and `Legate.fail`; there is no default for either.
 
+`Legate.log` is a real SINK, not just a reporting concern: it declares `Authority::Log`, so a `message`/`fields` argument carrying a RiskFlowLabel (from `Legate.read`, `Legate.fetch`, `Legate.env`, or anything else that attaches one) is checked against the offered `RiskFlowPolicy` the same way any other risky call's tainted argument is — a script reading a sensitive value and handing it to `Legate.log` can be Asked about or flatly Rejected, not just reported after the fact. This is what actually closes the exfiltration path a script that reads something sensitive and narrates it would otherwise have: the destination being embedder-chosen and possibly outside the sandbox entirely (a local file another tool call can read, say) is exactly why this needed a real Authority, not only `Effect::ExternalOutput`'s static visibility. Added 2026-09-10; SCOPE.md has the full design reasoning, including the much larger unrelated finding that surfaced alongside it — no other Legate verb (`read`/`write`/`delete`/`net` included) currently has this same protection.
+
 ---
 
 ## 5. Value types
@@ -612,17 +611,6 @@ response.raise!   -> self             # raises Legate::Transport unless ok?
 ```
 
 `raise!` exists for the common case where the script genuinely wants a non-2xx to be fatal, without forcing that choice on every caller.
-
-### 5.6 `Legate::Exit`
-
-```ruby
-exit.code        -> Integer
-exit.ok?         -> Boolean   # code.zero?
-exit.out         -> String
-exit.err         -> String
-exit.truncated?  -> Boolean
-exit.duration    -> Float
-```
 
 ---
 
@@ -773,7 +761,7 @@ Enforce at three levels, on the assumption that the higher ones will eventually 
 The vocabulary in §4 is novel, so priors do not fight it. The **removals** in §1.2 are where habit will collide with the language, and no amount of design avoids that. Three requirements make the collision cheap:
 
 1. **Remove, never cripple.** Undefine the constant or method entirely. A partially-implemented `File` invites the author to assume the other thirty-nine methods exist.
-2. **Fail at parse time where possible.** `File.read`, `send`, `eval`, `retry`, and bare `rescue` are all detectable statically. A diagnostic before execution costs one turn; a failure on line 340 of a long run costs the whole run. (`retry` is now detected and rejected — U020, since 2026-09-09, UNSUPPORTED.md. Bare `rescue` is detectable but not currently detected: it is implemented and works, unrestricted — §0.)
+2. **Fail at parse time where possible.** `File.read`, `send`, `eval`, and `retry` are all detectable statically. A diagnostic before execution costs one turn; a failure on line 340 of a long run costs the whole run. (`retry` is now detected and rejected — U020, since 2026-09-09, UNSUPPORTED.md.)
 3. **Name the replacement.** Every removal diagnostic MUST state the Legate equivalent, or state plainly that none exists.
 
 Written                        |Diagnostic                                                          
@@ -841,8 +829,7 @@ flowchart TB
     subgraph GATE["Static gate bans"]
         B1["rescue Exception"]
         B2["rescue Legate::Denied / Exhausted / Aborted"]
-        B3["bare rescue with no class"]
-        B4["ensure that swallows"]
+        B3["ensure that swallows"]
     end
 
     FAT -.->|"enforced by"| GATE
@@ -899,14 +886,18 @@ The specification is shaped to make these checks cheap. An implementation SHOULD
 > no exception gate and no inclusion ledger. Read what follows as the
 > intended design. Where §9 previously described these checks as
 > guarantees already in force, that was wrong and has been corrected;
-> see SCOPE.md's entry on §10 for the full status and for the one
-> remaining rule (bare `rescue`) the language currently implements in
-> direct contradiction of §10.2. `retry`'s own contradiction (the
-> same entry) was resolved 2026-09-09 by removing `retry` — see
-> UNSUPPORTED.md, U020 — rather than by building the analyser around
-> it; that rule has moved out of §10.2's table below into a baseline
-> exclusion enforced unconditionally, the same as `eval`/`send`/
-> `File`, not contingent on §10 ever being built.
+> see SCOPE.md's entry on §10 for the full history. Both of that
+> entry's original contradictions between §10.2 and reality are now
+> resolved, by two different routes. `retry` (2026-09-09): by removing
+> `retry` from the language entirely — see UNSUPPORTED.md, U020 —
+> since the existing implementation turned out to be a genuinely
+> broken stub, not a working feature worth keeping. Bare `rescue`
+> (2026-09-10): the opposite route, keeping it permanently and
+> removing §10.2's own rule against it instead — unlike `retry`, it is
+> correctly implemented and exercised by real specs, and a future
+> analyser can give reduced-precision analysis to a function that uses
+> it rather than needing to forbid the construct outright (§10.2's own
+> note, below).
 
 ### 10.1 Dataflow
 
@@ -919,15 +910,16 @@ Check 2 is the security-critical one — its sibling, taint reaching an `argv`, 
 
 ### 10.2 Exception discipline
 
-Exceptions are worse for flow analysis than return values: every call site gains a control-flow edge to every enclosing handler, so the CFG stops being a tree. Four restrictions recover most of the tractability, and each is independently justified. (A fifth, `retry` being forbidden, was here too until 2026-09-09 — it's now a baseline exclusion enforced unconditionally, not one contingent on this analyser existing; see UNSUPPORTED.md, U020, and this section's own status note above.)
+Exceptions are worse for flow analysis than return values: every call site gains a control-flow edge to every enclosing handler, so the CFG stops being a tree. Three restrictions recover most of the tractability that remains available, and each is independently justified. (Two more were here until this session. `retry` being forbidden: resolved 2026-09-09 by removing `retry` from the language — UNSUPPORTED.md, U020. `rescue` being required to name a class: resolved 2026-09-10 by the opposite route — see the note below the table.)
 
-Rule                                                          |Reason                                                               
---------------------------------------------------------------|---------------------------------------------------------------------
-`rescue` MUST name one or more classes                        |a bare `rescue` makes the handler edge set universal and uncomputable
-`rescue Exception` is forbidden                               |it is the only syntax that catches the fatal tier                    
-`rescue Legate::Denied` / `Exhausted` / `Aborted` is forbidden|direct evasion of §9.2                                               
-`ensure` MUST NOT return, raise, or `break`                   |silently discards an in-flight exception, including a fatal one      
-re-raising as a different class is forbidden                  |would permit laundering a fatal exception into a recoverable one     
+Rule                                                          |Reason                                                          
+--------------------------------------------------------------|----------------------------------------------------------------
+`rescue Exception` is forbidden                               |it is the only syntax that catches the fatal tier               
+`rescue Legate::Denied` / `Exhausted` / `Aborted` is forbidden|direct evasion of §9.2                                          
+`ensure` MUST NOT return, raise, or `break`                   |silently discards an in-flight exception, including a fatal one 
+re-raising as a different class is forbidden                  |would permit laundering a fatal exception into a recoverable one
+
+A bare `rescue` (no class named) is deliberately NOT in this table, and permanently so — decided 2026-09-10, correcting SCOPE.md's earlier open question. An ephemeral, agent-authored script reaching for `rescue` as a blanket escape hatch is a reasonable thing to want, and unlike `retry` — which needed a VM fix that didn't exist to work correctly at all — bare `rescue` is genuinely, correctly implemented today. The tractability cost this table's own preamble describes is real, but bounded: it is not a security concern. §9.2's uncatchability of the fatal tier holds regardless of syntax — `Compiler#compile_rescue` already substitutes `StandardError` as a bare `rescue`'s implicit class, matching real Ruby exactly, so it was never able to catch `Legate::Denied`/`Exhausted`/`Aborted` (direct `Exception` subclasses, not `StandardError` ones) in the first place. Keeping it changes nothing about what a script can evade; it only changes how precisely a future analyser can reason about a function that uses it. When that analyser is built, the intended treatment is reduced-precision analysis for such a function — its own handler treated as reaching every `StandardError`-family raise reachable from the body, rather than a narrower, computed set — not outright rejection of the construct.
 
 ### 10.3 The inclusion ledger
 
@@ -948,7 +940,7 @@ Note the direction of the third check. Because the manifest is optional (§2.7),
 
 ### 10.4 Raise-set inference
 
-Because the effectful surface is 21 verbs with fixed, documented raise sets, the analyser can compute a **checked-exception set** for every function in the script — the way Java's `throws` works, but inferred rather than declared. This is not possible in general Ruby, and it earns back much of what §2.1 gave up.
+Because the effectful surface is 19 verbs with fixed, documented raise sets — the read/write/delete/net family, §4.1–§4.5 — the analyser can compute a **checked-exception set** for every function in the script — the way Java's `throws` works, but inferred rather than declared. This is not possible in general Ruby, and it earns back much of what §2.1 gave up. (§4.7's six ambient verbs are outside this count: their errors are either generic `ArgumentError`/`TypeError` — not part of the `Legate::`-namespaced taxonomy §9 specifies — or an unconditionally fatal, uncatchable `FatalSignal`, which needs no checked-exception inference at all since no `rescue` clause could ever be relevant to it.)
 
 Three uses:
 
@@ -964,8 +956,8 @@ Group                                     |Count
 ------------------------------------------|-----------------------------------
 Verbs on `Legate`                         |25                                 
 Submodules (one per grant, optional sugar)|5                                  
-Value types                               |6                                  
-Methods across all value types            |~47                                
+Value types                               |5                                  
+Methods across all value types            |~41                                
 Stream operators and terminals            |~40 (all familiar Enumerable names)
 Grant kinds                               |5                                  
 Exception classes                         |11 (8 recoverable, 3 fatal)        
@@ -974,11 +966,15 @@ Exception classes                         |11 (8 recoverable, 3 fatal)
 > one.** As of 2026-09-08 all **25 verbs** are built — the gap
 > between specified and built is down to **no submodules** (the six
 > submodules are sugar over the grant categories — §2.7 — and none is
-> built despite every verb they would wrap now existing) and one
-> value type — `Legate::Exit` — that nothing yet produces (§4.6, its
-> only would-be producer, was retired). §0.
+> built despite every verb they would wrap now existing). `Legate::
+> Exit`, the one previous gap in this count, is no longer part of the
+> specified surface at all: it was `Legate.run`'s return type, and
+> once `run` was retired (§4.6) with no producer left and no plan to
+> build one, keeping the type in the spec anyway — real, described,
+> permanently unreachable — was judged worse than removing it.
+> Retired 2026-09-10; see SCOPE.md. §0.
 
-Roughly **120 names**, of which about 40 are Enumerable methods the model already knows perfectly, and 11 are exception classes whose handling follows ordinary Ruby reflexes. The 5 submodules are optional and need not be learned at all. The genuinely novel vocabulary is the 25 verbs and 6 types — comfortably a single page of context.
+Roughly **114 names**, of which about 40 are Enumerable methods the model already knows perfectly, and 11 are exception classes whose handling follows ordinary Ruby reflexes. The 5 submodules are optional and need not be learned at all. The genuinely novel vocabulary is the 25 verbs and 5 types — comfortably a single page of context.
 
 Five of those verbs are bangs, and they cost a reader almost nothing: the suffix means one thing everywhere it appears (§4.3), so learning it once covers `write!`, `cp!` and `mv!`, while `rmdir!` is the same idea applied to a tree. A script author who never writes a bang is never wrong, only occasionally refused.
 

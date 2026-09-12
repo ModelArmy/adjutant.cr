@@ -48,11 +48,6 @@ module Adjutant
         cls = legate.constants[i.symbols.intern("Response").value].as_rclass
         Legate::Response.build(i, cls, 404, {} of String => String, Value.string("not found"), "https://example.com/missing")
       end
-
-      i.define_native("make_exit") do |_args, _blk, _ncc|
-        cls = legate.constants[i.symbols.intern("Exit").value].as_rclass
-        Legate::Exit.build(i, cls, 0, "hello\n", "", false, 0.42)
-      end
     end
     interp.modules.require("test/legate_value_type_triggers", interp)
     interp
@@ -235,16 +230,6 @@ module Adjutant
         rescue Legate::Malformed
           "caught"
         end
-        RUBY
-      end
-    end
-
-    describe "Legate::Exit (§5.6)" do
-      it "code/ok?/out/err/truncated?/duration" do
-        interp = interp_with_value_type_triggers
-        interp.eval(<<-RUBY).as_bool.should eq true
-        e = make_exit
-        e.code == 0 && e.ok? && e.out == "hello\n" && e.err == "" && !e.truncated?
         RUBY
       end
     end

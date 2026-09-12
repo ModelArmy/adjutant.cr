@@ -38,17 +38,38 @@ module Adjutant
       # conversion (a Sym becomes its name; a Proc/RubyObject/RubyClass
       # raises rather than silently stringifying).
       #
-      # No effect declared (`RiskProfile.none`): none of `Effect`'s
-      # current members (ReadsFiles/WritesFiles/... — risk_profile.cr)
-      # describes "emits structured data to a caller-configured sink,"
-      # and minting a new one is a bigger call than this verb alone
-      # should force — flagged in SCOPE.md as an open question rather
-      # than decided here.
+      # `Effect::ExternalOutput` (risk_profile.cr): the static risk
+      # sweep's honest answer to "what does this call do" — data can
+      # leave the sandbox through it, via a destination the script
+      # itself never names or sees.
+      #
+      # `authorities: Set{Authority::Log}` (below) is the half that
+      # actually DOES something, not just reports: it makes
+      # `Legate.log` a real SINK in `VM#check_risk_flow`'s
+      # labeled-argument check — the same generic mechanism
+      # `risk_flow_enforcement_spec.cr` proves correct, just never
+      # before connected to an actual Legate verb. A script that logs
+      # a value carrying a RiskFlowLabel (from `Legate.read`,
+      # `Legate.fetch`, `Legate.env`, ...) now has that check consult
+      # `RiskFlowPolicy#action_for(Authority::Log, sensitivity)` the
+      # SAME way a tainted argument reaching any other risky call
+      # would, and can be Asked about or flatly Rejected — this is
+      # the actual fix for reading a sensitive file and logging it as
+      # exfiltration, not the Effect above, which only makes the
+      # possibility visible in a report someone has to go read.
+      # `authorities:` is NOT the same thing as going through
+      # `Broker#authorize` (ambient verbs still bypass that whole
+      # sequence — no wall-clock check, no AuditRecord for this) —
+      # it's a separate, narrower mechanism that only ever looks at
+      # already-labeled arguments. Added 2026-09-10; full reasoning,
+      # including why NO other Legate verb has this same protection
+      # yet, in SCOPE.md.
       module Log
         def self.bootstrap(interp : Interpreter, legate : RubyClass, broker : Broker) : Nil
           legate.define_native_singleton_method(
             interp.symbols.intern("log").value,
-            RiskProfile.none,
+            RiskProfile.new(effects: Set{Effect::ExternalOutput}),
+            authorities: Set{Authority::Log},
           ) do |args, _blk, ncc|
             message_val = args[1]?
             if message_val.nil?

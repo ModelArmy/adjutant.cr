@@ -380,6 +380,12 @@ just noise for the next reader.
   there is no analyser file, `risk_walker.cr` contains no reference to
   Legate, and nothing infers, cross-checks or refuses a policy.
 
+  (Piece 4's own status was later confirmed directly, 2026-09-10 —
+  see "No Legate verb... actually prevents a script from reading
+  sensitive data and handing it to a sink," below: not done. The
+  mechanism it needs — `VM#check_risk_flow` — is built and tested,
+  wired to zero real verbs.)
+
   All three subsections are unbuilt:
 
   - **§10.1 Dataflow.** No grant inference, so no minimum policy and
@@ -492,22 +498,113 @@ just noise for the next reader.
     its own. `retry` puts a back-edge in the control-flow graph, and
     §10.2's whole preamble is about keeping the CFG tractable.
 
-  ### Bare `rescue` — still open, not addressed by the retry decision
+  ### Bare `rescue` — DECIDED 2026-09-10: kept permanently
 
-  A genuinely different question from `retry`'s, and NOT resolved by
-  it: bare `rescue` isn't broken the way `retry` was — it's
+  A genuinely different question from `retry`'s, and never resolved
+  by it: bare `rescue` isn't broken the way `retry` was — it's
   correctly, fully implemented and exercised by existing specs; §10.2
-  simply doesn't gate it yet. Whether it should eventually be removed
+  simply didn't gate it yet. Whether it should eventually be removed
   (matching `retry`'s fate) or whether §10.2's rule should instead be
-  softened once the analyser exists is not decided here, and
-  shouldn't be assumed to follow `retry`'s precedent just because the
-  two were adjacent in this entry — `retry`'s removal was driven by a
-  correctness bug specific to it, not by the tractability argument
-  alone, and tractability alone is a weaker case for an outright ban
-  (bounded/reduced-precision analysis is a real alternative for bare
-  `rescue` in a way it never quite was for `retry`, which needed a
-  target IP that plain didn't exist). Recorded here rather than
-  decided, same as before.
+  softened once the analyser exists was the open question — settled
+  by removing §10.2's rule entirely, the opposite of `retry`'s
+  outcome, rather than assuming the two should match just because
+  they were adjacent in this entry. `retry`'s removal was driven by a
+  correctness bug specific to it; bare `rescue` has none, and
+  tractability alone was judged a weaker basis for an outright ban of
+  a genuinely useful, working construct — an ephemeral, agent-authored
+  script reaching for `rescue` as a blanket escape hatch is a
+  reasonable thing to want. The security question this raises has a
+  clean answer, verified against `compiler.cr` directly rather than
+  assumed: a bare `rescue`'s implicit class has always been
+  `StandardError` (`Compiler#compile_rescue`, matching real Ruby
+  exactly), so it was never able to catch `Legate::Denied`/
+  `Exhausted`/`Aborted` — direct `Exception` subclasses — regardless
+  of this decision. Keeping it changes nothing about what a script can
+  evade. §10.2's own table and the §10 status banner (LEGATE.md) are
+  updated accordingly; the future analyser's intended treatment for a
+  function using bare `rescue` is reduced-precision analysis, not
+  rejection — recorded in §10.2's own prose rather than only here,
+  since it's a real design commitment for whoever eventually builds
+  it, not just a historical note.
+
+- **No Legate verb — `Legate.log` included, until this entry —
+  actually prevents a script from reading sensitive data and handing
+  it to a sink.** Raised 2026-09-10: could a script read `/etc/
+  passwd` and exfiltrate it via `Legate.log`, especially if the log
+  destination turns out to be something readable outside Adjutant
+  entirely (a local file another tool call can open)? Checking the
+  answer surfaced something bigger than the question asked.
+
+  **What actually gates a risky call on the data flowing through it
+  (not just on the call's own subject) already exists, fully built
+  and tested, and is connected to NOTHING.** `VM#check_risk_flow`
+  (`vm.cr`) is the real mechanism: for every native call, it checks
+  each argument's own `RiskFlowLabel` against the authorities that
+  call's `NativeCallable` declares, via `RiskFlowPolicy#action_for`
+  — genuinely different from, and complementary to, `Broker#
+  authorize`'s `declare_sensitivity` call, which only ever asks "is
+  THIS SUBJECT (a path, host, env name) itself configured as
+  sensitive," never "does the DATA passed in carry a label from
+  somewhere else." Confirmed by reading `write.cr`'s own
+  `authorize_write` call directly: it passes the destination PATH,
+  never the DATA argument, so writing tainted content to an
+  untainted path was never checked either. `check_risk_flow` is
+  real, is exercised thoroughly by `risk_flow_enforcement_spec.cr`
+  ("risk flow enforcement (piece 4)" — its own describe block name)
+  via a synthetic `delete_file` trigger — and is wired to zero real
+  Legate verbs. `grep -rn "authorities:" src/adjutant/legate/verbs/`
+  returns nothing, for ANY verb, `read`/`write`/`delete`/`net`
+  included. This is "piece 4 of the authorization work," the same
+  phrase the §10 entry above references without (at the time) being
+  able to say whether it was done. It is not done. That resolves the
+  open question this file's own earlier note left about that entry's
+  Must-Fix-vs-Will-Fix categorization — it stays Must Fix, and now
+  for a documented, concrete reason rather than an unverified guess.
+
+  **Fixed here, narrowly, for `Legate.log` only:** a new
+  `Authority::Log` (`authority.cr`) and a new `Effect::
+  ExternalOutput` (`risk_profile.cr`) — deliberately two separate
+  additions answering two separate questions, matching this
+  codebase's own Authority-vs-Effect split (`authority.cr`'s own
+  comment: Authority is enforced, Effect is reported). `Effect::
+  ExternalOutput` makes the risk visible in the static sweep (step
+  4c) — necessary but NOT sufficient, since a static effect flag
+  reports a possibility, it doesn't stop anything. `Authority::Log`,
+  declared via `legate.define_native_singleton_method`'s
+  `authorities:` parameter (which every verb bootstrap until now has
+  silently left at its default, empty, `Set(Authority).new`), is
+  what actually does the preventing — it makes `Legate.log` a real
+  consumer of the already-built `check_risk_flow` machinery. Verified
+  end-to-end, not just unit-tested in isolation: `log_spec.cr`'s
+  "risk-flow enforcement" tests use `Legate.env` as a REAL labeled
+  source (not a synthetic trigger) reaching `Legate.log` as the sink,
+  including confirming label propagation through a constructed Hash
+  literal (`{data: secret}`) actually reaches the check — traced
+  through `Op::MakeHash`'s own `RiskFlowLabel.join` across every
+  pair, confirmed correct before trusting the test to mean anything.
+
+  **NOT fixed, and this is the larger remaining piece:** `read`,
+  `write`, `delete`, and `net` — the entire non-ambient verb family
+  — declare no `authorities:` either, meaning the ORIGINAL
+  exfiltration question (read a sensitive file, write it somewhere
+  else; or read it, `Legate.fetch` it out over the network) is
+  UNPROTECTED by this same mechanism today, for the verbs where it
+  would matter most. Not attempted here: retrofitting `authorities:`
+  onto four established, heavily-specified, heavily-tested verb
+  families is real, separate work — deciding which Authority each
+  declares (a `Legate.write` call plausibly needs to check the
+  INCOMING data against `Authority::Write`, which already exists and
+  is already used for the destination-sensitivity check, so this may
+  be closer to "add one line per verb" than `Legate.log`'s case was
+  — but that needs verifying per verb, not assumed), auditing
+  whether any existing policy/spec currently relies on tainted data
+  reaching these verbs unchecked (a behavior change, however
+  correct, breaks something for someone if they were depending on
+  the absence), and deciding whether `net`/`fetch` needs the SAME
+  treatment for outbound request bodies specifically. Left as the
+  next piece of this Must Fix entry, not a new one — the
+  investigation and the fix for `log` are done; the fix for
+  everything else Legate already ships is not.
 
 ## Will Fix
 
@@ -1372,24 +1469,27 @@ individually.
   verb signatures) rather than hand-authoring a parallel prose doc, so
   the two can't silently drift apart.
 
-- **`Legate::Exit`'s fate is now an open question, not just an
-  unused type.** Found 2026-09-05, while removing `Legate.run`'s
-  scaffolding (§4 step 1). The value type itself
-  (`code`/`ok?`/`out`/`err`/`truncated?`/`duration`) was left
-  bootstrapped rather than deleted — it's real, tested, and
-  IFC-labeled — but `raise!` had to go: its only exception class,
-  `Legate::NonZeroExit`, was removed as unused scaffolding, and
-  nothing produces a `Legate::Exit` at all now that `run` is retired
-  from the spec (§4.6). Two honest options, neither decided here:
-  retire the whole type alongside `run` (consistent — there is
-  genuinely no producer, and won't be while exec stays out of scope),
-  or leave it as a plain, producer-less record shape against the
-  chance a future non-process source wants the same
-  `code`/`out`/`err`/`duration` shape. Leaning toward the latter only
-  because deleting it touches `interpreter.cr`'s bootstrap call and
-  several IFC-propagation specs that exercise it for reasons
-  unrelated to `run` — the risk of leaving it is a shape kept alive by
-  inertia rather than by a real second producer in view.
+- **`Legate::Exit` — DECIDED 2026-09-10: removed entirely.** Found
+  2026-09-05, while removing `Legate.run`'s scaffolding (§4 step 1),
+  as an open question between two options: retire the whole type
+  alongside `run` (no producer, and won't be while exec stays out of
+  scope), or leave it as a plain, producer-less record shape against
+  the chance a future non-process source wants the same
+  `code`/`out`/`err`/`duration` shape. Settled on the former — if
+  something ever needs that shape again, it can be rebuilt with full
+  context for whatever it's actually serving, rather than kept alive
+  now on the chance it might be useful later. `raise!` had already
+  been removed (its only exception class, `Legate::NonZeroExit`, was
+  scaffolding for `run`); the rest
+  (`code`/`ok?`/`out`/`err`/`truncated?`/`duration`) is now gone too
+  — `legate/exit.cr` deleted, its bootstrap call and `require`
+  removed from `interpreter.cr`/`legate.cr`, LEGATE.md's §5.6, its
+  §3 type-index row and diagram node, and its §11 counts (value
+  types 6→5, methods ~47→~41) all updated to match. The Exit-specific
+  IFC-labeling test in `risk_flow_propagation_spec.cr` was removed
+  rather than adapted — Entry/Match/Response already exercise the
+  identical selective-labeling pattern, so no real coverage was lost,
+  just a redundant fourth instance of it.
 
 - **`Legate.log` is `Legate.log(message, fields = {})`, not the
   spec'd `Legate.log(message, **fields)`.** Built 2026-09-08 (§4 step
@@ -1449,21 +1549,15 @@ individually.
   genuinely single-call incidental space. `legate/broker.cr`'s
   `@scratch_dir` comment has the full reasoning; not revisited here.
 
-- **Whether `Legate.log` should declare an `Effect` of its own is
-  unresolved.** Built 2026-09-08. None of `Effect`'s current members
-  (`ReadsFiles`/`WritesFiles`/`DeletesFiles`/`MovesFiles`/
-  `Recursive`/`NetworkEgress`/`ExecutesCode`/`ElevatedPrivilege`/
-  `ModifiesEnvironment` — `risk_profile.cr`) describes "emits
-  structured data to a caller-configured sink," so `Legate.log`
-  ships with `RiskProfile.none` — the static risk sweep (step 4c)
-  will report it as effect-free, which undersells it a little: an
-  embedder-configured log is still somewhere a script's data can end
-  up, and a report reader arguably ought to see that. Minting a new
-  `Effect` member for one verb felt like a bigger call than this
-  session should make unilaterally — it touches the enum other code
-  pattern-matches over (`risk_assessment_spec.cr`'s whole-set
-  comparisons, notably), not just this one file. Flagged rather than
-  decided.
+- **`Legate.log`'s `Effect` — RESOLVED 2026-09-10, and turned out to
+  be half the real question.** This entry originally flagged that
+  `Legate.log` shipped with `RiskProfile.none`, undeclaring a real
+  static-report effect. Fixed with `Effect::ExternalOutput`, but the
+  Effect alone doesn't prevent anything — see the Must Fix entry
+  above ("No Legate verb... actually prevents a script from reading
+  sensitive data and handing it to a sink") for the actual fix
+  (`Authority::Log`) and the much larger finding that surfaced
+  alongside it.
 
 - **§10.1's own worked claim ("the effectful surface is 21 verbs")
   is stale, independent of anything this session touched.** Noticed

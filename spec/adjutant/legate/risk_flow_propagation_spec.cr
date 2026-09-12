@@ -30,7 +30,7 @@ module Adjutant
     interp
   end
 
-  # Stat/Entry/Match/Response/Exit are broker-manufactured only (no
+  # Stat/Entry/Match/Response are broker-manufactured only (no
   # script-visible constructor — see each file's own comment), so
   # their propagation is tested by calling `.build` directly from
   # Crystal with a real `RiskFlowLabel`, via the same kind of
@@ -69,11 +69,6 @@ module Adjutant
         cls = legate.constants[i.symbols.intern("Response").value].as_rclass
         Legate::Response.build(i, cls, 200, {"Content-Type" => "application/json"},
           Value.string(%({"a": 1}), label), "https://example.com", label)
-      end
-
-      i.define_native("labeled_exit") do |_args, _blk, _ncc|
-        cls = legate.constants[i.symbols.intern("Exit").value].as_rclass
-        Legate::Exit.build(i, cls, 0, "secret output\n", "", false, 0.1, label)
       end
     end
     interp.modules.require("test/legate_ifc_triggers", interp)
@@ -161,7 +156,7 @@ module Adjutant
       end
     end
 
-    describe "Legate::Stat/Entry/Match/Response/Exit — broker-side .build propagation" do
+    describe "Legate::Stat/Entry/Match/Response — broker-side .build propagation" do
       it "Stat: size and the outer object carry the label; type/mode (metadata) don't" do
         interp = interp_with_labeled_value_triggers
         result = interp.eval("labeled_stat")
@@ -198,14 +193,6 @@ module Adjutant
         interp = interp_with_labeled_value_triggers
         interp.eval(%(labeled_response.json["a"])).label.should_not be_nil
         interp.eval("labeled_response.json").label.should_not be_nil
-      end
-
-      it "Exit: out/err and the outer object carry the label; code/truncated/duration don't" do
-        interp = interp_with_labeled_value_triggers
-        interp.eval("labeled_exit").label.should_not be_nil
-        interp.eval("labeled_exit.out").label.should_not be_nil
-        interp.eval("labeled_exit.code").label.should be_nil
-        interp.eval("labeled_exit.duration").label.should be_nil
       end
     end
 
