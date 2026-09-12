@@ -1,0 +1,13 @@
+# Two roots under `read`: `fixtures/` (pre-existing source content)
+# AND `workspace/` (this script reads back what it just wrote via
+# `Legate.read`/`Legate.stat`/`Legate.lines`, to actually verify the
+# write-grant verbs did what they claim — a write-only grant would
+# leave this script no way to check its own work).
+grants:
+  read:
+    roots:
+      - fixtures
+      - workspace
+  write:
+    roots:
+      - workspace

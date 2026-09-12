@@ -36,10 +36,10 @@ module Adjutant
     # never registered, and gets a snippet-less report rather than a
     # crash.
     def line(filename : String?, line : Int32) : String?
-      return nil unless filename
+      return unless filename
       lines = @lines[filename]?
-      return nil unless lines
-      return nil unless 1 <= line <= lines.size
+      return unless lines
+      return unless 1 <= line <= lines.size
       lines[line - 1]
     end
 

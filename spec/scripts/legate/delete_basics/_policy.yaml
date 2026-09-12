@@ -1,0 +1,26 @@
+# Four grant categories, three roots, and the asymmetry between them
+# is the point rather than an accident of convenience:
+#
+#   - `read` covers `fixtures/` and `workspace/` — this script needs
+#     to read back what it moved and deleted in order to prove the
+#     verbs did what they claim.
+#   - `write` covers `workspace/` ONLY. The script builds its own
+#     scratch content there; `fixtures/` is checked-in source content
+#     and nothing here should be able to modify it.
+#   - `delete` also covers `workspace/` only, and for a sharper
+#     reason: a `delete` root over `fixtures/` would let a bug in
+#     this script quietly remove committed test data. §4.4's whole
+#     argument is that creation and destruction are different
+#     authorities — a policy that grants them over different sets of
+#     paths is that argument in practice, not just in prose.
+grants:
+  read:
+    roots:
+      - fixtures
+      - workspace
+  write:
+    roots:
+      - workspace
+  delete:
+    roots:
+      - workspace

@@ -1,0 +1,12 @@
+# Grants this directory's scripts read-only access to their own
+# `fixtures/` subfolder — LEGATE.md §7's real config shape
+# (`Legate::Grants.from_yaml`), the same format a real embedder
+# writes; nothing here is test-runner-specific syntax. Resolved by
+# `src/test_runner.cr`'s `grants_for` relative to THIS file's own
+# directory, so `fixtures` below means `spec/scripts/legate/basics/
+# fixtures`, regardless of where `crystal spec`/`ops test` is
+# actually invoked from.
+grants:
+  read:
+    roots:
+      - fixtures

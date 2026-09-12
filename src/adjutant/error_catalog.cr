@@ -360,6 +360,100 @@ module Adjutant
         help: "Pass a Regexp: `str =~ /pattern/`."
       ),
 
+      "R034" => Entry.new(
+        code: "R034",
+        summary: "Legate.records given an unknown format: {format}",
+        why: "`Legate.records(path, format:)` only knows how to parse " \
+             "`:jsonl` and `:csv` — there's no general-purpose record " \
+             "format beyond those two.",
+        help: "Pass `format: :jsonl` or `format: :csv`."
+      ),
+
+      "R035" => Entry.new(
+        code: "R035",
+        summary: "Legate.grep called with no paths argument",
+        why: "`Legate.grep(pattern, paths)` needs to know WHERE to " \
+             "search — `paths` is required, not optional, even though " \
+             "`context:`/`limit:` both have defaults.",
+        help: "Pass a glob string or an Array of paths, e.g. " \
+              "`Legate.grep(pattern, \"src/**/*.rb\")`."
+      ),
+
+      "R036" => Entry.new(
+        code: "R036",
+        summary: "`{method}` given a non-{expected} value for {kwarg}: ({class_name})",
+        why: "`{kwarg}:` on `{method}` only accepts a {expected} — " \
+             "passing anything else can't be interpreted as one.",
+        help: "Check the value you're passing for `{kwarg}:`."
+      ),
+
+      "R037" => Entry.new(
+        code: "R037",
+        summary: "`{method}`'s data argument is neither a String nor an Enumerable ({class_name})",
+        why: "`{method}(path, data)` only accepts a String, an Array " \
+             "of Strings, or a Legate stream for `data` — nothing " \
+             "else can be written out a piece at a time.",
+        help: "Pass a String, an Array of Strings, or a Legate stream."
+      ),
+
+      "R038" => Entry.new(
+        code: "R038",
+        summary: "`{method}`'s data argument yielded a non-String element ({class_name})",
+        why: "Every element of `{method}`'s `data` — whether from an " \
+             "Array or a Legate stream — must itself be a String; " \
+             "there's no implicit `#to_s` conversion for what gets " \
+             "written to a file.",
+        help: "Make sure every element is already a String, e.g. via `.map { |x| x.to_s }`."
+      ),
+
+      "R039" => Entry.new(
+        code: "R039",
+        summary: "`{method}`'s `{arg}` argument isn't a {expected} ({class_name})",
+        why: "`{method}` needs `{arg}` to be a {expected} — passing " \
+             "anything else can't be interpreted as one.",
+        help: "Check the value you're passing for `{arg}`."
+      ),
+
+      "R040" => Entry.new(
+        code: "R040",
+        summary: "Legate.fail called with no message argument",
+        why: "`Legate.fail(message)` needs `message` — an abort with " \
+             "no explanation defeats the point of choosing to abort " \
+             "rather than letting some other error surface.",
+        help: "Pass a String explaining why the script is aborting, " \
+              "e.g. `Legate.fail(\"missing required config\")`."
+      ),
+
+      "R041" => Entry.new(
+        code: "R041",
+        summary: "Legate.log called with no message argument",
+        why: "`Legate.log(message, fields = {})` needs `message` — " \
+             "`fields` alone, with nothing to say, isn't a log line.",
+        help: "Pass a String as the first argument, e.g. " \
+              "`Legate.log(\"starting step 2\", {step: 2})`."
+      ),
+
+      "R042" => Entry.new(
+        code: "R042",
+        summary: "`{method}` given an `n` that isn't positive",
+        why: "`n <= 0` doesn't get real Ruby's own \"treat it as " \
+             "absent\" quirk here — a value that looks like a " \
+             "deliberate argument silently changing the shape of the " \
+             "result (Integer vs Float) is worse than a clean error.",
+        help: "Pass a positive Integer or Float, or omit `n` entirely " \
+              "for a Float in [0.0, 1.0)."
+      ),
+
+      "R043" => Entry.new(
+        code: "R043",
+        summary: "Legate.env called with no name argument",
+        why: "`Legate.env(name)` needs to know WHICH variable to " \
+             "look up — there's no sensible default name to fall " \
+             "back to.",
+        help: "Pass the environment variable's name as a String, " \
+              "e.g. `Legate.env(\"TZ\")`."
+      ),
+
       # --- L: limits reached ----------------------------------------
       #
       # The script is valid; it is just larger than something Adjutant
@@ -453,6 +547,20 @@ module Adjutant
              "from `lambda { ... }`/`->(){}` in real Ruby, is not supported. " \
              "Excluded by design, not a missing feature.",
         help: "Use `lambda { ... }` or `->(...) { ... }` instead."
+      ),
+      "U020" => Entry.new(
+        code: "U020",
+        summary: "retry is not supported",
+        why: "Real Ruby's `retry` re-executes the nearest enclosing " \
+             "`begin` block, from its start — which requires tracking " \
+             "where that block's own body starts, separately from its " \
+             "`rescue`/`ensure` targets. This VM doesn't track that. " \
+             "Excluded by design (see UNSUPPORTED.md, U020) rather " \
+             "than left half-working.",
+        help: "Use a loop with an explicit attempt counter instead — " \
+              "break on success inside the loop, and re-raise once " \
+              "the counter's used up, rather than relying on an " \
+              "implicit repeat."
       ),
       "U007" => Entry.new(
         code: "U007",

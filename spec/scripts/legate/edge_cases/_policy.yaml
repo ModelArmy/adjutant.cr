@@ -1,0 +1,9 @@
+# Grants this directory's scripts read-only access to their own
+# `fixtures/` subfolder, recursively (Grants' containment check
+# applies to `fixtures/many/*.txt` too, not just direct children) —
+# same shape as basics/_policy.yaml, see that file's own comment for
+# the full explanation of how this resolves.
+grants:
+  read:
+    roots:
+      - fixtures

@@ -1,0 +1,8 @@
+# Intentionally empty — nothing this suite exercises needs any grant
+# at all. `Legate.random`/`Legate.log` consult no grant whatsoever
+# (RiskProfile.none, no authorize_* call — see their own bootstrap
+# comments); `Legate.env`'s and `Legate.fail`'s missing-argument and
+# wrong-type checks both happen BEFORE any allowlist or authorization
+# step is ever reached, so this suite never needs `ambient.env`
+# populated the way `ambient_basics/_policy.yaml` does.
+grants: {}

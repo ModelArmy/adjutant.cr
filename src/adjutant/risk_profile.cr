@@ -18,11 +18,40 @@ module Adjutant
     ReadsFiles
     WritesFiles
     DeletesFiles
+    # Relocation, which is NOT destruction. `Legate.mv` carries this
+    # ALONE and declares itself reversible: `File.rename` preserves
+    # the information, and the cross-device fallback is deliberately
+    # ordered copy-then-delete so a partway failure duplicates rather
+    # than loses. Saying `DeletesFiles` of a move would imply a loss
+    # that does not occur, and pairing the two is worse than either.
+    #
+    # `Legate.mv!` carries this AND `DeletesFiles`, the latter
+    # honestly about the clobbered destination — a real,
+    # unrecoverable loss of a file the script never named as a
+    # source. That asymmetry with the AUTHORITY a move needs (both
+    # Delete and Write, either way) is correct rather than an
+    # oversight: authorities answer "what may this call do", effects
+    # answer "what did it consequently do", and nothing infers one
+    # from the other.
+    MovesFiles
     Recursive
     ExecutesCode
     NetworkEgress
     ElevatedPrivilege
     ModifiesEnvironment
+    # Data leaves the sandbox via a destination this call does not
+    # itself reveal or control — unlike NetworkEgress, where the
+    # destination IS the call's own explicit argument (a URL the
+    # script wrote), the embedder chose `Legate.log`'s destination at
+    # Interpreter-construction time, and the script calling it has no
+    # way to know what that destination is or whether it's local
+    # (STDOUT, a file another tool call can read) or remote. Added
+    # 2026-09-10 for exactly one verb so far — see SCOPE.md's entry
+    # on `Legate.log` and `Authority::Log` for the full reasoning,
+    # including why this alone doesn't prevent anything (that's
+    # `Authority::Log`'s job) and only makes the risk visible in a
+    # static report.
+    ExternalOutput
   end
 
   # Whether a native call's effect can be undone.

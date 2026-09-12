@@ -1,0 +1,44 @@
+name: CI (Windows)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, crystal: latest }
+
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Install Crystal
+        uses: crystal-lang/install-crystal@v1
+        with:
+          crystal: ${{matrix.crystal}}
+
+      - name: Cache shards
+        uses: actions/cache@v5
+        with:
+          path: |
+            lib
+            bin/ameba*
+          key: ${{ matrix.os }}-shards-${{ hashFiles('**/shard.lock') }}
+
+      - name: Install shards
+        run: shards check || shards install
+
+      # `fetch_stream_spec.cr`'s raise-mid-walk case is `pending` under
+      # `flag?(:windows)` — it hard-crashes the process there. See
+      # SCOPE's "Streamed fetch on Windows".
+      - name: Run tests
+        run: crystal spec

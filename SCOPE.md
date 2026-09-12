@@ -39,6 +39,21 @@ currently blocking anything" no longer held. The remaining entries
 weren't re-evaluated against the promoted two on this axis, just carried
 forward.
 
+**Two entries removed 2026-09-04, on the same principle.** The
+destination-clobber entry (`write`/`cp`/`mv` silently destroying an
+existing destination while declaring themselves reversible) and the
+`rm` conflation entry (one verb doing both file deletion and tree
+walking) both shipped that day, along with the three loose ends the
+latter had deliberately left undecided: `rm` returns a Bool, all three
+delete verbs stay idempotent on a missing path, and LEGATE.md §4.4 was
+rewritten rather than left disagreeing with the code. The reasoning —
+why the perimeter cannot catch a clobbered destination, why
+`Effect::MovesFiles` had to exist, and why moving recursion from a
+kwarg into a verb name unblocked `Effect::Recursive` — is in
+DEVELOPMENT.md's "Destructive verbs" writeup. Removed here rather than
+marked done, since a completed entry in a list of open problems is
+just noise for the next reader.
+
 - **Runtime diagnostics have no carets** (`Frame` records a line but no
   column). Promoted from Error reporting 2026-08-05 on a
   turn-churn argument specific to this use case: the cost of an
@@ -97,6 +112,500 @@ forward.
   fallback-only names `exec_builtin` handles, rather than a full
   lookup-table rewrite.
 
+- **`dup`/`clone` on a `RubyObject` SUBCLASS with real typed state
+  outside `ivars` silently produces a wrong-typed object, then
+  crashes on first use.** Found 2026-08-23 porting mruby-time's own
+  `Time#initialize_copy` test (`spec/scripts/mruby/time.rb`) — not
+  specific to `Time`. `exec_builtin`'s `"dup", "clone"` case (`vm.cr`)
+  always allocates a plain `RubyObject.new(obj.rclass)` and shallow-
+  copies `ivars`, correct for an ordinary class but wrong for any
+  subclass carrying real fields outside `ivars` — `TimeObject`'s
+  `@time` (`builtins/time.cr`), and equally `RegexpObject`'s `@regex`/
+  `MatchDataObject`'s `@md` (`builtins/regexp.cr`), simply hadn't been
+  caught yet (nothing in the existing suite calls `.dup`/`.clone` on a
+  `Regexp`/`MatchData`). The clone comes back as a plain `RubyObject`,
+  not the real subclass, so any method touching the actual typed field
+  (`.year`, `.to_i`, a `Regexp` match call, ...) hits a raw Crystal
+  cast failure (`Cast from Adjutant::RubyObject to
+  Adjutant::TimeObject failed`) on first use — an ugly internal crash,
+  not a clean Ruby-level error, and reachable in completely ordinary
+  script usage (any `.dup`/`.clone` on one of these three types).
+  Must Fix rather than Will Fix specifically because of that failure
+  shape — silent wrong object followed by a confusing crash is exactly
+  the "actively causing incorrect behavior in normal use" bar this
+  section is for, not a missing-feature gap. Fix shape: give
+  `RubyObject` (or each subclass) a virtual `#copy_state_into(other)`-
+  style hook the `"dup"`/`"clone"` case calls after allocating the
+  correctly-typed instance (needs a way to allocate the RIGHT Crystal
+  class, not always a bare `RubyObject.new` — possibly a
+  `RubyObject#shallow_copy : RubyObject` virtual method every subclass
+  overrides, mirroring the pattern `RegexpObject`/`MatchDataObject`/
+  `TimeObject` already use for their own typed-state constructors).
+
+- **The risk flow rule key has no slot for the sink's subject.** Found
+  2026-09-01, in the same conversation, from the `Legate.env`
+  case. `RiskFlowRule` is `(RiskTag, Sensitivity) → RiskFlowAction`,
+  so a policy can express "high-sensitivity data must not reach the
+  network" but CANNOT express "this API key may go to
+  `api.stripe.com` and nowhere else." That distinction is the
+  difference between a policy that forbids API keys outright and one
+  that lets them do the job they exist for — an env-sourced credential
+  reaching a server is the normal case, not the attack.
+
+  Note what is NOT missing: the subject. `Broker#authorize` already
+  takes it (`subject` — a path for the file grants, a host for `net`,
+  a binary for `exec`) and already passes it to `declare_sensitivity`
+  as the provenance origin. It simply is not part of the rule key, so
+  the policy table cannot discriminate on it.
+
+  Must Fix on the same "the perimeter cannot catch this" argument as
+  the destination entry above: `net_rules` decides whether a host may
+  be reached at all, but says nothing about WHICH data may reach it,
+  and the flow policy is the layer that is supposed to answer that.
+
+  Fix shape: a third dimension on the rule, most likely an optional
+  subject pattern reusing `SensitivityPattern`'s existing
+  literal/prefix/regex matching rather than inventing a second
+  matcher. Two things to settle first, neither obvious: how an absent
+  pattern is read (match-any is the ergonomic default but makes every
+  existing rule silently broader than a subject-bearing one), and how
+  this interacts with a redirect hop, where the subject a rule was
+  evaluated against is not the subject finally reached. Explicitly
+  out of scope for the `Effect`/`Authority` split — that change is
+  about which enum keys the rule, not how many dimensions it has.
+
+- **Authorization is a Legate-private mechanism, but it is not a
+  Legate-shaped problem.** Decided 2026-09-01, in the design
+  conversation following the `Effect`/`Authority` split. `Authority`
+  and `RiskFlowPolicy` are core; the perimeter that decides whether a
+  given subject may be reached under a given authority is not — it
+  lives entirely in `Legate::Broker`, `Legate::Grants`,
+  `Legate::Authorization` and `Legate::Budget`. Anything else that
+  ever needs to reach outside the VM must either reimplement that
+  sequence or be bolted onto Legate, and neither is acceptable for a
+  mechanism whose whole job is being the one place effects are gated.
+
+  Must Fix rather than Will Fix on timing, not on breakage: nothing is
+  wrong today, but every additional consumer makes the move dearer,
+  and the last piece changes an embedder-facing config format. Pre-1.0
+  is the cheap moment.
+
+  **The seam already exists.** `Broker#authorize` takes the grant
+  decision as a block (`& : -> Grants::Decision`) precisely because
+  each category resolves differently. Everything before and after that
+  block is generic — wall-clock, then the decision, then
+  `ncc.declare_sensitivity`, then exactly one `AuditRecord` per
+  outcome, with the resolved `RiskFlowLabel?` threaded back out so a
+  verb can tag the data it returns. Only the block's body is Legate's.
+
+  ### What moves to core
+
+  - The sequence itself, `Authorization::Decision` (two fields,
+    nothing Legate in it), and `AuditRecord` — whose `grant : Symbol`
+    field collapses into `Authority`, since `Broker#authorize`
+    currently takes both and they are the same fact spelled twice.
+  - The perimeter predicates and the data they read: `check_root`,
+    `check_net`, `check_binary`, and `Grants`' roots / net rules /
+    exec allowlist. These are predicates over paths, hosts and
+    binaries; none of them mentions a verb.
+  - Run-level accounting: `wall_clock`, `memory`, `total_read`,
+    `total_write`. `wall_clock` especially — SCOPE's own "no
+    wall-clock bound on a script or a held-open stream" entry says the
+    fix belongs in one watchdog at the `Interpreter#eval` boundary,
+    and a core run-clock is where that hangs.
+  - `OpenSources` and `max_open_streams`: a cap over anything
+    closable, and `Interpreter#eval` already owns the teardown.
+  - Core's own unrescuable denial signal.
+
+  ### What stays in Legate
+
+  - The verb-facing wrappers (`authorize_read`/`_write`/`_delete`/
+    `_net`/`_exec`). They know about `allow_missing`, `Legate::Path`
+    and which `Legate::` class to name; fourteen verbs should not be
+    talking to a generic API directly.
+  - The verb-shaped limits — `read_limit`, `fetch_limit`,
+    `url_limit`, `stream_limit`. Named after verbs; `fetch_limit`
+    cannot mean anything to a subsystem with no `fetch`.
+  - §9's error tier and the script-visible class names. Core raises
+    its own signal; Legate supplies the name, roughly what
+    `FATAL_CLASS_NAME` already does as a constant.
+
+  ### The plug-in shape
+
+  The point is not just relocation — authorization becomes a
+  capability a subsystem plugs into, the way Legate will:
+
+  - **`Authority` stays CLOSED.** Six members, core, no registration.
+    It keys `RiskFlowRule`, so an open vocabulary makes policy tables
+    unbounded and breaks the property `reject_all` depends on ("never
+    silently stops covering an Authority added later"). It is also
+    what the static manifest reports, and a manifest whose vocabulary
+    depends on which extensions are loaded cannot be trusted.
+  - **The predicate is PLUGGABLE.** Core owns the sequence and asks a
+    registered resolver whether a subject is permitted under an
+    authority. Legate resolves `Write` against roots; something else
+    may resolve it against a different perimeter.
+  - **The config section is OPEN.** Each subsystem contributes and
+    parses its own block inside one document.
+
+  ### Interaction that does NOT move by itself
+
+  §10.1 SPECIFIES a grant inference that walks the call graph for
+  `Legate.*` names, emits the minimum policy a script requires, and
+  refuses a run whose offered policy grants more. **It does not
+  exist** — see the §10 entry below; nothing in `src/` infers a
+  policy, and `risk_walker.cr` contains no reference to Legate at all.
+  Corrected 2026-09-02, having been described here twice in the
+  present tense as though it were shipped.
+
+  So there is nothing to rekey, and this is cheaper than it looked:
+  what must change is the SPEC, so that whoever implements §10.1 keys
+  it on a registered provider rather than a hardcoded module name.
+  Otherwise a second provider gets full enforcement and no static
+  manifest, which is exactly the asymmetry the manifest exists to
+  prevent.
+
+  Worked example, since one sentence understates it. Suppose a second
+  provider `Vault` gives scripts access to secrets, and a script does:
+
+      key = Vault.secret("stripe/live")
+      Legate.fetch("https://api.example.com", body: key)
+
+  This is what WILL happen when §10.1 is built as currently written —
+  a warning, not a bug report. At RUNTIME the script is already fully
+  protected. `Vault.secret` is an
+  `EffectProvider`, so it goes through the same core Broker: same
+  wall-clock check, same perimeter decision, same
+  `declare_sensitivity`, same audit record, same RiskFlowPolicy. A
+  `Read`-authority rule on high-sensitivity data fires exactly as it
+  would for `Legate.read`.
+
+  STATICALLY it is misdescribed, three ways:
+
+  - The inferred minimum policy mentions only `net`. It never says the
+    script needs a `vault` grant, because the walk does not know
+    `Vault` exists.
+  - Over-grant refusal inverts. The offered policy grants
+    `vault: [stripe/*]`; the inferred minimum does not mention
+    `vault`; so the comparison sees a grant the script supposedly does
+    not need, and either refuses a legitimate run or quietly treats
+    the unknown section as noise.
+  - The manifest under-reports. Whoever decides whether to run this is
+    told the script makes a network request. They are NOT told it
+    reads a live payment credential first — precisely the fact that
+    would change the answer.
+
+  So the failure mode is not an unprotected provider. It is the
+  pre-run picture and the runtime enforcement disagreeing, with the
+  pre-run picture being the one a human reads before consenting. A
+  script can be completely enforced and still misdescribed, and
+  nothing goes red when that happens: a second provider is added,
+  every spec passes, and the manifest simply goes quiet about it.
+
+  Fix shape, for the SPEC today and the implementation whenever it
+  arrives: the walk collects calls to any REGISTERED provider's module
+  rather than a hardcoded `Legate`, and each provider maps its own
+  verbs to the authorities it declares — which is what finally makes
+  `EffectProvider#authorities` load-bearing rather than documentation.
+
+  **Do this WITH piece 4, not before it.** The walk needs to know
+  which providers exist and what each one's config section is called,
+  which is the same registry the config merge introduces; doing it
+  first would mean inventing half a registry and reworking it a step
+  later.
+
+  ### Order, and why the config is last
+
+  Four separable pieces, to be landed and tested independently:
+
+  1. Perimeter to core (`Grants`, the `check_*` predicates,
+     `Decision`). **Landed 2026-09-01.**
+  2. Run accounting to core (the run-level half of `Limits` as
+     `ResourceLimits`, plus `Budget`, `OpenSources` and
+     `FatalSignal`). **Landed 2026-09-01.**
+  3. The broker sequence to core as `Adjutant::Broker` — one per RUN,
+     shared by every provider, with `Legate::Broker` becoming the
+     first `EffectProvider` holding a reference to it, and
+     `AuditRecord` rekeyed on `Authority`. **Landed 2026-09-01.**
+
+     Note what piece 3 did NOT add, deliberately: a resolver registry.
+     Dispatch does not need one — a provider calls the broker itself
+     and supplies its perimeter decision through a block, which is
+     more precise than a lookup, since the provider knows which of its
+     own predicates applies and core does not. The registry earns its
+     place in piece 4, where the config and the inference need to
+     ITERATE providers rather than dispatch to them.
+  4. **One config document.** `RiskFlowPolicy` is JSON and
+     agent-constructed; `Grants` parses YAML. Two formats for one
+     document is history, not design. Last because it is the only
+     piece that changes an embedder-facing format, and it benefits
+     from the rest being settled.
+
+     Three properties a merged config MUST preserve, each a decision
+     made deliberately:
+
+     - **No permissive default.** `RiskFlowPolicy` has no bare `.new`
+       meaning "allow everything," so Adjutant never silently permits
+       risky calls because an embedder didn't think about IFC. A
+       document carrying a grants section and no risk section must
+       mean `reject_all`, NOT "unset, therefore allow" — and the
+       reverse likewise.
+     - **Adjutant still never reads a policy path off disk.**
+       Unifying the schema must not grow file IO in core; the
+       embedder loads and passes it, as today.
+     - **More surface, same coverage trap.** A larger document has
+       more places to silently stop covering an `Authority`.
+
+  ### Spec ownership
+
+  `LEGATE.md` §7 currently specifies the policy file, and `grants.cr`
+  parses that YAML. Once `Grants` is core, §7 either moves to a core
+  document or says plainly that it documents the Legate SURFACE over a
+  core mechanism. A core type specified only inside `LEGATE.md` is the
+  drift that produced the four divergences the 2026-08-31 handoff
+  complains about. Dismantling parts of LEGATE.md is expected here and
+  explicitly sanctioned — that spec predates both the `Effect`/
+  `Authority` split and Legate becoming an extension rather than an
+  island.
+
+  Note honestly: there is no second consumer today, so parts of this
+  generalise on the strength of the argument rather than on evidence.
+  Chosen deliberately — the perimeter is precisely what a future
+  subsystem should inherit rather than reinvent.
+
+- **LEGATE.md §10's static analysis layer does not exist, and §9/§10
+  leaned on it in the present tense as though it did.** Found
+  2026-09-02, while checking what piece 4 of the authorization work
+  would have to rekey. Nothing in `src/` implements any part of §10 —
+  there is no analyser file, `risk_walker.cr` contains no reference to
+  Legate, and nothing infers, cross-checks or refuses a policy.
+
+  (Piece 4's own status was later confirmed directly, 2026-09-10 —
+  see "No Legate verb... actually prevents a script from reading
+  sensitive data and handing it to a sink," below: not done. The
+  mechanism it needs — `VM#check_risk_flow` — is built and tested,
+  wired to zero real verbs.)
+
+  All three subsections are unbuilt:
+
+  - **§10.1 Dataflow.** No grant inference, so no minimum policy and
+    no over-grant refusal. Checks 2–4 (taint to path, unbounded
+    materialisation, double consumption) likewise. Note that check 2
+    is the one §10.1 itself calls security-critical — its former
+    sibling, taint to `argv`, was retired 2026-09-05 along with
+    `Legate.run` itself (§4.6), which is also why this is four checks
+    now, not five.
+  - **§10.2 Exception discipline.** None of the four rules is
+    enforced. Bare `rescue` and `rescue Exception` are both accepted
+    and exercised by existing specs — see the still-open note on bare
+    `rescue` at the end of this entry. (`retry` was the fifth rule
+    here; resolved 2026-09-09 — see below — and moved out of §10.2's
+    scope entirely rather than left as a sixth unenforced row.)
+  - **§10.3 The inclusion ledger.** No ledger, no sealing, no
+    unqualified-call check.
+
+  Why this was Must Fix even though the analyser is a large feature:
+  the DOCUMENTATION defect was live and separable from it. §9.2's own
+  text used to say "the static gate ensures it cannot deliberately
+  swallow one either," and §9's design-intent paragraph used to say
+  "§10.2 ensures it cannot do so on purpose." Both asserted a
+  guarantee that nothing provided. A reader — including a model
+  reading the spec to decide how defensively to write — was being
+  told a boundary was enforced that was not.
+
+  What actually holds is the RUNTIME property, and it holds
+  independently: `FatalSignal` is a plain `Exception`, not a
+  `RuntimeError`, so no script `rescue` of any class can catch it
+  regardless of syntax. `fatal_signal.cr`'s own comment already states
+  this correctly — the gate is a first line of defence and the runtime
+  guarantee "does not depend on the gate being correct or even
+  present."
+
+  Fix, in the two parts originally planned:
+
+  1. **Correct the claims — DONE, before this session.** §9.2 and
+     §9's design-intent paragraph now state the runtime property as
+     the guarantee and describe §10.2 as an intended additional
+     check, not a current one. Verified against the actual current
+     LEGATE.md text, 2026-09-09, before touching anything else in
+     this entry.
+  2. **Build it later, as its own scoped piece of work**, with §10.1
+     keyed on the provider registry from the start (see the
+     authorization entry above). Still not done; §10.1/§10.3 remain
+     exactly as unbuilt as the day this entry was written.
+
+  ### `retry` — resolved 2026-09-09 by removal, not by keeping it
+
+  This entry originally described `retry` as "a working language
+  feature" and recommended deciding whether to keep it (rewriting
+  §10.2 around it) or plan its removal — reasoning from `Compiler#
+  compile_retry` emitting `Op::Retry`, from `retry` scripts running
+  without error, and from a citation of "exactly one spec
+  (`classes_and_modules/vm_spec.cr`)" as evidence it was implemented
+  but barely exercised. **That citation was itself wrong** — checked
+  properly this session, it turned out to be an English sentence in a
+  comment about an unrelated feature (excluded-method diagnostics),
+  not a test of `retry`'s runtime behavior at all. Nothing anywhere
+  actually exercised `retry` beyond the trivial case, which is exactly
+  why the real problem stayed hidden: `Op::Retry`'s own handler
+  comment in `vm.cr` already called it a "stub," and what it actually
+  did — `f.ip = 0` — restarts the ENTIRE enclosing frame (method,
+  block, or top-level script), not the nearest `begin` block the way
+  real Ruby's `retry` does. `HandlerEntry` (`vm.cr`) never tracked
+  where a `begin` block's own body starts, only its `rescue`/`ensure`
+  targets, so there was nothing for a correct implementation to jump
+  to even if `Op::Retry` had tried. Correct only when the `begin`
+  block happens to be the entire frame body; silently wrong (re-running
+  whatever preceded it) otherwise.
+
+  This doesn't overturn the tractability analysis below — that
+  reasoning about WHY §10.2 wants to forbid `retry` still holds, and
+  is preserved as-is since it's independently useful design reasoning
+  — but it does replace the CONCLUSION. "A working feature, decide
+  whether to keep it" was the wrong frame; it was a broken stub, and
+  the choice became "fix a real VM gap (track a begin-body-start
+  target) to keep it, or remove it." Removed — see UNSUPPORTED.md,
+  U020, for the full decision and reasoning, and
+  `begin_rescue_ensure/compiler_spec.cr` for the enforcement spec.
+  `retry` still parses; `Compiler#compile_retry` rejects it (U020)
+  rather than emitting bytecode; `Op::Retry` no longer exists in
+  `bytecode.cr` at all.
+
+  Worth being honest about, since this file exists to catch exactly
+  this failure mode elsewhere: this entry's own prior analysis relied
+  on a citation nobody had actually checked, in a document whose
+  entire premise is not doing that.
+
+  ### The tractability reasoning, preserved from the original analysis
+
+  §10.2 gave two reasons for forbidding `retry`; only the second ever
+  survived §9.2, independent of the correctness question above.
+
+  - *"Converts a cap into a loop"* — largely FALSE as things stood.
+    It would matter if a script could catch a budget exhaustion and
+    retry past it, but per-run budgets raise `FatalSignal`, which no
+    `rescue` of any class can catch (see `fatal_signal.cr`). So
+    `retry` could only ever loop on the RECOVERABLE tier, where
+    retrying is usually pointless and sometimes correct: a `TooLarge`
+    on an over-limit read fails identically the second time, and a
+    `TooMany` on `max_open_streams` is the case where retrying is
+    legitimate BY DESIGN — that limit caps simultaneous holdings
+    rather than cumulative consumption, so a script that finishes a
+    stream and tries again has genuinely freed the resource. This
+    reason read as a leftover from before §9.2 made the fatal tier
+    uncatchable.
+  - *"Makes budget analysis undecidable"* — TRUE, and sufficient on
+    its own. `retry` puts a back-edge in the control-flow graph, and
+    §10.2's whole preamble is about keeping the CFG tractable.
+
+  ### Bare `rescue` — DECIDED 2026-09-10: kept permanently
+
+  A genuinely different question from `retry`'s, and never resolved
+  by it: bare `rescue` isn't broken the way `retry` was — it's
+  correctly, fully implemented and exercised by existing specs; §10.2
+  simply didn't gate it yet. Whether it should eventually be removed
+  (matching `retry`'s fate) or whether §10.2's rule should instead be
+  softened once the analyser exists was the open question — settled
+  by removing §10.2's rule entirely, the opposite of `retry`'s
+  outcome, rather than assuming the two should match just because
+  they were adjacent in this entry. `retry`'s removal was driven by a
+  correctness bug specific to it; bare `rescue` has none, and
+  tractability alone was judged a weaker basis for an outright ban of
+  a genuinely useful, working construct — an ephemeral, agent-authored
+  script reaching for `rescue` as a blanket escape hatch is a
+  reasonable thing to want. The security question this raises has a
+  clean answer, verified against `compiler.cr` directly rather than
+  assumed: a bare `rescue`'s implicit class has always been
+  `StandardError` (`Compiler#compile_rescue`, matching real Ruby
+  exactly), so it was never able to catch `Legate::Denied`/
+  `Exhausted`/`Aborted` — direct `Exception` subclasses — regardless
+  of this decision. Keeping it changes nothing about what a script can
+  evade. §10.2's own table and the §10 status banner (LEGATE.md) are
+  updated accordingly; the future analyser's intended treatment for a
+  function using bare `rescue` is reduced-precision analysis, not
+  rejection — recorded in §10.2's own prose rather than only here,
+  since it's a real design commitment for whoever eventually builds
+  it, not just a historical note.
+
+- **No Legate verb — `Legate.log` included, until this entry —
+  actually prevents a script from reading sensitive data and handing
+  it to a sink.** Raised 2026-09-10: could a script read `/etc/
+  passwd` and exfiltrate it via `Legate.log`, especially if the log
+  destination turns out to be something readable outside Adjutant
+  entirely (a local file another tool call can open)? Checking the
+  answer surfaced something bigger than the question asked.
+
+  **What actually gates a risky call on the data flowing through it
+  (not just on the call's own subject) already exists, fully built
+  and tested, and is connected to NOTHING.** `VM#check_risk_flow`
+  (`vm.cr`) is the real mechanism: for every native call, it checks
+  each argument's own `RiskFlowLabel` against the authorities that
+  call's `NativeCallable` declares, via `RiskFlowPolicy#action_for`
+  — genuinely different from, and complementary to, `Broker#
+  authorize`'s `declare_sensitivity` call, which only ever asks "is
+  THIS SUBJECT (a path, host, env name) itself configured as
+  sensitive," never "does the DATA passed in carry a label from
+  somewhere else." Confirmed by reading `write.cr`'s own
+  `authorize_write` call directly: it passes the destination PATH,
+  never the DATA argument, so writing tainted content to an
+  untainted path was never checked either. `check_risk_flow` is
+  real, is exercised thoroughly by `risk_flow_enforcement_spec.cr`
+  ("risk flow enforcement (piece 4)" — its own describe block name)
+  via a synthetic `delete_file` trigger — and is wired to zero real
+  Legate verbs. `grep -rn "authorities:" src/adjutant/legate/verbs/`
+  returns nothing, for ANY verb, `read`/`write`/`delete`/`net`
+  included. This is "piece 4 of the authorization work," the same
+  phrase the §10 entry above references without (at the time) being
+  able to say whether it was done. It is not done. That resolves the
+  open question this file's own earlier note left about that entry's
+  Must-Fix-vs-Will-Fix categorization — it stays Must Fix, and now
+  for a documented, concrete reason rather than an unverified guess.
+
+  **Fixed here, narrowly, for `Legate.log` only:** a new
+  `Authority::Log` (`authority.cr`) and a new `Effect::
+  ExternalOutput` (`risk_profile.cr`) — deliberately two separate
+  additions answering two separate questions, matching this
+  codebase's own Authority-vs-Effect split (`authority.cr`'s own
+  comment: Authority is enforced, Effect is reported). `Effect::
+  ExternalOutput` makes the risk visible in the static sweep (step
+  4c) — necessary but NOT sufficient, since a static effect flag
+  reports a possibility, it doesn't stop anything. `Authority::Log`,
+  declared via `legate.define_native_singleton_method`'s
+  `authorities:` parameter (which every verb bootstrap until now has
+  silently left at its default, empty, `Set(Authority).new`), is
+  what actually does the preventing — it makes `Legate.log` a real
+  consumer of the already-built `check_risk_flow` machinery. Verified
+  end-to-end, not just unit-tested in isolation: `log_spec.cr`'s
+  "risk-flow enforcement" tests use `Legate.env` as a REAL labeled
+  source (not a synthetic trigger) reaching `Legate.log` as the sink,
+  including confirming label propagation through a constructed Hash
+  literal (`{data: secret}`) actually reaches the check — traced
+  through `Op::MakeHash`'s own `RiskFlowLabel.join` across every
+  pair, confirmed correct before trusting the test to mean anything.
+
+  **NOT fixed, and this is the larger remaining piece:** `read`,
+  `write`, `delete`, and `net` — the entire non-ambient verb family
+  — declare no `authorities:` either, meaning the ORIGINAL
+  exfiltration question (read a sensitive file, write it somewhere
+  else; or read it, `Legate.fetch` it out over the network) is
+  UNPROTECTED by this same mechanism today, for the verbs where it
+  would matter most. Not attempted here: retrofitting `authorities:`
+  onto four established, heavily-specified, heavily-tested verb
+  families is real, separate work — deciding which Authority each
+  declares (a `Legate.write` call plausibly needs to check the
+  INCOMING data against `Authority::Write`, which already exists and
+  is already used for the destination-sensitivity check, so this may
+  be closer to "add one line per verb" than `Legate.log`'s case was
+  — but that needs verifying per verb, not assumed), auditing
+  whether any existing policy/spec currently relies on tainted data
+  reaching these verbs unchecked (a behavior change, however
+  correct, breaks something for someone if they were depending on
+  the absence), and deciding whether `net`/`fetch` needs the SAME
+  treatment for outbound request bodies specifically. Left as the
+  next piece of this Must Fix entry, not a new one — the
+  investigation and the fix for `log` are done; the fix for
+  everything else Legate already ships is not.
+
 ## Will Fix
 
 Real gaps, not currently blocking anything, no active design conversation
@@ -109,6 +618,30 @@ still roughly ordered by how cheap/independent the fix is.
 
 Small, mechanical, independent of each other — good candidates for quick
 wins.
+
+- **No octal/hex/binary integer literal prefixes (`0o`/`0x`/`0b`) —
+  and, worse, a LEADING-ZERO decimal like `0644` silently parses as
+  plain decimal 644, not octal, with no error.** Found 2026-08-24
+  writing a spec for `Legate::Stat#mode` (a real Unix permission bit
+  value) — `s.mode == 0644` in a script silently compares against the
+  wrong number, no parse error or warning at all, exactly the "ran,
+  looked plausible, was wrong" bug shape worth staying alert for.
+  Low practical urgency (permission-bit-style literals are rare
+  outside exactly this kind of use), but worth fixing before any
+  Legate verb that surfaces a real mode value (`Legate.mkdir`,
+  anything touching `Stat#mode`) ships, since a script author's first
+  instinct for "check the mode" would reach for exactly this syntax
+  and get a silently wrong answer rather than a loud one.
+
+- **Leading-dot line continuation for a method chain isn't supported**
+  (`obj\n  .method\n  .method` — real Ruby 1.9+ syntax) — raises P002
+  (`.` can't start an expression here) rather than parsing. Found
+  2026-08-24 writing a multi-line `Legate::Stream` chain spec.
+  Genuinely common, readable Ruby style for a chain of 3+ calls, and
+  the kind of thing an LLM trained on real-world Ruby would reach for
+  by default — worth fixing since a script author hitting this gets a
+  parse error on ordinary-looking code, not silent wrongness, but
+  still a real everyday-syntax gap.
 
 - **`%W[]`/`%I[]` (interpolating word/symbol arrays) and `%q`/`%Q`/`%r`
   (the general delimited-literal forms) aren't supported — only plain
@@ -167,7 +700,26 @@ wins.
   in `irb` unambiguously executes `seen << n` unless `n > 4`, never
   attempts to parse an if-expression as break's own value.
 
-- **Do `class`/`module` bodies want the same implicit `rescue`/`else`/
+- **`&:symbol` proc-shorthand (`arr.map(&:length)`) isn't supported —
+  `&` can't start an expression there at all (P002).** Found
+  2026-08-26 writing a `Legate.lines` spec, reaching for
+  `.map(&:length)` out of habit and hitting a hard parse error rather
+  than a wrong answer. Common enough to matter: it's arguably THE most
+  reached-for block shorthand in idiomatic Ruby, ahead even of a
+  one-line `{ |x| x.foo }`, for exactly the "call one method on every
+  element" shape that turns up constantly in `Legate::Stream` chains
+  (`.select { }.map(&:foo)`-style code) — an LLM writing natural Ruby
+  will reach for this by default, same "everyday syntax block" bar
+  the leading-dot-chaining entry above was promoted on. Likely lands
+  as sugar at the parser/AST level: `&:name` desugars to the same
+  shape as a literal `{ |x| x.name }` block/`Proc` (real Ruby's
+  `Symbol#to_proc`), so — depending how block-arg-passing is
+  structured today — this may be closer to "recognize `&` followed by
+  a Symbol literal and synthesize the equivalent block AST node" than
+  new runtime machinery. Not yet traced to the exact parser callsite
+  (wherever `&blockarg` is currently parsed at a call site) or
+  confirmed whether `Proc`/`Symbol#to_proc` already exist as a target
+  to desugar onto.
   `ensure` treatment `def` bodies just got?** Open question, not a
   confirmed gap — flagged 2026-08-10 when `def`'s own version shipped
   (see `DEVELOPMENT.md`'s "Method-body (implicit) rescue" section).
@@ -410,6 +962,26 @@ Quality-of-diagnostic gaps in the `Diagnostic`/`ErrorCatalog` system
   the exact same shape of gap and was NOT touched by this fix — flagged
   here rather than silently assumed fixed alongside the read side.
 
+- **`Op::Mul` (and `%`) still doesn't dispatch to a `RubyObject`'s
+  own `*` — only `+`/`-`/`/` do now.** Added 2026-08-23 alongside a
+  real `Time` builtin (`builtins/time.cr`) that needed `t + 60`/
+  `t - 60` to work via ordinary infix syntax: `VM#exec_add`/`#exec_sub`
+  (`vm.cr`) check whether the LEFT operand is a `RubyObject` with its
+  own `+`/`-` (native or script) before falling through to
+  `ValueOps`'s base-type handling — the same "left receiver's method
+  wins when it has one" shape `<=>`-derived `<`/`<=`/`>`/`>=`/`==`
+  already established. Widened same-day to `/` too (`VM#exec_div`) —
+  `Legate::Path#/` (`legate/path.cr`, LEGATE.md §5.1) needed real
+  infix `/` to work the moment Path's own spec was implemented, not
+  just theoretically anticipated the way `*`/`%` still are.
+  DEVELOPMENT.md's own "Some operators are overloaded across base
+  types" section originally anticipated this whole gap for `-`/`*`/
+  `/` and explicitly said to close each "if [something] does" need
+  it; `Time` was that something for `+`/`-`, `Legate::Path` for `/`.
+  `*`/`%` remain untouched — nothing needs them yet either — so this
+  stays Will Fix rather than Must Fix; promote if a future type needs
+  one.
+
 - **No `Numeric` ancestor class in the `RubyClass` hierarchy, so
   `5.is_a?(Numeric)` fails rather than returning `true`.** Long-
   standing, untriaged since the original 2026-07-14 handoff bundle —
@@ -508,6 +1080,16 @@ section).
 
 
 ### Data & builtin types
+
+- **`Array` has no `#count` at all** (`#length`/`#size` exist, `#count`
+  doesn't — checked `array.cr` directly). Found 2026-08-24 writing a
+  `Legate::Stream` spec that called `.to_a.count` out of habit. Real
+  Ruby's `#count` is `#size`'s more common spelling in idiomatic code
+  and also overloads to count matching elements (`#count { }` /
+  `#count(x)`, unlike plain `#size`) — worth adding both the bare
+  alias and the block/argument forms together rather than just the
+  alias, since an LLM reaching for `#count` is at least as likely to
+  want the filtered form.
 
 - **Quoted Symbol literals (`:"..."`) don't decode backslash escape
   sequences.** Found 2026-08-13 fixing the identical gap for String
@@ -655,41 +1237,466 @@ individually.
   touch, how they interact with `RiskFlowPolicy`) before implementation
   is meaningful — carried forward from the original 2026-07-14 handoff
   as "no IO," refiled here now that the real blocker (undecided scope,
-  not undecided design mechanics) is clearer.
+  not undecided design mechanics) is clearer. Superseded by the
+  `Legate` design work (see `LEGATE.md`) — this entry can be removed
+  once `Legate` implementation lands.
+
+### Streamed fetch on Windows
+
+- **A script that raises inside a streamed `Legate.fetch` walk
+  terminates the host process on Windows.** Found 2026-09-04 via CI.
+  Exit `0xC0000409` — a fail-fast during exception unwinding, aborting
+  inside MSVC's `FindAndUnlinkFrame`, which is an integrity check on
+  the registered SEH frame list. Uncatchable by construction: it fires
+  before any handler, and rescuing every exception changes nothing.
+
+  **Believed to be a Crystal runtime defect rather than an Adjutant
+  one**, on this evidence. Each of the three ingredients passes alone
+  and only the combination dies: a raise unwinding through VM frames
+  is fine (`begin_rescue_ensure/vm_spec.cr`), the same shape over a
+  FILE-backed stream is fine (`open_sources_spec.cr`'s "closes a
+  stream whose walk raised"), and cancelling a socket-backed stream
+  without unwinding is fine (a `break` instead of a `raise`). It
+  reproduces on Crystal 1.20 and latest, and does NOT need the test's
+  in-process server — it crashes just the same against a static file
+  server in another process, so it reaches real deployments rather
+  than only the harness. Six standalone reproductions were attempted
+  and none crashed; the trigger needs something structural the VM
+  supplies that a small program does not.
+
+  `verbs/fetch_stream_spec.cr`'s "closes the connection when the
+  script raises mid-walk" is `pending` under `flag?(:windows)` —
+  skipped, not deleted, so the coverage returns when the runtime is
+  fixed. **Windows is therefore not a supported host for streamed
+  `fetch`.** Buffered `fetch` was never tested and may or may not be
+  affected. Not blocking on macOS or Linux, which is where the early
+  access work is aimed.
+
+  Parked deliberately: there is no sound fix available in this repo,
+  and the investigation has already cost more than the platform is
+  currently worth. To pick it up, the route that worked was cutting
+  DOWN from the crashing spec, not building UP from a small program.
+
+### Static risk assessment
+
+- **A `RiskChoice` reports its worst branch, so effects reachable only
+  on a losing branch vanish from the manifest entirely.** Found
+  2026-09-04, while writing the step 4c sweep — the first draft of its
+  end-to-end assertion assumed a union and failed, which is how the
+  behaviour surfaced. `RiskAggregator.summarize_choice`
+  (`risk_aggregator.cr`) takes `max_by { rank }` across branches: one
+  summary wins whole, and the others contribute nothing.
+
+  **The reasoning is sound for severity and does not obviously extend
+  to effects.** Exactly one branch of an `if` runs, so reporting the
+  worst `Severity`/`Reversibility` is honest where unioning them would
+  overstate how bad a single run can be. But `rank` orders by those
+  two fields alone, and both are CONCLUSIONS drawn from effects — so
+  the effect SET is carried along by whichever branch happened to win
+  on other grounds, rather than being reasoned about at all. Where two
+  branches rank equally the tie goes to the first, which makes the
+  reported effects a function of source order.
+
+  The concrete case, now pinned in
+  `spec/adjutant/legate/risk_assessment_spec.cr`: a script whose
+  `else` branch calls `Legate.rmdir!` reports `NetworkEgress` and
+  nothing else, because the `if` branch's `Legate.fetch` ranks equal
+  and comes first. A user reading that manifest before running the
+  script is not told a recursive delete is reachable.
+
+  **The likely shape of a fix is worst-rank-with-full-effect-union** —
+  keep the current severity and reversibility semantics exactly, union
+  the effects across branches. That answers both questions the
+  manifest is actually asked ("how bad can one run be" and "what could
+  this script touch") without conflating them. Two things to check
+  before assuming it is that easy: `RiskSummary#path` currently
+  describes a single winning branch and would need to say something
+  coherent about effects that came from elsewhere, and
+  `summarize_deferred`/`RiskUnresolved` already deliberately over-
+  report on the "can't confirm, surface loudly" principle — which
+  points the same way, and is worth reconciling explicitly rather than
+  by coincidence.
+
+  Related to §10.1's provider-registry work: `SCOPE`'s own `Vault`
+  example is about a manifest going silent while enforcement keeps
+  working, and this is the same failure reached by a different route.
+  Not blocking anything today — the static pass is advisory, and
+  runtime enforcement is unaffected, since `VM#call_native` fires from
+  the call itself regardless of AST position.
+
+### Legate
+
+- **The pinned socket's TLS path is only exercised when a transcript
+  is RECORDED.** Found 2026-08-30. The plain socket half is covered
+  offline: `http_client_pinning_canary_spec.cr`
+  stands up a loopback HTTP server and pins to it from a client whose
+  hostname (`canary.invalid`) cannot resolve, so a response can only
+  arrive if the pinned address was used and the name never consulted.
+  What that spec does NOT cover is the `OpenSSL::SSL::Socket::Client`
+  branch — SNI and certificate verification against the logical
+  hostname while connected to the pinned address — because that needs
+  a local TLS server with a certificate the client will accept. Will
+  Fix. The practical verification meanwhile is re-recording: deleting
+  a transcript under `spec/transcripts/` and re-running with
+  `WIRETAP_RECORD=1` forces a real TLS handshake through the pinning
+  override. Fix shape: a
+  self-signed certificate generated per-run plus a client context
+  trusting it, which is a chunk of setup worth doing deliberately
+  rather than inline in a spec.
+
+- **`Legate.fetch`'s `body:` does not stream an Enumerable.** Found
+  2026-08-30. §4.5 says `body:` accepts a String or an Enumerable "so
+  uploads stream"; an Array is currently joined into a single String
+  before the request is built, so the memory saving the sentence
+  promises does not happen. Will Fix. The response half of streaming
+  has since landed (`Utils::HttpResponseStream` plus `stream: true`),
+  and this is the remaining half: it needs the REQUEST body written
+  incrementally to the connection rather than materialised first,
+  which `HTTP::Request` accepts as an `IO` but Legate does not yet
+  supply. Note the interaction already settled in §4.5 — a redirect on
+  a request that carried a body is handed to the script, so a
+  single-pass upload stream never has to be replayed.
+
+- **`Legate.records` cannot consume a stream.** Found 2026-08-30,
+  logged 2026-08-31 after `stream: true` landed.
+  `Legate.records(path, format:)` opens the path itself, so a body
+  from `Legate.fetch(..., stream: true)` cannot be fed to it — a
+  script wanting to pull JSONL rows off a network response has to
+  buffer the whole thing first, which defeats the streaming it just
+  asked for. Will Fix. The plumbing is closer than it looks: both
+  parsers already consume an iterator rather than a file specifically
+  (`:jsonl` builds on `Lines::LineIterator`, `:csv` on
+  `CSV::Parser`), so what is missing is a second entry point.
+  Undecided whether that is `Legate.records(stream, format:)` or
+  `response.records(format:)`; the second reads better at a call site
+  but puts a parsing concern on `Response`.
+
+- **`Response#json` cannot parse a streamed body.** Found 2026-08-30,
+  logged 2026-08-31. `#json` raises `Legate::Malformed` on a
+  non-String body, so `stream: true` and `.json` are mutually
+  exclusive. Correct as it stands — the alternative is silently
+  buffering a body the script explicitly asked not to buffer — but it
+  means a large JSON document has no streaming path at all. Will Fix
+  eventually, and materially harder than the `records` entry above: it
+  needs an incremental JSON parser, not just a different entry point,
+  and Crystal's `JSON::PullParser` over a chunk iterator is the
+  obvious starting point rather than a settled design.
+
+- **No wall-clock bound on a script or on a held-open stream.** Found
+  2026-08-30 designing `stream: true`. `Legate.fetch`'s `timeout:`
+  becomes the client's connect and read timeouts, which bound each
+  individual READ but not total duration: a server dribbling one byte
+  every few seconds keeps a connection open indefinitely without ever
+  tripping a read timeout, and a script holding that stream stays
+  alive with it. `Limits#wall_clock` exists and is unenforced for the
+  same reason. Will Fix, and deliberately NOT solved inside one verb —
+  this is the same problem as an infinite loop in a script, and wants
+  one watchdog at the `Interpreter#eval` boundary rather than a
+  duration check invented separately in `fetch`, `exec`, and every
+  future long-running verb. The run-teardown seam added for
+  `open_sources` is the natural place to hang it, since it already
+  owns "this run is over, release everything."
+
+- **IPv6 literals can't be written in a `net.hosts` rule.** Found
+  2026-08-30 building `net_rule.cr`. The scalar parser splits a
+  `host:port` entry on the colon, which is unambiguous for a DNS name
+  and hopeless for `2001:db8::1`; bracketed forms
+  (`[2001:db8::1]:8443`) aren't handled either. The parser *rejects*
+  both loudly with an `ArgumentError` at policy-load time rather than
+  mis-splitting on the first colon, so nothing silently misbehaves — a
+  policy naming an IPv6 literal fails to load instead of quietly
+  building a rule for a host that doesn't exist and then denying every
+  real connection to it with a baffling reason. Will Fix rather than
+  Must Fix: the same grant is expressible by hostname today, and the
+  failure mode is loud and immediate. Fix shape: bracket-aware
+  splitting in `NetRule.parse`, plus a decision on whether a bare IPv6
+  address should be grantable at all, given §8.2's address-range
+  checks are about to reject most of the interesting ones anyway.
+
+- **§2.7's `include Legate::Read` submodule-include feature (dropping
+  the `Legate.` prefix, e.g. `include Legate::Read; read("x")`) isn't
+  implemented at all — no code references it anywhere.** Found
+  2026-08-27, systematic audit of the read-verb slice against
+  LEGATE.md. Not a bug — nothing currently shipped is broken by this
+  — just real, specified surface (§2.7's own worked example) with
+  zero implementation, worth tracking explicitly rather than
+  rediscovering later. Will Fix rather than Must Fix: every verb is
+  already reachable fully-qualified (`Legate.read(...)`, §2.7's own
+  "available fully qualified, always, with no setup"), so the
+  submodule form is sugar, not something currently blocking a script
+  from doing anything. Fix shape not yet scoped — likely needs each
+  grant-category submodule (`Legate::Read`, `Legate::Write`, ...) to
+  actually exist as an includable module whose methods delegate to
+  the same native singleton methods already bootstrapped on `Legate`
+  itself, rather than a second copy of each verb's implementation.
+
+- **`Legate.grep`'s documented `Timeout` (LEGATE.md §4.1) doesn't
+  actually raise `Legate::Timeout`.** Found 2026-08-27 implementing
+  `grep.cr`: unlike every other §4.1 verb, grep's own Raises list
+  includes `Timeout` — the only sensible reading is that a scan across
+  a large fileset should be able to notice it's taking too long
+  MID-scan, not just at the single up-front broker call every other
+  verb makes once. What `grep.cr` actually does is call
+  `Budget#check_wall_clock!` once per file in its scan loop (real,
+  working protection against a runaway multi-file scan) — but that
+  raises the FATAL, unrescuable `Legate::FatalSignal(:exhausted, ...)`
+  (budget.cr), not the script-catchable `Legate::Timeout` RuntimeError
+  class (exceptions.cr) LEGATE.md's own text names. No kwarg or
+  default duration for a SEPARATE, grep-local, recoverable timeout is
+  documented anywhere — inventing a second, independent timer with
+  its own semantics felt like more new, unspecified design surface
+  than one verb's implementation should decide unilaterally. Needs a
+  real decision: either LEGATE.md's text is describing the existing
+  fatal wall-clock mechanism loosely (in which case the doc should
+  stop implying a script can `rescue` it), or grep genuinely needs its
+  own recoverable per-call deadline (in which case its kwarg/default
+  need designing first).
+
+- **No terse, agent-facing reference doc for Legate (and Adjutant's
+  Ruby subset generally) exists yet.** `LEGATE.md`/`ERRORS.md`/
+  `SCOPE.md` are correctness/completeness documents for a human
+  implementer, not what a small model (target: 16K+ context) should
+  read to learn what to write — different audience, different job,
+  and padding a small model's context with design rationale it can't
+  act on costs it real task room. Deliberately deferred, not
+  overlooked: nothing about the verb surface is stable yet, so
+  anything written now would describe intent rather than real
+  signatures/errors/edge cases, and the actual hard-to-infer-from-
+  Ruby-subset-syntax spots won't be known until scripts are written
+  against a real implementation. Revisit once `Legate` verbs exist and
+  are being dogfooded — likely worth generating this doc from
+  `LEGATE.md` (e.g. via a machine-extractable annotation convention on
+  verb signatures) rather than hand-authoring a parallel prose doc, so
+  the two can't silently drift apart.
+
+- **`Legate::Exit` — DECIDED 2026-09-10: removed entirely.** Found
+  2026-09-05, while removing `Legate.run`'s scaffolding (§4 step 1),
+  as an open question between two options: retire the whole type
+  alongside `run` (no producer, and won't be while exec stays out of
+  scope), or leave it as a plain, producer-less record shape against
+  the chance a future non-process source wants the same
+  `code`/`out`/`err`/`duration` shape. Settled on the former — if
+  something ever needs that shape again, it can be rebuilt with full
+  context for whatever it's actually serving, rather than kept alive
+  now on the chance it might be useful later. `raise!` had already
+  been removed (its only exception class, `Legate::NonZeroExit`, was
+  scaffolding for `run`); the rest
+  (`code`/`ok?`/`out`/`err`/`truncated?`/`duration`) is now gone too
+  — `legate/exit.cr` deleted, its bootstrap call and `require`
+  removed from `interpreter.cr`/`legate.cr`, LEGATE.md's §5.6, its
+  §3 type-index row and diagram node, and its §11 counts (value
+  types 6→5, methods ~47→~41) all updated to match. The Exit-specific
+  IFC-labeling test in `risk_flow_propagation_spec.cr` was removed
+  rather than adapted — Entry/Match/Response already exercise the
+  identical selective-labeling pattern, so no real coverage was lost,
+  just a redundant fourth instance of it.
+
+- **`Legate.log` is `Legate.log(message, fields = {})`, not the
+  spec'd `Legate.log(message, **fields)`.** Built 2026-09-08 (§4 step
+  2). Adjutant's native-call dispatch has no wildcard-kwarg mechanism
+  — every native method declares a FIXED `kwarg_names : Set(String)`
+  (`NativeCallable#kwarg_names`), and `VM#check_unknown_native_
+  keywords!` rejects any name outside it; an empty declared set (the
+  default, and every native method until now) rejects every kwarg
+  name outright. There is no "accept anything" escape hatch. Building
+  real support for that — a sentinel `kwarg_names` value, or a
+  parallel dispatch path — would be a genuine VM-level change, and
+  doing it for the sake of one convenience verb's exact spelling felt
+  disproportionate; the positional-Hash form carries identical
+  information (`Legate.log("done", {status: "ok"})` vs the spec'd
+  `Legate.log("done", status: "ok")` — same data, different
+  punctuation). Worth doing properly — generalized native kwarg
+  support — if a second verb ever wants the same thing; not before.
+  `legate/verbs/log.cr`'s own top comment has the full reasoning.
+
+  **Addendum, confirmed against a live `crystal build` the same day:**
+  the positional-Hash form turned out not to be merely a dispatch
+  workaround — it's load-bearing for a SECOND, independent reason.
+  `Log::Metadata`'s own top-level entries are `Symbol`-keyed
+  (`Log::Metadata#setup`, Crystal stdlib), and Crystal symbols cannot
+  be created dynamically at runtime AT ALL — only from a literal
+  known at compile time. `fields`' keys are chosen by the SCRIPT at
+  runtime, so they could never have been Metadata's own top-level
+  entry names regardless of how they arrived (kwarg spray or Hash
+  argument) — a real `**fields` implementation would have hit this
+  exact wall too. The fix (`legate/verbs/log.cr`): nest the whole
+  `fields` Hash one level down, under the single Symbol key `:fields`
+  — a literal in that file, known at compile time — since `Log::
+  Metadata::Value::Type` explicitly allows a String-keyed Hash as a
+  NESTED value, just not as Metadata's own top-level keys. Worth
+  knowing for whoever eventually builds generalized native kwarg
+  support per the paragraph above: it would face the identical
+  Symbol-key wall at the Log layer, unrelated to and not solved by
+  fixing VM dispatch.
+
+- **`Legate.scratch`'s directory is emptied at the end of every
+  `Interpreter#eval` call, not at the end of an agent's whole
+  session.** Built 2026-09-08. §4.7 says scratch "is emptied when the
+  script exits," and this codebase's own existing vocabulary already
+  settles what "the script" means for exactly this kind of resource:
+  `OpenSources`'s own comment ("SCOPE IS THE RUN, NOT THE PROCESS")
+  defines it as one `eval` call, specifically because an Interpreter
+  is long-lived and may run many. Applied the same rule to scratch
+  for consistency, but it is a real product decision with a real
+  cost: an agent doing multi-step work across several `eval` calls on
+  one Interpreter (exactly DEVELOPMENT.md's own description of the
+  intended use) gets a FRESH scratch directory every call, so
+  anything written to scratch in one step is gone by the next. If
+  that turns out to matter in practice, the fix is either a
+  session-scoped scratch dir with its own (currently nonexistent)
+  session-end teardown hook, or leaning on a real `write:` root for
+  anything meant to survive across steps and reserving `scratch` for
+  genuinely single-call incidental space. `legate/broker.cr`'s
+  `@scratch_dir` comment has the full reasoning; not revisited here.
+
+- **`Legate.log`'s `Effect` — RESOLVED 2026-09-10, and turned out to
+  be half the real question.** This entry originally flagged that
+  `Legate.log` shipped with `RiskProfile.none`, undeclaring a real
+  static-report effect. Fixed with `Effect::ExternalOutput`, but the
+  Effect alone doesn't prevent anything — see the Must Fix entry
+  above ("No Legate verb... actually prevents a script from reading
+  sensitive data and handing it to a sink") for the actual fix
+  (`Authority::Log`) and the much larger finding that surfaced
+  alongside it.
+
+- **§10.1's own worked claim ("the effectful surface is 21 verbs")
+  is stale, independent of anything this session touched.** Noticed
+  2026-09-08 while updating nearby verb counts for the ambient-verb
+  work; not fixed, since it belongs to §10 (the static analyser),
+  which is entirely unbuilt and out of scope for this session, and
+  chasing it would mean first deciding what "effectful surface"
+  should even count (all 25 specified verbs? Just the ones with a
+  declared `Authority`? Something narrower?) rather than just
+  correcting a number. Left as a marker for whoever next touches §10.
+
+- **`Legate.env`'s allowlist denial produces no `AuditRecord`, unlike
+  a normal grant denial.** Built 2026-09-08 (§4.7, completing it).
+  Every ambient verb skips `Broker#authorize`'s whole sequence,
+  `scratch`/`fail` included, and this matches that for consistency —
+  but it's a closer call here than for those two. `scratch`/`fail`
+  have no interesting "why did this fail" to record (a resource that
+  always succeeds; an abort whose reason is already in the script's
+  own `FatalSignal#message`). An env-allowlist denial is different in
+  kind: it's a real policy-enforcement event, much closer to a normal
+  grant denial than to `scratch`'s own provisioning, and env
+  allowlists commonly gate secrets — exactly the situation an
+  embedder reviewing "what did this script try and fail to do" would
+  want visibility into. Not fixed here because doing it properly
+  means either exposing `AuditLog.append` outside `Broker#authorize`
+  (a real API change to core `Adjutant::Broker`, not a Legate-local
+  one) or hand-constructing an `AuditRecord` from `legate/verbs/
+  env.cr` against a currently-append-only-via-authorize class — both
+  bigger than this one verb's denial path should force unilaterally.
+  `legate/verbs/env.cr`'s own comment has the same flag, closer to
+  the code it's about.
+
+- **`Legate.now` reuses the core `Time` class rather than a
+  `Legate::Time`, and its RubyClass is looked up at CALL time, not
+  bootstrap time.** Built 2026-09-08. Worth recording as a pattern,
+  not just a fact about this one verb: `Interpreter#bootstrap_
+  builtin_classes` registers `Time` (and any other core builtin
+  reached via `register_builtin_class` outside `bootstrap_legate`
+  itself) AFTER `bootstrap_legate` runs, not before — so any FUTURE
+  Legate verb that needs to construct a value of some OTHER
+  core-builtin type will hit the identical ordering hazard, and the
+  identical fix (`interp.get_global(name)` inside the native block,
+  deferred to call time) applies. Didn't reorder `bootstrap_builtin_
+  classes` itself to register `Time` earlier — it's a shared sequence
+  this file doesn't own, and the call-time lookup sidesteps the
+  problem entirely for a fraction of the risk. Also: `Legate.now`'s
+  "frozen" is aspirational, same as `Legate::Response`'s own
+  documented "frozen" claim (`legate/response.cr`) — Adjutant has no
+  real `freeze`/`frozen?` mechanism at all (`vm.cr`'s `dup`/`clone`
+  comment says the same); a script can still mutate the returned
+  value via `#utc`/`#gmtime`/`#localtime`. Not specific to this verb,
+  just newly relevant to it.
+
+- **`Legate::Broker`'s default `log:` printed to STDOUT for every
+  `Legate.log` call, in direct contradiction of what shipped
+  documenting it.** Found 2026-09-10, via a real `ops test` run —
+  not a code review, an actual observed symptom (`ambient_basics.rb`/
+  `ambient_edge_cases.rb`'s own `Legate.log` calls printing during
+  the test run). The broker's default was `::Log.for("adjutant.
+  legate")`, and every comment/spec-text describing it (`broker.cr`,
+  LEGATE.md §4.7) confidently asserted this was a silent no-op,
+  "matching Crystal's own 'unconfigured sources emit nothing'
+  default." That default doesn't exist — checked properly this time:
+  Crystal's stdlib docs state plainly, and have since at least
+  0.35.1, that "by default entries from all sources with Info and
+  above severity will be logged to STDOUT using the Log::IOBackend."
+  `::Log.for(name)` binds to `Log.builder`, the process's ONE shared
+  global builder, so ANY unrelated code anywhere in the same process
+  calling (or not calling) `Log.setup` affects every Adjutant
+  embedding's `Legate.log` output too — the opposite of the isolation
+  the whole design was supposed to provide. Fixed by binding the
+  default to `Legate::Broker::DEFAULT_LOG`, a private `Log::Builder`
+  with no bindings at all, genuinely independent of the rest of the
+  process. Regression spec added (`broker_spec.cr`, `"#log
+  default"`) checking the builder identity directly, since capturing
+  real STDOUT output reliably in a spec is its own source of
+  flakiness this fix doesn't need to take on.
+
+  **Addendum, same day: the first fix was itself incomplete.** The
+  new regression spec caught it immediately — `Interpreter.new` with
+  no `log:` failed to match `DEFAULT_LOG`. `Legate::Broker#initialize`
+  was fixed, but `Interpreter#initialize` and `spec_helper.cr`'s
+  `make_interp` each carried their OWN independent copy of the same
+  `log : ::Log = ::Log.for("adjutant.legate")` default expression,
+  written separately when `log:` was first threaded through each
+  layer (step 2, `scratch`/`log`/`fail`). Since both always pass
+  `log:` through EXPLICITLY to the layer below, their own stale
+  default silently overrode the fix for any caller that doesn't pass
+  `log:` itself — which includes `test_runner.cr`, meaning the actual
+  script-test suites (`ambient_basics.rb`/`ambient_edge_cases.rb`)
+  were probably STILL printing to STDOUT even after the first "fix"
+  shipped. Both now reference `Legate::Broker::DEFAULT_LOG` directly
+  rather than re-deriving their own copy — the actual lesson here
+  isn't "remember every call site," it's that a default value worth
+  getting right belongs in exactly ONE place, referenced everywhere
+  else, precisely so a fix like this one can't fail to propagate.
+
+  Worth being blunt about: this is the same failure mode as the
+  `retry` entry above (a confident, specific, wrong claim about
+  runtime behavior, shipped and repeated across multiple files) and
+  the `SCOPE.md` citation error in that same entry — except this one
+  was caught by the person running the tests, not by re-reading the
+  code. All three came from the same root cause: asserting how a
+  Crystal stdlib API behaves from confident recollection rather than
+  checking, in a codebase whose own stated practice — see this file's
+  own repeated "not independently verified against a live toolchain"
+  flags elsewhere — exists specifically to catch this. The `Log`
+  module in particular has now produced three separate mistakes this
+  session (the `Hash` vs `NamedTuple`/Symbol-key question in
+  `log.cr`'s `emit` call, this default, and almost a fourth just now
+  in scoping this very regression spec) — worth treating any future
+  claim about `Log`'s behavior as unverified until checked against
+  the actual docs or a real run, not just this one.
 
 ### Tooling
 
-- **Eleven ameba rule classes are excluded per-file rather than
+- **Eleven ameba rule classes were excluded per-file rather than
   fixed.** Added 2026-09-01, when the `Effect` rename forced an ameba
-  bump from 1.6.4 to 1.7.0 and the new version reported warnings across
-  a large part of `src/`. CI linting was briefly disabled entirely,
-  then restored by generating `.ameba.yml` with `--gen-config` so the
-  gate runs again and only the known-failing (rule, file) pairs are
-  skipped.
+  bump from 1.6.4 to 1.7.0 and the new version reported warnings
+  across a large part of `src/`. Deferred until after the `add-legate`
+  merge so the warnings would not have to be fixed twice, over two
+  partly-overlapping sets of files.
 
-  Why deferred rather than fixed on the spot: the warnings would have
-  to be fixed twice. `add-legate` carries eighteen source files that do
-  not exist on this branch and have never been linted by 1.7.0 either,
-  so a sweep now covers a set that only partly overlaps the one that
-  will need sweeping after the merge. One pass afterwards is strictly
-  less work and lands as a single reviewable commit rather than a
-  cleanup tangled into a refactor.
+  **Cleared 2026-09-02.** `.ameba.yml` now carries no exclusions at
+  all. Of the eighteen warnings that survived `--fix`: eight
+  `Lint/ElseNil` and six stale `Lint/UnneededDisableDirective` were
+  mechanical; `Lint/UselessAssign` and `Lint/VoidOutsideLib` were one
+  each; and three `Metrics/CyclomaticComplexity` were real. Two of
+  those three were split into genuinely separate methods
+  (`NetRule.parse` into its two accepted spellings,
+  `RiskWalker#walk_super_target` into its singleton and instance
+  branches) rather than silenced. The third, `bootstrap_regexp`, took
+  an inline `ameba:disable` with a stated reason, matching the
+  convention `range.cr` and `helpers.cr` already use: its branch count
+  comes from how many methods `Regexp` has, not from tangled logic.
 
-  **Trigger: the `add-legate` merge.** Do it as its own commit, then
-  delete the exclusions from `.ameba.yml` rule by rule as each is
-  cleared — the generated file's own header says the same thing, and
-  the file is worthless as a record once it stops shrinking.
-
-  Note the property that makes this safe to leave: exclusions are
-  scoped to individual files, so any NEW file is fully linted, and an
-  excluded file is still checked by every other rule. New code does not
-  inherit the debt. The rules currently excluded somewhere:
-  `Lint/ElseNil`, `Lint/UnneededDisableDirective`, `Lint/UselessAssign`,
-  `Lint/VoidOutsideLib`, `Lint/WhitespaceAroundMacroExpression`,
-  `Metrics/CyclomaticComplexity`, `Style/HeredocIndent`,
-  `Style/RedundantNilInControlExpression`, `Style/RedundantSelf`,
-  `Style/VerboseNilType`. `risk_walker.cr`, `vm.cr` and `compiler.cr`
-  account for most of the entries.
+  Keep the file empty. A per-file exclusion turns a rule off for code
+  nobody has looked at yet, including code written later — which is
+  how the 1.7.0 warnings reached eighteen files in the first place.
 
 ## Deliberate non-goals
 
