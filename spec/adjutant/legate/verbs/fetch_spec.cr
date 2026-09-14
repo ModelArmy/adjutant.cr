@@ -155,6 +155,30 @@ module Adjutant
       end
     end
 
+    # `Authority::Net` (2026-09-10): the exfiltration fix for the
+    # verb where it's most direct — a script reading sensitive
+    # content and POSTing it out via `body:`. Belongs in THIS
+    # section, not among the tests below that make real (Wiretap-
+    # recorded) HTTP calls: `VM#check_risk_flow` runs in `call_native`
+    # BEFORE `Legate.fetch`'s own body ever executes, so a rejection
+    # here never reaches the network at all — no transcript needed,
+    # same as URL-validation failures just above.
+    describe "risk-flow enforcement (the actual exfiltration fix)" do
+      it "rejects a request body carrying a pre-existing taint, before any network call is attempted" do
+        policy = RiskFlowPolicy.new(
+          risk_flow_rules: [RiskFlowRule.new(Authority::Net, Sensitivity::Elevated, RiskFlowAction::Reject)],
+        )
+        interp, _ = make_interp(risk_flow_policy: policy, grants: net_grants(methods: ["get", "post"]))
+        interp.define_native("tainted_str") do |args|
+          Value.string(args.first.as_string, RiskFlowLabel.of(ProvenanceKind::UserInput, "cli-arg", Sensitivity::Elevated))
+        end
+
+        expect_raises(RuntimeError, /risk flow policy rejected/) do
+          interp.eval(%(Legate.fetch("https://api.example.com/orders", method: :post, body: tainted_str("leak"))))
+        end
+      end
+    end
+
     describe "grant enforcement" do
       it "denies a host outside the allowlist, fatally" do
         interp, _ = make_interp(grants: net_grants)

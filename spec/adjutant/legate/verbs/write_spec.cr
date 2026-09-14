@@ -383,4 +383,62 @@ module Adjutant
       end
     end
   end
+
+  # `Authority::Write` (2026-09-10) is what actually PREVENTS the
+  # exfiltration `Legate.write`'s own `authorize_write` call never
+  # did: that call only ever checks the DESTINATION path's own
+  # configured sensitivity, never whether the DATA being written
+  # carries taint from somewhere else. Real source (`Legate.read` on
+  # an actually-sensitive file, not a synthetic trigger) reaching a
+  # real sink, the same shape `log_spec.cr`'s equivalent test uses.
+  describe "risk-flow enforcement (the actual exfiltration fix, not just the destination check)" do
+    it "rejects sensitive content read from one file when written verbatim to another" do
+      with_tmpdir do |dir|
+        secret = File.join(dir, "secret.txt")
+        dest = File.join(dir, "dest.txt")
+        File.write(secret, "hunter2")
+
+        policy = RiskFlowPolicy.new(
+          sensitivity_patterns: [SensitivityPattern.new(ProvenanceKind::File, secret, 1, Sensitivity::High)],
+          risk_flow_rules: [RiskFlowRule.new(Authority::Write, Sensitivity::High, RiskFlowAction::Reject)],
+        )
+        interp, _ = make_interp(
+          risk_flow_policy: policy,
+          grants: Legate::Grants.new(read_roots: [dir], write_roots: [dir]),
+        )
+        expect_raises(RuntimeError, /risk flow policy rejected/) do
+          interp.eval(<<-RUBY)
+          content = Legate.read(#{secret.inspect})
+          Legate.write(#{dest.inspect}, content)
+          RUBY
+        end
+      end
+    end
+
+    it "does NOT reject when the content is untainted, even under the identical rule" do
+      with_tmpdir do |dir|
+        plain = File.join(dir, "plain.txt")
+        dest = File.join(dir, "dest.txt")
+        File.write(plain, "nothing sensitive")
+
+        policy = RiskFlowPolicy.new(
+          risk_flow_rules: [RiskFlowRule.new(Authority::Write, Sensitivity::High, RiskFlowAction::Reject)],
+        )
+        interp, _ = make_interp(
+          risk_flow_policy: policy,
+          grants: Legate::Grants.new(read_roots: [dir], write_roots: [dir]),
+        )
+        eval = interp.eval(<<-RUBY)
+        begin
+          content = Legate.read(#{plain.inspect})
+          Legate.write(#{dest.inspect}, content)
+          "no error"
+        rescue
+          "errored"
+        end
+        RUBY
+        eval.as_string.should eq "no error"
+      end
+    end
+  end
 end

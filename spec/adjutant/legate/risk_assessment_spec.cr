@@ -171,24 +171,45 @@ module Adjutant
     # Until 2026-09-10, no Legate verb declared `authorities` at all:
     # enforcement ran entirely through `broker.authorize`'s explicit
     # `declare_sensitivity` path, so `check_risk_flow`'s automatic
-    # path was inert for every Legate call. That was a real design
-    # position worth revisiting deliberately rather than by accident
-    # — and it was revisited: `Legate.log` now declares
-    # `Authority::Log`, the fix for a real exfiltration path (a
-    # script reading sensitive data and handing it to `Legate.log`
-    # verbatim — SCOPE.md has the full reasoning, including the much
-    # larger finding that surfaced alongside it: `read`/`write`/
-    # `delete`/`net` still declare none, so they remain unprotected
-    # by this same mechanism). This test still fails the instant that
-    # set changes without this assertion being updated alongside it —
-    # the whole point is that it can't drift silently, not that it
-    # stays empty forever.
+    # path was inert for every Legate call. `Legate.log` was the
+    # first fix, for a real exfiltration path (SCOPE.md has the full
+    # reasoning) — and the SAME session found that gap was much
+    # larger than `log` alone: `read`/`write`/`delete`/`net`, the
+    # entire non-ambient verb family, had it too. All four are fixed
+    # here, each declaring the authority (or authorities, for `mv`/
+    # `mv!`, which already call BOTH `authorize_delete` and
+    # `authorize_write`) matching its own existing `broker.authorize_
+    # *` call — reused, not invented, since these Authority values
+    # already existed for the static-perimeter check this is
+    # complementary to. `scratch`/`fail`/`env`/`now`/`random` remain
+    # deliberately empty: none goes through `broker.authorize` at
+    # all (ambient verbs bypass that whole sequence), so none has an
+    # existing Authority to reuse the way the other families did.
+    # This test still fails the instant the set changes without this
+    # assertion being updated alongside it.
     it "declares authorities on exactly the verbs that have deliberately been given them" do
       interp, _ = make_interp
       with_authorities = legate_verbs(interp).select { |_, c| !c.authorities.empty? }
 
-      with_authorities.keys.sort.should eq ["log"]
-      with_authorities["log"].authorities.should eq Set{Authority::Log}
+      with_authorities.transform_values(&.authorities).should eq({
+        "read"    => Set{Authority::Read},
+        "stat"    => Set{Authority::Read},
+        "list"    => Set{Authority::Read},
+        "grep"    => Set{Authority::Read},
+        "write"   => Set{Authority::Write},
+        "write!"  => Set{Authority::Write},
+        "append"  => Set{Authority::Write},
+        "mkdir"   => Set{Authority::Write},
+        "cp"      => Set{Authority::Write},
+        "cp!"     => Set{Authority::Write},
+        "rm"      => Set{Authority::Delete},
+        "rmdir"   => Set{Authority::Delete},
+        "rmdir!"  => Set{Authority::Delete},
+        "mv"      => Set{Authority::Delete, Authority::Write},
+        "mv!"     => Set{Authority::Delete, Authority::Write},
+        "fetch"   => Set{Authority::Net},
+        "log"     => Set{Authority::Log},
+      })
     end
 
     # ASSERTION 5 — end to end, through the real walker.

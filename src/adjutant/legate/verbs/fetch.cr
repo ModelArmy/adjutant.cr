@@ -74,6 +74,17 @@ module Adjutant
           bytes_cls = Helpers.fetch(legate, interp, "Bytes")
           chunk_cls = Helpers.fetch(legate, interp, "Chunk")
 
+          # `authorities: Set{Authority::Net}` — same fix as write.cr's
+          # own version, for the verb where the exfiltration shape is
+          # most direct: a script reading sensitive content and
+          # POSTing it out via `body:`/`headers:` (or embedding it in
+          # the URL itself) now has that data's own label checked
+          # against `Authority::Net`, not just the URL/host's own
+          # configured sensitivity (this verb's EXISTING `declare_
+          # sensitivity` call, unchanged). `check_risk_flow` covers
+          # kwargs the same way it covers positional args (`vm.cr`'s
+          # own comment on why), so `body:`/`headers:` are checked
+          # exactly like the URL is.
           legate.define_native_singleton_method(
             interp.symbols.intern("fetch").value,
             RiskProfile.new(
@@ -86,6 +97,7 @@ module Adjutant
               severity: Severity::Warning,
             ),
             KWARG_NAMES,
+            authorities: Set{Authority::Net},
           ) do |args, _blk, ncc|
             # Convention 1: every kwarg validated BEFORE any
             # authorize_* call, so a wrong-typed kwarg never consumes

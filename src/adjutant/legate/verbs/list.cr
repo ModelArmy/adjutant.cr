@@ -23,10 +23,12 @@ module Adjutant
           entry_cls = Helpers.fetch(legate, interp, "Entry")
           path_cls = Helpers.fetch(legate, interp, "Path")
 
+          # See read.cr's own comment on this exact addition.
           legate.define_native_singleton_method(
             interp.symbols.intern("list").value,
             RiskProfile.new(effects: Set{Effect::ReadsFiles}),
             KWARG_NAMES,
+            authorities: Set{Authority::Read},
           ) do |args, _blk, ncc|
             # `limit` validated FIRST — SCOPE.md's "kwarg-validation
             # ordering inconsistent across the read-verb slice" entry

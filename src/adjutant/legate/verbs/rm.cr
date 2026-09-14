@@ -139,6 +139,14 @@ module Adjutant
         # many" is worth knowing.
         private def self.register_rm(interp : Interpreter, legate : RubyClass, broker : Broker,
                                      conflict : RubyClass) : Nil
+          # `authorities: Set{Authority::Delete}` — same fix as
+          # write.cr's own version, narrower in the same way mkdir's
+          # is: `rm` takes only a path, no content, so this protects
+          # against a TAINTED path being used as a delete target
+          # (this verb's own EXISTING `authorize_delete`/`declare_
+          # sensitivity` call only ever checks the path's own
+          # configured sensitivity, never whether it arrived tainted
+          # from somewhere else).
           legate.define_native_singleton_method(
             interp.symbols.intern("rm").value,
             RiskProfile.new(
@@ -146,6 +154,7 @@ module Adjutant
               reversible: Reversibility::No,
               severity: Severity::Warning,
             ),
+            authorities: Set{Authority::Delete},
           ) do |args, _blk, ncc|
             raw, label = target(args, ncc, broker)
 
@@ -171,6 +180,7 @@ module Adjutant
         # carried by the name instead of the absence of a flag.
         private def self.register_rmdir(interp : Interpreter, legate : RubyClass, broker : Broker,
                                         conflict : RubyClass) : Nil
+          # See register_rm's own comment on this exact addition.
           legate.define_native_singleton_method(
             interp.symbols.intern("rmdir").value,
             RiskProfile.new(
@@ -178,6 +188,7 @@ module Adjutant
               reversible: Reversibility::No,
               severity: Severity::Warning,
             ),
+            authorities: Set{Authority::Delete},
           ) do |args, _blk, ncc|
             raw, label = target(args, ncc, broker)
 
@@ -209,6 +220,7 @@ module Adjutant
         # static manifest can report it.
         private def self.register_rmdir_bang(interp : Interpreter, legate : RubyClass, broker : Broker,
                                              conflict : RubyClass) : Nil
+          # See register_rm's own comment on this exact addition.
           legate.define_native_singleton_method(
             interp.symbols.intern("rmdir!").value,
             RiskProfile.new(
@@ -216,6 +228,7 @@ module Adjutant
               reversible: Reversibility::No,
               severity: Severity::Warning,
             ),
+            authorities: Set{Authority::Delete},
           ) do |args, _blk, ncc|
             raw, label = target(args, ncc, broker)
 

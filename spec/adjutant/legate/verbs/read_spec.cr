@@ -262,4 +262,33 @@ module Adjutant
       end
     end
   end
+
+  # `Authority::Read` (2026-09-10): protects against a TAINTED PATH
+  # (built from a labeled source) being used as a read target — not
+  # exfiltration (read doesn't send data anywhere), closer in spirit
+  # to §10.1's unbuilt "taint to path" check. `sensitivity_labeling_
+  # spec.cr`'s own `tainted_path` test already proves the returned
+  # content correctly INHERITS such a label; it uses `RiskFlowAction
+  # ::Allow` throughout, so it never actually proves rejection. This
+  # does.
+  describe "risk-flow enforcement (tainted path, not tainted content)" do
+    it "rejects a read target path carrying a pre-existing taint" do
+      with_tmpdir do |dir|
+        file = File.join(dir, "f.txt")
+        File.write(file, "hi")
+
+        policy = RiskFlowPolicy.new(
+          risk_flow_rules: [RiskFlowRule.new(Authority::Read, Sensitivity::Elevated, RiskFlowAction::Reject)],
+        )
+        interp, _ = make_interp(risk_flow_policy: policy, grants: Legate::Grants.new(read_roots: [dir]))
+        interp.define_native("tainted_path") do |args|
+          Value.string(args.first.as_string, RiskFlowLabel.of(ProvenanceKind::UserInput, "cli-arg", Sensitivity::Elevated))
+        end
+
+        expect_raises(RuntimeError, /risk flow policy rejected/) do
+          interp.eval(%(Legate.read(tainted_path(#{file.inspect}))))
+        end
+      end
+    end
+  end
 end

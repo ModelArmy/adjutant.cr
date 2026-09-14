@@ -18,18 +18,38 @@ module Adjutant
         def self.bootstrap(interp : Interpreter, legate : RubyClass, broker : Broker) : Nil
           stat_cls = Helpers.fetch(legate, interp, "Stat")
 
-          # `risk: ReadsFiles` here is the AUTOMATIC, label-driven
-          # check (VM#check_risk_flow) — complementary to, not a
-          # duplicate of, `broker.authorize_read`'s own
-          # `declare_sensitivity` call below. This one fires when the
-          # ARGUMENT arrives already labeled (e.g. a path string built
-          # from something a previous tainted read produced);
-          # `declare_sensitivity` fires on the path's own literal
-          # content regardless of whether it carries an incoming
-          # label at all. A verb touching files needs both, same as
-          # every risk-tagged native method elsewhere in this
-          # codebase — this is not a Legate-specific pattern.
-          Builtins.define_singleton(legate, interp, "stat", risk: RiskProfile.new(effects: Set{Effect::ReadsFiles})) do |args, _blk, ncc|
+          # The AUTOMATIC, label-driven check (`VM#check_risk_flow`)
+          # is driven by `authorities:` below — NOT by `risk:`/
+          # `RiskProfile.effects`, which only feeds the static risk
+          # sweep (step 4c) and has no runtime enforcement role at
+          # all. This comment used to conflate the two, and used to
+          # describe `check_risk_flow` as already firing here
+          # ("complementary to... declare_sensitivity") when in fact
+          # `authorities:` was never passed anywhere in the read-verb
+          # family — including here — until 2026-09-10. Also switched
+          # from `Builtins.define_singleton` (a narrower shared
+          # helper used across many non-Legate builtins, which
+          # doesn't forward `authorities:` at all) to `legate.
+          # define_native_singleton_method` directly, matching every
+          # other Legate verb.
+          #
+          # The actual design, which WAS accurate the whole time: a
+          # verb touching files needs both mechanisms, not either.
+          # `declare_sensitivity` (below, via `authorize_read`) fires
+          # on the path argument's own literal content, regardless of
+          # whether it carries an incoming label — "is THIS PATH
+          # configured as sensitive." `check_risk_flow` (via
+          # `authorities:`) fires when the argument arrives ALREADY
+          # labeled — e.g. a path string built from something a
+          # previous tainted read produced — checking that INCOMING
+          # taint against policy independently of what the path's own
+          # content says. Same two-mechanism split `write.cr`/
+          # `log.cr` document for their own additions.
+          legate.define_native_singleton_method(
+            interp.symbols.intern("stat").value,
+            RiskProfile.new(effects: Set{Effect::ReadsFiles}),
+            authorities: Set{Authority::Read},
+          ) do |args, _blk, ncc|
             path_val = args[1]? || Value.nil_value
             str_val = ncc.call_method(path_val, "to_s", [] of Value)
             raw = str_val.as_string

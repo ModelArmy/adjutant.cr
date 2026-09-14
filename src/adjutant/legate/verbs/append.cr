@@ -39,9 +39,12 @@ module Adjutant
           conflict = Helpers.fetch(legate, interp, "Conflict")
           eof = Helpers.fetch(legate, interp, "EOF")
 
+          # See write.cr's own comment on this exact addition — same
+          # fix, same reasoning, same date.
           legate.define_native_singleton_method(
             interp.symbols.intern("append").value,
             RiskProfile.new(effects: Set{Effect::WritesFiles}),
+            authorities: Set{Authority::Write},
           ) do |args, _blk, ncc|
             path_val = args[1]? || Value.nil_value
             str_val = ncc.call_method(path_val, "to_s", [] of Value)

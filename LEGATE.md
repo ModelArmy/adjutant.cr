@@ -34,6 +34,7 @@ Section                                  |Status      |Notes
 §8.5 exception construction              |Built       |                                                                                       
 §8.6 diagnostics for removed constructs  |Built       |`retry` resolved 2026-09-09 (UNSUPPORTED.md, U020); every table row now enforced       
 §8.7 audit log                           |Built       |Narrower than specified: no bytes/duration                                             
+§8.8 risk-flow sink enforcement          |Built       |As of 2026-09-10; `read`/`write`/`delete`/`net`/`log` only — see SCOPE.md              
 §9 exception taxonomy                    |Built       |                                                                                       
 §10 static analyser                      |NOT BUILT   |No part of it. See §10's own note                                                      
 §11 surface count                        |ASPIRATIONAL|Counts the specified surface, not the built one                                        
@@ -780,6 +781,12 @@ An author who meets one of these once writes correct Legate for the remainder of
 ### 8.7 Audit log
 
 Every verb call appends one structured record: timestamp, verb, arguments (paths canonicalised, bodies hashed not stored), grant consulted, decision, bytes moved, duration, and the exception class raised if any. Re-iteration of a stream logs a distinct record. Every fatal exception is logged before unwinding begins, in case an `ensure` misbehaves. The log is the artefact a human reviews; it should be readable without the script.
+
+### 8.8 Risk-flow sink enforcement
+
+Every read/write/delete/net verb, and `Legate.log`, checks its own arguments against `RiskFlowPolicy` twice, for two genuinely different questions. The verb's own `authorize_*` call (§8.1–§8.2, `Broker#authorize`) asks whether the SUBJECT itself — the path, host, or env name a call names — is configured as sensitive; a script reading `/etc/shadow` gets asked or refused because that path is sensitive, independent of anything else in the script. Separately, and automatically, every native call whose declared `authorities` intersect a labeled argument's own provenance is checked again: a value carrying a `RiskFlowLabel` from an earlier `Legate.read`/`Legate.fetch`/`Legate.env` call — regardless of what it's now named or which variable holds it — is checked against policy at every SINK it subsequently reaches, not only at its original source. This is what actually prevents a script from reading something sensitive under one name and handing it to another verb under a different one; the first check alone cannot, since by the time the data reaches a second call it may be sitting in an ordinary-looking local variable with no textual trace of where it came from.
+
+The read family (`read`/`stat`/`list`/`grep`) declares `Authority::Read`; the write family (`write`/`write!`/`append`/`mkdir`/`cp`/`cp!`) declares `Authority::Write`; the delete family (`rm`/`rmdir`/`rmdir!`) declares `Authority::Delete`; `mv`/`mv!` declare both, matching their own two `authorize_*` calls exactly; `fetch` declares `Authority::Net`; `Legate.log` declares `Authority::Log` (§4.7), the one Authority with no matching `authorize_*` call at all — ambient verbs bypass that whole sequence, so this is the only enforcement `Legate.log` has. `scratch`/`fail`/`env`/`now`/`random` remain outside this mechanism entirely, the same as they are outside `Broker#authorize`.
 
 ---
 

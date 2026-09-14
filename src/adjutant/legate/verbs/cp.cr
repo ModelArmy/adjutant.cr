@@ -111,10 +111,19 @@ module Adjutant
                       RiskProfile.new(effects: Set{Effect::ReadsFiles, Effect::WritesFiles})
                     end
 
+          # `authorities: Set{Authority::Write}` — same fix, same
+          # reasoning as write.cr's own version. Both `cp`'s
+          # arguments are paths, not a content value (the copy
+          # happens filesystem-to-filesystem, with no in-VM buffer
+          # a label could travel on) — what this protects is a
+          # tainted SOURCE or DESTINATION path being used, matching
+          # mkdir's own narrower case rather than write's data-borne
+          # one.
           legate.define_native_singleton_method(
             interp.symbols.intern(name).value,
             profile,
             Set{"recursive"},
+            authorities: Set{Authority::Write},
           ) do |args, _blk, ncc|
             recursive = recursive_flag(ncc, name)
 

@@ -22,8 +22,19 @@ module Adjutant
 
           legate.define_native_singleton_method(
             interp.symbols.intern("read").value,
-            RiskProfile.new(effects: Set{Effect::ReadsFiles}), # complements declare_sensitivity — see stat.cr's own comment on why both are needed
+            RiskProfile.new(effects: Set{Effect::ReadsFiles}),
             KWARG_NAMES,
+            # `authorities: Set{Authority::Read}` — this comment used
+            # to say "complements declare_sensitivity" as though that
+            # were already true; it wasn't, until 2026-09-10 — nothing
+            # set `authorities:` anywhere in the read-verb family
+            # before this, so `VM#check_risk_flow` was inert for
+            # every one of them despite this exact line claiming
+            # otherwise. See stat.cr's own comment for the fuller
+            # "why both mechanisms are needed" reasoning, which was
+            # accurate about the DESIGN the whole time — just not
+            # about whether it was WIRED.
+            authorities: Set{Authority::Read},
           ) do |args, _blk, ncc|
             # `limit`/`scrub` validated FIRST — SCOPE.md's "kwarg-
             # validation ordering inconsistent across the read-verb

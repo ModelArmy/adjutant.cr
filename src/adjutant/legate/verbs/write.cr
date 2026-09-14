@@ -110,9 +110,24 @@ module Adjutant
                       RiskProfile.new(effects: Set{Effect::WritesFiles})
                     end
 
+          # `authorities: Set{Authority::Write}` — makes this a real
+          # sink in `VM#check_risk_flow`'s labeled-argument check: a
+          # script reading sensitive content (via `Legate.read`,
+          # `Legate.fetch`, `Legate.env`, ...) and writing it out
+          # verbatim now has that data's own label checked against
+          # `RiskFlowPolicy#action_for(Authority::Write, sensitivity)`,
+          # not just this verb's own EXISTING `declare_sensitivity`
+          # call for the DESTINATION path (`authorize_write`,
+          # broker.cr) — which only ever asks "is this destination
+          # itself configured as sensitive," never "does the data
+          # flowing into it carry taint from somewhere else." Added
+          # 2026-09-10, the same fix `Legate.log` got for the same
+          # reason — SCOPE.md has the full audit that found NO verb
+          # had this, `Legate.log` included at the time.
           legate.define_native_singleton_method(
             interp.symbols.intern(name).value,
             profile,
+            authorities: Set{Authority::Write},
           ) do |args, _blk, ncc|
             path_val = args[1]? || Value.nil_value
             str_val = ncc.call_method(path_val, "to_s", [] of Value)

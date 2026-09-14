@@ -129,9 +129,18 @@ module Adjutant
                       RiskProfile.new(effects: Set{Effect::MovesFiles})
                     end
 
+          # `authorities: Set{Authority::Delete, Authority::Write}` —
+          # matches this verb's own EXISTING authorization shape
+          # exactly (`authorize_delete` on `from`, `authorize_write`
+          # on `to` — this file's own module comment, and the two
+          # calls just below). A tainted FROM or TO path is now
+          # checked against BOTH authorities' policy — see write.cr's
+          # own comment for the fuller reasoning behind this whole
+          # change.
           legate.define_native_singleton_method(
             interp.symbols.intern(name).value,
             profile,
+            authorities: Set{Authority::Delete, Authority::Write},
           ) do |args, _blk, ncc|
             from_val = args[1]? || Value.nil_value
             from_str_val = ncc.call_method(from_val, "to_s", [] of Value)

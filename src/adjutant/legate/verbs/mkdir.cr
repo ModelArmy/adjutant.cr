@@ -21,9 +21,16 @@ module Adjutant
           conflict = Helpers.fetch(legate, interp, "Conflict")
           path_cls = Helpers.fetch(legate, interp, "Path")
 
+          # `authorities: Set{Authority::Write}` — narrower than
+          # write.cr's own version of this: `mkdir` has no data
+          # argument, only a path, so what this actually protects is
+          # a TAINTED PATH being used to create a directory, not
+          # exfiltration. Added for family consistency with the rest
+          # of §4.3 — see write.cr's comment for the fuller reasoning.
           legate.define_native_singleton_method(
             interp.symbols.intern("mkdir").value,
             RiskProfile.new(effects: Set{Effect::WritesFiles}),
+            authorities: Set{Authority::Write},
           ) do |args, _blk, ncc|
             path_val = args[1]? || Value.nil_value
             str_val = ncc.call_method(path_val, "to_s", [] of Value)

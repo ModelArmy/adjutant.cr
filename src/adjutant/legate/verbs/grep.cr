@@ -55,10 +55,12 @@ module Adjutant
           match_cls = Helpers.fetch(legate, interp, "Match")
           path_cls = Helpers.fetch(legate, interp, "Path")
 
+          # See read.cr's own comment on this exact addition.
           legate.define_native_singleton_method(
             interp.symbols.intern("grep").value,
             RiskProfile.new(effects: Set{Effect::ReadsFiles}),
             KWARG_NAMES,
+            authorities: Set{Authority::Read},
           ) do |args, _blk, ncc|
             # Pattern/paths/context/limit ALL validated FIRST, before
             # any grant/authorization work — same "a bad call-site

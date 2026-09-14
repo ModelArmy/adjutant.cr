@@ -325,4 +325,38 @@ module Adjutant
       end
     end
   end
+
+  # `Authority::Delete` (2026-09-10): `rm`/`rmdir`/`rmdir!` take no
+  # content argument, only a path, so what this protects is a
+  # TAINTED PATH — built from a labeled source — being used as a
+  # delete target, not exfiltration (see `write_spec.cr`'s own
+  # version of this describe block for that case). Uses the same
+  # synthetic `tainted_path` trigger `sensitivity_labeling_spec.cr`
+  # already established and verified, rather than trying to derive
+  # taint through string concatenation/slicing — whether Adjutant's
+  # own `+`/`[]` propagate labels the way Hash/Array literals do
+  # (`Op::MakeHash`'s `RiskFlowLabel.join`, confirmed for `log_spec.
+  # cr`'s test) was never checked, and this test doesn't need that
+  # question answered to prove the point.
+  describe "risk-flow enforcement (tainted path, not tainted content)" do
+    it "rejects a delete target path carrying a pre-existing taint" do
+      with_tmpdir do |dir|
+        file = File.join(dir, "f.txt")
+        File.write(file, "x")
+
+        policy = RiskFlowPolicy.new(
+          risk_flow_rules: [RiskFlowRule.new(Authority::Delete, Sensitivity::Elevated, RiskFlowAction::Reject)],
+        )
+        interp, _ = make_interp(risk_flow_policy: policy, grants: Legate::Grants.new(delete_roots: [dir]))
+        interp.define_native("tainted_path") do |args|
+          Value.string(args.first.as_string, RiskFlowLabel.of(ProvenanceKind::UserInput, "cli-arg", Sensitivity::Elevated))
+        end
+
+        expect_raises(RuntimeError, /risk flow policy rejected/) do
+          interp.eval(%(Legate.rm(tainted_path(#{file.inspect}))))
+        end
+        File.exists?(file).should be_true
+      end
+    end
+  end
 end

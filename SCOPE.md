@@ -583,28 +583,51 @@ just noise for the next reader.
   through `Op::MakeHash`'s own `RiskFlowLabel.join` across every
   pair, confirmed correct before trusting the test to mean anything.
 
-  **NOT fixed, and this is the larger remaining piece:** `read`,
-  `write`, `delete`, and `net` — the entire non-ambient verb family
-  — declare no `authorities:` either, meaning the ORIGINAL
-  exfiltration question (read a sensitive file, write it somewhere
-  else; or read it, `Legate.fetch` it out over the network) is
-  UNPROTECTED by this same mechanism today, for the verbs where it
-  would matter most. Not attempted here: retrofitting `authorities:`
-  onto four established, heavily-specified, heavily-tested verb
-  families is real, separate work — deciding which Authority each
-  declares (a `Legate.write` call plausibly needs to check the
-  INCOMING data against `Authority::Write`, which already exists and
-  is already used for the destination-sensitivity check, so this may
-  be closer to "add one line per verb" than `Legate.log`'s case was
-  — but that needs verifying per verb, not assumed), auditing
-  whether any existing policy/spec currently relies on tainted data
-  reaching these verbs unchecked (a behavior change, however
-  correct, breaks something for someone if they were depending on
-  the absence), and deciding whether `net`/`fetch` needs the SAME
-  treatment for outbound request bodies specifically. Left as the
-  next piece of this Must Fix entry, not a new one — the
-  investigation and the fix for `log` are done; the fix for
-  everything else Legate already ships is not.
+  **RESOLVED 2026-09-10, same day, once the audit above turned up
+  nothing blocking it:** `read`, `write`, `delete`, and `net` all now
+  declare `authorities:`, reusing their own EXISTING Authority values
+  rather than inventing new ones — `read`/`stat`/`list`/`grep` →
+  `Authority::Read`; `write`/`write!`/`append`/`mkdir`/`cp`/`cp!` →
+  `Authority::Write`; `rm`/`rmdir`/`rmdir!` → `Authority::Delete`;
+  `mv`/`mv!` → BOTH, matching their own two existing `authorize_*`
+  calls exactly (confirmed by reading `mv.cr` directly rather than
+  assuming); `fetch` → `Authority::Net`. Verified safe before writing
+  a single line: neither `spec_helper.cr`'s default test policy nor
+  `test_runner.cr`'s script-test one ever configures a
+  `sensitivity_pattern`, so nothing sourced through a real verb call
+  anywhere in the existing suite was ever labeled in the first place
+  (`declare_sensitivity` returns before even checking `reject_all_
+  flows` when resolved sensitivity is `None`) — the only real risk
+  category was specs that SYNTHETICALLY construct a labeled value,
+  and every one of those was individually checked and confirmed
+  either unrelated to a Legate verb or landing on a sensitivity the
+  test's own policy doesn't have a matching rule for. `authorities:`
+  turned out to need genuine per-verb judgment, not a blind stamp —
+  `mkdir`/`rm`/`rmdir`/`rmdir!` have no data argument at all, so what
+  they protect is a tainted PATH reaching them, not tainted content;
+  a stale comment in `stat.cr` (see below) had already worked out
+  this exact two-mechanism design and described it as already true,
+  years before it was. End-to-end regression coverage added for each
+  family — a real source (`Legate.env`, or `Legate.read` on an
+  actually-sensitive file, never a synthetic trigger standing in for
+  the whole scenario) reaching the newly-protected sink — in
+  `write_spec.cr`, `rm_spec.cr`, `fetch_spec.cr`, and `read_spec.cr`.
+  LEGATE.md §8.8 documents the mechanism itself. This Must Fix entry
+  is done; nothing further to file under it.
+
+  **Found along the way, worth its own line:** `stat.cr`'s own
+  bootstrap comment already said `check_risk_flow` was "complementary
+  to, not a duplicate of" `declare_sensitivity`, describing this
+  exact fix as though it were already active. It never was —
+  `authorities:` had never been set anywhere in the read-verb family,
+  `stat` included. The comment also conflated `RiskProfile.effects`
+  (static-report-only, no enforcement role) with `authorities:` (the
+  actual enforcement mechanism) as though they were the same thing.
+  Fixed in place, dated, same convention this file uses on itself.
+  Also switched `stat.cr` from `Builtins.define_singleton` — a
+  narrower shared helper used across many non-Legate builtins, which
+  doesn't forward `authorities:` at all — to `legate.define_native_
+  singleton_method` directly, matching every other Legate verb.
 
 ## Will Fix
 
