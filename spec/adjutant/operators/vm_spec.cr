@@ -331,6 +331,82 @@ module Adjutant
       end
     end
 
+    describe "== derived from a script-defined <=> (Comparable-style, no mixin needed)" do
+      # Companion to the "<=> and comparisons on script objects" block
+      # above — `<`/`<=`/`>`/`>=` already dispatched through a
+      # script-defined `<=>` before this; `==` (Op::Eq, a separate
+      # opcode from compare/compare_via_spaceship) did not, and fell
+      # back to plain reference identity for ANY two RubyObjects
+      # regardless of whether they defined `<=>` — a real, documented
+      # gap (see the removed comment in value_ops.cr's
+      # ValueOps.equal?) surfaced while designing a real `Time` type
+      # that needed value equality. See values_equal?/
+      # robject_equal_via_spaceship? (vm.cr) for the fix and the full
+      # reasoning on why `==` swallows a bad `<=>` into `false` where
+      # `<`/`<=`/`>`/`>=` deliberately raise R013 instead — that
+      # asymmetry is real Ruby Comparable behavior, not new here.
+
+      it "two different objects with the same <=>-comparable value are == (NOT identity)" do
+        eval(<<-RUBY).as_bool.should eq true
+        class Box
+          def initialize(v); @v = v; end
+          def <=>(other); @v <=> other.v; end
+          def v; @v; end
+        end
+        Box.new(5) == Box.new(5)
+        RUBY
+      end
+
+      it "two objects with different <=>-comparable values are not ==" do
+        eval(<<-RUBY).as_bool.should eq false
+        class Box
+          def initialize(v); @v = v; end
+          def <=>(other); @v <=> other.v; end
+          def v; @v; end
+        end
+        Box.new(5) == Box.new(6)
+        RUBY
+      end
+
+      it "falls back to plain identity when no <=> is defined at all — unchanged from before this fix" do
+        eval(<<-RUBY).as_bool.should eq false
+        class Bare; end
+        Bare.new == Bare.new
+        RUBY
+      end
+
+      it "identity still holds for the SAME object with no <=> defined" do
+        eval(<<-RUBY).as_bool.should eq true
+        class Bare; end
+        a = Bare.new
+        a == a
+        RUBY
+      end
+
+      it "<=> returning nil (genuinely unorderable) makes == false, NOT a raised R013 — unlike < which does raise" do
+        eval(<<-RUBY).as_bool.should eq false
+        class Foo
+          def <=>(other); nil; end
+        end
+        Foo.new == Foo.new
+        RUBY
+      end
+
+      it "<=> raising makes == false rather than propagating the error — matches real Ruby's non-raising Comparable#==" do
+        eval(<<-RUBY).as_bool.should eq false
+        class Foo
+          def <=>(other); raise "boom"; end
+        end
+        Foo.new == Foo.new
+        RUBY
+      end
+
+      it "does not affect Array/Hash/Range's own established content-equality special cases" do
+        eval("[1, 2, 3] == [1, 2, 3]").as_bool.should eq true
+        eval("(1..5) == (1..5)").as_bool.should eq true
+      end
+    end
+
     describe "VM#call_method against a script-defined method (regression)" do
       # Found 2026-08-06 while testing the <=> item above, but not
       # specific to <=> at all — a real, general bug in call_method

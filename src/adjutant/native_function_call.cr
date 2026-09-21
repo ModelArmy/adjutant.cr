@@ -63,13 +63,18 @@ module Adjutant
     end
 
     def declare_sensitivity(authority : Authority, kind : ProvenanceKind, origin : String,
-                            sensitivity : Sensitivity? = nil) : Nil
+                            sensitivity : Sensitivity? = nil) : RiskFlowLabel?
       @vm.declare_sensitivity(authority, kind, origin, @name, @callable.risk, filename, line, sensitivity)
     end
 
     def raise_error(code : String, data : Hash(String, String) = {} of String => String,
                     error_class : String = "RuntimeError") : NoReturn
       @vm.raise_native_error(code, data, error_class, filename, line)
+    end
+
+    def raise_error_class(message : String, error_class : RubyClass,
+                          attributes : Hash(String, Value)? = nil) : NoReturn
+      @vm.raise_native_error_class(message, error_class, filename, line, attributes)
     end
   end
 end

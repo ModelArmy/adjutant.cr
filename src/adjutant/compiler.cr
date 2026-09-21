@@ -167,7 +167,7 @@ module Adjutant
     # its lexical surroundings in Ruby, regardless of where it's
     # written), so that scope's own `parent` is already nil.
     def resolve_outer(name : String) : {Int32, Int32}?
-      return nil unless @is_block
+      return unless @is_block
       depth = 0
       scope = @parent
       while scope
@@ -2055,8 +2055,34 @@ module Adjutant
       compile_body(clause.body)
     end
 
+    # `retry` is a deliberate scope decision (UNSUPPORTED.md, U020),
+    # not merely unimplemented — see that entry for the full
+    # reasoning. In short: real Ruby's `retry` re-executes the
+    # nearest enclosing `begin` block specifically, from its start;
+    # nothing in this VM tracks where a `begin` block's own body
+    # starts (`HandlerEntry` — vm.cr — only ever stored `rescue_ip`/
+    # `ensure_ip`, the RESCUE and ENSURE clause targets, never a
+    # "begin body start" one), so the prior implementation here
+    # (`Op::Retry`, now removed) restarted the WHOLE enclosing frame
+    # instead — correct only in the narrow case where the `begin`
+    # block happens to be the entire frame body, silently wrong
+    # (re-running whatever came before the `begin`) otherwise. Found
+    # 2026-09-09; removed rather than fixed, per the standing
+    # principle (UNSUPPORTED.md's own header) that Adjutant should be
+    # a proper subset of Ruby, not a same-named construct that
+    # behaves differently.
     private def compile_retry(node : RetryNode) : Nil
-      @chunk.emit(Op::Retry, node.line)
+      raise CompileError.new(
+        Diagnostic.new(
+          code: "U020",
+          primary: Span.new(
+            line: node.line,
+            column: node.column,
+            length: 5, # "retry"
+            label: "retry is not supported"
+          )
+        )
+      )
     end
 
     # --- Misc ---------------------------------------------------------------
@@ -2212,7 +2238,6 @@ module Adjutant
       when Assign     then node.value.as?(BeginNode)
       when OpAssign   then node.value.as?(BeginNode)
       when CondAssign then node.value.as?(BeginNode)
-      else                 nil
       end
     end
 

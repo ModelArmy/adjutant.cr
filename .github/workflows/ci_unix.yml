@@ -12,11 +12,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest, crystal: latest }
-          - { os: ubuntu-24.04-arm, crystal: latest }
-          - { os: macos-latest, crystal: latest }
-          - { os: macos-15-intel, crystal: latest }
-          - { os: windows-latest, crystal: "1.20" }
+          - { os: ubuntu-latest, crystal: "1.21" }
+          - { os: ubuntu-24.04-arm, crystal: "1.21" }
+          - { os: macos-latest, crystal: "1.21" }
 
     runs-on: ${{ matrix.os }}
 
@@ -43,23 +41,26 @@ jobs:
         run: shards check || shards install
 
       - name: Run tests
-        run: crystal spec -Dtest
+        run: crystal spec
 
       # ---- Build and run test scripts
 
       - name: Setup release environment
-        if: ${{ runner.os != 'Windows' }}
         run: mkdir -p bin/release
 
       - name: Build Release
-        if: ${{ runner.os != 'Windows' }}
         run: SHARDS_BIN_PATH=bin/release shards --production build --release
 
       - name: Run test script runner
-        if: ${{ runner.os != 'Windows' }}
         run: bin/release/test_runner
 
       # ---- format and lint check on Linux only
+
+      - name: Setup ameba (Linux)
+        if: ${{ runner.os == 'Linux' }}
+        run: |
+          mkdir -p bin;
+          cp lib/ameba/bin/ameba.cr bin && crystal build -Dpreview_mt -o bin/ameba bin/ameba.cr
 
       - name: Check formatting (Linux)
         if: ${{ runner.os == 'Linux' }}

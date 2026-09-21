@@ -412,6 +412,24 @@ module Adjutant
       it "parses self" do
         parse_expr("self").should be_a(SelfNode)
       end
+
+      it "parses __FILE__ directly to a StringLiteral holding the parse's own filename" do
+        node = Parser.new("__FILE__", "my_script.rb").parse.stmts.first
+        node.should be_a(StringLiteral)
+        node.as(StringLiteral).value.should eq "my_script.rb"
+      end
+
+      it "parses __LINE__ directly to an IntLiteral holding its own source line" do
+        node = Parser.new("x = 1\ny = __LINE__").parse.stmts.last
+        # `y = __LINE__` is an Assign wrapping the IntLiteral, not the
+        # IntLiteral itself — unwrap one level, matching how a real
+        # script would actually use `__LINE__` (assigned to something,
+        # not evaluated bare as the whole program).
+        node.should be_a(Assign)
+        rhs = node.as(Assign).value
+        rhs.should be_a(IntLiteral)
+        rhs.as(IntLiteral).value.should eq "2"
+      end
     end
   end
 end

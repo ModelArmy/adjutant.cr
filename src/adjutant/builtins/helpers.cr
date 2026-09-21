@@ -11,11 +11,11 @@ module Adjutant::Builtins
   # - `crystal_methods` is an optional array to use when the defined name doesn't match Crystal's stdlib method name
   private macro __define_mapped_methods(cls, interp, self_as, return_as, methods, crystal_methods = nil)
     {% for method, index in methods %}
-    define({{cls}}, {{interp}}, {{method.stringify}}) do |args|
+    define({{ cls }}, {{ interp }}, {{ method.stringify }}) do |args|
       obj = args.first
-      val = obj.as_{{self_as}}
-      Adjutant::Value.{{return_as}}(
-        val.{{crystal_methods ? crystal_methods[index] : method}},
+      val = obj.as_{{ self_as }}
+      Adjutant::Value.{{ return_as }}(
+        val.{{ crystal_methods ? crystal_methods[index] : method }},
         obj.label) # pass on the risk label
     end
     {% end %}
@@ -24,10 +24,10 @@ module Adjutant::Builtins
   # Macro to define a getter method for `name` property, with `default` which can be
   # an expression that uses `obj` for the instance
   private macro __define_getter(cls, interp, name, default = Value.nil_value)
-    define({{cls}}, {{interp}}, {{name}}) do |args|
+    define({{ cls }}, {{ interp }}, {{ name }}) do |args|
       obj = args.first.as_robject
-      name_sym = {{interp}}.symbols.intern({{name}})
-      obj.ivars[name_sym.value]? || {{default}}
+      name_sym = {{ interp }}.symbols.intern({{ name }})
+      obj.ivars[name_sym.value]? || {{ default }}
     end
   end
 

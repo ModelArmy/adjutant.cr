@@ -1,0 +1,7 @@
+grants:
+  read:
+    roots:
+      - workspace
+  write:
+    roots:
+      - workspace

@@ -178,5 +178,79 @@ module Adjutant
         v.inspect.should eq "\"secret\" [label:{host:example.com}]"
       end
     end
+
+    describe "#to_plain / #to_plain?" do
+      it "converts every scalar to its plain Crystal equivalent" do
+        Value.nil_value.to_plain.should be_nil
+        Value.bool(true).to_plain.should eq true
+        Value.int(42).to_plain.should eq 42_i64
+        Value.float(1.5).to_plain.should eq 1.5
+        Value.string("hi").to_plain.should eq "hi"
+      end
+
+      it "converts a Sym to its name — no Symbol variant exists on the far side" do
+        sym = SPEC_SYMBOLS.intern("status")
+        Value.symbol(sym).to_plain.should eq "status"
+      end
+
+      it "converts an Array/Hash recursively, dropping the LabeledArray/LabeledHash wrapper" do
+        arr = Value.new(LabeledArray.new([Value.int(1), Value.string("a")]), nil)
+        arr.to_plain.should eq [1_i64, "a"] of PlainValue
+
+        entries = {Value.string("count") => Value.int(3), Value.string("ok") => Value.bool(true)}
+        h = Value.new(LabeledHash.new(entries), nil)
+        h.to_plain.should eq({"count" => 3_i64, "ok" => true} of String => PlainValue)
+      end
+
+      it "accepts Symbol-keyed Hashes exactly like String-keyed ones, at any nesting depth" do
+        sym_ok = SPEC_SYMBOLS.intern("ok")
+        top_entries = {Value.symbol(sym_ok) => Value.bool(true)}
+        top = Value.new(LabeledHash.new(top_entries), nil)
+        top.to_plain.should eq({"ok" => true} of String => PlainValue)
+
+        # Nested one level down — the case a real Ruby literal like
+        # `{tags: ["a"], nested: {ok: true}}` hits, and the exact
+        # shape `Legate.log`'s `fields` argument produces.
+        sym_nested = SPEC_SYMBOLS.intern("nested")
+        inner_entries = {Value.symbol(sym_ok) => Value.bool(true)}
+        inner = Value.new(LabeledHash.new(inner_entries), nil)
+        outer_entries = {Value.symbol(sym_nested) => inner}
+        outer = Value.new(LabeledHash.new(outer_entries), nil)
+
+        expected_inner = {"ok" => true} of String => PlainValue
+        expected = {"nested" => expected_inner} of String => PlainValue
+        outer.to_plain.should eq(expected)
+      end
+
+      it "raises ArgumentError for a Hash with a non-String key" do
+        entries = {Value.int(1) => Value.string("a")}
+        h = Value.new(LabeledHash.new(entries), nil)
+        expect_raises(ArgumentError) { h.to_plain }
+        h.to_plain?.should be_nil
+      end
+
+      it "raises ArgumentError for a RubyClass — no implicit #to_s (a ScriptProc/RubyObject behave the same; " \
+         "see log_spec.cr's lambda test for that end-to-end, since hand-constructing a real ScriptProc needs a real Chunk)" do
+        cls = Value.rclass(RubyClass.new("Widget", nil, is_module: false))
+        expect_raises(ArgumentError) { cls.to_plain }
+        cls.to_plain?.should be_nil
+      end
+
+      it "to_plain? is the nil-on-failure counterpart, matching as_int?/as_int's own pairing" do
+        Value.string("ok").to_plain?.should eq "ok"
+        entries = {Value.int(1) => Value.string("a")}
+        Value.new(LabeledHash.new(entries), nil).to_plain?.should be_nil
+      end
+
+      it "bounds recursion — a Value nested well past PLAIN_MAX_DEPTH fails rather than overflowing the stack" do
+        deep = Value.int(0)
+        (Value::PLAIN_MAX_DEPTH + 10).times { deep = Value.new(LabeledArray.new([deep]), nil) }
+        deep.to_plain?.should be_nil
+
+        shallow = Value.int(0)
+        5.times { shallow = Value.new(LabeledArray.new([shallow]), nil) }
+        shallow.to_plain?.should_not be_nil
+      end
+    end
   end
 end

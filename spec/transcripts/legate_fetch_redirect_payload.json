@@ -1,0 +1,66 @@
+{
+  "name": "legate_fetch_redirect_payload",
+  "recorded_with": "hand-written",
+  "interactions": [
+    {
+      "request": {
+        "method": "POST",
+        "url": "https://api.example.com/orders",
+        "headers": {
+          "Host": "api.example.com"
+        },
+        "body": "an order",
+        "body_digest": "cd6f6beb919ac128004da1067feb1007006d0c5c441bd9c9061e026df819f348"
+      },
+      "response": {
+        "status": 307,
+        "headers": {
+          "Content-Type": "text/plain",
+          "Location": "https://api.example.com/v2/orders"
+        },
+        "body": "moved"
+      },
+      "recorded_at": "2026-08-30T00:00:00Z"
+    },
+    {
+      "request": {
+        "method": "POST",
+        "url": "https://api.example.com/submit",
+        "headers": {
+          "Host": "api.example.com"
+        },
+        "body": "a form",
+        "body_digest": "e9979206fc15cd663622a6f1efe711bebffbdd4cc8ce7329a1e031742f48648a"
+      },
+      "response": {
+        "status": 303,
+        "headers": {
+          "Content-Type": "text/plain",
+          "Location": "https://api.example.com/receipt/9"
+        },
+        "body": "accepted"
+      },
+      "recorded_at": "2026-08-30T00:00:00Z"
+    },
+    {
+      "request": {
+        "method": "POST",
+        "url": "https://api.example.com/legacy",
+        "headers": {
+          "Host": "api.example.com"
+        },
+        "body": "data",
+        "body_digest": "3a6eb0790f39ac87c94f3856b2dd2c5d110e6811602261a9a923d3bb23adc8b7"
+      },
+      "response": {
+        "status": 301,
+        "headers": {
+          "Content-Type": "text/plain",
+          "Location": "https://api.example.com/current"
+        },
+        "body": "moved permanently"
+      },
+      "recorded_at": "2026-08-30T00:00:00Z"
+    }
+  ]
+}

@@ -101,7 +101,6 @@ module Adjutant
     # Exception handling
     Try         # set rescue handler at c
     EndTry      # clear rescue handler
-    Retry       # retry the begin body
     Throw       # raise: pop value and throw
     PushError   # push current rescue exception onto stack
     SetEnsure   # register ensure block at c

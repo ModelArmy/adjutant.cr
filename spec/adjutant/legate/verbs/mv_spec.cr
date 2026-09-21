@@ -1,0 +1,429 @@
+require "../../../spec_helper"
+require "file_utils"
+
+private def with_tmpdir(&)
+  path = File.join(Dir.tempdir, "adjutant-spec-#{Random::Secure.hex(8)}")
+  Dir.mkdir(path)
+  begin
+    yield path
+  ensure
+    FileUtils.rm_rf(path)
+  end
+end
+
+# See mkdir_spec.cr's own identical helper for the full explanation.
+private def posix(path : String) : String
+  ::Path.new(path).to_posix.to_s
+end
+
+module Adjutant
+  private def self.move_grants(dir : String) : Legate::Grants
+    Legate::Grants.new(delete_roots: [dir], write_roots: [dir])
+  end
+
+  describe "Legate.mv" do
+    it "moves a file and returns a Path to the destination" do
+      with_tmpdir do |dir|
+        from = File.join(dir, "a.txt")
+        to = File.join(dir, "b.txt")
+        File.write(from, "content")
+        interp, _ = make_interp(grants: move_grants(dir))
+        eval = interp.eval(%(Legate.mv(#{(from).inspect}, #{(to).inspect}).to_s))
+        eval.as_string.should eq posix(to)
+        File.exists?(from).should be_false
+        File.read(to).should eq "content"
+      end
+    end
+
+    it "moves a whole directory tree" do
+      with_tmpdir do |dir|
+        from = File.join(dir, "src")
+        to = File.join(dir, "dest")
+        Dir.mkdir(from)
+        File.write(File.join(from, "a.txt"), "a")
+        interp, _ = make_interp(grants: move_grants(dir))
+        interp.eval(%(Legate.mv(#{(from).inspect}, #{(to).inspect})))
+        Dir.exists?(from).should be_false
+        File.read(File.join(to, "a.txt")).should eq "a"
+      end
+    end
+
+    it "creates parent directories of the destination automatically" do
+      with_tmpdir do |dir|
+        from = File.join(dir, "a.txt")
+        to = File.join(dir, "x", "y", "b.txt")
+        File.write(from, "hi")
+        interp, _ = make_interp(grants: move_grants(dir))
+        interp.eval(%(Legate.mv(#{(from).inspect}, #{(to).inspect})))
+        File.read(to).should eq "hi"
+      end
+    end
+    it "raises Legate::NotFound when the source doesn't exist" do
+      with_tmpdir do |dir|
+        interp, _ = make_interp(grants: move_grants(dir))
+        eval = interp.eval(<<-RUBY)
+        begin
+          Legate.mv(#{(File.join(dir, "gone.txt")).inspect}, #{(File.join(dir, "b.txt")).inspect})
+          "no error"
+        rescue Legate::NotFound
+          "caught"
+        end
+        RUBY
+        eval.as_string.should eq "caught"
+      end
+    end
+
+    it "raises Legate::Conflict when the destination is a directory and the source is a file" do
+      with_tmpdir do |dir|
+        from = File.join(dir, "a.txt")
+        to = File.join(dir, "d")
+        File.write(from, "hi")
+        Dir.mkdir(to)
+        interp, _ = make_interp(grants: move_grants(dir))
+        eval = interp.eval(<<-RUBY)
+        begin
+          Legate.mv(#{(from).inspect}, #{(to).inspect})
+          "no error"
+        rescue Legate::Conflict
+          "caught"
+        end
+        RUBY
+        eval.as_string.should eq "caught"
+        File.exists?(from).should be_true
+      end
+    end
+
+    it "raises Legate::Conflict when the destination is a non-empty directory and the source is a directory" do
+      with_tmpdir do |dir|
+        from = File.join(dir, "src")
+        to = File.join(dir, "dest")
+        Dir.mkdir(from)
+        Dir.mkdir(to)
+        File.write(File.join(to, "occupied.txt"), "x")
+        interp, _ = make_interp(grants: move_grants(dir))
+        eval = interp.eval(<<-RUBY)
+        begin
+          Legate.mv(#{(from).inspect}, #{(to).inspect})
+          "no error"
+        rescue Legate::Conflict
+          "caught"
+        end
+        RUBY
+        eval.as_string.should eq "caught"
+        File.read(File.join(to, "occupied.txt")).should eq "x"
+      end
+    end
+
+    # THE decision this verb exists to encode — the delete-without-
+    # write case §4.4's literal text would have allowed. A script that
+    # can delete inside `dir` must NOT be able to place content
+    # anywhere it likes by calling it a move.
+    it "denies a move with a delete grant but no write grant" do
+      with_tmpdir do |dir|
+        from = File.join(dir, "a.txt")
+        to = File.join(dir, "b.txt")
+        File.write(from, "hi")
+        interp, _ = make_interp(grants: Legate::Grants.new(delete_roots: [dir]))
+        expect_raises(Legate::FatalSignal, /Legate\.write denied/) do
+          interp.eval(%(Legate.mv(#{(from).inspect}, #{(to).inspect})))
+        end
+        File.exists?(from).should be_true
+        File.exists?(to).should be_false
+      end
+    end
+
+    # The mirror case, and the one §4.4 states outright: `write`
+    # alone cannot achieve a move either.
+    it "denies a move with a write grant but no delete grant" do
+      with_tmpdir do |dir|
+        from = File.join(dir, "a.txt")
+        to = File.join(dir, "b.txt")
+        File.write(from, "hi")
+        interp, _ = make_interp(grants: Legate::Grants.new(write_roots: [dir]))
+        expect_raises(Legate::FatalSignal, /Legate\.delete denied/) do
+          interp.eval(%(Legate.mv(#{(from).inspect}, #{(to).inspect})))
+        end
+        File.exists?(from).should be_true
+      end
+    end
+
+    # Both roots granted, but not the same root — the destination
+    # falls outside the write grant, so the move is still refused.
+    it "denies a move whose destination is outside every granted write root" do
+      with_tmpdir do |dir|
+        with_tmpdir do |other|
+          from = File.join(dir, "a.txt")
+          File.write(from, "hi")
+          interp, _ = make_interp(grants: Legate::Grants.new(delete_roots: [dir], write_roots: [dir]))
+          expect_raises(Legate::FatalSignal, /Legate\.write denied/) do
+            interp.eval(%(Legate.mv(#{(from).inspect}, #{(File.join(other, "b.txt")).inspect})))
+          end
+          File.exists?(from).should be_true
+        end
+      end
+    end
+
+    it "moves a symlink itself, never the file it points at" do
+      {% if flag?(:unix) %}
+        with_tmpdir do |dir|
+          real = File.join(dir, "real.txt")
+          link = File.join(dir, "link.txt")
+          moved = File.join(dir, "moved.txt")
+          File.write(real, "content")
+          File.symlink(real, link)
+          interp, _ = make_interp(grants: move_grants(dir))
+          interp.eval(%(Legate.mv(#{(link).inspect}, #{(moved).inspect})))
+          File.symlink?(moved).should be_true
+          File.exists?(link).should be_false
+          File.read(real).should eq "content"
+        end
+      {% end %}
+    end
+
+    it "logs exactly one :allowed delete record and one :allowed write record per invocation" do
+      with_tmpdir do |dir|
+        from = File.join(dir, "a.txt")
+        File.write(from, "hi")
+        interp, _ = make_interp(grants: move_grants(dir))
+        interp.eval(%(Legate.mv(#{(from).inspect}, #{(File.join(dir, "b.txt")).inspect})))
+        records = interp.broker.audit_log.records
+        deletes = records.select { |r| r.verb == "delete" }
+        writes = records.select { |r| r.verb == "write" }
+        deletes.size.should eq 1
+        deletes.first.decision.should eq :allowed
+        writes.size.should eq 1
+        writes.first.decision.should eq :allowed
+      end
+    end
+
+    # A same-filesystem move is a bare `rename` — it moves no bytes,
+    # so it consumes no read/write byte budget. The cross-device
+    # fallback DOES consume both; that asymmetry is documented in
+    # `mv.cr` and is not exercised here, since forcing a genuine
+    # second filesystem into a spec isn't portable.
+    it "consumes no byte budget for a same-filesystem move" do
+      with_tmpdir do |dir|
+        from = File.join(dir, "a.txt")
+        File.write(from, "a" * 1024)
+        interp, _ = make_interp(grants: move_grants(dir))
+        interp.eval(%(Legate.mv(#{(from).inspect}, #{(File.join(dir, "b.txt")).inspect})))
+        interp.broker.budget.total_read.should eq 0
+        interp.broker.budget.total_write.should eq 0
+      end
+    end
+
+    # The destination rule. The "overwrites an existing file
+    # destination" test that used to sit here has moved to
+    # `Legate.mv!` rather than being deleted — the behaviour it
+    # described is still real, just no longer the default.
+    it "raises Legate::Conflict when the destination file already exists" do
+      with_tmpdir do |dir|
+        from = File.join(dir, "a.txt")
+        to = File.join(dir, "b.txt")
+        File.write(from, "new")
+        File.write(to, "old")
+        interp, _ = make_interp(grants: move_grants(dir))
+        eval = interp.eval(<<-RUBY)
+        begin
+          Legate.mv(#{(from).inspect}, #{(to).inspect})
+          "no error"
+        rescue Legate::Conflict
+          "caught"
+        end
+        RUBY
+        eval.as_string.should eq "caught"
+        File.read(to).should eq "old"
+        # The source is still there too — a refused move must not
+        # have half-happened.
+        File.read(from).should eq "new"
+      end
+    end
+
+    it "names Legate.mv! in the Conflict message, per principle 6" do
+      with_tmpdir do |dir|
+        from = File.join(dir, "a.txt")
+        to = File.join(dir, "b.txt")
+        File.write(from, "new")
+        File.write(to, "old")
+        interp, _ = make_interp(grants: move_grants(dir))
+        eval = interp.eval(<<-RUBY)
+        begin
+          Legate.mv(#{(from).inspect}, #{(to).inspect})
+          "no error"
+        rescue Legate::Conflict => e
+          e.message
+        end
+        RUBY
+        eval.as_string.should contain "Legate.mv!"
+      end
+    end
+
+    it "raises Legate::Conflict when the destination is an EMPTY directory and the source is one too" do
+      with_tmpdir do |dir|
+        from = File.join(dir, "src")
+        Dir.mkdir(from)
+        File.write(File.join(from, "a.txt"), "a")
+        to = File.join(dir, "dest")
+        Dir.mkdir(to)
+        interp, _ = make_interp(grants: move_grants(dir))
+        eval = interp.eval(<<-RUBY)
+        begin
+          Legate.mv(#{(from).inspect}, #{(to).inspect})
+          "no error"
+        rescue Legate::Conflict
+          "caught"
+        end
+        RUBY
+        eval.as_string.should eq "caught"
+        File.directory?(from).should be_true
+      end
+    end
+
+    it "refuses a dangling symlink at the destination rather than replacing it" do
+      with_tmpdir do |dir|
+        from = File.join(dir, "a.txt")
+        File.write(from, "new")
+        link = File.join(dir, "b.txt")
+        File.symlink(File.join(dir, "never-created.txt"), link)
+        interp, _ = make_interp(grants: move_grants(dir))
+        eval = interp.eval(<<-RUBY)
+        begin
+          Legate.mv(#{(from).inspect}, #{(link).inspect})
+          "no error"
+        rescue Legate::Conflict
+          "caught"
+        end
+        RUBY
+        eval.as_string.should eq "caught"
+        File.symlink?(link).should be_true
+      end
+    end
+  end
+
+  describe "Legate.mv!" do
+    it "replaces an existing file destination" do
+      with_tmpdir do |dir|
+        from = File.join(dir, "a.txt")
+        to = File.join(dir, "b.txt")
+        File.write(from, "new")
+        File.write(to, "old")
+        interp, _ = make_interp(grants: move_grants(dir))
+        interp.eval(%(Legate.mv!(#{(from).inspect}, #{(to).inspect})))
+        File.read(to).should eq "new"
+        File.exists?(from).should be_false
+      end
+    end
+
+    it "moves to a fresh destination exactly as the plain verb does" do
+      with_tmpdir do |dir|
+        from = File.join(dir, "a.txt")
+        to = File.join(dir, "sub", "b.txt")
+        File.write(from, "hi")
+        interp, _ = make_interp(grants: move_grants(dir))
+        interp.eval(%(Legate.mv!(#{(from).inspect}, #{(to).inspect})))
+        File.read(to).should eq "hi"
+        File.exists?(from).should be_false
+      end
+    end
+
+    # The two refusals the bang does NOT lift. Unlike `cp!`, `mv!`
+    # will not replace a non-empty destination directory: `relocate`'s
+    # rename would either fail at the OS level or destroy the contents
+    # depending on whether the two paths share a filesystem, and a
+    # verb whose behaviour turns on that is worse than one that
+    # refuses.
+    it "still raises Legate::Conflict replacing a file with a directory" do
+      with_tmpdir do |dir|
+        from = File.join(dir, "src")
+        Dir.mkdir(from)
+        to = File.join(dir, "b.txt")
+        File.write(to, "old")
+        interp, _ = make_interp(grants: move_grants(dir))
+        eval = interp.eval(<<-RUBY)
+        begin
+          Legate.mv!(#{(from).inspect}, #{(to).inspect})
+          "no error"
+        rescue Legate::Conflict
+          "caught"
+        end
+        RUBY
+        eval.as_string.should eq "caught"
+        File.read(to).should eq "old"
+      end
+    end
+
+    it "still raises Legate::Conflict replacing a non-empty destination directory" do
+      with_tmpdir do |dir|
+        from = File.join(dir, "src")
+        Dir.mkdir(from)
+        to = File.join(dir, "dest")
+        Dir.mkdir(to)
+        File.write(File.join(to, "keep.txt"), "keep")
+        interp, _ = make_interp(grants: move_grants(dir))
+        eval = interp.eval(<<-RUBY)
+        begin
+          Legate.mv!(#{(from).inspect}, #{(to).inspect})
+          "no error"
+        rescue Legate::Conflict
+          "caught"
+        end
+        RUBY
+        eval.as_string.should eq "caught"
+        File.read(File.join(to, "keep.txt")).should eq "keep"
+      end
+    end
+
+    # Replacing a directory is NOT among the refusals the bang lifts,
+    # and this test used to assert the opposite. It passed on POSIX,
+    # where `rename(2)` replaces an empty destination directory, and
+    # failed on Windows, where `MoveFile` refuses with "Access is
+    # denied". A verb that behaves differently by platform is worse
+    # than one that refuses everywhere, so `mv!` now refuses — see
+    # `mv.cr`'s `check_destination`.
+    it "refuses an EMPTY destination directory too, not just a non-empty one" do
+      with_tmpdir do |dir|
+        from = File.join(dir, "src")
+        Dir.mkdir(from)
+        File.write(File.join(from, "a.txt"), "a")
+        to = File.join(dir, "dest")
+        Dir.mkdir(to)
+        interp, _ = make_interp(grants: move_grants(dir))
+        eval = interp.eval(<<-RUBY)
+        begin
+          Legate.mv!(#{(from).inspect}, #{(to).inspect})
+          "no error"
+        rescue Legate::Conflict => e
+          e.message
+        end
+        RUBY
+        eval.as_string.should contain "Legate.rmdir"
+        File.exists?(File.join(from, "a.txt")).should be_true
+        Dir.children(to).should be_empty
+      end
+    end
+
+    # Same dual authorization as the plain verb — the bang is not a
+    # route around the perimeter.
+    it "denies a move with a delete grant but no write grant" do
+      with_tmpdir do |dir|
+        from = File.join(dir, "a.txt")
+        File.write(from, "hi")
+        interp, _ = make_interp(grants: Legate::Grants.new(delete_roots: [dir]))
+        expect_raises(Legate::FatalSignal, /Legate\.write denied/) do
+          interp.eval(%(Legate.mv!(#{(from).inspect}, #{(File.join(dir, "b.txt")).inspect})))
+        end
+      end
+    end
+
+    it "denies a move with a write grant but no delete grant" do
+      with_tmpdir do |dir|
+        from = File.join(dir, "a.txt")
+        File.write(from, "hi")
+        interp, _ = make_interp(grants: Legate::Grants.new(write_roots: [dir]))
+        expect_raises(Legate::FatalSignal, /Legate\.delete denied/) do
+          interp.eval(%(Legate.mv!(#{(from).inspect}, #{(File.join(dir, "b.txt")).inspect})))
+        end
+      end
+    end
+  end
+end

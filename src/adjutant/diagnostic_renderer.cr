@@ -95,7 +95,7 @@ module Adjutant
     # nil when no span produced any renderable text at all.
     private def snippet_block(diag : Diagnostic, default_filename : String?) : String?
       parts = diag.spans.compact_map { |span| snippet(span, default_filename) }
-      return nil if parts.empty?
+      return if parts.empty?
       parts.join("\n")
     end
 

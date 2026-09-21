@@ -139,6 +139,18 @@ module Adjutant
   # the common read/iteration methods (including #all?, needed by
   # values_equal?'s hash case) are hand-written direct delegates instead
   # of coming from an included module.
+  #
+  # A labeled Value used as a KEY in `@entries` is safe — `Value#==`/
+  # `#hash` (value.cr) explicitly compare/hash `@raw` alone, ignoring
+  # `@label`, specifically so this is safe. That override didn't
+  # always exist: found 2026-08-24 that `Legate::Response#json`
+  # (`legate/response.cr`) labeling a decoded-JSON Hash's KEYS (not
+  # just values) broke lookup silently, back when `Value` still used
+  # Crystal's default struct equality here. Fixed at the root in
+  # `Value` itself rather than left as a "never label a key" rule to
+  # remember — see that file's own comment for the full story, kept
+  # there rather than duplicated here since it's `Value`'s own
+  # invariant to explain, not this class's.
   class LabeledHash
     property label : RiskFlowLabel?
 

@@ -1,0 +1,20 @@
+# `workspace/` gets all three grants because this script needs to
+# build, inspect and destroy its own scratch content. `fixtures/`
+# gets `read` alone, and stays untouched: a denial is FATAL and
+# unrescuable by design (broker.cr), so a script CANNOT demonstrate
+# "delete refused outside the granted root" from the inside without
+# killing its own run. That case is proved at the Crystal level
+# instead (`rm_spec.cr`/`mv_spec.cr`, which can catch a FatalSignal);
+# `anchor.txt` is here only so the script can assert at the end that
+# nothing it did leaked outside `workspace/`.
+grants:
+  read:
+    roots:
+      - fixtures
+      - workspace
+  write:
+    roots:
+      - workspace
+  delete:
+    roots:
+      - workspace

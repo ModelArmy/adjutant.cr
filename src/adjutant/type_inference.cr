@@ -74,7 +74,6 @@ module Adjutant
       owner = case ns
               when Constant  then @interp.get_global(ns.name).as_rclass?
               when ConstPath then default_resolve_const_path(ns)
-              else                nil
               end
       sym = owner ? @interp.symbols.lookup(node.name) : nil
       (owner && sym) ? owner.constants[sym.value]?.try(&.as_rclass?) : nil
@@ -151,7 +150,6 @@ module Adjutant
       cls = case receiver
             when Constant  then @class_resolver.call(receiver.name)
             when ConstPath then @const_path_resolver.call(receiver)
-            else                nil
             end
       cls ? KnownType.new(cls) : UnknownType.new
     end

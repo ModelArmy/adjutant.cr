@@ -70,13 +70,13 @@ module Adjutant::Builtins
     # Ruby's `Float::INFINITY.floor(2)` (ndigits > 0, stays a Float)
     # does NOT raise, it returns Infinity unchanged.
     {% for method in [:ceil, :floor, :round, :truncate] %}
-    define(cls, interp, {{method.id.stringify}}) do |args, _blk, ncc|
+    define(cls, interp, {{ method.id.stringify }}) do |args, _blk, ncc|
       val = args.first.as_float
       ndigits = args[1]?.try(&.as_int) || 0_i64
       if !val.finite? && ndigits <= 0
         ncc.raise_error("R016", {"value" => val.to_s}, "FloatDomainError")
       end
-      Adjutant::Builtins.float_round_to_power_of_ten(val, ndigits, {{method}}, args.first.label)
+      Adjutant::Builtins.float_round_to_power_of_ten(val, ndigits, {{ method }}, args.first.label)
     end
     {% end %}
 

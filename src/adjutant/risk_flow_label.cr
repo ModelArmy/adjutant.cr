@@ -68,7 +68,7 @@ module Adjutant
     # sensitivity) — should not normally happen within one script run,
     # but the merge must still be well-defined.
     def merge(other : ProvenanceTag) : ProvenanceTag
-      self.sensitivity.worse_or_equal?(other.sensitivity) ? self : other
+      sensitivity.worse_or_equal?(other.sensitivity) ? self : other
     end
 
     def to_s(io : IO) : Nil

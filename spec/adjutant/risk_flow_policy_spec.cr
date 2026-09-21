@@ -129,14 +129,14 @@ module Adjutant
 
       it "returns the matching rule's action and the rule itself" do
         ask_rule = RiskFlowRule.new(Authority::Delete, Sensitivity::Elevated, RiskFlowAction::Ask)
-        reject_rule = RiskFlowRule.new(Authority::Exec, Sensitivity::High, RiskFlowAction::Reject)
+        reject_rule = RiskFlowRule.new(Authority::Write, Sensitivity::High, RiskFlowAction::Reject)
         policy = RiskFlowPolicy.new(risk_flow_rules: [ask_rule, reject_rule])
 
         action, rule = policy.action_for(Authority::Delete, Sensitivity::Elevated)
         action.should eq RiskFlowAction::Ask
         rule.should eq ask_rule
 
-        action2, rule2 = policy.action_for(Authority::Exec, Sensitivity::High)
+        action2, rule2 = policy.action_for(Authority::Write, Sensitivity::High)
         action2.should eq RiskFlowAction::Reject
         rule2.should eq reject_rule
       end
@@ -156,7 +156,7 @@ module Adjutant
         policy = RiskFlowPolicy.reject_all
         policy.action_for(Authority::Net, Sensitivity::Elevated)[0].should eq RiskFlowAction::Reject
         policy.action_for(Authority::Delete, Sensitivity::High)[0].should eq RiskFlowAction::Reject
-        policy.action_for(Authority::Exec, Sensitivity::High)[0].should eq RiskFlowAction::Reject
+        policy.action_for(Authority::Write, Sensitivity::High)[0].should eq RiskFlowAction::Reject
       end
 
       it "still allows Sensitivity::None" do
@@ -201,14 +201,14 @@ module Adjutant
           ],
           risk_flow_rules: [
             RiskFlowRule.new(Authority::Delete, Sensitivity::Elevated, RiskFlowAction::Ask),
-            RiskFlowRule.new(Authority::Exec, Sensitivity::High, RiskFlowAction::Reject),
+            RiskFlowRule.new(Authority::Write, Sensitivity::High, RiskFlowAction::Reject),
           ]
         )
         parsed = RiskFlowPolicy.from_json(original.to_json)
         parsed.sensitivity_for(ProvenanceKind::File, "/etc/passwd").should eq Sensitivity::High
         parsed.sensitivity_for(ProvenanceKind::File, "/etc/shadow").should eq Sensitivity::Elevated
         parsed.action_for(Authority::Delete, Sensitivity::Elevated)[0].should eq RiskFlowAction::Ask
-        parsed.action_for(Authority::Exec, Sensitivity::High)[0].should eq RiskFlowAction::Reject
+        parsed.action_for(Authority::Write, Sensitivity::High)[0].should eq RiskFlowAction::Reject
       end
 
       it "parses the design doc's worked example" do
@@ -230,7 +230,7 @@ module Adjutant
             RiskFlowRule.new(Authority::Delete, Sensitivity::Elevated, RiskFlowAction::Ask),
             RiskFlowRule.new(Authority::Delete, Sensitivity::High, RiskFlowAction::Ask),
             RiskFlowRule.new(Authority::Net, Sensitivity::High, RiskFlowAction::Ask),
-            RiskFlowRule.new(Authority::Exec, Sensitivity::High, RiskFlowAction::Reject),
+            RiskFlowRule.new(Authority::Write, Sensitivity::High, RiskFlowAction::Reject),
           ]
         )
         policy = RiskFlowPolicy.from_json(original.to_json)
@@ -241,7 +241,7 @@ module Adjutant
         policy.sensitivity_for(ProvenanceKind::Host, "mybiz.example.com").should eq Sensitivity::None
         policy.sensitivity_for(ProvenanceKind::Host, "other.com").should eq Sensitivity::Elevated
         policy.action_for(Authority::Delete, Sensitivity::Elevated)[0].should eq RiskFlowAction::Ask
-        policy.action_for(Authority::Exec, Sensitivity::High)[0].should eq RiskFlowAction::Reject
+        policy.action_for(Authority::Write, Sensitivity::High)[0].should eq RiskFlowAction::Reject
       end
     end
   end
