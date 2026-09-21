@@ -182,9 +182,9 @@ module Adjutant
     # *` call — reused, not invented, since these Authority values
     # already existed for the static-perimeter check this is
     # complementary to. `scratch`/`fail`/`env`/`now`/`random` remain
-    # deliberately empty: none goes through `broker.authorize` at
-    # all (ambient verbs bypass that whole sequence), so none has an
-    # existing Authority to reuse the way the other families did.
+    # deliberately empty: none is a sink. `env` does authorize
+    # against `Authority::Ambient`, but Ambient names a source, so a
+    # labeled argument reaching `env` has nothing to exfiltrate to.
     # This test still fails the instant the set changes without this
     # assertion being updated alongside it.
     it "declares authorities on exactly the verbs that have deliberately been given them" do
@@ -192,23 +192,23 @@ module Adjutant
       with_authorities = legate_verbs(interp).select { |_, c| !c.authorities.empty? }
 
       with_authorities.transform_values(&.authorities).should eq({
-        "read"    => Set{Authority::Read},
-        "stat"    => Set{Authority::Read},
-        "list"    => Set{Authority::Read},
-        "grep"    => Set{Authority::Read},
-        "write"   => Set{Authority::Write},
-        "write!"  => Set{Authority::Write},
-        "append"  => Set{Authority::Write},
-        "mkdir"   => Set{Authority::Write},
-        "cp"      => Set{Authority::Write},
-        "cp!"     => Set{Authority::Write},
-        "rm"      => Set{Authority::Delete},
-        "rmdir"   => Set{Authority::Delete},
-        "rmdir!"  => Set{Authority::Delete},
-        "mv"      => Set{Authority::Delete, Authority::Write},
-        "mv!"     => Set{Authority::Delete, Authority::Write},
-        "fetch"   => Set{Authority::Net},
-        "log"     => Set{Authority::Log},
+        "read"   => Set{Authority::Read},
+        "stat"   => Set{Authority::Read},
+        "list"   => Set{Authority::Read},
+        "grep"   => Set{Authority::Read},
+        "write"  => Set{Authority::Write},
+        "write!" => Set{Authority::Write},
+        "append" => Set{Authority::Write},
+        "mkdir"  => Set{Authority::Write},
+        "cp"     => Set{Authority::Write},
+        "cp!"    => Set{Authority::Write},
+        "rm"     => Set{Authority::Delete},
+        "rmdir"  => Set{Authority::Delete},
+        "rmdir!" => Set{Authority::Delete},
+        "mv"     => Set{Authority::Delete, Authority::Write},
+        "mv!"    => Set{Authority::Delete, Authority::Write},
+        "fetch"  => Set{Authority::Net},
+        "log"    => Set{Authority::Log},
       })
     end
 

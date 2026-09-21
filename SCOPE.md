@@ -1592,27 +1592,6 @@ individually.
   declared `Authority`? Something narrower?) rather than just
   correcting a number. Left as a marker for whoever next touches §10.
 
-- **`Legate.env`'s allowlist denial produces no `AuditRecord`, unlike
-  a normal grant denial.** Built 2026-09-08 (§4.7, completing it).
-  Every ambient verb skips `Broker#authorize`'s whole sequence,
-  `scratch`/`fail` included, and this matches that for consistency —
-  but it's a closer call here than for those two. `scratch`/`fail`
-  have no interesting "why did this fail" to record (a resource that
-  always succeeds; an abort whose reason is already in the script's
-  own `FatalSignal#message`). An env-allowlist denial is different in
-  kind: it's a real policy-enforcement event, much closer to a normal
-  grant denial than to `scratch`'s own provisioning, and env
-  allowlists commonly gate secrets — exactly the situation an
-  embedder reviewing "what did this script try and fail to do" would
-  want visibility into. Not fixed here because doing it properly
-  means either exposing `AuditLog.append` outside `Broker#authorize`
-  (a real API change to core `Adjutant::Broker`, not a Legate-local
-  one) or hand-constructing an `AuditRecord` from `legate/verbs/
-  env.cr` against a currently-append-only-via-authorize class — both
-  bigger than this one verb's denial path should force unilaterally.
-  `legate/verbs/env.cr`'s own comment has the same flag, closer to
-  the code it's about.
-
 - **`Legate.now` reuses the core `Time` class rather than a
   `Legate::Time`, and its RubyClass is looked up at CALL time, not
   bootstrap time.** Built 2026-09-08. Worth recording as a pattern,

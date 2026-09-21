@@ -26,7 +26,7 @@ module Adjutant
     #
     # What stays here is what only Legate knows: which roots, rules
     # and binaries make up its perimeter (`@grants`), that a denial
-    # reports as `Legate::Denied`, the four verb-facing `authorize_*`
+    # reports as `Legate::Denied`, the five verb-facing `authorize_*`
     # wrappers below — each of which knows about `allow_missing`,
     # about which §4 verb it serves, and about what a missing path
     # means for that verb — and two more Legate-only concerns that
@@ -45,8 +45,9 @@ module Adjutant
     # `AuditLog`'s comment) already argues against doing. Revisit if a
     # second provider ever needs either.
     #
-    # Every effectful verb calls exactly one `authorize_*` method at
-    # its own boundary, before doing anything to the outside world.
+    # Every effectful verb, and `Legate.env`, calls exactly one
+    # `authorize_*` method at its own boundary, before doing anything
+    # to the outside world.
     #
     class Broker
       include ::Adjutant::EffectProvider
@@ -69,14 +70,17 @@ module Adjutant
         "Legate::Denied"
       end
 
-      # The four grant categories §7 defines. `Ambient` is absent
-      # deliberately: it is a SOURCE of sensitivity rather than a
-      # sink, so nothing authorizes against it.
+      # The grant categories §7 defines that this provider authorizes
+      # against. `Ambient` is a SOURCE of sensitivity rather than a
+      # sink, but `Legate.env` still authorizes against it: its
+      # allowlist is a real grant, and a denial belongs in the audit
+      # log. `Authority::Log` is absent — `Legate.log` has no grant,
+      # only `VM#check_risk_flow`'s sink check.
       def authorities : Set(Authority)
         AUTHORITIES
       end
 
-      AUTHORITIES = Set{Authority::Read, Authority::Write, Authority::Delete, Authority::Net}
+      AUTHORITIES = Set{Authority::Read, Authority::Write, Authority::Delete, Authority::Net, Authority::Ambient}
 
       # Public so a VERB can read policy limits directly (e.g.
       # `Legate.read`'s own `limit:` kwarg has to be clamped to
@@ -378,6 +382,20 @@ module Adjutant
         subject = "#{scheme}://#{host}:#{port}"
         @core.authorize(self, Authority::Net, "net", subject, ProvenanceKind::Host, ncc) do
           @grants.check_net(scheme, host, port, method)
+        end
+      end
+
+      # §4.7's `ambient.env` boundary — the one ambient verb with a
+      # grant to consult. Returns the label for the variable's value;
+      # the caller attaches it only if the variable is set.
+      #
+      # Runs whether or not the variable is set. Checking sensitivity
+      # only for set variables would let a script learn whether a
+      # rejected, sensitive name exists: a set one raises, an unset
+      # one returns nil.
+      def authorize_env(name : String, ncc : NativeCallContext) : RiskFlowLabel?
+        @core.authorize(self, Authority::Ambient, "env", name, ProvenanceKind::Env, ncc) do
+          @grants.check_ambient_env(name)
         end
       end
     end

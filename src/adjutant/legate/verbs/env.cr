@@ -1,6 +1,5 @@
 require "../broker"
 require "../helpers"
-require "../../fatal_signal"
 require "../../native_call_context"
 
 module Adjutant
@@ -8,38 +7,18 @@ module Adjutant
     module Verbs
       # `Legate.env(name) -> String | nil` — LEGATE.md §4.7.
       #
-      # Bypasses `broker.authorize_*` entirely, same as every other
-      # ambient verb (`Ambient` is absent from `Broker::AUTHORITIES`
-      # — `broker.cr`'s own comment) — but UNLIKE `scratch`/`log`/
-      # `fail`, this one still has a real grant to consult:
-      # `grants.ambient_env`, the `ambient.env` allowlist (§7). A name
-      # outside it is denied the same way a normal grant denial is —
-      # `FatalSignal.new(:denied, ...)`, fatal and unrescuable — just
-      # constructed directly here rather than through
-      # `Broker#authorize`'s own (private) `deny!`, since there is no
-      # `Authority` to authorize against and no wall-clock/
-      # RiskFlowPolicy sequence this needs.
+      # The only ambient verb that goes through `Broker#authorize`:
+      # the `ambient.env` allowlist is a real grant, and env allowlists
+      # commonly gate secrets, so every lookup gets an `AuditRecord`
+      # like any read/write/delete/net call. A name outside the
+      # allowlist raises `Legate::Denied` (fatal, unrescuable).
       #
-      # AUDIT ASYMMETRY, noted rather than resolved: unlike a normal
-      # grant denial (which appends an `AuditRecord` before raising —
-      # `Adjutant::Broker#authorize`), this denial does not, matching
-      # every other ambient verb's own "skip the whole audit
-      # mechanism" treatment for consistency. Unlike `scratch`/`fail`
-      # though, THIS denial is a genuine policy-enforcement event an
-      # embedder reviewing "what did this script try and fail to do"
-      # might reasonably want visibility into, since env allowlists
-      # commonly gate secrets. Flagged, not fixed — see SCOPE.md.
-      #
-      # `Authority::Ambient` (`authority.cr`) exists for exactly this
-      # case: not a sink anything authorizes against, but a real
-      # SOURCE a sensitivity declaration can name.
-      # `ncc.declare_sensitivity` is the same mechanism
-      # `Legate.read`/`Legate.fetch` use to label their own results —
-      # called directly here, standalone, since it is fully
-      # self-contained (`native_function_call.cr`/`vm.cr`) and does
-      # not depend on `authorize`'s wrapping sequence to work
-      # correctly. Skipped entirely when the name is simply unset
-      # (`ENV[name]?` is nil) — there is no data to label.
+      # Steps:
+      # 1. Validate `name` (R043 when missing, R039 when not a String).
+      # 2. Authorize against the allowlist; this also resolves the
+      #    name's sensitivity and applies `RiskFlowPolicy` to it.
+      # 3. Return nil if the variable is unset, otherwise its value
+      #    carrying the label from step 2.
       module Env
         def self.bootstrap(interp : Interpreter, legate : RubyClass, broker : Broker) : Nil
           legate.define_native_singleton_method(
@@ -55,14 +34,11 @@ module Adjutant
             end
             name = name_val.as_string
 
-            unless broker.grants.ambient_env.includes?(name)
-              raise FatalSignal.new(:denied, "Legate.env denied: #{name.inspect} is not in the ambient.env allowlist")
-            end
+            label = broker.authorize_env(name, ncc)
 
             raw = ENV[name]?
             next Value.nil_value unless raw
 
-            label = ncc.declare_sensitivity(Authority::Ambient, ProvenanceKind::Env, name)
             Value.string(raw, label)
           end
         end

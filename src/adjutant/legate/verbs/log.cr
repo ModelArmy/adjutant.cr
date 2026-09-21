@@ -58,8 +58,8 @@ module Adjutant
       # exfiltration, not the Effect above, which only makes the
       # possibility visible in a report someone has to go read.
       # `authorities:` is NOT the same thing as going through
-      # `Broker#authorize` (ambient verbs still bypass that whole
-      # sequence — no wall-clock check, no AuditRecord for this) —
+      # `Broker#authorize` (`Legate.log` has no grant, so it skips
+      # that whole sequence — no wall-clock check, no AuditRecord) —
       # it's a separate, narrower mechanism that only ever looks at
       # already-labeled arguments. Added 2026-09-10; full reasoning,
       # including why NO other Legate verb has this same protection

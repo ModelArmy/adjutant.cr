@@ -3,8 +3,9 @@ require "./grants"
 module Adjutant
   module Legate
     # Reopens Legate::Grants (grants.cr) to add the STATIC network
-    # check, kept separate from grants.cr's own config-parsing concern
-    # so each file stays about one thing.
+    # check and the `ambient.env` allowlist check, kept separate from
+    # grants.cr's own config-parsing concern so each file stays about
+    # one thing.
     #
     # The root and binary checks that used to live here moved to
     # `Adjutant::Grants` on 2026-09-01 — containment under a root and
@@ -90,6 +91,16 @@ module Adjutant
         else
           Decision.deny("#{method.upcase} #{scheme}://#{host}:#{port} denied: method #{method.upcase} is not granted for this host")
         end
+      end
+
+      # Allows `name` only if it is in the `ambient.env` allowlist.
+      # Exact, case-sensitive match: environment variable names are
+      # case-sensitive on POSIX, and a looser match would grant names
+      # the policy never listed.
+      def check_ambient_env(name : String) : Decision
+        return Decision.deny("no ambient.env names granted") if ambient_env.empty?
+        return Decision.allow if ambient_env.includes?(name)
+        Decision.deny("#{name.inspect} is not in the ambient.env allowlist")
       end
     end
   end

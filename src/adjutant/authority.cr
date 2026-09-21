@@ -32,9 +32,8 @@ module Adjutant
   # broker boundary) was unused. See SCOPE.md and LEGATE.md §4.6.
   #
   # `Log` added 2026-09-10 — `Legate.log`'s own sink. Not wired
-  # through `Broker#authorize` the way Read/Write/Delete/Net are
-  # (§4.7's ambient verbs bypass that whole sequence — broker.cr's
-  # own comment); reached only through `VM#check_risk_flow`'s
+  # through `Broker#authorize` the way Read/Write/Delete/Net/Ambient
+  # are (`Legate.log` has no grant to consult); reached only through `VM#check_risk_flow`'s
   # labeled-argument check instead, via `NativeCallable#authorities`
   # on `Legate.log`'s own definition. See SCOPE.md's entry on why
   # `Legate.log` needed a real sink authority, not just a static

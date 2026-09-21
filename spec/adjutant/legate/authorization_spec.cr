@@ -315,5 +315,27 @@ module Adjutant
         grants.check_net("https", "api.example.com.", 443, "get").allowed?.should be_true
       end
     end
+
+    describe "#check_ambient_env" do
+      it "denies when no ambient.env names are granted" do
+        decision = Legate::Grants.deny_all.check_ambient_env("HOME")
+        decision.allowed?.should be_false
+        decision.reason.should match(/no ambient\.env names granted/)
+      end
+
+      it "allows a name in the allowlist" do
+        Legate::Grants.new(ambient_env: ["TZ", "LANG"]).check_ambient_env("LANG").allowed?.should be_true
+      end
+
+      it "denies a name outside the allowlist, naming it" do
+        decision = Legate::Grants.new(ambient_env: ["TZ"]).check_ambient_env("AWS_SECRET_ACCESS_KEY")
+        decision.allowed?.should be_false
+        decision.reason.should eq %("AWS_SECRET_ACCESS_KEY" is not in the ambient.env allowlist)
+      end
+
+      it "matches case-sensitively" do
+        Legate::Grants.new(ambient_env: ["TZ"]).check_ambient_env("tz").allowed?.should be_false
+      end
+    end
   end
 end
