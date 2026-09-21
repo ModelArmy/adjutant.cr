@@ -389,10 +389,9 @@ module Adjutant
       # grant to consult. Returns the label for the variable's value;
       # the caller attaches it only if the variable is set.
       #
-      # Runs whether or not the variable is set. Checking sensitivity
-      # only for set variables would let a script learn whether a
-      # rejected, sensitive name exists: a set one raises, an unset
-      # one returns nil.
+      # Runs whether or not the variable is set, following the
+      # sensitivity-before-existence convention (DEVELOPMENT.md,
+      # "Information flow control").
       def authorize_env(name : String, ncc : NativeCallContext) : RiskFlowLabel?
         @core.authorize(self, Authority::Ambient, "env", name, ProvenanceKind::Env, ncc) do
           @grants.check_ambient_env(name)
