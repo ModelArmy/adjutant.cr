@@ -31,8 +31,7 @@ What is different, in order of importance:
 - `arr.each_with_index { |x, i| }` → `arr.each { |x| ...; i += 1 }` with `i = 0` before
 - `arr.sum` → `arr.inject(0) { |acc, x| acc + x }`
 - `arr.inject(:+)` → `arr.inject(0) { |acc, x| acc + x }`; `inject` needs a block
-- `arr.sort { |a, b| b <=> a }` → `arr.sort.reverse`; `sort` ignores a block
-- `arr.sort_by { ... }`, `max_by`, sorting `[key, item]` pairs → Sort a flat list of Strings or numbers, then look the items up. Arrays do not compare, so a list of pairs comes back unsorted.
+- `arr.max_by { ... }`, `min_by` → `arr.sort_by { ... }.last`, `.first`
 - `arr.uniq` → `seen = {}; arr.each { |x| seen[x] = true }; seen.keys`
 - `arr.count { ... }` → `arr.select { ... }.size`
 - `arr.find { ... }` → `arr.select { ... }.first`
@@ -53,7 +52,7 @@ What is different, in order of importance:
 - `proc { }` → `lambda { }` or `-> { }`
 - `send(:name)`, `define_method`, `eval` → A `case` on the name
 - `private`, `protected` → Leave methods public
-- `def ==(o)`, `def <=>(o)`, `def +(o)` → A named method, such as `same_as?(o)`
+- `def ==(o)`, `def <(o)`, `def +(o)` → Define `<=>` instead, which drives `==`, `<`, `>`, `sort` and `min`/`max`; otherwise a named method such as `plus(o)`
 - `Struct.new(:a, :b)` → A class with `attr_accessor :a, :b`
 - `class << self` → `def self.name`
 - `$global` → A constant, or pass the value along
@@ -71,7 +70,7 @@ What is different, in order of importance:
 
 ## 3. Built-in methods
 
-These are complete lists. Operators `==`, `!=`, `<`, `<=`, `>`, `>=`, `<=>` order numbers and Strings only. Comparing anything else, including two Arrays, gives `false` rather than an error, so `sort`, `min` and `max` only work on lists of numbers or of Strings.
+These are complete lists. `<`, `<=`, `>`, `>=` order numbers with numbers and Strings with Strings; anything else raises `ArgumentError`. `<=>`, `sort`, `sort_by`, `min` and `max` also order Arrays element by element, so a two-key sort is `sort_by { |x| [-x.count, x.name] }`.
 
 **Every object**: `nil?` `is_a?` `kind_of?` `class` `respond_to?` `equal?` `dup` `clone` `to_s` `inspect`
 
@@ -83,7 +82,7 @@ These are complete lists. Operators `==`, `!=`, `<`, `<=`, `>`, `>=`, `<=>` orde
 
 **Symbol**: `to_s` `to_sym`
 
-**Array**: `[i]` `[i]=` `<<` `+` `push` `pop` `first` `first(n)` `last` `last(n)` `length` `size` `empty?` `include?` `each` `map` `select` `reject` `inject` `reduce` `all?` `any?` `min` `max` `sort` `reverse` `join(sep)`
+**Array**: `[i]` `[i]=` `<<` `+` `push` `pop` `first` `first(n)` `last` `last(n)` `length` `size` `empty?` `include?` `each` `map` `select` `reject` `inject` `reduce` `all?` `any?` `min` `max` `sort` `sort { |a, b| }` `sort_by` `reverse` `join(sep)`
 
 **Hash**: `[k]` `[k]=` `each { |k, v| }` `keys` `values` `key?` `has_key?` `include?` `delete` `merge` `length` `size` `empty?` `to_a`
 
