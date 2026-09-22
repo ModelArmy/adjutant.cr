@@ -61,6 +61,18 @@ just noise for the next reader.
   raise until it is honoured; either is better than the current
   answer. Silent-wrong, so it leads.
 
+- **Comparing Arrays, or values of different types, silently answers
+  `false`.** Found 2026-09-21 in the first skill-exam round.
+  `ValueOps.compare` orders Integers, Floats and Strings and returns
+  `false` for every other pair, so `[1, "a"] < [2, "b"]` is `false`,
+  and `sort` on a list of Arrays treats every pair as equal and leaves
+  the list in whatever order it was in. A model sorting `[-count,
+  word]` pairs, a standard Ruby idiom for a two-key sort, got a
+  plausible but wrong order with no error. Real Ruby compares Arrays
+  element by element and raises `ArgumentError` for incomparable
+  types; doing both would fix the idiom and turn the remaining cases
+  into visible errors.
+
 - **`Array#inject`/`reduce` with a Symbol and no block returns `nil`.**
   Found 2026-09-21, same pass. `[1, 2, 3].inject(:+)` treats `:+` as
   the initial value and, finding no block, returns `nil`. Real Ruby

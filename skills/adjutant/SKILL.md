@@ -32,7 +32,7 @@ What is different, in order of importance:
 - `arr.sum` → `arr.inject(0) { |acc, x| acc + x }`
 - `arr.inject(:+)` → `arr.inject(0) { |acc, x| acc + x }`; `inject` needs a block
 - `arr.sort { |a, b| b <=> a }` → `arr.sort.reverse`; `sort` ignores a block
-- `arr.sort_by { ... }`, `max_by` → Build keys, sort the keys, look the items up
+- `arr.sort_by { ... }`, `max_by`, sorting `[key, item]` pairs → Sort a flat list of Strings or numbers, then look the items up. Arrays do not compare, so a list of pairs comes back unsorted.
 - `arr.uniq` → `seen = {}; arr.each { |x| seen[x] = true }; seen.keys`
 - `arr.count { ... }` → `arr.select { ... }.size`
 - `arr.find { ... }` → `arr.select { ... }.first`
@@ -71,7 +71,7 @@ What is different, in order of importance:
 
 ## 3. Built-in methods
 
-These are complete lists. Operators `==`, `!=`, `<`, `<=`, `>`, `>=`, `<=>` work on numbers and strings.
+These are complete lists. Operators `==`, `!=`, `<`, `<=`, `>`, `>=`, `<=>` order numbers and Strings only. Comparing anything else, including two Arrays, gives `false` rather than an error, so `sort`, `min` and `max` only work on lists of numbers or of Strings.
 
 **Every object**: `nil?` `is_a?` `kind_of?` `class` `respond_to?` `equal?` `dup` `clone` `to_s` `inspect`
 

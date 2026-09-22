@@ -39,5 +39,7 @@ Each task should test one skill. The contract in `TASK.md` fixes the method name
 
 ## Results
 
-Skill commit|Model|Passed|Notes
-------------|-----|------|-----
+Skill commit                  |Model  |Passed                      |Notes                                                                                                                                                   
+------------------------------|-------|----------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------
+`a7db0de`                     |qwen3.8|3/4 tasks (13/17 assertions)|02 sorted `[-count, word]` pairs; Arrays don't compare, so the order was wrong. Skill was silent; runtime answered wrongly without error (SCOPE.md).    
+`a7db0de` + Array-compare note|qwen3.8|02 re-sat: pass             |Built a single sortable key: zero-padded `max - count`, then the word. Correct, but 20 lines where Ruby needs one; evidence for fixing Array comparison.
