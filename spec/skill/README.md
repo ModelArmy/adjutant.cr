@@ -39,7 +39,8 @@ Each task should test one skill. The contract in `TASK.md` fixes the method name
 
 ## Results
 
-Skill commit                  |Model  |Passed                      |Notes                                                                                                                                                   
-------------------------------|-------|----------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------
-`a7db0de`                     |qwen3.8|3/4 tasks (13/17 assertions)|02 sorted `[-count, word]` pairs; Arrays don't compare, so the order was wrong. Skill was silent; runtime answered wrongly without error (SCOPE.md).    
-`a7db0de` + Array-compare note|qwen3.8|02 re-sat: pass             |Built a single sortable key: zero-padded `max - count`, then the word. Correct, but 20 lines where Ruby needs one; evidence for fixing Array comparison.
+Skill commit                  |Model           |Passed                      |Notes                                                                                                                                                                                                                           
+------------------------------|----------------|----------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+`a7db0de`                     |qwen3.8         |3/4 tasks (13/17 assertions)|02 sorted `[-count, word]` pairs; Arrays don't compare, so the order was wrong. Skill was silent; runtime answered wrongly without error (SCOPE.md).                                                                            
+`a7db0de` + Array-compare note|qwen3.8         |02 re-sat: pass             |Built a single sortable key: zero-padded `max - count`, then the word. Correct, but 20 lines where Ruby needs one; evidence for fixing Array comparison.                                                                        
+`f03764b`                     |Muse Glimmer 30b|3/4 tasks                   |02 prefixed a padded count with `"-"`, as if String negation reversed the order; it doesn't, so words came out least frequent first. Took minutes on 02, seconds on the rest. Second model to struggle with the same workaround.
