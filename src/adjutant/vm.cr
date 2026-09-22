@@ -1214,10 +1214,10 @@ module Adjutant
             @risk_flow_log.record("Eq", [a.label, b.label], result.label, f.line)
             push(result)
           when Op::TripleEq then exec_binary(inst) { |subject, pattern| Value.bool(triple_eq_matches?(pattern, subject)) }
-          when Op::Lt       then exec_binary(inst) { |lhs, rhs| Value.bool(compare(lhs, rhs, :<)) }
-          when Op::Lte      then exec_binary(inst) { |lhs, rhs| Value.bool(compare(lhs, rhs, :<=)) }
-          when Op::Gt       then exec_binary(inst) { |lhs, rhs| Value.bool(compare(lhs, rhs, :>)) }
-          when Op::Gte      then exec_binary(inst) { |lhs, rhs| Value.bool(compare(lhs, rhs, :>=)) }
+          when Op::Lt       then exec_binary(inst) { |lhs, rhs| Value.bool(strict_compare(lhs, rhs, :<)) }
+          when Op::Lte      then exec_binary(inst) { |lhs, rhs| Value.bool(strict_compare(lhs, rhs, :<=)) }
+          when Op::Gt       then exec_binary(inst) { |lhs, rhs| Value.bool(strict_compare(lhs, rhs, :>)) }
+          when Op::Gte      then exec_binary(inst) { |lhs, rhs| Value.bool(strict_compare(lhs, rhs, :>=)) }
             # --- Unary ----------------------------------------------------------
 
           when Op::Not
@@ -3028,7 +3028,7 @@ module Adjutant
           # dispatch_call's receiver-based step finds and calls it
           # directly, before falling back this far.)
           nil
-        elsif sign = ValueOps.spaceship(a, b)
+        elsif sign = spaceship(a, b, filename, line)
           Value.int(sign.to_i64)
         else
           Value.nil_value
@@ -3281,6 +3281,82 @@ module Adjutant
       ValueOps.add(a, b, error_raiser(current_frame))
     end
 
+    # `<`/`<=`/`>`/`>=` in script code. Unlike `compare`, which answers
+    # `false` for a pair it cannot order (Range bounds and `===` rely on
+    # that), this raises R044 (`ArgumentError`) for two base-type values
+    # with no order between them, such as `1 < "a"` or two Arrays —
+    # matching Ruby, and turning a silent `false` into a visible error.
+    private def strict_compare(a : Value, b : Value, op : Symbol) : Bool
+      unless a.robject? || b.robject? || ValueOps.orderable?(a, b)
+        raise_incomparable(a, b, current_frame.filename, current_frame.line)
+      end
+      compare(a, b, op)
+    end
+
+    # Orders `a` against `b` as Ruby's `<=>` does: a negative, zero or
+    # positive Int32, or nil when the pair has no order. Arrays compare
+    # element by element, then by length. A RubyObject receiver uses its
+    # own `<=>`, which must return an Integer or nil (R013 otherwise).
+    protected def spaceship(a : Value, b : Value,
+                            filename : String = current_frame.filename,
+                            line : Int32 = current_frame.line) : Int32?
+      if a.array? && b.array?
+        xs = a.as_array
+        ys = b.as_array
+        Math.min(xs.size, ys.size).times do |i|
+          sign = spaceship(xs[i], ys[i], filename, line)
+          return unless sign
+          return sign unless sign == 0
+        end
+        return xs.size <=> ys.size
+      end
+
+      if a.robject?
+        sign_val = call_method(a, "<=>", [b], filename, line)
+        return if sign_val.null?
+        raise_bad_spaceship(a, b, sign_val, filename, line) unless sign_val.int?
+        return sign_val.as_int <=> 0
+      end
+
+      ValueOps.spaceship(a, b)
+    end
+
+    # `spaceship`, raising R044 (`ArgumentError`) when the pair has no
+    # order. For native methods that must order every pair they meet,
+    # such as `Array#sort`.
+    protected def order(a : Value, b : Value, filename : String, line : Int32) : Int32
+      spaceship(a, b, filename, line) || raise_incomparable(a, b, filename, line)
+    end
+
+    private def raise_incomparable(a : Value, b : Value, filename : String, line : Int32) : NoReturn
+      raise runtime_diagnostic(
+        Diagnostic.new(
+          code: "R044",
+          primary: Span.new(line: line, filename: filename),
+          data: {"left" => describe_value(a), "right" => describe_value(b)}
+        ),
+        current_frame,
+        error_class: "ArgumentError"
+      )
+    end
+
+    private def raise_bad_spaceship(a : Value, b : Value, sign_val : Value,
+                                    filename : String, line : Int32) : NoReturn
+      raise runtime_diagnostic(
+        Diagnostic.new(
+          code: "R013",
+          primary: Span.new(line: line, filename: filename),
+          data: {
+            "left"  => describe_value(a),
+            "right" => describe_value(b),
+            "value" => sign_val.inspect,
+          }
+        ),
+        current_frame,
+        error_class: "ArgumentError"
+      )
+    end
+
     # `a` is always the receiver — `a < b` reads as `a.<=>(b)`, the
     # same left-to-right receiver convention every other infix
     # operator in Adjutant already uses. No "is `<=>` defined?"
@@ -3303,19 +3379,7 @@ module Adjutant
         # unrecognized TYPE PAIRING (a base-type default), not a
         # script's own method returning a value that breaks its own
         # contract.
-        raise runtime_diagnostic(
-          Diagnostic.new(
-            code: "R013",
-            primary: Span.new(line: line, filename: filename),
-            data: {
-              "left"  => describe_value(a),
-              "right" => describe_value(b),
-              "value" => sign_val.inspect,
-            }
-          ),
-          current_frame,
-          error_class: "ArgumentError"
-        )
+        raise_bad_spaceship(a, b, sign_val, filename, line)
       end
       sign = sign_val.as_int
       case op

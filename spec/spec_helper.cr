@@ -175,6 +175,14 @@ module Adjutant
       ValueOps.compare(a, b, op)
     end
 
+    def spaceship(a : Value, b : Value) : Int32?
+      ValueOps.spaceship(a, b)
+    end
+
+    def order(a : Value, b : Value) : Int32
+      ValueOps.spaceship(a, b) || raise "comparison of #{a} with #{b} failed"
+    end
+
     def add(a : Value, b : Value) : Value
       ValueOps.add(a, b, ->(msg : String, error_class : String) { raise msg })
     end

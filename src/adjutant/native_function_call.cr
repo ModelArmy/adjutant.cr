@@ -50,6 +50,14 @@ module Adjutant
       @vm.compare(a, b, op, filename, line)
     end
 
+    def spaceship(a : Value, b : Value) : Int32?
+      @vm.spaceship(a, b, filename, line)
+    end
+
+    def order(a : Value, b : Value) : Int32
+      @vm.order(a, b, filename, line)
+    end
+
     def add(a : Value, b : Value) : Value
       @vm.add(a, b)
     end

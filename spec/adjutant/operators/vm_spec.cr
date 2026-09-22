@@ -466,6 +466,32 @@ module Adjutant
         # ValueOps.spaceship isn't just derived from compare(:<)/(:>).
         eval("(1 <=> \"a\").nil?").as_bool.should be_true
       end
+
+      it "compares Arrays element by element, then by length" do
+        eval("[1, 2] <=> [1, 3]").as_int.should eq(-1_i64)
+        eval("[1, 2] <=> [1, 2]").as_int.should eq(0_i64)
+        eval("[1, 2, 0] <=> [1, 2]").as_int.should eq(1_i64)
+        eval(%(([1, "a"] <=> [1, 2]).nil?)).as_bool.should be_true
+      end
+    end
+
+    describe "< <= > >= on values with no order" do
+      it "raises R044 for mismatched base types" do
+        error = expect_raises(RuntimeError) { eval(%(1 < "a")) }
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("R044")
+        diag.data["left"].should eq("Integer")
+        diag.data["right"].should eq("String")
+      end
+
+      it "raises R044 for two Arrays, which order only through <=>" do
+        error = expect_raises(RuntimeError) { eval("[1] < [2]") }
+        error.diagnostic.not_nil!.code.should eq("R044")
+      end
+
+      it "still answers false for NaN, which is a number" do
+        eval("1.0 < (0.0 / 0.0)").as_bool.should be_false
+      end
     end
 
     describe "boolean logic" do
