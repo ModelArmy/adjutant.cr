@@ -234,19 +234,48 @@ module Adjutant::Builtins
       end
     end
 
-    # Ordering comes from NativeCallContext#compare (real `<=>`-backed
-    # comparison, working for base types AND a RubyObject with its own
-    # `<=>` — see that method's own comment), not a hand-rolled
-    # numeric/string case split — so `sort` works for any element type
-    # `<`/`>`  already works for, including user-defined objects with
-    # their own `<=>`, matching real Ruby's `Comparable`-derived sort
-    # rather than a narrower built-in-types-only version. Returns a
-    # NEW array; does not mutate the receiver.
-    define(cls, interp, "sort") do |args, _blk, ncc|
+    # Returns a new Array in ascending `<=>` order; does not mutate the
+    # receiver. With a block, the block is the comparator: it receives
+    # two elements and returns a negative, zero or positive Integer.
+    # Raises R044 (`ArgumentError`) for a pair with no order, or a block
+    # that returns anything but an Integer — Ruby's own behaviour, and
+    # better than returning a plausible but unsorted list.
+    #
+    # The result's label joins every element's and the receiver's, plus,
+    # with a block, every comparator result's: the order itself carries
+    # whatever the block consulted.
+    define(cls, interp, "sort") do |args, blk, ncc|
       recv = args.first
       items = recv.as_array.to_a
-      sorted = items.sort { |elem_a, elem_b| ncc.compare(elem_a, elem_b, :<) ? -1 : (ncc.compare(elem_a, elem_b, :>) ? 1 : 0) }
-      Adjutant::Value.new(Adjutant::LabeledArray.new(sorted, joined_label(sorted, recv.as_array.label)), nil)
+      order_label = nil.as(Adjutant::RiskFlowLabel?)
+      sorted = if blk
+                 items.sort do |x, y|
+                   result = ncc.invoke(blk, [x, y])
+                   order_label = Adjutant::RiskFlowLabel.join(order_label, result.label)
+                   result.int? ? (result.as_int <=> 0) : ncc.raise_error("R044", {"left" => builtin_type_name(x), "right" => builtin_type_name(y)}, "ArgumentError")
+                 end
+               else
+                 items.sort { |x, y| ncc.order(x, y) }
+               end
+      label = Adjutant::RiskFlowLabel.join(joined_label(sorted, recv.as_array.label), order_label)
+      Adjutant::Value.new(Adjutant::LabeledArray.new(sorted, label), nil)
+    end
+
+    # Returns a new Array ordered by the block's result for each
+    # element, compared with `<=>`, so a two-key sort is
+    # `sort_by { |x| [x.a, x.b] }`. Raises R044 (`ArgumentError`) when two
+    # keys have no order, and R045 (`ArgumentError`) with no block.
+    #
+    # The result's label joins every element's, every key's and the
+    # receiver's, since the keys decide the order.
+    define(cls, interp, "sort_by") do |args, blk, ncc|
+      ncc.raise_error("R045", {"method" => "sort_by"}, "ArgumentError") unless blk
+      recv = args.first
+      keyed = recv.as_array.to_a.map { |elem| {ncc.invoke(blk, [elem]), elem} }
+      keyed.sort! { |x, y| ncc.order(x[0], y[0]) }
+      sorted = keyed.map(&.[1])
+      label = joined_label(keyed.map(&.[0]), joined_label(sorted, recv.as_array.label))
+      Adjutant::Value.new(Adjutant::LabeledArray.new(sorted, label), nil)
     end
 
     define(cls, interp, "reverse") do |args|
@@ -256,17 +285,16 @@ module Adjutant::Builtins
     end
 
     # Real Ruby's Array#min/#max on an empty receiver return nil,
-    # matched here rather than raising — same reduce-based ordering as
-    # #sort, just without materializing a whole sorted copy for a
-    # single extremum.
+    # matched here rather than raising. Ordered as `sort` orders, so a
+    # pair with no order raises R044 (`ArgumentError`).
     define(cls, interp, "min") do |args, _blk, ncc|
       items = args.first.as_array.to_a
-      items.empty? ? Adjutant::Value.nil_value : items.reduce { |acc, elem| ncc.compare(elem, acc, :<) ? elem : acc }
+      items.empty? ? Adjutant::Value.nil_value : items.reduce { |acc, elem| ncc.order(elem, acc) < 0 ? elem : acc }
     end
 
     define(cls, interp, "max") do |args, _blk, ncc|
       items = args.first.as_array.to_a
-      items.empty? ? Adjutant::Value.nil_value : items.reduce { |acc, elem| ncc.compare(elem, acc, :>) ? elem : acc }
+      items.empty? ? Adjutant::Value.nil_value : items.reduce { |acc, elem| ncc.order(elem, acc) > 0 ? elem : acc }
     end
 
     # Real Ruby's Array#any?/#all? with no block test each element's

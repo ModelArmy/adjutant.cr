@@ -88,6 +88,15 @@ module Adjutant
     # raising).
     abstract def compare(a : Value, b : Value, op : Symbol) : Bool
 
+    # Ruby's `<=>`: a negative, zero or positive Int32, or nil when `a`
+    # and `b` have no order. Arrays compare element by element; a
+    # RubyObject uses its own `<=>`. For native methods that sort.
+    abstract def spaceship(a : Value, b : Value) : Int32?
+
+    # `spaceship`, but raises R044 (`ArgumentError`) instead of
+    # returning nil. For native methods that must order every pair.
+    abstract def order(a : Value, b : Value) : Int32
+
     # Real Ruby `+` semantics for two Values — delegates to
     # ValueOps.add (value_ops.cr), the same logic Op::Add already uses
     # for script-level `+`. Needed by any native method that has to

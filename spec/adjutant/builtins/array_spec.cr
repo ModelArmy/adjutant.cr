@@ -574,6 +574,68 @@ module Adjutant
       it "works on strings too, via the same comparison mechanism" do
         eval(%(["banana", "apple", "cherry"].sort)).as_array.map(&.as_string).should eq ["apple", "banana", "cherry"]
       end
+
+      it "sorts Arrays element by element, then by length" do
+        eval(%([[2, "a"], [1, "b"], [1, "a"], [1]].sort.inspect)).as_string.should eq %([[1], [1, "a"], [1, "b"], [2, "a"]])
+      end
+
+      it "uses a block as the comparator" do
+        eval("[1, 3, 2].sort { |a, b| b <=> a }").as_array.map(&.as_int).should eq [3, 2, 1]
+      end
+
+      it "raises R044 for elements with no order between them" do
+        error = expect_raises(RuntimeError) { eval(%([1, "a"].sort)) }
+        error.diagnostic.not_nil!.code.should eq("R044")
+      end
+
+      it "raises R044 when the block returns something other than an Integer" do
+        error = expect_raises(RuntimeError) { eval("[1, 2].sort { |a, b| nil }") }
+        error.diagnostic.not_nil!.code.should eq("R044")
+      end
+    end
+
+    describe "#sort_by" do
+      it "orders by the block's key" do
+        eval(%(["ccc", "a", "bb"].sort_by { |w| w.length })).as_array.map(&.as_string).should eq ["a", "bb", "ccc"]
+      end
+
+      it "orders by several keys given as an Array" do
+        src = <<-RUBY
+          counts = {"b" => 3, "a" => 3, "c" => 1}
+          counts.keys.sort_by { |w| [-counts[w], w] }
+        RUBY
+        eval(src).as_array.map(&.as_string).should eq ["a", "b", "c"]
+      end
+
+      it "does not mutate the receiver" do
+        eval(<<-RUBY).as_array.map(&.as_int).should eq [3, 1, 2]
+          a = [3, 1, 2]
+          a.sort_by { |x| x }
+          a
+        RUBY
+      end
+
+      it "raises R044 for keys with no order between them" do
+        error = expect_raises(RuntimeError) { eval(%([1, 2].sort_by { |x| x == 1 ? "a" : 1 })) }
+        error.diagnostic.not_nil!.code.should eq("R044")
+      end
+
+      it "raises R045 with no block" do
+        error = expect_raises(RuntimeError) { eval("[1, 2].sort_by") }
+        error.diagnostic.not_nil!.code.should eq("R045")
+      end
+    end
+
+    describe "#min and #max" do
+      it "order Arrays element by element" do
+        eval("[[2, 1], [1, 9]].min.inspect").as_string.should eq "[1, 9]"
+        eval("[[2, 1], [1, 9]].max.inspect").as_string.should eq "[2, 1]"
+      end
+
+      it "raise R044 for elements with no order between them" do
+        error = expect_raises(RuntimeError) { eval(%([1, "a"].max)) }
+        error.diagnostic.not_nil!.code.should eq("R044")
+      end
     end
 
     describe "#reverse" do
