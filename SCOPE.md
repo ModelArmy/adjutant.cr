@@ -54,6 +54,20 @@ DEVELOPMENT.md's "Destructive verbs" writeup. Removed here rather than
 marked done, since a completed entry in a list of open problems is
 just noise for the next reader.
 
+- **`Array#sort` silently ignores a block.** Found 2026-09-21
+  writing the agent skill. `arr.sort { |a, b| b <=> a }` returns
+  ascending order with no error, so a script asking for a custom order
+  gets the natural one and looks right. Either honour the block or
+  raise until it is honoured; either is better than the current
+  answer. Silent-wrong, so it leads.
+
+- **`Array#inject`/`reduce` with a Symbol and no block returns `nil`.**
+  Found 2026-09-21, same pass. `[1, 2, 3].inject(:+)` treats `:+` as
+  the initial value and, finding no block, returns `nil`. Real Ruby
+  returns `6`. Supporting the Symbol form means dispatching the named
+  method; until then it should raise rather than return a plausible
+  `nil`.
+
 - **Runtime diagnostics have no carets** (`Frame` records a line but no
   column). Promoted from Error reporting 2026-08-05 on a
   turn-churn argument specific to this use case: the cost of an
@@ -1114,6 +1128,13 @@ section).
   alias, since an LLM reaching for `#count` is at least as likely to
   want the filtered form.
 
+- **`Float` has no `round`, `floor`, `ceil` or `abs`.** Found
+  2026-09-21 in the built-in census for the agent skill: `float.cr`
+  defines only `to_i`, `to_f`, `to_s` and `infinite?`. Integer has all
+  four, so a script that rounds a computed average fails where the
+  same code on an Integer works. `round(n)` with a digits argument is
+  the form models reach for most.
+
 - **Quoted Symbol literals (`:"..."`) don't decode backslash escape
   sequences.** Found 2026-08-13 fixing the identical gap for String
   literals (`decode_string_escapes`, parser.cr) — plain and
@@ -1348,6 +1369,23 @@ individually.
   the call itself regardless of AST position.
 
 ### Legate
+
+- **`Legate::Stream` implements 9 of the ~35 operations §6
+  specifies.** Found 2026-09-21 in the census for the agent skill.
+  `stream.cr` defines `map`, `select`, `reject`, `take`, `first`,
+  `each`, `count`, `sum` and `to_a`; the rest of §6.2–§6.4 (`each_slice`,
+  `with_index`, `find`, `min`/`max`, `reduce`, `top_by`, `tally`,
+  `sort_by`, `group_by`, …) do not exist, yet LEGATE.md §0 marks §6
+  "Built". §0 now says "Partial" and lists the nine. Build the rest by
+  what the skill exam shows models actually reach for.
+
+- **`Stream#to_a`'s `TooLarge` hint names methods that don't exist.**
+  Found alongside the above. The message recommends `each_slice`,
+  `top_by` or `tally`, none of which a stream has, so a model that
+  follows the diagnostic gets a second error. LEGATE.md §9's
+  `TooLarge`/`TooMany` rows have the same problem. Until those
+  operations exist, the hint should name what does: `each`, `take` or
+  `first(n)`.
 
 - **The pinned socket's TLS path is only exercised when a transcript
   is RECORDED.** Found 2026-08-30. The plain socket half is covered

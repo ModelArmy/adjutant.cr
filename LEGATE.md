@@ -25,7 +25,7 @@ Section                                  |Status      |Notes
 §4.6 execution                           |RETIRED     |No `exec` grant, no `run` verb — removed 2026-09-05 as unused scaffolding; see SCOPE.md
 §4.7 ambient                             |Built       |`scratch` `log` `fail` (2026-09-08), `env` `now` `random` (2026-09-08)                 
 §5 value types                           |Built       |All six — `Legate::Exit` retired 2026-09-10, see SCOPE.md                              
-§6 stream protocol                       |Built       |                                                                                       
+§6 stream protocol                       |Partial     |`map` `select` `reject` `take` `first` `each` `count` `sum` `to_a` only; see SCOPE.md  
 §7 grants and policy                     |Built       |`ambient.now` removed 2026-09-01; see SCOPE.md                                         
 §8.1 path resolution / TOCTOU            |Built       |                                                                                       
 §8.2 network hardening                   |Built       |Resolved-address checks in `fetch.cr`                                                  
