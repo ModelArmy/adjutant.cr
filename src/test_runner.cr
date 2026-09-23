@@ -4,6 +4,7 @@ require "wait_group"
 
 require "./adjutant"
 require "./testing/assert_module"
+require "./testing/wiretap_module"
 
 # Test scripts runner for Adjutant.
 #
@@ -41,6 +42,7 @@ module Testing
     POLICY_FILE_NAME = "_policy.yaml"
 
     def run : Int32
+      WiretapModule.setup
       files = Dir.glob(File.join(@scripts_dir, "**", "*.rb")).sort
       if files.empty?
         puts "No script specs found in #{@scripts_dir}"
@@ -84,6 +86,7 @@ module Testing
       )
       mod = AssertModule.new
       interp.modules.register(mod)
+      interp.modules.register(WiretapModule.new)
 
       error = nil
       cause = nil

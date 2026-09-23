@@ -13,6 +13,7 @@ spec/skill/
     checks.rb            assertions the model never sees
     _policy.yaml         grants only what the task needs
     fixtures/            input files
+    transcripts/         recorded HTTP for tasks that fetch (linked, not copied)
     reference.rb         a known-good answer, to validate the task itself
   answers/<model>/       model replies (gitignored)
   runs/<model>/          assembled scripts (gitignored)
@@ -32,6 +33,8 @@ One task per prompt, so one failure cannot contaminate the next.
 3. Record the result below. For each failure, note its cause: the skill was wrong, the skill was silent, or the model ignored it.
 
 Validate a new or changed task first with `assemble.sh reference`; its reference answer must pass.
+
+A task that fetches needs its transcript recorded once: assemble `reference` and run it with `WIRETAP_RECORD=1`, then commit what appears in the task's `transcripts/`. Model runs replay it, so an answer that requests a different URL or method fails.
 
 ## Adding a task
 
