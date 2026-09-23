@@ -40,6 +40,7 @@ What is different, in order of importance:
 - `arr[1..3]` → `arr.first(n)`, `arr.last(n)`; Arrays do not slice by Range
 - `hash.map`, `select`, `sort_by`, `find` → `hash.to_a.map { |pair| ... }` or `hash.each { |k, v| ... }`
 - `hash.fetch(k, d)`, `dig` → `hash.key?(k) ? hash[k] : d`; chain `[]`
+- `Hash.new(0)`, `counts[k] += 1` on a key not yet seen → `counts[k] = (counts[k] || 0) + 1`; a missing key is `nil`, and `nil + 1` is a TypeError
 - `"ab" * 3`, `"%d" % n`, `format` → Interpolation: `"#{n}"`
 - `str << "x"` → `str = str + "x"`
 - `x ** 2` → `x * x`
@@ -102,6 +103,7 @@ Every verb that takes a path accepts a String or a `Legate::Path`. Prefer paths:
 - `Legate.read(path, missing: :raise)` → String. `missing: nil` returns nil when absent.
 - `Legate.stat(path)` → `Legate::Stat` or nil: `type` (`:file`, `:dir`, `:symlink`, `:other`), `size`, `mtime`, `file?`, `dir?`
 - `Legate.list(glob)` → Array of `Legate::Entry`: `path`, `type`, `size`, `mtime`. Sorted; empty if none match.
+- Every `path` a verb hands back is a `Legate::Path`, not a String: use `basename`, `parent`, `stem`, `ext`, `parts` or `to_s`. String methods such as `split` are not on it.
 - `Legate.grep(regexp_or_string, glob_or_paths, context: 0)` → Array of `Legate::Match`: `path`, `line_no`, `text`, `before`, `after`
 
 **Stream** (grant `read`). Lazy and single-pass; re-call the verb to read again.
