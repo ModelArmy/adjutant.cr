@@ -1,0 +1,31 @@
+{
+  "name": "spec/skill/runs/reference/07_fetch_title/transcripts/slideshow",
+  "recorded_with": "wiretap/0.4.2",
+  "interactions": [
+    {
+      "request": {
+        "method": "GET",
+        "url": "https://httpbin.org/json",
+        "headers": {
+          "Host": "httpbin.org",
+          "User-Agent": "Crystal",
+          "Accept-Encoding": "gzip, deflate"
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Date": "Wed, 23 Sep 2026 04:18:42 GMT",
+          "Content-Type": "application/json",
+          "Content-Length": "429",
+          "Connection": "keep-alive",
+          "Server": "gunicorn/19.9.0",
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Credentials": "true"
+        },
+        "body": "{\n  \"slideshow\": {\n    \"author\": \"Yours Truly\", \n    \"date\": \"date of publication\", \n    \"slides\": [\n      {\n        \"title\": \"Wake up to WonderWidgets!\", \n        \"type\": \"all\"\n      }, \n      {\n        \"items\": [\n          \"Why <em>WonderWidgets</em> are great\", \n          \"Who <em>buys</em> WonderWidgets\"\n        ], \n        \"title\": \"Overview\", \n        \"type\": \"all\"\n      }\n    ], \n    \"title\": \"Sample Slide Show\"\n  }\n}\n"
+      },
+      "recorded_at": "2026-09-23T04:18:42Z"
+    }
+  ]
+}

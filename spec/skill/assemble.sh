@@ -34,7 +34,7 @@ for task in "$@"; do
 
   out="$here/runs/$model/$task"
   mkdir -p "$out"
-  cp "$task_dir/_policy.yaml" "$out/"
+  [ -f "$task_dir/_policy.yaml" ] && cp "$task_dir/_policy.yaml" "$out/"
   [ -d "$task_dir/fixtures" ] && cp -R "$task_dir/fixtures" "$out/"
   # Linked, not copied: a transcript recorded during a run belongs in
   # the task, which is committed, not in this throwaway directory.
