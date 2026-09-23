@@ -97,6 +97,69 @@ module Adjutant
         eval(src).as_int.should eq 20_i64
       end
 
+      it "uses yield's value in an expression" do
+        src = <<-RUBY
+        def doubled
+          x = yield 10
+          x + 1
+        end
+        doubled { |n| n * 2 }
+        RUBY
+        eval(src).as_int.should eq 21_i64
+      end
+
+      it "returns yield's value" do
+        src = <<-RUBY
+        def first_of
+          return yield
+        end
+        first_of { "value" }
+        RUBY
+        eval(src).as_string.should eq "value"
+      end
+
+      it "calls a method on yield's value" do
+        src = <<-RUBY
+        def shout
+          yield.upcase
+        end
+        shout { "hi" }
+        RUBY
+        eval(src).as_string.should eq "HI"
+      end
+
+      it "leaves a following binary operator to the surrounding expression" do
+        src = <<-RUBY
+        def plus_four
+          yield + 4
+        end
+        plus_four { 10 }
+        RUBY
+        eval(src).as_int.should eq 14_i64
+      end
+
+      it "still takes arguments without parentheses" do
+        src = <<-RUBY
+        def pair
+          yield 1, 2
+        end
+        pair { |a, b| a + b }
+        RUBY
+        eval(src).as_int.should eq 3_i64
+      end
+
+      it "takes a trailing if modifier" do
+        src = <<-RUBY
+        def maybe(flag)
+          count = 0
+          yield if flag
+          count
+        end
+        maybe(false) { 1 }
+        RUBY
+        eval(src).as_int.should eq 0_i64
+      end
+
       it "block does not capture enclosing local via closure" do
         src = <<-RUBY
         def run
