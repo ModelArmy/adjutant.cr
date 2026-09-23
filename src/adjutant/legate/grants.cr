@@ -232,6 +232,12 @@ module Adjutant
       # flag any mismatch `ops test` surfaces here first.
       def self.from_yaml(source : String) : Grants
         doc = YAML.parse(source)
+        # An empty or scalar document has no keys to read, and asking
+        # one for `["grants"]?` raises YAML's own "Expected Array or
+        # Hash, not Nil" — which names nothing the caller wrote. A
+        # policy that grants nothing is a legitimate thing to write, so
+        # it is all-denied, exactly as a missing file is.
+        return deny_all unless doc.as_h?
         grants_node = doc["grants"]?
         limits_node = doc["limits"]?
 

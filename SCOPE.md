@@ -1121,18 +1121,6 @@ section).
   alias, since an LLM reaching for `#count` is at least as likely to
   want the filtered form.
 
-- **An empty or non-mapping `_policy.yaml` kills the test runner's
-  fiber instead of failing that script.** Found 2026-09-22 in the 9B
-  exam round. `Grants.from_yaml` calls `doc["grants"]?` on whatever
-  `YAML.parse` returned, and for a document with no mapping that is
-  Nil, so `YAML::Any#[]?` raises "Expected Array or Hash, not Nil" —
-  the unverified recollection `from_yaml`'s own comment warns about.
-  Two fixes, both wanted: `from_yaml` should treat a document with no
-  mapping as all-denied, or raise a message naming the file; and
-  `Runner#run_file` should rescue around `grants_for`, so one bad
-  policy fails its own script instead of taking down the fiber with a
-  bare stack trace.
-
 - **A TypeError from a binary operator renders nil as nothing at
   all.** Found in the same round: a model's `counts[word] + 1` on a
   missing key reported `cannot add  and 1`, because `ValueOps` builds

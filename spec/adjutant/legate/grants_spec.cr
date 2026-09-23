@@ -146,6 +146,18 @@ module Adjutant
         grants.limits.memory.should be_nil
       end
 
+      it "denies everything for a blank document, rather than raising YAML's own error" do
+        ["", "   ", "\n", "# only a comment\n"].each do |source|
+          grants = Legate::Grants.from_yaml(source)
+          grants.read_roots.should be_empty
+          grants.ambient_env.should be_empty
+        end
+      end
+
+      it "denies everything for a document that is not a mapping" do
+        Legate::Grants.from_yaml("just a string").read_roots.should be_empty
+      end
+
       it "treats a present-but-empty category the same as an absent one" do
         grants = Legate::Grants.from_yaml(<<-YAML)
           grants:
