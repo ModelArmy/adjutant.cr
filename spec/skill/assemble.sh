@@ -2,7 +2,8 @@
 # Usage: spec/skill/assemble.sh <model> [task ...]
 #
 # Builds runs/<model>/<task>/<task>.rb from an answer followed by the
-# task's checks.rb, alongside copies of its _policy.yaml and fixtures/.
+# task's checks.rb, alongside copies of its _policy.yaml and fixtures/,
+# and a link to its transcripts/ if it has one.
 # Answers come from answers/<model>/<task>.rb; the model name
 # "reference" uses each task's own reference.rb instead. If an answer
 # contains a ``` fence, only the first fenced block is used, so a raw
@@ -35,6 +36,9 @@ for task in "$@"; do
   mkdir -p "$out"
   cp "$task_dir/_policy.yaml" "$out/"
   [ -d "$task_dir/fixtures" ] && cp -R "$task_dir/fixtures" "$out/"
+  # Linked, not copied: a transcript recorded during a run belongs in
+  # the task, which is committed, not in this throwaway directory.
+  [ -d "$task_dir/transcripts" ] && ln -s "$task_dir/transcripts" "$out/transcripts"
 
   # Keep the first fenced block if there is one, else the whole file.
   if grep -q '^```' "$answer"; then
