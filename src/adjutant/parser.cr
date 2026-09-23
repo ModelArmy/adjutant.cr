@@ -359,12 +359,12 @@ module Adjutant
       when TokenKind::KwRetry   then advance; RetryNode.new(l, c)
       when TokenKind::KwAlias   then parse_alias
       when TokenKind::KwRequire then parse_require
-      when TokenKind::KwYield   then parse_yield
       when TokenKind::KwAttrReader, TokenKind::KwAttrWriter, TokenKind::KwAttrAccessor
         parse_attr(current_kind)
       else
-        # KwSuper deliberately NOT its own case here (was, until this
-        # fix): this table's shortcut cases return immediately,
+        # KwSuper and KwYield deliberately NOT their own cases here
+        # (both were, until this fix): this table's shortcut cases
+        # return immediately,
         # bypassing parse_expr_statement's full pipeline (parse_expression's
         # operator-precedence climbing, assignment, trailing if/
         # unless/while/until modifiers) entirely. Harmless for most
@@ -380,7 +380,11 @@ module Adjutant
         # here reaches that same case via the normal
         # parse_expression → parse_unary → parse_primary chain,
         # so `super` gets full expression-parsing treatment uniformly,
-        # whether it starts a statement or not.
+        # whether it starts a statement or not. `yield` is the same
+        # story, found a session later: its shortcut here was the only
+        # dispatch it had, so `x = yield`, `return yield` and
+        # `yield.to_s` were all parse errors and a block could only be
+        # called for its side effects, never for its value.
         parse_expr_statement
       end
     end
@@ -998,6 +1002,8 @@ module Adjutant
         parse_begin
       when TokenKind::KwRaise
         parse_raise(l, c)
+      when TokenKind::KwYield
+        parse_yield
       when TokenKind::KwSuper
         # `super` was previously only reachable via parse_statement's
         # own dispatch (see that table, above) — fine for `super()`
@@ -1898,7 +1904,12 @@ module Adjutant
           skip_newlines
         end
         expect(TokenKind::RParen)
-      elsif !at_any?(TokenKind::Newline, TokenKind::Semi, TokenKind::EOF, TokenKind::KwEnd)
+      elsif arg_follows_no_paren?
+        # The guard `parse_super`/`parse_raise` already use for the
+        # identical ambiguity, and needed here for the same reason once
+        # `yield` became an expression: without it `x = yield + 1` reads
+        # `+ 1` as yield's own argument, discards it, and applies
+        # nothing to yield's value.
         args << parse_expression(0)
         while match(TokenKind::Comma)
           skip_newlines

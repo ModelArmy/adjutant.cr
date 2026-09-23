@@ -1121,17 +1121,6 @@ section).
   alias, since an LLM reaching for `#count` is at least as likely to
   want the filtered form.
 
-- **`yield` parses only as a whole statement, so a block's value
-  cannot be used.** Found 2026-09-22 writing skill-exam task 08.
-  `parse_statement` dispatches `KwYield`, and nothing else does, so
-  `x = yield`, `return yield` and `yield.to_s` are all P002 parse
-  errors and a block can only be called for its side effects. Every
-  `yield` in `spec/scripts` discards the value, which is why this
-  never surfaced. Ruby's own `yield` is an expression. Fix shape:
-  parse it in `parse_primary` as well, as `KwSuper` already is. Until
-  then the only way to use what a caller's code returns is a lambda
-  parameter, which is what R007's own help text recommends.
-
 - **`Float` has no `round`, `floor`, `ceil` or `abs`.** Found
   2026-09-21 in the built-in census for the agent skill: `float.cr`
   defines only `to_i`, `to_f`, `to_s` and `infinite?`. Integer has all
