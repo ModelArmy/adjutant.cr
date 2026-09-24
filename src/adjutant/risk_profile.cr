@@ -1,91 +1,56 @@
 require "./diagnostic"
 
 module Adjutant
-  # What a native function does to the world outside the VM.
-  #
-  # An Effect is a *consequence* — the reason a function is risky.
-  # Reversibility and Severity (below) are *conclusions* drawn from
-  # them. A RiskProfile with no effects must therefore be fully safe
-  # (see RiskProfile's strict-empty rule) — if a function needs a
-  # non-default reversibility or severity but has no effect to justify
-  # it, that means an effect is missing, not that the conclusion fields
-  # should be set freely.
-  #
-  # Deliberately NOT the same vocabulary as the authority a call
-  # exercises: a move requires both delete and write authority, but
-  # destroys nothing. See Authority for that half.
+  # What a native function does to the world outside the VM: the
+  # consequences that make it risky. Reversibility and Severity are
+  # conclusions drawn from them, so a profile with no effects must be
+  # fully safe; a function that needs another conclusion is missing an
+  # effect. Separate from Authority, what a call may do: a move needs
+  # Delete and Write authority but destroys nothing.
   enum Effect
     ReadsFiles
     WritesFiles
     DeletesFiles
-    # Relocation, which is NOT destruction. `Legate.mv` carries this
-    # ALONE and declares itself reversible: `File.rename` preserves
-    # the information, and the cross-device fallback is deliberately
-    # ordered copy-then-delete so a partway failure duplicates rather
-    # than loses. Saying `DeletesFiles` of a move would imply a loss
-    # that does not occur, and pairing the two is worse than either.
-    #
-    # `Legate.mv!` carries this AND `DeletesFiles`, the latter
-    # honestly about the clobbered destination — a real,
-    # unrecoverable loss of a file the script never named as a
-    # source. That asymmetry with the AUTHORITY a move needs (both
-    # Delete and Write, either way) is correct rather than an
-    # oversight: authorities answer "what may this call do", effects
-    # answer "what did it consequently do", and nothing infers one
-    # from the other.
+    # Relocation, which destroys nothing. `Legate.mv` carries it alone
+    # and is reversible: a cross-device move copies before deleting.
+    # `Legate.mv!` adds DeletesFiles for the destination it may
+    # overwrite.
     MovesFiles
     Recursive
     ExecutesCode
     NetworkEgress
     ElevatedPrivilege
     ModifiesEnvironment
-    # Data leaves the sandbox via a destination this call does not
-    # itself reveal or control — unlike NetworkEgress, where the
-    # destination IS the call's own explicit argument (a URL the
-    # script wrote), the embedder chose `Legate.log`'s destination at
-    # Interpreter-construction time, and the script calling it has no
-    # way to know what that destination is or whether it's local
-    # (STDOUT, a file another tool call can read) or remote. Added
-    # 2026-09-10 for exactly one verb so far — see SCOPE.md's entry
-    # on `Legate.log` and `Authority::Log` for the full reasoning,
-    # including why this alone doesn't prevent anything (that's
-    # `Authority::Log`'s job) and only makes the risk visible in a
-    # static report.
+    # Data leaves through a destination the call doesn't reveal: the
+    # host chose `Legate.log`'s when building the Interpreter, and the
+    # script can't tell whether it is local or remote. Unlike
+    # NetworkEgress, whose destination is the call's own URL. It only
+    # makes the risk visible in a report; `Authority::Log` is what
+    # governs it.
     ExternalOutput
   end
 
-  # Whether a native call's effect can be undone.
-  #
-  # `Depends` means reversibility is determined by call-site arguments
-  # the static RiskProfile can't see (e.g. a flag toggling in-place
-  # writes) — requires `note` to explain the condition. Phase A treats
-  # `Depends` as "escalate and ask a human"; resolving it precisely is
-  # deferred to argument-level analysis (Phase B/C).
+  # Whether a call's effect can be undone. `Depends` means it turns on
+  # arguments a static profile can't see, such as a flag, and requires
+  # a `note` explaining the condition.
   enum Reversibility
     Yes
     No
     Depends
   end
 
-  # Precomputed severity for presentation — avoids re-deriving a summary
-  # verdict from effects every time a risk manifest is displayed.
+  # The summary verdict, stored so a report needn't derive it from
+  # the effects.
   enum Severity
     Info
     Warning
     Error
   end
 
-  # Static, per-function risk metadata attached to a NativeCallable.
-  #
-  # Immutable value type. `RiskProfile.none` is the common case — most
-  # native functions (arithmetic, string/array helpers, etc.) have no
-  # side effects at all.
-  #
-  # An empty effect set strictly implies Reversibility::Yes and
-  # Severity::Info; constructing an empty profile with any other
-  # reversibility or severity is a bug in the caller and raises
-  # immediately. If a function needs to express risk with no existing
-  # effect fitting, add a new Effect rather than bypassing this check.
+  # A native function's static risk. `RiskProfile.none`, no effects,
+  # is the common case. A profile with no effects must be reversible
+  # and Info; anything else raises, since the missing piece is an
+  # effect.
   struct RiskProfile
     getter effects : Set(Effect)
     getter reversible : Reversibility
@@ -104,7 +69,7 @@ module Adjutant
       end
     end
 
-    # The no-side-effects case: no effects, fully reversible, informational.
+    # No effects: reversible and Info.
     def self.none : RiskProfile
       RiskProfile.new
     end

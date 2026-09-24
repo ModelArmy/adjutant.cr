@@ -3,10 +3,9 @@ require "./risk_profile"
 require "./diagnostic"
 
 module Adjutant
-  # A single worst-case path through a RiskNode tree, kept as a trail
-  # of descriptions so presentation can say *why* — e.g. "delete_file
-  # (inside if branch: user_confirmed == false)" — rather than just a
-  # severity badge.
+  # The worst-case path through a RiskNode tree, as a trail of
+  # descriptions: "delete_file (inside if branch: ...)", so a report
+  # can say why, not just how bad.
   struct RiskSummary
     getter effects : Set(Effect)
     getter reversible : Reversibility
@@ -22,13 +21,10 @@ module Adjutant
     end
   end
 
-  # One resolved (or unresolved) leaf found anywhere in a RiskNode
-  # tree, with enough context for a UX to group, filter, or sort —
-  # unlike RiskSummary, which collapses everything to one worst-case
-  # path. `iterated`/`branch_path` say WHERE in the control-flow shape
-  # this leaf sits, since two leaves with identical effects can carry very
-  # different weight (once, vs. inside a loop; unconditional, vs. only
-  # on the `--force` branch).
+  # One leaf of a RiskNode tree, resolved or not, with where it sits:
+  # `iterated` if inside a loop, `branch_path` for the branches that
+  # lead to it. The same call weighs differently once, in a loop, or
+  # only on one branch.
   struct RiskFinding
     getter description : String
     getter profile : RiskProfile
@@ -40,20 +36,15 @@ module Adjutant
     end
   end
 
-  # Walks a RiskNode tree, either into every individual finding
-  # (all_findings) or the single worst-case RiskSummary (summarize) —
-  # the path an attacker or a careless script would actually hit, not
-  # a flattened union across mutually-exclusive branches.
+  # Reduces a RiskNode tree to every finding (`all_findings`) or to
+  # the single worst path (`summarize`), which takes the worst branch
+  # of a Choice rather than a union of exclusive branches.
   #
-  # Ordering used to pick "worse": Severity::Error > Warning > Info;
-  # ties broken by Reversibility::No > Depends > Yes. RiskUnresolved
-  # always outranks everything (see risk_node.cr for why).
+  # Worse means higher Severity (Error, Warning, Info), then less
+  # reversible (No, Depends, Yes). Unresolved outranks everything.
   module RiskAggregator
-    # Every RiskLeaf/RiskUnresolved anywhere in the tree — not just the
-    # worst-case path summarize() returns. A UX can group these by
-    # description (dedup repeated calls to the same function), filter
-    # by severity, or sort by reversibility itself; RiskAggregator
-    # takes no view on presentation.
+    # Every leaf and unresolved call in the tree. Grouping, filtering
+    # and sorting are left to the presentation.
     def self.all_findings(node : RiskNode, iterated : Bool = false, branch_path : Array(String) = [] of String) : Array(RiskFinding)
       case node
       when RiskLeaf
@@ -65,22 +56,17 @@ module Adjutant
       when RiskChoice
         node.children.flat_map { |child| all_findings(child, iterated, branch_path + ["#{node.origin} branch"]) }
       when RiskDeferred
-        # Included at full severity, same philosophy as RiskUnresolved
-        # outranking everything else (see class docs above) — this
-        # project consistently treats "can't confirm" as a reason to
-        # surface loudly, not a reason to under-report. Tagged via
-        # branch_path so presentation can distinguish "this WILL
-        # happen" from "this MIGHT happen, handed off to a callee we
-        # can't see into" without losing the underlying finding.
+        # A deferred risk counts in full, as unresolved ones do: what
+        # can't be confirmed is surfaced, not discounted. Its
+        # `branch_path` marks it deferred.
         all_findings(node.child, iterated, branch_path + ["deferred: #{node.reason}"])
       else
         [] of RiskFinding
       end
     end
 
-    # The RiskProfile equivalent RiskUnresolved is treated as in
-    # summarize() — kept as one place so both entry points agree on
-    # what "unresolved" means as a profile.
+    # The profile an unresolved call counts as, shared by both entry
+    # points.
     private def self.unresolved_profile : RiskProfile
       RiskProfile.new(effects: Set{Effect::ExecutesCode}, reversible: Reversibility::No, severity: Severity::Error)
     end
@@ -101,16 +87,14 @@ module Adjutant
       when RiskDeferred
         summarize_deferred(node)
       else
-        # Was a bare `raise`, surfacing as an untyped Crystal exception
-        # with no code and nothing telling the reader to report it.
         raise InternalError.new(
           Diagnostic.new(code: "I007", data: {"node" => node.class.to_s})
         )
       end
     end
 
-    # All children occur — union effects, OR-ed reversible/severity via
-    # worse-wins, path is the concatenation of each child's worst path.
+    # Every child runs: effects are unioned, the worst severity and
+    # reversibility win, and the paths are concatenated.
     private def self.summarize_sequence(node : RiskSequence) : RiskSummary
       return RiskSummary.none if node.children.empty?
       child_summaries = node.children.map { |child| summarize(child) }
@@ -126,9 +110,7 @@ module Adjutant
       )
     end
 
-    # Exactly one child occurs — report the single worst-case branch,
-    # tagged with which branch it was, rather than unioning mutually
-    # exclusive outcomes together.
+    # One child runs: the worst branch, tagged with which it was.
     private def self.summarize_choice(node : RiskChoice) : RiskSummary
       return RiskSummary.none if node.children.empty?
       child_summaries = node.children.map { |child| summarize(child) }
@@ -142,14 +124,9 @@ module Adjutant
       )
     end
 
-    # The child's full severity/reversibility/effects are used as-is (see
-    # all_findings' RiskDeferred case for why: this project treats
-    # "can't confirm" as a reason to surface loudly, matching how
-    # RiskUnresolved is handled, not a reason to under-report) — only
-    # the path gets a "deferred: <reason>" prefix, so presentation can
-    # tell a human this risk is contingent on a callee actually
-    # invoking what was handed to it, not something that will
-    # definitely run the way an ordinary RiskSequence child does.
+    # The child's risk counts in full; the path is prefixed
+    # "deferred: <reason>", since it runs only if a callee invokes
+    # what it was given.
     private def self.summarize_deferred(node : RiskDeferred) : RiskSummary
       child_summary = summarize(node.child)
       RiskSummary.new(

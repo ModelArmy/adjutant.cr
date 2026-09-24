@@ -1,34 +1,13 @@
 module Adjutant
-  # Wraps an Array(Value), adding a mutable RiskFlowLabel that
-  # accumulates taint from elements set into it — see
-  # research/IFC_DESIGN.md's "Container labeling (Stage 3.5)" section for
-  # why this exists: Value is a struct, so a label living on a Value copy
-  # popped off the stack has no way to persist back to the variable slot
-  # a container came from. Putting the label on this wrapper instead
-  # fixes that for free, since the wrapper (like the Array it held
-  # before) is a reference type shared by every Value that wraps it.
+  # An Array(Value) with a mutable risk-flow label that accumulates
+  # the labels of elements stored into it. A class, so every Value
+  # holding the array shares one label; see research/IFC_DESIGN.md,
+  # "Container labeling".
   #
-  # Composition, not inheritance: Array(Value) is not subclassed, because
-  # Crystal's stdlib collection methods (map, select, dup, +, slicing,
-  # ...) construct plain Array/Hash internally rather than `self.class.new`,
-  # so a subclass would silently lose its label the moment any such
-  # method ran.
-  #
-  # Hand-writes the small, fixed set of read/mutate methods actually
-  # used elsewhere in the codebase (size, [], each, map, any?, zip,
-  # push, pop, []=) rather than including Indexable(Value)/Enumerable.
-  #
-  # `include Indexable(Value)` was tried first but triggers a Crystal
-  # compiler stack overflow (crystal 1.20.3) — Value's raw union
-  # includes LabeledArray itself, so Value is a self-referential type,
-  # and instantiating Indexable/Enumerable's generic methods over a
-  # self-referential element type appears to blow up the compiler's
-  # overload resolution. Hand-writing avoids the generic module
-  # instantiation entirely — same fix already needed for LabeledHash's
-  # `Enumerable({Value, Value})` attempt below, for a more directly
-  # diagnosed reason (Value as a generic type argument is rejected
-  # outright there; here it compiles but crashes — likely the same
-  # underlying cause via a different code path).
+  # Wraps rather than subclasses Array, whose methods build plain
+  # Arrays and would drop the label. Doesn't include Indexable or
+  # Enumerable: Value contains LabeledArray, and instantiating those
+  # modules over the self-referential type crashes the compiler.
   class LabeledArray
     property label : RiskFlowLabel?
 
@@ -51,13 +30,6 @@ module Adjutant
       @items[index]?
     end
 
-    # `#first`/`#last` (and their `?` forms) — genuinely missing
-    # rather than deliberately excluded, unlike `Indexable`/
-    # `Enumerable` itself (see this class's own top comment for why
-    # those specifically are out). Added 2026-08-14 after hitting the
-    # gap writing a spec — flagged there as "not the first time,"
-    # so added for real rather than working around it in the test
-    # again.
     def first : Value
       @items.first
     end
@@ -91,10 +63,7 @@ module Adjutant
     end
 
     def zip(other : LabeledArray, & : Value, Value -> Bool) : Bool
-      # Only ever used (values_equal?) to check element-wise equality
-      # of two same-length arrays — not a general zip, so this returns
-      # the all?-style Bool the one real call site needs rather than an
-      # array of tuples.
+      # Element-wise equality of two arrays of the same length.
       @items.each_with_index.all? { |v, i| yield v, other[i] }
     end
 
@@ -115,10 +84,8 @@ module Adjutant
       @items[index] = value
     end
 
-    # Escape hatch for operations (e.g. `+`) that need a genuinely new,
-    # independent Array(Value) to build a new container from — callers
-    # are responsible for deciding that new container's label themselves
-    # (typically RiskFlowLabel.join of the two sources' labels).
+    # A copy of the items, for building a new container; the caller
+    # sets its label.
     def dup_items : Array(Value)
       @items.dup
     end
@@ -132,25 +99,10 @@ module Adjutant
     end
   end
 
-  # Wraps a Hash(Value, Value), same rationale and shape as LabeledArray.
-  # Crystal has no single Indexable-equivalent module for hash-like
-  # types, and `include Enumerable({Value, Value})` hits a compiler
-  # restriction ("can't use Value as a generic type argument yet"), so
-  # the common read/iteration methods (including #all?, needed by
-  # values_equal?'s hash case) are hand-written direct delegates instead
-  # of coming from an included module.
-  #
-  # A labeled Value used as a KEY in `@entries` is safe — `Value#==`/
-  # `#hash` (value.cr) explicitly compare/hash `@raw` alone, ignoring
-  # `@label`, specifically so this is safe. That override didn't
-  # always exist: found 2026-08-24 that `Legate::Response#json`
-  # (`legate/response.cr`) labeling a decoded-JSON Hash's KEYS (not
-  # just values) broke lookup silently, back when `Value` still used
-  # Crystal's default struct equality here. Fixed at the root in
-  # `Value` itself rather than left as a "never label a key" rule to
-  # remember — see that file's own comment for the full story, kept
-  # there rather than duplicated here since it's `Value`'s own
-  # invariant to explain, not this class's.
+  # A Hash(Value, Value) with a mutable risk-flow label, as for
+  # LabeledArray. `Enumerable({Value, Value})` is rejected by the
+  # compiler, so iteration methods are written out. Keys may be
+  # labelled: `Value#==` and `#hash` ignore labels.
   class LabeledHash
     property label : RiskFlowLabel?
 
@@ -181,11 +133,8 @@ module Adjutant
       @entries.has_key?(key)
     end
 
-    # Real removal — real Ruby's Hash#delete returns the removed
-    # value, or nil if the key wasn't present, which is exactly
-    # Crystal's own Hash#delete(key) return shape, so this is a direct
-    # delegate, not new logic. A MUTATION (like []=/push elsewhere in
-    # this file), not a container rebuild.
+    # Removes `key` and returns its value, or nil if absent, as Ruby's
+    # `Hash#delete` does.
     def delete(key : Value) : Value?
       @entries.delete(key)
     end
@@ -206,8 +155,8 @@ module Adjutant
       @entries.all? { |k, v| yield k, v }
     end
 
-    # Escape hatch for operations that need a genuinely new, independent
-    # Hash(Value, Value) — see LabeledArray#dup_items.
+    # A copy of the entries, for building a new container; the caller
+    # sets its label.
     def dup_entries : Hash(Value, Value)
       @entries.dup
     end

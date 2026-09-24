@@ -341,6 +341,14 @@ capability exposure]
 
 `EffectHandler` handles physical effects — stdout writes and VFS reads. `ModuleRegistry` handles capability exposure — which native functions and objects a script can access. Scripts can only access capabilities that have been explicitly registered. The registry is auditable: `registered_paths` and `loaded_paths` show exactly what a script has access to and what it has used.
 
+#### Stream sources and `OpenSources`
+
+A stream verb's iterator holds an OS resource (a file, an HTTP connection) for the length of a walk. It closes itself when the source is exhausted, but three ordinary cases never get there: `first(n)` and `take(n)` break out of the walk, which is what makes them lazy; an exception propagates out of it; or the script stops referring to the stream. So every stream source registers with the run's `OpenSources`, and `Interpreter#eval` closes whatever is left in an `ensure`, so the next script on the same Interpreter starts clean. Scope is the run, not the process: the process is the host application.
+
+Two simpler designs don't work. Closing when a walk halts breaks sibling streams sharing a pull position (LEGATE.md §6.1, tested in `stream_spec.cr`): after `a = s.select {}; b = s.select {}; a.first(2)`, `b.to_a` keeps pulling from the same source. And Crystal's `finalize` may never run before the descriptor limit is hit, and runs at an arbitrary time on an arbitrary thread, where touching the broker, budget or audit log is unsafe.
+
+`close_all` closes in reverse order of registration, so a wrapping source (`records`' `:jsonl` path wraps a line iterator) closes before what it wraps. Each close is rescued and the errors are returned, not raised: it runs from an `ensure`, often while the script's own error is unwinding, and a cleanup failure must not replace it. The count of open sources is capped by `ResourceLimits#max_open_streams`, since closing at the end of the run bounds a leak in time but not in number.
+
 ### The Value model
 
 All runtime values are represented as `Value`, a Crystal struct:
