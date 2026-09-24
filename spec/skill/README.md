@@ -7,6 +7,7 @@ Tests whether a model can write working Adjutant scripts from `skills/adjutant/S
 ```
 spec/skill/
   PREAMBLE.md            rules sent with every task
+  TODO.md                exam backlog and the scripts behind tasks 11 to 13
   skill_spec.cr          keeps SKILL.md in step with the runtime (runs under `crystal spec`)
   assemble.sh            answer + checks → runnable script
   tasks/NN_name/
