@@ -45,3 +45,32 @@ def no_block
   yield
 end
 assert_raise { no_block }
+
+def keep_lines(lines)
+  kept = []
+  lines.each { |line| kept << line if yield(line) }
+  kept
+end
+assert_equal ["alpha", "gamma"], keep_lines(["alpha", "bee", "gamma"]) { |l| l.length > 3 }
+
+def sum_cells(rows)
+  sum = 0
+  rows.each do |row|
+    row.each do |cell|
+      sum = sum + yield(cell)
+    end
+  end
+  sum
+end
+assert_equal 60, sum_cells([[1, 2], [3]]) { |n| n * 10 }
+
+def run_twice
+  yield
+  yield
+end
+def collect_from_outer
+  results = []
+  run_twice { results << yield }
+  results
+end
+assert_equal ["outer", "outer"], collect_from_outer { "outer" }

@@ -125,9 +125,7 @@ module Adjutant
         summary: "no block given to `{method}`",
         why: "`{method}` reached a `yield`, which runs the block passed to " \
              "it, but it was called without one.",
-        help: "Pass a block — `{method} { ... }` or `{method} do ... end`. " \
-              "To make the block optional, guard the `yield` with " \
-              "`block_given?`."
+        help: "Pass a block — `{method} { ... }` or `{method} do ... end`."
       ),
       "R008" => Entry.new(
         code: "R008",

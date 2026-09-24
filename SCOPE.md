@@ -1129,21 +1129,6 @@ section).
   `cannot add nil and 1`; R013's data already uses `inspect` for
   exactly this reason.
 
-- **`yield` inside a block body raises R007 instead of reaching the
-  enclosing method's block.** Found 2026-09-22 designing skill-exam
-  task 10. `Op::Yield` reads `f.block` of the frame it runs in, and a
-  block's own frame is pushed with `block: nil` — by `Op::Yield`
-  itself, and by `invoke_internal` for a block a native method calls —
-  so the commonest Ruby shape there is, `items.each { |x| yield x }`,
-  fails. A method can only `yield` from its own top level, which is
-  why `keep_lines`' reference answer walks an Array with `while`
-  rather than `each`. Real Ruby resolves `yield` lexically, to the
-  method the `yield` is written in. Fix shape: carry the enclosing
-  method frame's block onto block frames, or resolve `yield` against
-  the nearest non-block frame. Related to the expression fix
-  (2026-09-22, merged): that one made a block's value usable, this is
-  about where `yield` may be written at all.
-
 - **`Float` has no `round`, `floor`, `ceil` or `abs`.** Found
   2026-09-21 in the built-in census for the agent skill: `float.cr`
   defines only `to_i`, `to_f`, `to_s` and `infinite?`. Integer has all

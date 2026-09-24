@@ -184,11 +184,11 @@ module Testing
     # Describe an unexpected error
     private def describe_unexpected_error(e : Exception) : String
       kind = "unexpected_error"
-      error = if e.is_a?(Adjutant::RuntimeError)
-                "#{kind}: #{e.filename}:#{e.line}: #{e.message}"
-              else
-                "#{kind}: #{e.class}: #{e.message}"
-              end
+      if e.is_a?(Adjutant::RuntimeError)
+        "#{kind}: #{e.filename}:#{e.line}: #{e.message}"
+      else
+        "#{kind}: #{e.class}: #{e.message}"
+      end
     end
 
     # Prefers a rendered diagnostic (source line + carets) when the
