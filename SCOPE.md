@@ -844,41 +844,18 @@ Runtime diagnostic carets — same underlying gap as originally filed
 here — were promoted to `Must Fix` 2026-08-05; see that entry above for
 current status.
 
-- **U008, U009, U012–U015 are decided but not enforced; U011 was
-  enforced 2026-08-14, no longer part of this list.** Filed 2026-08-05
-  in two sessions (U008–U011, then U012–U015 added the same day after
-  the mruby full-repo sweep) — see `UNSUPPORTED.md` for the six
-  remaining entries (`private`/`protected`/`public`, `Struct.new`,
-  numbered block params, endless `def`, `class << self`, `undef`/
-  method-added hooks). `U010` (originally "`super` across multiple
-  `rescue` clauses") was retired 2026-08-10, the same session `super`
-  itself was built and shipped — the concern turned out not to be a
-  real gap once `super` actually worked; see `UNSUPPORTED.md`'s U010
-  entry. `U011` (`$globals`) was enforced 2026-08-14, prompted by
-  deciding against building real Ruby's `$~`/`$1`-`$9`.. match
-  globals for Regexp specifically (see `UNSUPPORTED.md`'s own U011
-  entry for the full reasoning and what covers the gap instead) — a
-  real `U011` diagnostic now fires at parse time by name rather than
-  the generic fallback. Each of the remaining six currently falls
-  through to a generic undefined-name/undefined-method/parse error
-  rather than naming the construct — the same gap U001–U004 had
-  before their 2026-07-27/28 enforcement pass, and the exact failure
-  shape `UNSUPPORTED.md`'s own design principle warns against. Follows
-  the established decide-first-enforce-second pattern rather than
-  waiting on enforcement to write the entries (see U007's own
-  precedent — already partially enforced/partially not, same file).
-  Most of the six are a lookup-after-resolution-fails check, same
-  mechanism as U005–U007 (`dispatch_call`/constant resolution,
-  `vm.cr`); U012–U015 are parse-time rather than
-  pattern rather than waiting on enforcement to write the entries (see
-  U007's own precedent — already partially enforced/partially not,
-  same file). Most of the seven are a lookup-after-resolution-fails
-  check, same mechanism as U005–U007 (`dispatch_call`/constant
-  resolution, `vm.cr`); U012–U015 are parse-time rather than
-  resolution-time (numbered params/`undef`/`class << self`/endless-
-  `def` all fail differently at the parser today, not via name
-  lookup) — worth confirming the right enforcement point per item
-  rather than assuming all seven share one mechanism.
+- **U008, U009, U012–U015 and U021 are decided but not enforced.**
+  See `UNSUPPORTED.md` for each. Using one falls through to a generic
+  undefined-name, undefined-method or parse error that doesn't name
+  the construct, the failure shape `UNSUPPORTED.md`'s second principle
+  forbids. U021 costs the most in practice: a model reaching for
+  `File.read` or `ENV` is told the constant is uninitialized, not that
+  `Legate.read` or `Legate.env` is the way. U008, U009 and U021 are
+  lookup-after-resolution-fails checks, the mechanism U005–U007 use
+  (`dispatch_call` and constant resolution, `vm.cr`); U012–U015 fail
+  in the parser today, so each needs its own enforcement point.
+  Backticks and `%x{}` have no case in the lexer at all, so theirs is
+  there.
 
 - **No distinct `ZeroDivisionError` class — division by zero raises a
   plain `RuntimeError`.** Found 2026-08-10, writing test coverage for
@@ -1113,6 +1090,14 @@ section).
   `cannot add nil and 1`; R013's data already uses `inspect` for
   exactly this reason.
 
+- **`Hash#each` with one block parameter binds the key alone.**
+  Predicted 2026-09-24 by reading `hash.cr`; no spec or model has hit
+  it. `h.each { |pair| }` gives `pair` the key, where Ruby gives
+  `[k, v]`, so the script runs and answers wrongly. `Hash#each` passes
+  `k` and `v` as two arguments. The likely fix is passing one
+  `[k, v]` Array and letting `spread_block_args` (vm.cr) spread it for
+  `|k, v|`, which is how Ruby does it.
+
 - **`Float` has no `round`, `floor`, `ceil` or `abs`.** Found
   2026-09-21 in the built-in census for the agent skill: `float.cr`
   defines only `to_i`, `to_f`, `to_s` and `infinite?`. Integer has all
@@ -1252,23 +1237,6 @@ individually.
   a materially larger, more invasive change than kwargs turned out to
   be. Not blocking anything today; flagged for whoever next writes a
   native function wanting this so it isn't rediscovered cold.
-
-- **No native File IO/HTTP module — really a scoping question, not a
-  missing-feature bug.** Only `SampleModule`'s simulated I/O exists
-  today. Reframed 2026-07-27 (previously filed as a plain missing-
-  feature item, alongside the IFC items above): the actual open
-  question is which parts of a File/HTTP-shaped stdlib surface are
-  worth exposing at all, given every native method is a deliberate
-  IFC-relevant decision (provenance, sensitivity, risk-flow policy
-  implications — see `declare_sensitivity` and the IFC design arc), not
-  just a Ruby-compatibility checkbox. Needs its own design pass to
-  decide the actual surface (which methods, what they're allowed to
-  touch, how they interact with `RiskFlowPolicy`) before implementation
-  is meaningful — carried forward from the original 2026-07-14 handoff
-  as "no IO," refiled here now that the real blocker (undecided scope,
-  not undecided design mechanics) is clearer. Superseded by the
-  `Legate` design work (see `LEGATE.md`) — this entry can be removed
-  once `Legate` implementation lands.
 
 ### Streamed fetch on Windows
 
