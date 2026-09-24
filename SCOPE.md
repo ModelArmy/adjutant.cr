@@ -54,6 +54,105 @@ DEVELOPMENT.md's "Destructive verbs" writeup. Removed here rather than
 marked done, since a completed entry in a list of open problems is
 just noise for the next reader.
 
+**Promoted 2026-09-24: Adjutant must be a proper subset of Ruby.**
+Anything it accepts and then runs differently from Ruby is Must Fix,
+whatever its frequency. A construct Adjutant rejects is only a gap and
+can stay in Will Fix. The first eleven entries below are divergences;
+where two remedies are listed, rejecting is always acceptable, since
+it restores the subset.
+
+- **A new name assigned inside a block becomes a global, not a
+  block-local.** Predicted 2026-09-24 by reading `compiler.cr`; no
+  spec or model has hit it. `Compiler#emit_store_name` emits
+  `SetGlobal` when a block (or lambda, or `for` body, which compiles
+  as a block) assigns a name no enclosing scope defines, so
+  `xs.each { |x| t = x * 2 }` writes `t` into the interpreter's
+  `@globals`. Unlike Ruby: `t` is still readable after the block
+  (Ruby raises NameError); recursive calls whose blocks use the same
+  name share one variable, so the script can run and answer wrongly;
+  and `@globals` is shared across `Interpreter#eval` calls, so the
+  name carries into later scripts in the session. Conversely, a
+  `for` loop's variable is unreadable after the loop, where Ruby
+  keeps it. DEVELOPMENT.md's Parser section describes the block rule
+  as Ruby's, which it isn't. The likely fix is a block-local slot for
+  a block or lambda, and a slot in the enclosing scope for a `for`
+  loop's variable and body.
+
+- **`and` and `or` bind tighter than assignment.** Predicted
+  2026-09-24 by reading `parser.cr`. `maybe_assignment` parses the
+  right-hand side with `parse_expression(0)`, and `KwAnd`/`KwOr` have
+  precedence 3 and 2, so `x = false or true` sets `x` to `true`. Ruby
+  parses `(x = false) or true` and sets `false`: `and` and `or` sit
+  below assignment. The idiom `x = fetch or raise "..."` is
+  unaffected, but `ok = check and log` is not. The fix is stopping an
+  assignment's right-hand side at `and`/`or`.
+
+- **`rescue e` is accepted as `rescue => e`.** `parse_rescue_clause`
+  treats a bare identifier after `rescue` as the binding, and the
+  clause catches StandardError. Ruby evaluates `e` as the class to
+  match, which raises TypeError at match time unless `e` holds a
+  class. About twenty specs use the form (`control_flow.rb`,
+  `exceptions_spec.cr`, `risk_flow_enforcement_spec.cr`, ...), so the
+  fix is rejecting it with a diagnostic that names `rescue => e`, then
+  rewriting those specs.
+
+- **An Integer and an equal Float are the same Hash key.**
+  `{5 => "a"}[5.0]` returns `"a"`; Ruby returns nil, since Hash keys
+  compare with `eql?` and `5.eql?(5.0)` is false. `Value#==` and
+  `Value#hash` delegate to the raw Crystal value, where `5 == 5.0`
+  and the hashes agree. `hash_spec.cr`'s "cross-type numeric key
+  lookup" asserts the current behaviour and must change with the
+  fix. Hash keys need an `eql?`-style comparison: same type and
+  value.
+
+- **`Hash#each` with one block parameter binds the key alone.**
+  Predicted 2026-09-24 by reading `hash.cr`; no spec or model has hit
+  it. `h.each { |pair| }` gives `pair` the key, where Ruby gives
+  `[k, v]`, so the script runs and answers wrongly. `Hash#each` passes
+  `k` and `v` as two arguments. The likely fix is passing one
+  `[k, v]` Array and letting `spread_block_args` (vm.cr) spread it for
+  `|k, v|`, which is how Ruby does it.
+
+- **An Array or Hash used as a Hash key is looked up by identity.**
+  `{[1, 2] => "a"}[[1, 2]]` returns nil; Ruby returns `"a"`. A
+  container key hashes and compares as the `LabeledArray` or
+  `LabeledHash` reference, not by contents. The fix is hashing and
+  comparing containers by contents, recursively, alongside the
+  numeric-key fix above.
+
+- **A leading-zero integer literal is decimal.** `0644` parses as 644;
+  Ruby reads it as octal 420. `s.mode == 0644` compares against the
+  wrong number without error. `0o`, `0x` and `0b` prefixes are also
+  unsupported, which is only a gap. Scanning is in
+  `Lexer#scan_number`.
+
+- **Division by zero raises RuntimeError, not ZeroDivisionError.**
+  `ValueOps`' arithmetic errors are raised through `on_error` as
+  `RuntimeError`, so `rescue ZeroDivisionError` never matches and the
+  error escapes. The other `on_error` call sites in `value_ops.cr`
+  (TypeError and the like) should be audited against Ruby's classes
+  at the same time.
+
+- **Quoted Symbol literals don't decode escapes.** `:"a\nb"` keeps a
+  literal backslash and `n`. The Symbol is built in `parser.cr` by
+  stripping quotes from the lexeme (`SymbolLiteral.new(tok.lexeme
+  .lstrip(':')...)`) without `decode_string_escapes`, which string
+  literals use.
+
+- **A class's `self.inherited` is never called.** A script can define
+  `def self.inherited(subclass)`, and Ruby calls it when the class is
+  subclassed, before the subclass body runs; Adjutant never does, so
+  a registry built on it stays empty without error. Either call it
+  where `class Foo < Bar` links the superclass (`compiler.cr` and the
+  VM's MakeClass), or reject its definition with a U-code.
+
+- **A second heredoc opener on a line is lexed as `<<`.** `foo(<<~A,
+  <<~B)` is valid Ruby. Only the first opener's body is skipped, so
+  the second body's lines are lexed as code. The lexer resolves one
+  opener per line (`Lexer#scan_heredoc_opener`). At minimum a second
+  opener must be a parse error; full support means queueing the
+  openers and reading their bodies in order.
+
 - **`Array#inject`/`reduce` with a Symbol and no block returns `nil`.**
   Found 2026-09-21, same pass. `[1, 2, 3].inject(:+)` treats `:+` as
   the initial value and, finding no block, returns `nil`. Real Ruby
@@ -649,20 +748,6 @@ still roughly ordered by how cheap/independent the fix is.
 Small, mechanical, independent of each other — good candidates for quick
 wins.
 
-- **No octal/hex/binary integer literal prefixes (`0o`/`0x`/`0b`) —
-  and, worse, a LEADING-ZERO decimal like `0644` silently parses as
-  plain decimal 644, not octal, with no error.** Found 2026-08-24
-  writing a spec for `Legate::Stat#mode` (a real Unix permission bit
-  value) — `s.mode == 0644` in a script silently compares against the
-  wrong number, no parse error or warning at all, exactly the "ran,
-  looked plausible, was wrong" bug shape worth staying alert for.
-  Low practical urgency (permission-bit-style literals are rare
-  outside exactly this kind of use), but worth fixing before any
-  Legate verb that surfaces a real mode value (`Legate.mkdir`,
-  anything touching `Stat#mode`) ships, since a script author's first
-  instinct for "check the mode" would reach for exactly this syntax
-  and get a silently wrong answer rather than a loud one.
-
 - **Leading-dot line continuation for a method chain isn't supported**
   (`obj\n  .method\n  .method` — real Ruby 1.9+ syntax) — raises P002
   (`.` can't start an expression here) rather than parsing. Found
@@ -686,23 +771,6 @@ wins.
   the heredoc interpolation path than the plain `%w` one), and `%q`/
   `%Q`/`%r` are just `'...'`/`"..."`/`/.../ ` with an arbitrary
   delimiter instead of the fixed one.
-
-- **Heredocs support only ONE opener per physical line** — real Ruby
-  allows stacking several (`foo(<<~A, <<~B)`), each consuming its own
-  body block in order below the line, in sequence. Added 2026-08-19
-  alongside `%w[]`/`%i[]`/heredocs going in for the first time (see
-  `DEVELOPMENT.md`'s "The Lexer" writeup for the full mechanism) — a
-  deliberate scoping decision at the time, not something later found
-  broken: the lexer's eager single-opener resolution (`Lexer#scan_heredoc_opener`
-  jumps straight to extracting/tokenizing the ONE pending heredoc's
-  body the moment its opener is scanned) doesn't extend to a second
-  opener appearing before the first's body has even been reached. A
-  second opener on the same line currently just scans as ordinary
-  (almost certainly nonsensical) `<<` tokens instead of failing
-  loudly — worth tightening to a clean parse error at minimum, even
-  before real multi-heredoc support lands. Rare enough in ordinary
-  scripts (a single heredoc per line covers the vast majority of real
-  usage) that it wasn't worth blocking the rest of the pickup on.
 
 - **A bare `next`, `break` or `return` directly before `}`, `end` or
   `else` probably fails to parse.** Predicted 2026-09-24 while fixing
@@ -844,6 +912,16 @@ Runtime diagnostic carets — same underlying gap as originally filed
 here — were promoted to `Must Fix` 2026-08-05; see that entry above for
 current status.
 
+- **`ParseError` and `CompileError` keep a message-only constructor
+  nothing uses.** Every raise site in `parser.cr` and `compiler.cr`
+  builds a `Diagnostic`; `ParseError.new(message, line, column)` and
+  `CompileError.new(message, line, column)` are reached only by
+  `diagnostic_spec.cr:172`. `HostStateError.new(message)`
+  (`diagnostic.cr`) likewise has only a spec caller. Removing them
+  makes `diagnostic` non-nilable on those classes and lets callers
+  drop their nil handling. `InternalError.new(message)` is still used
+  and stays.
+
 - **U008, U009, U012–U015 and U021 are decided but not enforced.**
   See `UNSUPPORTED.md` for each. Using one falls through to a generic
   undefined-name, undefined-method or parse error that doesn't name
@@ -856,22 +934,6 @@ current status.
   in the parser today, so each needs its own enforcement point.
   Backticks and `%x{}` have no case in the lexer at all, so theirs is
   there.
-
-- **No distinct `ZeroDivisionError` class — division by zero raises a
-  plain `RuntimeError`.** Found 2026-08-10, writing test coverage for
-  the method-body-rescue fix (`VM#error_raiser`/`VM#runtime_error`,
-  `vm.cr`): `ValueOps`' arithmetic error path hardcodes
-  `builtin_class_by_name("RuntimeError")`, unconditionally, regardless
-  of what actually went wrong. Real Ruby raises `ZeroDivisionError` (a
-  `StandardError` subclass) specifically for this — a script that
-  writes `rescue ZeroDivisionError` expecting to catch it (reasonable,
-  unsurprising Ruby) currently doesn't, silently: the rescue clause
-  just never matches, and the error propagates uncaught instead of a
-  clear "class doesn't exist" signal. Likely other arithmetic/type
-  error paths through the same `on_error` callback have the identical
-  gap (see `error_raiser`'s call sites in `value_ops.cr`) — worth
-  auditing all of them together rather than fixing this one class in
-  isolation.
 
 - **U007's reflection exclusion is a category, not a list, so only
   `ObjectSpace` is enforced.** Added 2026-07-29 while enforcing U005–U007.
@@ -989,28 +1051,6 @@ Quality-of-diagnostic gaps in the `Diagnostic`/`ErrorCatalog` system
   and is no longer the gap — what's left is specifically the
   class-hierarchy piece.
 
-- **`Class#inherited` hook not implemented.** Found 2026-08-05 in the
-  mruby full-repo sweep (`test/t/class.rb`). Real Ruby calls
-  `self.inherited(subclass)` automatically the instant a class is
-  subclassed, before the subclass body runs — there's no way to
-  reconstruct this after the fact (by the time you'd poll for
-  subclasses you'd need to already know their names). Distinct in kind
-  from `class << self` (below, WONTFIX) — that's alternate syntax for
-  something already expressible via `def self.x`; this is a real
-  capability with no equivalent already-supported spelling. Primary
-  use is registry/discovery patterns (a base class automatically
-  tracking every class that inherits from it — plugin systems, ORMs,
-  test-case discovery) without a separate manual-registration call in
-  each subclass — plausible for an agent building a small plugin or
-  multi-behavior dispatch system of its own. Considered against
-  monkey-patching concerns during triage (2026-08-05 chat) and judged
-  distinct: the hook's pragmatic use (registry-on-subclass) doesn't
-  require or enable monkey-patching, which stays excluded regardless.
-  Not yet traced to a starting file/method — likely lands wherever
-  `ClassNode`/`class Foo < Bar` compiles the superclass link
-  (`compiler.cr`), triggering a call to the superclass's own
-  `inherited` if defined, same shape as other hook-style dispatch.
-
 - **Bare `new` (implicit `self`, no explicit receiver) doesn't
   dispatch inside a class method.** Found 2026-08-10, writing test
   coverage for the method-body-rescue fix — `def self.run; c = new;
@@ -1090,32 +1130,12 @@ section).
   `cannot add nil and 1`; R013's data already uses `inspect` for
   exactly this reason.
 
-- **`Hash#each` with one block parameter binds the key alone.**
-  Predicted 2026-09-24 by reading `hash.cr`; no spec or model has hit
-  it. `h.each { |pair| }` gives `pair` the key, where Ruby gives
-  `[k, v]`, so the script runs and answers wrongly. `Hash#each` passes
-  `k` and `v` as two arguments. The likely fix is passing one
-  `[k, v]` Array and letting `spread_block_args` (vm.cr) spread it for
-  `|k, v|`, which is how Ruby does it.
-
 - **`Float` has no `round`, `floor`, `ceil` or `abs`.** Found
   2026-09-21 in the built-in census for the agent skill: `float.cr`
   defines only `to_i`, `to_f`, `to_s` and `infinite?`. Integer has all
   four, so a script that rounds a computed average fails where the
   same code on an Integer works. `round(n)` with a digits argument is
   the form models reach for most.
-
-- **Quoted Symbol literals (`:"..."`) don't decode backslash escape
-  sequences.** Found 2026-08-13 fixing the identical gap for String
-  literals (`decode_string_escapes`, parser.cr) — plain and
-  interpolated strings now decode `\n`/`\t`/etc. correctly, but the
-  quoted-Symbol construction site (`SymbolLiteral.new(tok.lexeme
-  .lstrip(':').strip('"').strip('\'')...)`) was deliberately left
-  untouched in that same pass, since its quote-stripping approach is
-  structurally different (chained `lstrip`/`strip` rather than the
-  index-based `strip_quotes`) and riskier to edit without dedicated
-  attention. Lower priority than the String fix was — quoted symbols
-  with embedded escapes are rare — but the same category of gap.
 
 - **`Integer`/`Float` are both missing `#divmod`.** Found 2026-08-13
   triaging `spec/scripts/mruby/float.rb`'s commented-out `Float#divmod`
@@ -1142,24 +1162,6 @@ section).
   rather than assuming the whole feature is absent when `#each`'s own
   mechanism already generalizes.
 
-- **`Array`/`Hash` as a `Hash` key hashes by reference, not content.**
-  `Value` has no custom `hash(hasher)` override, so a `Hash(Value, Value)`
-  key lookup relies on Crystal's auto-generated struct hash — fine for
-  `Nil`/`Bool`/`Int64`/`Float64`/`String`/`Sym` (all of which Crystal
-  hashes consistently, INCLUDING cross-type for numerics: `5.hash ==
-  5.0.hash` when `5 == 5.0`, confirmed by `hash_spec.cr`'s own passing
-  regression test, not assumed), but an `Array` or `Hash` used AS a key
-  hashes by Crystal's default reference identity, not by the
-  elements/pairs it contains — so `{[1,2] => "a"}[[1,2]]` (a different
-  `Array` object with equal contents) would NOT find `"a"`, even though
-  `ValueOps.equal?([1,2], [1,2])` is `true`. Same root cause as the note
-  in `ValueOps.equal?`'s own comment (`value_ops.cr`) — noted here too
-  since it's the kind of gap easy to rediscover the hard way inside a
-  `Hash`-keyed-by-container script. Fixing this properly would mean
-  giving `Value` a real custom `hash(hasher)` for the `array?`/`hash?`
-  cases specifically (hashing by contents, recursively) — a deliberate,
-  scoped change, not a quick patch, and only matters for the (currently
-  rare) case of a container used as a hash key.
 - **String repetition** (`"ab" * 3`). `ValueOps.op` (the method backing
   `*`, see `value_ops.cr`) has real `Integer`/`Float` cases but no
   `String` one — `+`, `==`, and `<`/`<=`/`>`/`>=` all DO already work for
