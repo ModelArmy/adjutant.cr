@@ -4,53 +4,16 @@ require "../risk_profile"
 require "./helpers"
 
 module Adjutant::Builtins
-  # Builds the `Array` RubyClass and registers its native methods.
-  #
-  # `+` and `<<` are NOT registered here — `+` (concatenation, returns
-  # a new array) is now a real ValueOps.add case, and `<<` (in-place
-  # append, returns self) is a real ValueOps.shl case — see
-  # value_ops.cr, both extended alongside this class since real Ruby
-  # overloads those operators across Integer/String/Array and they're
-  # unreachable via find_native_method regardless (same reasoning as
-  # Integer/Float/String's own arithmetic). `[]`/`[]=` are also
-  # already real opcodes
-  # (Op::GetIndex/Op::SetIndex, see exec_get_index/exec_set_index) —
-  # not registered here either. `==` (deep, element-wise) is a real
-  # values_equal? case, also extended alongside this class.
-  #
-  # `length`/`size` follow String's precedent: previously served by
-  # exec_builtin's generic fallback, now authoritative here via
-  # find_native_method (checked first in dispatch).
-  #
-  # `each`/`map` are the first native methods that actually invoke a
-  # script-provided block, via NativeCallContext#invoke — confirmed
-  # working end-to-end by existing block-from-native machinery (see
-  # DEVELOPMENT.md's Object model section) before this file was
-  # written, not assumed.
+  # Builds the `Array` class and its native methods. `+`, `<<`, `==`,
+  # `[]` and `[]=` are opcodes (ValueOps, `values_equal?`, GetIndex and
+  # SetIndex), not methods.
   # ameba:disable Metrics/CyclomaticComplexity - one `define` call per native method, each a flat independent case; count comes from many methods, not tangled branching
   def self.bootstrap_array(interp : Adjutant::Interpreter) : Adjutant::RubyClass
     cls = Adjutant::RubyClass.new("Array")
 
-    # Real Ruby (as I understand it — worth a real `irb` check, not
-    # independently confirmed here): `Array#to_s` is a plain alias for
-    # `Array#inspect` — identical output, no separate algorithm.
-    # `to_s` here calls real dispatch on `inspect` (`ncc.call_method`)
-    # rather than duplicating the same rendering logic in two places —
-    # pointless in practice today, since `U003` forbids reopening
-    # `Array` (or any builtin) to override just one of the two, but
-    # still the correct single-source-of-truth shape regardless.
-    #
-    # `inspect` itself: each element rendered via ITS OWN real
-    # `inspect` (`ncc.call_method`, not a hand-rolled per-type case) —
-    # a nested custom object's own `#inspect` override is respected
-    # for free, the same way `Object#inspect`'s ivar rendering already
-    # works (builtins/object.cr). Cycle-guarded (see
-    # NativeCallContext#guard_rendering's own comment): a genuinely self-
-    # referential array now renders as `[[...]]`, matching real Ruby,
-    # rather than recursing until the native stack overflows — this
-    # guard did not exist before this method could actually recurse,
-    # since the old `to_s` (a Crystal-level `args.first.to_s` call)
-    # never walked elements at all.
+    # Each element's own `inspect`, so an object's override applies.
+    # A self-containing array renders as `[[...]]`. `to_s` is the
+    # same.
     define(cls, interp, "inspect") do |args, _blk, ncc|
       arr = args.first.as_array
       str = ncc.guard_rendering(arr.object_id, "[...]") do
@@ -77,17 +40,8 @@ module Adjutant::Builtins
     end
 
     define(cls, interp, "push") do |args|
-      # Real Ruby's Array#push accepts multiple arguments and appends
-      # all of them, returning self — `args[1..]` is every argument
-      # after the receiver, not just one.
-      #
-      # Joins each pushed value's label into the CONTAINER's own
-      # label (arr.label=), matching `<<`'s existing behavior
-      # (ValueOps.shl) and Op::SetIndex's own convention
-      # (exec_set_index, vm.cr) — without this, `arr.push(tainted)`
-      # would silently leave the container's own label untouched even
-      # though `arr << tainted` already taints it, a real,
-      # pre-existing inconsistency between the two ways to append.
+      # Appends every argument and returns self. Each value's label
+      # joins the array's, as for `<<` and `[]=`.
       arr = args.first.as_array
       args[1..].each do |v|
         arr.push(v)
@@ -124,32 +78,17 @@ module Adjutant::Builtins
       recv = args.first
       if blk
         mapped = recv.as_array.map { |elem| ncc.invoke(blk, [elem]) }
-        # New container from a block whose results have their own
-        # (possibly labeled) provenance — join across the mapped
-        # results, same principle as Op::MakeArray's construction-time
-        # join, since this is also constructing a brand new container.
-        # Seeded with the RECEIVER's own container-level label too
-        # (see joined_label's own comment) — a container tainted at
-        # the container level (not reflected in any element) should
-        # still taint whatever's derived from it, even once every
-        # element has been transformed into a brand new computed
-        # value.
+        # The result's label joins every mapped value's and the
+        # receiver's.
         Adjutant::Value.new(Adjutant::LabeledArray.new(mapped, joined_label(mapped, recv.as_array.label)), nil)
       else
         Adjutant::Value.new(Adjutant::LabeledArray.new, nil)
       end
     end
 
-    # `#first(n)`/`#last(n)` (the count-argument form): real Ruby
-    # returns an Array of the first/last `n` elements, not a single
-    # value — same class of gap `Range#first(n)` had before its own
-    # fix (see SCOPE.md/git history, 2026-08-19). Simpler here than
-    # Range's version was: an Array already has every element in
-    # hand, so this is a plain slice, no `#succ`-walking needed.
-    # Negative `n` raises ArgumentError, reusing R031 as-is — same
-    # message real Ruby gives for `Array#first(-1)`, which is in fact
-    # what R031's wording was written against in the first place (see
-    # its own comment in error_catalog.cr).
+    # With no argument, the first element or nil. With `n`, an Array
+    # of the first `n` elements; a negative `n` raises R031
+    # (`ArgumentError`), as Ruby does.
     define(cls, interp, "first") do |args, _blk, ncc|
       recv = args.first
       arr = recv.as_array
@@ -196,16 +135,10 @@ module Adjutant::Builtins
       end
     end
 
-    # Real Ruby's Array#reduce/#inject supports both `reduce(initial)
-    # { |acc, x| ... }` and `reduce { |acc, x| ... }` (initial
-    # defaults to the first element, and an empty receiver with no
-    # initial returns nil). NOT supported here: the symbol-operator
-    # form (`reduce(:+)`, `reduce(0, :+)`) — out of scope, since it
-    # needs call_method-by-symbol-name plumbing this method has no
-    # reason to grow just for a shorthand real Ruby itself defines in
-    # terms of the block form anyway. A blockless call with no symbol
-    # returns nil rather than an Enumerator (unsupported, same as
-    # every other Enumerable-less method here).
+    # `reduce(initial) { |acc, x| }` and `reduce { |acc, x| }`, where
+    # the first element is the initial value and an empty receiver
+    # gives nil. The Symbol form, `reduce(:+)`, is not implemented and
+    # returns nil.
     define(cls, interp, "reduce") do |args, blk, ncc|
       items = args.first.as_array.to_a
       initial = args[1]?
@@ -284,9 +217,8 @@ module Adjutant::Builtins
       Adjutant::Value.new(Adjutant::LabeledArray.new(items, joined_label(items, recv.as_array.label)), nil)
     end
 
-    # Real Ruby's Array#min/#max on an empty receiver return nil,
-    # matched here rather than raising. Ordered as `sort` orders, so a
-    # pair with no order raises R044 (`ArgumentError`).
+    # Nil for an empty receiver, as in Ruby. Ordered as `sort` orders:
+    # a pair with no order raises R044 (`ArgumentError`).
     define(cls, interp, "min") do |args, _blk, ncc|
       items = args.first.as_array.to_a
       items.empty? ? Adjutant::Value.nil_value : items.reduce { |acc, elem| ncc.order(elem, acc) < 0 ? elem : acc }
@@ -297,12 +229,8 @@ module Adjutant::Builtins
       items.empty? ? Adjutant::Value.nil_value : items.reduce { |acc, elem| ncc.order(elem, acc) > 0 ? elem : acc }
     end
 
-    # Real Ruby's Array#any?/#all? with no block test each element's
-    # own truthiness; with a block, test the block's return value per
-    # element instead — both forms supported here, matching
-    # Array#include?'s existing style of branching on whether an
-    # optional argument (there, the needle; here, the block) was
-    # given.
+    # Without a block, each element's truthiness; with one, the
+    # block's result.
     define(cls, interp, "any?") do |args, blk, ncc|
       items = args.first.as_array
       found = blk ? items.any? { |elem| ncc.invoke(blk, [elem]).truthy? } : items.any?(&.truthy?)
