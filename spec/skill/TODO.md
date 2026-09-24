@@ -29,7 +29,7 @@ Only if the skill needs to serve larger models better. Put any extra depth in re
 
 ## 3. Drift spec
 
-1. **Check the method whitelist.** Extend `skill_spec.cr` to assert that every method `SKILL.md` §3 lists exists on its class; about 20 lines. A wrong whitelist is the most harmful way for the skill to go stale.
+1. **Check the method whitelist in both directions.** Extend `skill_spec.cr` to compare `SKILL.md` §3 with each class's registered native methods (`RubyClass#native_methods`), read from a live Interpreter rather than grepped from source: every listed method must exist, and every public registered method must be listed or named in an explicit omission list. The one-way check would have missed the 2026-09-24 error, where the census grepped for `define(cls, interp, "...")` and so missed Float's macro-registered `round`, `floor`, `ceil`, `truncate`, `abs`, `finite?` and `nan?`, and the skill told models to work around methods that existed.
 
 ## 4. Source scripts
 

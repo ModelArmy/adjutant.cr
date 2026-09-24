@@ -44,7 +44,6 @@ What is different, in order of importance:
 - `"ab" * 3`, `"%d" % n`, `format` → Interpolation: `"#{n}"`
 - `str << "x"` → `str = str + "x"`
 - `x ** 2` → `x * x`
-- `3.7.round` → `(3.7 + 0.5).floor` for positives; Float has only `to_i`, `to_f`, `to_s`, `infinite?`
 - `obj.count += 1` → `obj.count = obj.count + 1`
 - `foo(*args)` → Pass the Array itself
 - `.method` at the start of a line → End the previous line with `.` instead
@@ -77,7 +76,7 @@ These are complete lists. `<`, `<=`, `>`, `>=` order numbers with numbers and St
 
 **Integer**: `+ - * / %` `& | ^ << >>` `abs` `ceil` `floor` `round` `truncate` `even?` `odd?` `zero?` `next` `succ` `times` `to_i` `to_f` `to_s`
 
-**Float**: `+ - * / %` `to_i` `to_f` `to_s` `infinite?`
+**Float**: `+ - * / %` `abs` `ceil` `floor` `round` `truncate` `finite?` `infinite?` `nan?` `to_i` `to_f` `to_s`
 
 **String**: `+` `[i]` `[range]` `=~` `length` `size` `empty?` `upcase` `downcase` `capitalize` `strip` `chomp` `reverse` `chars` `each_line` `split` `include?` `start_with?` `end_with?` `index` `rindex` `sub` `gsub` `match` `to_i` `to_f` `to_sym`
 
