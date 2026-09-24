@@ -4,39 +4,30 @@ require "./risk_profile"
 require "./diagnostic"
 
 module Adjutant
-  # How a matched risk flow rule resolves a risky call.
+  # What a matched risk-flow rule does with a call:
   #
-  # Allow: proceed, no interruption.
-  # Ask: pause and surface the concrete flow to the agent/user for a
-  #   live decision, via the required on_risk_flow_decision callback
-  #   (see Interpreter.new) — VM#call_native wires this up for every
-  #   tagged native call with labeled arguments.
-  # Reject: policy has already decided no, unconditionally — no prompt.
-  #   For organizational rules that should never be silently approved
-  #   regardless of who's asked. (Unattended execution is not this
-  #   enum's concern — see research/IFC_DESIGN.md's "Unattended
-  #   execution is the agent's problem, not Adjutant's" section.)
+  #   Allow:  the call proceeds.
+  #   Ask:    the host's `on_risk_flow_decision` callback decides.
+  #   Reject: the call is refused without asking.
   #
-  # See research/IFC_DESIGN.md's "Risk flow policy" and "Enforcement"
-  # sections.
+  # See research/IFC_DESIGN.md, "Risk flow policy".
   enum RiskFlowAction
     Allow
     Ask
     Reject
   end
 
-  # How SensitivityPattern#pattern is interpreted.
+  # How `SensitivityPattern#pattern` is matched.
   enum PatternType
     Exact
     Regex
   end
 
-  # A single origin → sensitivity rule. Matched against a ProvenanceTag's
-  # (kind, origin) at tag-creation time (e.g. a File IO module checking
-  # the path it just opened). Specificity is stated explicitly via
-  # `priority` — not inferred from pattern syntax or array position; see
-  # the design doc for why (hostnames get more specific reading left,
-  # paths reading right, so no single syntax-driven rule generalizes).
+  # One rule assigning a sensitivity to subjects of a kind whose
+  # origin matches `pattern`, consulted when data is tagged.
+  # Specificity is stated by `priority`, never inferred from the
+  # pattern or its position: hosts get more specific leftwards, paths
+  # rightwards.
   struct SensitivityPattern
     include JSON::Serializable
 
@@ -58,18 +49,10 @@ module Adjutant
     end
   end
 
-  # A single (Authority, Sensitivity) → RiskFlowAction rule, consulted
-  # at the risk flow check. Sensitivity::None always allows regardless
-  # of table contents (see RiskFlowPolicy#action_for) — rows here only
-  # need to cover Elevated/High cases that should escalate above the
-  # default.
-  #
-  # Keyed on Authority, not Effect: a rule answers "may data this
-  # sensitive reach a sink with this permission," which is a question
-  # about what the call is allowed to do, not about what it does. That
-  # also keeps the manifest vocabulary free to gain members (an effect
-  # describing a consequence more precisely) without silently adding a
-  # rule key that matches nothing.
+  # One rule mapping data of `sensitivity` reaching a sink with
+  # `authority` to an action. `Sensitivity::None` always allows, so
+  # rules only cover Elevated and High. Keyed on Authority, not
+  # Effect: the question is what the call may do.
   struct RiskFlowRule
     include JSON::Serializable
 
@@ -81,26 +64,11 @@ module Adjutant
     end
   end
 
-  # Raised when two SensitivityPattern rules match the same (kind,
-  # origin) at the same top priority — ambiguous policy, not resolved
-  # silently. See research/IFC_DESIGN.md's "Pattern matching for
-  # sensitivity lookup" section for why this is a hard error rather than
-  # picking one arbitrarily: with explicit priorities, a tie means the
-  # policy author's priorities actually collide, not that Adjutant
-  # failed to compute specificity.
-  #
-  # NOT script-visible — a plain Crystal Exception, not raised via the
-  # RuntimeError+error_value mechanism every script-catchable error
-  # uses (see vm.cr's raise_risk_flow_rejected and Op::raise's "raise"
-  # handler). A malformed policy is an agent/embedder configuration
-  # problem, not something a running script did wrong; a script must
-  # not be able to `rescue` its way past a broken policy any more than
-  # it can catch an internal Adjutant bug. See research/IFC_DESIGN.md's
-  # enforcement design notes for the general script-visible vs.
-  # Adjutant/agent-only distinction this follows. The script-visible
-  # counterpart is the bootstrapped RiskFlowRejectedError builtin class
-  # (Interpreter#bootstrap_error_classes), not a Crystal exception type
-  # of its own.
+  # Raised when two sensitivity patterns match the same subject at the
+  # same top priority: the policy's priorities collide, and picking
+  # one would hide that. A Crystal exception, not script-visible: a
+  # broken policy is the host's configuration error, and a script must
+  # not be able to rescue past it.
   class AmbiguousRiskFlowPolicyError < Exception
     getter diagnostic : Diagnostic?
 
@@ -115,29 +83,19 @@ module Adjutant
     end
   end
 
-  # A single risk flow policy: sensitivity lookup rules plus risk flow
-  # action rules. Loaded and owned by whatever embeds Adjutant (the
-  # agent) — Adjutant itself never reads a policy path off disk; the
-  # agent parses or constructs a RiskFlowPolicy and passes it to
-  # Interpreter. See research/IFC_DESIGN.md's "Policy object" and "Risk
-  # flow policy" sections.
-  #
-  # There is no bare `RiskFlowPolicy.new` default that means "allow
-  # everything" — Adjutant does not silently permit risky calls just
-  # because an embedder didn't think about IFC. An embedder who
-  # genuinely wants no risk assessment must say so explicitly by
-  # constructing `RiskFlowPolicy.reject_all` (safe default: reject
-  # rather than allow) or a real policy — not by omission.
+  # A risk-flow policy: sensitivity patterns and action rules. The
+  # host builds it and passes it to the Interpreter; Adjutant never
+  # reads one from disk. There is no allow-everything default: a host
+  # that wants no assessment must pass `RiskFlowPolicy.reject_all` or
+  # a real policy.
   class RiskFlowPolicy
     include JSON::Serializable
 
     getter sensitivity_patterns : Array(SensitivityPattern)
     getter risk_flow_rules : Array(RiskFlowRule)
 
-    # When true, action_for always returns Reject for any non-None
-    # sensitivity, regardless of risk_flow_rules — see .reject_all.
-    # Not persisted via JSON: a loaded policy file is always a real
-    # rule table, never this blanket mode.
+    # Rejects every non-None sensitivity whatever the rules say; see
+    # `.reject_all`. Never loaded from JSON.
     @[JSON::Field(ignore: true)]
     getter? reject_all_flows : Bool = false
 
@@ -146,20 +104,15 @@ module Adjutant
                    @reject_all_flows : Bool = false)
     end
 
-    # A policy that rejects every risky call outright — no sensitivity
-    # patterns or risk_flow_rules needed, and (unlike an exhaustive
-    # generated rule table) never silently stops covering an Authority
-    # that's added later. The explicit, safe-by-default choice for an
-    # embedder who wants "no risk assessment" without accidentally
-    # meaning "allow everything."
+    # A policy that rejects every flow of sensitive data, including
+    # through authorities added later.
     def self.reject_all : RiskFlowPolicy
       new(reject_all_flows: true)
     end
 
-    # origin → sensitivity lookup, consulted by native modules at
-    # tag-creation time. Highest-priority match wins; a tie among
-    # matches at the top priority raises AmbiguousRiskFlowPolicyError. No match
-    # at all → Sensitivity::None.
+    # The sensitivity of `origin`: the highest-priority matching
+    # pattern's, or None if nothing matches. Raises
+    # AmbiguousRiskFlowPolicyError on a tie at the top priority.
     def sensitivity_for(kind : ProvenanceKind, origin : String) : Sensitivity
       matches = sensitivity_patterns.select { |pattern| pattern.kind == kind && pattern.matches?(origin) }
       return Sensitivity::None if matches.empty?
@@ -181,21 +134,14 @@ module Adjutant
       top.first.sensitivity
     end
 
-    # (Authority, Sensitivity) → action lookup, consulted at the risk
-    # flow check. Sensitivity::None always allows regardless of table
-    # contents — the universal default is not overridable by a rule,
-    # only sensitivities above None can be. No matching rule for a
-    # non-None sensitivity → Allow (an authority with no configured rows
-    # is treated as not policy-relevant, not as an implicit escalation) —
-    # unless reject_all_flows is set, in which case every non-None
-    # sensitivity is Reject regardless of risk_flow_rules.
+    # The action for `sensitivity` reaching a sink with `authority`,
+    # with the rule that decided it (nil for a default):
     #
-    # Returns the RiskFlowRule that was matched, if any, alongside the
-    # action — nil when the result came from a default (None
-    # sensitivity, reject_all_flows, or no matching rule) rather than an
-    # explicit rule. Callers building a RiskFlowMatch for a
-    # RiskFlowDecisionRequest need the specific rule that fired, not
-    # just the resulting action.
+    #   1. None sensitivity: Allow, always.
+    #   2. `reject_all_flows`: Reject.
+    #   3. A matching rule: its action.
+    #   4. Otherwise Allow: an authority with no rules is not governed
+    #      by the policy.
     def action_for(authority : Authority, sensitivity : Sensitivity) : {RiskFlowAction, RiskFlowRule?}
       return {RiskFlowAction::Allow, nil} if sensitivity.none?
       return {RiskFlowAction::Reject, nil} if reject_all_flows?
