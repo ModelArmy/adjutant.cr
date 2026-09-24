@@ -96,7 +96,7 @@ just noise for the next reader.
 **Promoted 2026-09-24: Adjutant must be a proper subset of Ruby.**
 Anything it accepts and then runs differently from Ruby is Must Fix,
 whatever its frequency. A construct Adjutant rejects is only a gap and
-can stay in Will Fix. The first sixteen entries below are divergences;
+can stay in Will Fix. The first nineteen entries below are divergences;
 where two remedies are listed, rejecting is always acceptable, since
 it restores the subset.
 
@@ -210,6 +210,33 @@ it restores the subset.
   `"a".equal?("a")` is true; Ruby compares identity and says false for
   two String objects. Its `superclass` returns nil for any receiver
   that isn't a class, where Ruby raises NoMethodError (`5.superclass`).
+
+- **Native methods don't check positional arity either.** A native
+  method reads `args` directly, so extra arguments are ignored and a
+  missing one takes whatever the method's own fallback is:
+  `[1].include?` is false and `[1, 2].first(1, 2)` is `[1]`, where
+  Ruby raises ArgumentError for both. Keywords are checked
+  (`kwarg_names`, R012). The fix is declaring each native method's
+  positional arity, required and optional counts, in its
+  NativeCallable and checking it in `VM#call_native`, alongside the
+  script-method fix above.
+
+- **Blockless iterators return a value instead of an Enumerator.**
+  `Array#each` without a block returns the receiver, and `map`,
+  `select` and `reject` return `[]`, where Ruby returns an
+  Enumerator. So `arr.map` is silently empty; `arr.map.with_index`
+  fails only one call later. Adjutant has no Enumerator, so the fix is
+  raising, as `sort_by` already does (R045), for every block-taking
+  builtin method called without one. Audit `hash.cr`, `range.cr`,
+  `string.cr` and `integer.cr` (`times`) for the same shape.
+
+- **`Array#join` renders elements with Crystal's `to_s`, not the
+  script's.** `join` calls `Value#to_s`, which renders a nested Array
+  or Hash as `#<Adjutant::LabeledArray>` and ignores an object's own
+  `to_s`. Ruby joins nested arrays recursively (`[1, [2, 3]].join(",")`
+  is `"1,2,3"`) and calls each element's `to_s`. The fix is dispatching
+  `to_s` through `ncc.call_method`, recursing into Arrays, as
+  `inspect` already does.
 
 - **Quoted Symbol literals don't decode escapes.** `:"a\nb"` keeps a
   literal backslash and `n`. The Symbol is built in `parser.cr` by
@@ -1208,13 +1235,6 @@ section).
   `cannot add nil and 1`; R013's data already uses `inspect` for
   exactly this reason.
 
-- **`Float` has no `round`, `floor`, `ceil` or `abs`.** Found
-  2026-09-21 in the built-in census for the agent skill: `float.cr`
-  defines only `to_i`, `to_f`, `to_s` and `infinite?`. Integer has all
-  four, so a script that rounds a computed average fails where the
-  same code on an Integer works. `round(n)` with a digits argument is
-  the form models reach for most.
-
 - **`Integer`/`Float` are both missing `#divmod`.** Found 2026-08-13
   triaging `spec/scripts/mruby/float.rb`'s commented-out `Float#divmod`
   block. Real Ruby's `#divmod` returns `[quotient, remainder]` as a
@@ -1293,31 +1313,6 @@ individually.
   new opcodes — natural fit for the core-API-library work rather than
   a standalone language-layer item. Filed here rather than under a
   language-gap group for that reason.
-- **Native functions have no positional-arg defaults or arity
-  binding — everything is hand-rolled `args` indexing today.** Found
-  2026-08-09 while designing native keyword argument support (see
-  git history/`DEVELOPMENT.md`'s "Native keyword arguments" section
-  for what DID ship): a native function reads `args` directly with
-  its own ad-hoc "was this supplied" convention inline (e.g.
-  `testing/assert_module.cr`'s `assert`: `args.first?.try { ... } ||
-  "assertion"`) — there's no `Param`-equivalent list, no arity check,
-  no declared-default concept at all for POSITIONAL native args
-  (kwargs now have declared names via `NativeCallable#kwarg_names`,
-  but still no defaults of their own either — see that section).
-  Deliberately scoped OUT of the kwargs work rather than done
-  together: real positional defaults would need a `bind_args`-
-  equivalent binding layer for native calls (a `Param`-like list
-  matched by POSITION, evaluated/defaulted before the Crystal block
-  runs), almost certainly a changed native function signature (a
-  pre-bound, defaults-already-applied `Array(Value)` rather than raw
-  `args`, since asking every native function to keep hand-rolling
-  `args.first?` defeats the point), and would touch every existing
-  `define_native`/`define_native_method` call site to adopt the new
-  shape (or leave two conventions live side by side indefinitely) —
-  a materially larger, more invasive change than kwargs turned out to
-  be. Not blocking anything today; flagged for whoever next writes a
-  native function wanting this so it isn't rediscovered cold.
-
 ### Streamed fetch on Windows
 
 - **A script that raises inside a streamed `Legate.fetch` walk
