@@ -7,6 +7,7 @@ Tests whether a model can write working Adjutant scripts from `skills/adjutant/S
 ```
 spec/skill/
   PREAMBLE.md            rules sent with every task
+  skill_spec.cr          keeps SKILL.md in step with the runtime (runs under `crystal spec`)
   assemble.sh            answer + checks → runnable script
   tasks/NN_name/
     TASK.md              the contract the model sees
@@ -39,6 +40,10 @@ A task that fetches needs its transcript recorded once: assemble `reference` and
 ## Adding a task
 
 Each task should test one skill. The contract in `TASK.md` fixes the method name, parameters and return value exactly, because `checks.rb` calls it. Grant the least the task needs in `_policy.yaml`: an answer that reaches for more should fail with `Legate::Denied`.
+
+## Keeping the skill current
+
+`skill_spec.cr` fails when `SKILL.md` misses a Legate verb, names one that does not exist, or has no decision for a U-code in `UNSUPPORTED.md`. For a new U-code, either add a redirect to the skill and its phrase to `SKILL_COVERED_U_CODES`, or add it to `SKILL_OMITTED_U_CODES` with the reason.
 
 ## Results
 
