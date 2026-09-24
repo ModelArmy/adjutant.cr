@@ -93,10 +93,20 @@ just noise for the next reader.
      action (for example `default: Ask`) is allowed; it keeps specs
      short but reintroduces a default, just a stated one.
 
+- **`sub` and `gsub` drop the replacement's label.** Their result's
+  label joins the receiver's and the pattern's only, so
+  `"x".sub("x", secret)` returns `secret`'s text unlabelled, and so
+  does `s.gsub(/./) { secret }`: a script can strip a label by
+  substitution and pass the data to a sink the policy would have
+  stopped. `string_sub_or_gsub` builds the result with one
+  `String.build`; the fix is joining the replacement's label, or every
+  block result's, into the result's, which over-labels but never
+  under-labels.
+
 **Promoted 2026-09-24: Adjutant must be a proper subset of Ruby.**
 Anything it accepts and then runs differently from Ruby is Must Fix,
 whatever its frequency. A construct Adjutant rejects is only a gap and
-can stay in Will Fix. The first nineteen entries below are divergences;
+can stay in Will Fix. The first twenty-one entries below are divergences;
 where two remedies are listed, rejecting is always acceptable, since
 it restores the subset.
 
@@ -237,6 +247,20 @@ it restores the subset.
   is `"1,2,3"`) and calls each element's `to_s`. The fix is dispatching
   `to_s` through `ncc.call_method`, recursing into Arrays, as
   `inspect` already does.
+
+- **`String#split` follows Crystal's rules, not Ruby's.** `split`
+  calls Crystal's `String#split`, which keeps trailing empty fields:
+  `"a,b,,".split(",")` is `["a", "b", "", ""]`, where Ruby gives
+  `["a", "b"]`. A `" "` separator is literal, where Ruby treats it as
+  a whitespace split (`"a  b".split(" ")` is `["a", "b"]`). A `limit`
+  is passed to Crystal unchecked against Ruby's rules (positive caps
+  the fields, negative keeps trailing empties), and is ignored for a
+  whitespace split. CSV-style parsing, as in exam task 04, meets the
+  first case.
+
+- **`String#each_line("")` splits on newlines, not paragraphs.** Ruby's
+  empty separator is paragraph mode, splitting on runs of blank lines;
+  Adjutant falls back to `"\n"` without saying so.
 
 - **Quoted Symbol literals don't decode escapes.** `:"a\nb"` keeps a
   literal backslash and `n`. The Symbol is built in `parser.cr` by
@@ -1397,6 +1421,17 @@ individually.
   the call itself regardless of AST position.
 
 ### Legate
+
+- **Audit records lack §8.7's bytes, duration and argument detail.**
+  LEGATE.md §8.7 asks for bytes moved, duration, and arguments with
+  bodies hashed; its status table already says "narrower than
+  specified". An `AuditRecord` has timestamp, verb, subject,
+  authority, decision and exception class. The broker writes it before
+  the effect runs, so bytes and duration aren't known yet; meeting §8.7
+  needs the record completed after the verb finishes, or a second
+  record. Unchecked: whether a stream's re-iteration writes a distinct
+  record, and whether a fatal exception is recorded before unwinding,
+  both of which §8.7 also requires.
 
 - **`Legate::Stream` implements 9 of the ~35 operations §6
   specifies.** Found 2026-09-21 in the census for the agent skill.
