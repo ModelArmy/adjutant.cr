@@ -403,6 +403,69 @@ module Adjutant
       end
     end
 
+    describe "block parameters spreading a lone Array" do
+      it "spreads each pair across two parameters in a native method's block" do
+        eval("[[1, 2], [3, 4]].map { |a, b| a * 10 + b }").as_array.map(&.as_int).should eq [12_i64, 34_i64]
+      end
+
+      it "spreads the pairs of Hash#to_a, so a two-key sort_by works" do
+        src = <<-RUBY
+        counts = {"b" => 3, "a" => 3, "c" => 1}
+        counts.to_a.sort_by { |word, count| [-count, word] }.map { |word, count| word }
+        RUBY
+        eval(src).as_array.map(&.as_string).should eq ["a", "b", "c"]
+      end
+
+      it "spreads a single yielded Array" do
+        src = <<-RUBY
+        def once
+          yield [1, 2]
+        end
+        once { |a, b| [b, a] }
+        RUBY
+        eval(src).as_array.map(&.as_int).should eq [2_i64, 1_i64]
+      end
+
+      it "gives a trailing splat the elements after the first" do
+        src = <<-RUBY
+        [[1, 2, 3]].map { |first, *rest| [first, rest] }.first
+        RUBY
+        v = eval(src)
+        v.as_array[0].as_int.should eq 1_i64
+        v.as_array[1].as_array.map(&.as_int).should eq [2_i64, 3_i64]
+      end
+
+      it "applies a default when the Array is shorter than the parameter list" do
+        v = eval("[[1]].map { |a, b = 9| [a, b] }.first")
+        v.as_array.map(&.as_int).should eq [1_i64, 9_i64]
+      end
+
+      it "keeps the Array whole for a single parameter" do
+        eval("[[1, 2]].map { |pair| pair.size }").as_array.map(&.as_int).should eq [2_i64]
+      end
+
+      it "keeps the Array whole for a lone splat" do
+        v = eval("[[1, 2]].map { |*all| all }.first")
+        v.as_array.size.should eq 1
+        v.as_array[0].as_array.map(&.as_int).should eq [1_i64, 2_i64]
+      end
+
+      it "does not spread when more than one value is yielded" do
+        src = <<-RUBY
+        def twice
+          yield [1, 2], 3
+        end
+        twice { |a, b| [a.size, b] }
+        RUBY
+        eval(src).as_array.map(&.as_int).should eq [2_i64, 3_i64]
+      end
+
+      it "does not spread for a lambda" do
+        eval("f = ->(a, b) { a }\nf.call([1, 2])").as_array.map(&.as_int).should eq [1_i64, 2_i64]
+        eval("f = lambda { |a, b| a }\nf.call([1, 2])").as_array.map(&.as_int).should eq [1_i64, 2_i64]
+      end
+    end
+
     describe "bare global identifier resolution" do
       # @globals holds both top-level `def`s and top-level variable
       # assignments in one namespace (unlike Ruby, which keeps methods

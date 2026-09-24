@@ -454,7 +454,7 @@ module Adjutant
     # to this split).
     protected def invoke(proc : ScriptProc, args : Array(Value), self_val : Value? = nil,
                          kwargs : Hash(String, Value)? = nil) : Value
-      invoke_internal(proc, args, self_val, outer_locals: nil, kwargs: kwargs)
+      invoke_internal(proc, spread_block_args(proc, args, kwargs), self_val, outer_locals: nil, kwargs: kwargs)
     end
 
     # The only correct way for a native function to call a stored
@@ -1553,7 +1553,7 @@ module Adjutant
               # frame even existed — see Frame#block_outer_locals),
               # not over this frame's own locals, which are almost
               # always a completely unrelated method body.
-              result = call_script_proc(blk, args, f.filename, nil, f.yield_outer,
+              result = call_script_proc(blk, spread_block_args(blk, args), f.filename, nil, f.yield_outer,
                 own_yield: f.block_yield, own_yield_outer: f.block_yield_outer)
               push(result) if @frames.size == depth_before
             else
@@ -2819,6 +2819,24 @@ module Adjutant
       frame.kwarg_names = kwargs.keys.to_set if kwargs
       bind_args(frame, proc, args, caller_line, kwargs)
       Value.nil_value # sentinel; Op::Ret will push the real return value
+    end
+
+    # Returns the arguments a block binds, spreading a lone Array across
+    # the block's parameters when it declares more than one, as Ruby
+    # does: `pairs.each { |k, v| }` binds each pair's two elements, and
+    # `|a, *rest|` takes the first element and the rest. A block with one
+    # parameter, or only a splat, keeps the Array whole. Lambdas never
+    # spread; they are called through `invoke_proc`, which does not come
+    # here. Elements keep their own labels, as `Array#first` returns them.
+    private def spread_block_args(proc : ScriptProc, args : Array(Value),
+                                  kwargs : Hash(String, Value)? = nil) : Array(Value)
+      return args unless proc.is_block? && args.size == 1 && (kwargs.nil? || kwargs.empty?)
+      arr = args[0].as_array?
+      params = proc.ast_params
+      return args unless arr && params
+      positional = params.count { |param| !param.splat? && !param.kwarg? && !param.block_param? }
+      spreads = positional > 1 || (positional == 1 && params.any?(&.splat?))
+      spreads ? arr.to_a : args
     end
 
     # Binds `args` (the caller's actual positional Values) and
