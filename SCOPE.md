@@ -54,6 +54,18 @@ DEVELOPMENT.md's "Destructive verbs" writeup. Removed here rather than
 marked done, since a completed entry in a list of open problems is
 just noise for the next reader.
 
+- **A path on another Windows drive passes root containment.**
+  Predicted 2026-09-24 by reading `grants.cr`; no spec has hit it.
+  `Grants#under?` and `#under_maybe_missing?` call
+  `Path#relative_to`, which returns the target path unchanged when
+  its anchor differs from the root's (Crystal's `relative_to?` returns
+  nil). The check then sees a first component that isn't `..` and
+  counts the path as inside, so with a root of `C:\work`, a path on
+  `D:\` is allowed. POSIX is unaffected, since every resolved path
+  shares the anchor `/`. The fix is `relative_to?`, with nil counting
+  as outside; a spec needs two drives, or a UNC path against a drive
+  root.
+
 **Promoted 2026-09-24: Adjutant must be a proper subset of Ruby.**
 Anything it accepts and then runs differently from Ruby is Must Fix,
 whatever its frequency. A construct Adjutant rejects is only a gap and
