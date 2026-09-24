@@ -66,6 +66,33 @@ just noise for the next reader.
   as outside; a spec needs two drives, or a UNC path against a drive
   root.
 
+- **A risk-flow policy with no rule for an authority allows sensitive
+  data through it.** `RiskFlowPolicy#action_for` returns Allow when
+  no rule matches, so a policy that marks `/etc/passwd` High and has
+  rules for `Net` and `Delete` but not `Write` (as
+  `samples/run_script.cr`'s does) lets a script copy the file into a
+  granted output directory without a prompt. The perimeter passes it,
+  since the directory is granted; nothing flags the missing row.
+  Decided 2026-09-24: reject an incomplete policy when it is built,
+  not at run time, so the mistake reaches the policy's author rather
+  than an unattended run.
+  1. A policy (other than `reject_all`) must have a rule for every
+     pair of a sink authority (`Read`, `Write`, `Delete`, `Net`,
+     `Log`; not `Ambient`, which is grant-only) and a sensitivity
+     above None (`Elevated`, `High`).
+  2. Checked in the constructor, so `from_json` and code-built
+     policies both get it. A host configuration error: a Crystal
+     exception like AmbiguousRiskFlowPolicyError, not script-visible
+     and not in the error catalog; its message lists every missing
+     pair.
+  3. With complete tables, the no-rule Allow default in
+     `action_for` becomes unreachable and can be removed.
+  4. About 45 construction sites in `src/`, `spec/` and `samples/`
+     build partial policies and need full tables. Worth deciding
+     whether a helper that fills unlisted pairs with one explicit
+     action (for example `default: Ask`) is allowed; it keeps specs
+     short but reintroduces a default, just a stated one.
+
 **Promoted 2026-09-24: Adjutant must be a proper subset of Ruby.**
 Anything it accepts and then runs differently from Ruby is Must Fix,
 whatever its frequency. A construct Adjutant rejects is only a gap and
