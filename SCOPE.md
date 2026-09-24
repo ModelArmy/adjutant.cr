@@ -704,31 +704,15 @@ wins.
   scripts (a single heredoc per line covers the vast majority of real
   usage) that it wasn't worth blocking the rest of the pickup on.
 
-- **`break if cond; more_code` (or `next if cond; more_code`) mis-parses
-  when break/next has a modifier `if`/`unless` immediately followed by
-  more code on the same line (or block).** Found 2026-08-18 writing a
-  spec for endless-range `#each`/`#step` (a range with no `break`
-  never terminates, so the test needed one) — entirely unrelated to
-  ranges themselves, a pre-existing bug just newly exercised.
-  `parse_break` (parser.cr) grabs its own optional VALUE via
-  `at_any?(Newline, Semi, EOF) ? nil : parse_expression(0)` before
-  ever checking for a trailing `KwIf`/`KwUnless` modifier — but `if`
-  is a valid expression-START token (`parse_primary` has its own
-  `KwIf` case), so `break if n > 4; seen << n` parses `if n > 4; seen
-  << n` whole as break's VALUE (a real if-expression, greedily
-  consuming through to the enclosing block's own closing `}`/`end`
-  looking for the if's own `end`) rather than stopping after `if n >
-  4` and treating it as break's trailing modifier. Real Ruby's
-  break/next argument grammar is more restricted than a full
-  statement expression — it never starts with a bare `if`/`unless` —
-  so the fix is narrowing `parse_break`'s own "does a value follow"
-  check to also treat `KwIf`/`KwUnless` as "no value here, this is
-  the modifier" makes the code AVAILABLE to the later `case
-  current_kind when KwIf`/`KwUnless` branch already sitting right
-  below it, unchanged. Confirmed via the same real-Ruby-first
-  discipline as the rest of this session: `break if n > 4; seen << n`
-  in `irb` unambiguously executes `seen << n` unless `n > 4`, never
-  attempts to parse an if-expression as break's own value.
+- **A bare `next`, `break` or `return` directly before `}`, `end` or
+  `else` probably fails to parse.** Predicted 2026-09-24 while fixing
+  the modifier `if`/`unless` case; not yet confirmed by a spec or a
+  model. `jump_value_follows?` (parser.cr) treats only a newline, `;`,
+  end of file and a modifier `if`/`unless` as "no value here", so in
+  `items.each { |x| next }` or `if a then break end` the parser tries
+  to read `}` or `end` as the keyword's value. Ruby accepts both. The
+  likely fix is adding `RBrace`, `KwEnd` and `KwElse` to that list,
+  once a failure confirms it.
 
 - **`&:symbol` proc-shorthand (`arr.map(&:length)`) isn't supported —
   `&` can't start an expression there at all (P002).** Found

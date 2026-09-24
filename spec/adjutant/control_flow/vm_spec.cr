@@ -405,5 +405,46 @@ module Adjutant
         result.as_array.map(&.as_int).should eq [1, 2]
       end
     end
+
+    describe "modifier if and unless on return, break and next" do
+      it "skips with next unless and runs the rest of the block" do
+        result = eval(<<-RUBY)
+          def evens(items)
+            out = []
+            items.each do |x|
+              next unless x.even?
+              out << x
+            end
+            out
+          end
+          evens([1, 2, 3, 4])
+        RUBY
+        result.as_array.map(&.as_int).should eq [2, 4]
+      end
+
+      it "breaks with break if followed by more code on the same line" do
+        result = eval(<<-RUBY)
+          seen = []
+          [1, 2, 3, 4, 5, 6].each { |n| break if n > 4; seen << n }
+          seen
+        RUBY
+        result.as_array.map(&.as_int).should eq [1, 2, 3, 4]
+      end
+
+      it "returns early with a guard clause" do
+        result = eval(<<-RUBY)
+          def sign(n)
+            return "zero" if n == 0
+            n > 0 ? "positive" : "negative"
+          end
+          [sign(0), sign(3)]
+        RUBY
+        result.as_array.map(&.as_string).should eq ["zero", "positive"]
+      end
+
+      it "keeps a value given before the modifier" do
+        eval("[1, 2].map { |x| next 0 if x == 1; x }").as_array.map(&.as_int).should eq [0, 2]
+      end
+    end
   end
 end

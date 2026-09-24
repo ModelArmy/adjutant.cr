@@ -1860,10 +1860,18 @@ module Adjutant
       CaseNode.new(subject, whens, else_branch, l, c)
     end
 
+    # True when `return`, `break` or `next` is followed by its optional
+    # value. A trailing `if` or `unless` is always the modifier, never
+    # the start of the value, so `next unless x` skips on `x` rather
+    # than reading `unless x ... end` as the value to return.
+    private def jump_value_follows? : Bool
+      !at_any?(TokenKind::Newline, TokenKind::Semi, TokenKind::EOF, TokenKind::KwIf, TokenKind::KwUnless)
+    end
+
     private def parse_return : Node
       l, c = line, col
       expect(TokenKind::KwReturn)
-      value = at_any?(TokenKind::Newline, TokenKind::Semi, TokenKind::EOF) ? nil : parse_expression(0)
+      value = jump_value_follows? ? parse_expression(0) : nil
       result = ReturnNode.new(value, l, c)
       case current_kind
       when TokenKind::KwIf
@@ -1878,7 +1886,7 @@ module Adjutant
     private def parse_break(node_class : BreakNode.class | NextNode.class) : Node
       l, c = line, col
       advance
-      value = at_any?(TokenKind::Newline, TokenKind::Semi, TokenKind::EOF) ? nil : parse_expression(0)
+      value = jump_value_follows? ? parse_expression(0) : nil
       result = node_class.new(value, l, c)
       case current_kind
       when TokenKind::KwIf
