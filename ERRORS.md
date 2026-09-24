@@ -137,6 +137,8 @@ R040|`Legate.fail` called with no `message` argument                    |—
 R041|`Legate.log` called with no `message` argument                     |—                                          
 R042|`Legate.random` given an `n` that isn't positive                    |`method`                                   
 R043|`Legate.env` called with no `name` argument                        |—                                          
+R044|Two values with no order between them were compared or sorted     |`left`, `right`                            
+R045|A block-taking method called with no block                       |`method`                                   
 
 Scripts can `rescue` these. R008 raises a `NameError`, matching Ruby;
 R011, R012, R015, and R018 raise `ArgumentError`, also matching Ruby;
@@ -146,8 +148,8 @@ R037, R038, and R039 raise a `TypeError`, also matching Ruby; R020, R022,
 R025, and R031 raise an `ArgumentError`, also matching Ruby; R021
 raises a `RegexpError`, also matching Ruby; R026, R027, R028, R029, and
 R030 raise a `RangeError`, also matching Ruby; R032, R034, R035, R040,
-R041, R042, and R043 raise an `ArgumentError`, also matching Ruby; the
-rest raise `RuntimeError`.
+R041, R042, R043, R044, and R045 raise an `ArgumentError`, also
+matching Ruby; the rest raise `RuntimeError`.
 
 Adjutant's constants are assign-once, which Ruby only warns about. R001 is
 that rule firing on an ordinary constant; reopening a class or module is

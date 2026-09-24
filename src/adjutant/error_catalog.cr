@@ -125,9 +125,7 @@ module Adjutant
         summary: "no block given to `{method}`",
         why: "`{method}` reached a `yield`, which runs the block passed to " \
              "it, but it was called without one.",
-        help: "Pass a block — `{method} { ... }` or `{method} do ... end`. " \
-              "To make the block optional, guard the `yield` with " \
-              "`block_given?`."
+        help: "Pass a block — `{method} { ... }` or `{method} do ... end`."
       ),
       "R008" => Entry.new(
         code: "R008",
@@ -452,6 +450,26 @@ module Adjutant
              "back to.",
         help: "Pass the environment variable's name as a String, " \
               "e.g. `Legate.env(\"TZ\")`."
+      ),
+      "R044" => Entry.new(
+        code: "R044",
+        summary: "comparison of {left} with {right} failed",
+        why: "`{left}` and `{right}` have no order between them. Numbers " \
+             "order with numbers and Strings with Strings; Arrays order " \
+             "element by element, but only through `<=>`, `sort`, " \
+             "`sort_by`, `min` and `max`, not with `<`/`>`. A `sort` " \
+             "block must return an Integer.",
+        help: "Compare values of the same kind, for example by " \
+              "converting with `to_s` or `to_i` first. To order by " \
+              "several keys, use `sort_by { |x| [key1, key2] }`."
+      ),
+      "R045" => Entry.new(
+        code: "R045",
+        summary: "`{method}` needs a block",
+        why: "`{method}` computes something from each element, and the " \
+             "block is what computes it. Without one there is nothing " \
+             "to do.",
+        help: "Pass a block: `{method} { |x| ... }`."
       ),
 
       # --- L: limits reached ----------------------------------------

@@ -243,8 +243,10 @@ module Adjutant
       in_block : Bool = false,
       parent_scope : CompilerScope? = nil,
       def_depth : Int32 = 0,
+      enclosing_method : String? = nil,
     ) : {Chunk, Int32}
       c = new(symbols, def_depth)
+      c.enclosing_method = enclosing_method
       scope = CompilerScope.new(in_block, parent_scope)
       c.scope = scope
       slots = params.map { |param| scope.define(param.name) }
@@ -260,6 +262,12 @@ module Adjutant
     protected getter symbols
     protected property scope : CompilerScope?
     protected setter in_block
+
+    # The method this code is being compiled inside, so a block can
+    # record where it was written. Only R007's message reads it: a
+    # block's own name is `<block>`, which names no call the reader
+    # could fix.
+    protected property enclosing_method : String?
 
     # -----------------------------------------------------------------------
 
@@ -1106,10 +1114,11 @@ module Adjutant
           params: blk.params,
           in_block: true,
           parent_scope: @scope,
-          def_depth: @def_depth
+          def_depth: @def_depth,
+          enclosing_method: @enclosing_method
         )
         sproc = ScriptProc.new(blk_chunk, "<block>", blk_params, blk_locals, true,
-          ast_params: blk.params)
+          ast_params: blk.params, home_method: @enclosing_method)
         proc_idx = @chunk.add_const(Value.proc(sproc))
         @chunk.emit(Op::MakeProc, node.line, c: proc_idx)
       else
@@ -1430,7 +1439,8 @@ module Adjutant
         node.body, @symbols,
         params: node.params,
         in_block: false,
-        def_depth: @def_depth + 1
+        def_depth: @def_depth + 1,
+        enclosing_method: node.name
       )
       sproc = ScriptProc.new(body_chunk, node.name, params, local_count, false,
         ast_body: node.body, ast_params: node.params)
@@ -1490,6 +1500,7 @@ module Adjutant
         params: node.params,
         in_block: true,
         parent_scope: @scope,
+        enclosing_method: @enclosing_method,
         # Incremented, not propagated unchanged — a lambda IS a real,
         # first-class `Proc` value a script can store and invoke later,
         # arbitrarily many times (see the a=1 comment below) — same
@@ -1693,10 +1704,11 @@ module Adjutant
         params: for_params,
         in_block: true,
         parent_scope: @scope,
-        def_depth: @def_depth
+        def_depth: @def_depth,
+        enclosing_method: @enclosing_method
       )
       sproc = ScriptProc.new(blk_chunk, "<block>", node.vars, blk_locals, true,
-        ast_params: for_params)
+        ast_params: for_params, home_method: @enclosing_method)
       proc_idx = @chunk.add_const(Value.proc(sproc))
       @chunk.emit(Op::MakeProc, node.line, c: proc_idx)
       @chunk.emit(Op::SetBlock, node.line)

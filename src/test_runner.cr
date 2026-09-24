@@ -4,6 +4,7 @@ require "wait_group"
 
 require "./adjutant"
 require "./testing/assert_module"
+require "./testing/wiretap_module"
 
 # Test scripts runner for Adjutant.
 #
@@ -41,6 +42,7 @@ module Testing
     POLICY_FILE_NAME = "_policy.yaml"
 
     def run : Int32
+      WiretapModule.setup
       files = Dir.glob(File.join(@scripts_dir, "**", "*.rb")).sort
       if files.empty?
         puts "No script specs found in #{@scripts_dir}"
@@ -75,44 +77,69 @@ module Testing
       short = path.sub(@scripts_dir + "/", "")
       ef = Adjutant::TestEffectHandler.new
       limits = Adjutant::ExecutionLimits.new(instruction_limit: 500_000_u64, call_depth_limit: 256)
-      interp = Adjutant::Interpreter.new(
-        risk_flow_policy: Adjutant::RiskFlowPolicy.reject_all,
-        grants: grants_for(path),
-        on_risk_flow_decision: ->(_req : Adjutant::RiskFlowDecisionRequest) { Adjutant::RiskFlowDecision::Reject },
-        effect: ef,
-        limits: limits,
-      )
       mod = AssertModule.new
-      interp.modules.register(mod)
 
       error = nil
       cause = nil
-      begin
-        # `__FILE__` (parser.cr's `KwFile` case) resolves to exactly
-        # this SECOND `path` argument, verbatim — normalized to `/`
-        # via `Path#to_posix` here (a no-op on Linux/macOS) because
-        # `Dir.glob` above returns `\`-joined paths on Windows,
-        # matching `list.cr`'s own established Windows-portability
-        # fix earlier this session. Without this, any script using
-        # `__FILE__` and splitting on `/` (a script has no OTHER way
-        # to derive its own directory — there's no ambient File IO
-        # module, SCOPE.md's own noted gap) would silently get the
-        # wrong answer specifically on a Windows runner. `File.open`
-        # just below still uses the ORIGINAL, native-separator `path`
-        # — real filesystem access needs the OS's own separator
-        # convention, only the SCRIPT-VISIBLE `__FILE__` value needs
-        # normalizing.
-        eval_filename = ::Path.new(path).to_posix.to_s
-        File.open(path) { |io| interp.eval(io, eval_filename) }
-      rescue e : Adjutant::ParseError
-        error = describe_error(interp, e, "parse error", path)
+
+      interp = begin
+        Adjutant::Interpreter.new(
+          risk_flow_policy: Adjutant::RiskFlowPolicy.reject_all,
+          grants: grants_for(path),
+          on_risk_flow_decision: ->(_req : Adjutant::RiskFlowDecisionRequest) { Adjutant::RiskFlowDecision::Reject },
+          effect: ef,
+          limits: limits,
+        )
+      rescue e : Exception
+        # Deliberately wide: anything that stops an interpreter being
+        # built belongs in this file's own result. Narrow it only by
+        # adding cases, never by letting one escape — an exception out
+        # of the fiber that calls this loses the FileResult entirely,
+        # and the run reports one row fewer instead of one failure.
         cause = e
-      rescue e : Adjutant::CompileError
-        error = describe_error(interp, e, "compile error", path)
-        cause = e
-      rescue e : Adjutant::RuntimeError
-        error = describe_error(interp, e, "runtime error", path)
-        cause = e
+        error = describe_unexpected_error(e)
+        nil
+      end
+
+      if interp && !error
+        interp.modules.register(mod)
+        interp.modules.register(WiretapModule.new)
+
+        begin
+          # `__FILE__` (parser.cr's `KwFile` case) resolves to exactly
+          # this SECOND `path` argument, verbatim — normalized to `/`
+          # via `Path#to_posix` here (a no-op on Linux/macOS) because
+          # `Dir.glob` above returns `\`-joined paths on Windows,
+          # matching `list.cr`'s own established Windows-portability
+          # fix earlier this session. Without this, any script using
+          # `__FILE__` and splitting on `/` (a script has no OTHER way
+          # to derive its own directory — there's no ambient File IO
+          # module, SCOPE.md's own noted gap) would silently get the
+          # wrong answer specifically on a Windows runner. `File.open`
+          # just below still uses the ORIGINAL, native-separator `path`
+          # — real filesystem access needs the OS's own separator
+          # convention, only the SCRIPT-VISIBLE `__FILE__` value needs
+          # normalizing.
+          eval_filename = ::Path.new(path).to_posix.to_s
+          File.open(path) { |io| interp.eval(io, eval_filename) }
+        rescue e : Adjutant::ParseError
+          error = describe_error(interp, e, "parse error", path)
+          cause = e
+        rescue e : Adjutant::CompileError
+          error = describe_error(interp, e, "compile error", path)
+          cause = e
+        rescue e : Adjutant::RuntimeError
+          error = describe_error(interp, e, "runtime error", path)
+          cause = e
+        rescue e : Exception
+          # Deliberately wide: anything that stops the interpreter
+          # belongs in this file's own result. Narrow it only by
+          # adding cases, never by letting one escape — an exception out
+          # of the fiber that calls this loses the FileResult entirely,
+          # and the run reports one row fewer instead of one failure.
+          error = describe_unexpected_error(e)
+          cause = e
+        end
       end
 
       # Exclusive access to STDOUT
@@ -152,6 +179,16 @@ module Testing
         ambient_env: raw.ambient_env,
         limits: raw.limits,
       )
+    end
+
+    # Describe an unexpected error
+    private def describe_unexpected_error(e : Exception) : String
+      kind = "unexpected_error"
+      if e.is_a?(Adjutant::RuntimeError)
+        "#{kind}: #{e.filename}:#{e.line}: #{e.message}"
+      else
+        "#{kind}: #{e.class}: #{e.message}"
+      end
     end
 
     # Prefers a rendered diagnostic (source line + carets) when the

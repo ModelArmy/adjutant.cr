@@ -115,22 +115,11 @@ assert('Range#each', '15.2.14.4.4') do
   a.each {|i| b += i}
   assert_equal 6, b
 end
-# --- BLOCKED, but NOT by anything range-related — `break if cond`
-# (no explicit break value) immediately followed by a closing `}`
-# hits a separate, still-open parser bug: `parse_break` grabs its own
-# optional VALUE via `parse_expression(0)` before ever checking for a
-# trailing `KwIf` modifier, and `if` is itself a valid expression-
-# START token, so `break if c.size == 10 }` tries to parse `if
-# c.size == 10 }` as break's own value (a real if-expression) instead
-# of stopping after `if c.size == 10` and treating it as the
-# modifier. See SCOPE.md's "`break if cond; more_code`" Will Fix
-# entry for the full writeup — not fixed here, deliberately left as
-# upstream wrote it rather than rewritten to dodge an unrelated bug.
-# assert('Range#each (endless)') do
-#   c = []
-#   (1..).each { |i| c << i; break if c.size == 10 }
-#   assert_equal [1, 2, 3, 4, 5, 6, 7, 8 ,9, 10], c
-# end
+assert('Range#each (endless)') do
+  c = []
+  (1..).each { |i| c << i; break if c.size == 10 }
+  assert_equal [1, 2, 3, 4, 5, 6, 7, 8 ,9, 10], c
+end
 
 # --- Trimmed: `#begin`/`#end` now exist (real Ruby names — this
 # class previously only had `#min`/`#max` under those names). The

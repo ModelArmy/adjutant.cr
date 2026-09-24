@@ -1,0 +1,31 @@
+{
+  "name": "spec/skill/runs/reference/07_fetch_title/transcripts/not_found",
+  "recorded_with": "wiretap/0.4.2",
+  "interactions": [
+    {
+      "request": {
+        "method": "GET",
+        "url": "https://httpbin.org/status/404",
+        "headers": {
+          "Host": "httpbin.org",
+          "User-Agent": "Crystal",
+          "Accept-Encoding": "gzip, deflate"
+        }
+      },
+      "response": {
+        "status": 404,
+        "headers": {
+          "Date": "Wed, 23 Sep 2026 04:18:42 GMT",
+          "Content-Type": "text/html; charset=utf-8",
+          "Content-Length": "0",
+          "Connection": "keep-alive",
+          "Server": "gunicorn/19.9.0",
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Credentials": "true"
+        },
+        "body": ""
+      },
+      "recorded_at": "2026-09-23T04:18:42Z"
+    }
+  ]
+}

@@ -97,6 +97,138 @@ module Adjutant
         eval(src).as_int.should eq 20_i64
       end
 
+      it "uses yield's value in an expression" do
+        src = <<-RUBY
+        def doubled
+          x = yield 10
+          x + 1
+        end
+        doubled { |n| n * 2 }
+        RUBY
+        eval(src).as_int.should eq 21_i64
+      end
+
+      it "returns yield's value" do
+        src = <<-RUBY
+        def first_of
+          return yield
+        end
+        first_of { "value" }
+        RUBY
+        eval(src).as_string.should eq "value"
+      end
+
+      it "calls a method on yield's value" do
+        src = <<-RUBY
+        def shout
+          yield.upcase
+        end
+        shout { "hi" }
+        RUBY
+        eval(src).as_string.should eq "HI"
+      end
+
+      it "leaves a following binary operator to the surrounding expression" do
+        src = <<-RUBY
+        def plus_four
+          yield + 4
+        end
+        plus_four { 10 }
+        RUBY
+        eval(src).as_int.should eq 14_i64
+      end
+
+      it "still takes arguments without parentheses" do
+        src = <<-RUBY
+        def pair
+          yield 1, 2
+        end
+        pair { |a, b| a + b }
+        RUBY
+        eval(src).as_int.should eq 3_i64
+      end
+
+      it "takes a trailing if modifier" do
+        src = <<-RUBY
+        def maybe(flag)
+          count = 0
+          yield if flag
+          count
+        end
+        maybe(false) { 1 }
+        RUBY
+        eval(src).as_int.should eq 0_i64
+      end
+
+      it "yields from inside a block to the enclosing method's block" do
+        src = <<-RUBY
+        def keep_over(items, limit)
+          kept = []
+          items.each { |x| kept << x if yield(x, limit) }
+          kept
+        end
+        keep_over([1, 5, 9], 4) { |x, limit| x > limit }
+        RUBY
+        eval(src).as_array.map(&.as_int).should eq [5, 9]
+      end
+
+      it "yields from inside nested blocks" do
+        src = <<-RUBY
+        def total(rows)
+          sum = 0
+          rows.each do |row|
+            row.each do |cell|
+              sum = sum + yield(cell)
+            end
+          end
+          sum
+        end
+        total([[1, 2], [3]]) { |n| n * 10 }
+        RUBY
+        eval(src).as_int.should eq 60_i64
+      end
+
+      it "resolves yield to the method the block was written in, not the one running it" do
+        src = <<-RUBY
+        def run_twice
+          yield
+          yield
+        end
+        def outer
+          results = []
+          run_twice { results << yield }
+          results
+        end
+        outer { "from outer" }
+        RUBY
+        eval(src).as_array.map(&.as_string).should eq ["from outer", "from outer"]
+      end
+
+      it "gives a block yielded to from inside another block its own closure scope" do
+        src = <<-RUBY
+        def each_of(items)
+          items.each { |x| yield x }
+        end
+        seen = 0
+        each_of([1, 2, 3]) { |x| seen = seen + x }
+        seen
+        RUBY
+        eval(src).as_int.should eq 6_i64
+      end
+
+      it "names the enclosing method, not <block>, when a yield inside a block has none" do
+        src = <<-RUBY
+        def needs_block(items)
+          items.each { |x| yield x }
+        end
+        needs_block([1])
+        RUBY
+        error = expect_raises(RuntimeError) { eval(src) }
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("R007")
+        diag.data["method"].should eq("needs_block")
+      end
+
       it "block does not capture enclosing local via closure" do
         src = <<-RUBY
         def run
@@ -268,6 +400,69 @@ module Adjutant
         f(1, 2, 3)
         RUBY
         eval(src).as_int.should eq 1_i64
+      end
+    end
+
+    describe "block parameters spreading a lone Array" do
+      it "spreads each pair across two parameters in a native method's block" do
+        eval("[[1, 2], [3, 4]].map { |a, b| a * 10 + b }").as_array.map(&.as_int).should eq [12_i64, 34_i64]
+      end
+
+      it "spreads the pairs of Hash#to_a, so a two-key sort_by works" do
+        src = <<-RUBY
+        counts = {"b" => 3, "a" => 3, "c" => 1}
+        counts.to_a.sort_by { |word, count| [-count, word] }.map { |word, count| word }
+        RUBY
+        eval(src).as_array.map(&.as_string).should eq ["a", "b", "c"]
+      end
+
+      it "spreads a single yielded Array" do
+        src = <<-RUBY
+        def once
+          yield [1, 2]
+        end
+        once { |a, b| [b, a] }
+        RUBY
+        eval(src).as_array.map(&.as_int).should eq [2_i64, 1_i64]
+      end
+
+      it "gives a trailing splat the elements after the first" do
+        src = <<-RUBY
+        [[1, 2, 3]].map { |first, *rest| [first, rest] }.first
+        RUBY
+        v = eval(src)
+        v.as_array[0].as_int.should eq 1_i64
+        v.as_array[1].as_array.map(&.as_int).should eq [2_i64, 3_i64]
+      end
+
+      it "applies a default when the Array is shorter than the parameter list" do
+        v = eval("[[1]].map { |a, b = 9| [a, b] }.first")
+        v.as_array.map(&.as_int).should eq [1_i64, 9_i64]
+      end
+
+      it "keeps the Array whole for a single parameter" do
+        eval("[[1, 2]].map { |pair| pair.size }").as_array.map(&.as_int).should eq [2_i64]
+      end
+
+      it "keeps the Array whole for a lone splat" do
+        v = eval("[[1, 2]].map { |*all| all }.first")
+        v.as_array.size.should eq 1
+        v.as_array[0].as_array.map(&.as_int).should eq [1_i64, 2_i64]
+      end
+
+      it "does not spread when more than one value is yielded" do
+        src = <<-RUBY
+        def twice
+          yield [1, 2], 3
+        end
+        twice { |a, b| [a.size, b] }
+        RUBY
+        eval(src).as_array.map(&.as_int).should eq [2_i64, 3_i64]
+      end
+
+      it "does not spread for a lambda" do
+        eval("f = ->(a, b) { a }\nf.call([1, 2])").as_array.map(&.as_int).should eq [1_i64, 2_i64]
+        eval("f = lambda { |a, b| a }\nf.call([1, 2])").as_array.map(&.as_int).should eq [1_i64, 2_i64]
       end
     end
 

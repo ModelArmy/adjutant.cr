@@ -22,3 +22,8 @@ docs/
 # `write` stopped replacing an existing destination — a script that
 # depends on last run's leftovers isn't testing what it claims to.
 spec/scripts/legate/*/workspace/
+
+# Skill exam: model answers and the scripts assembled from them.
+# Scores are logged in spec/skill/README.md instead.
+/spec/skill/answers/
+/spec/skill/runs/

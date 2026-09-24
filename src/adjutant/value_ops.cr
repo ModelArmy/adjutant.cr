@@ -200,6 +200,13 @@ module Adjutant
     # equal" with "genuinely incomparable" (both look like neither
     # `<` nor `>`), which real Ruby's own `<=>` (nil for incomparable)
     # distinguishes and script code can reasonably depend on.
+    # True when `compare` and `spaceship` have an order for this pair:
+    # two numbers, or two Strings. Everything else — including two
+    # Arrays, which only `VM#spaceship` orders — is incomparable here.
+    def self.orderable?(a : Value, b : Value) : Bool
+      ((a.int? || a.float?) && (b.int? || b.float?)) || (a.string? && b.string?)
+    end
+
     def self.spaceship(a : Value, b : Value) : Int32?
       case
       when a.int? && b.int?

@@ -1,0 +1,6 @@
+grants:
+  net:
+    hosts:
+      - httpbin.org
+    methods:
+      - get

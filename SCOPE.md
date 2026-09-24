@@ -54,6 +54,13 @@ DEVELOPMENT.md's "Destructive verbs" writeup. Removed here rather than
 marked done, since a completed entry in a list of open problems is
 just noise for the next reader.
 
+- **`Array#inject`/`reduce` with a Symbol and no block returns `nil`.**
+  Found 2026-09-21, same pass. `[1, 2, 3].inject(:+)` treats `:+` as
+  the initial value and, finding no block, returns `nil`. Real Ruby
+  returns `6`. Supporting the Symbol form means dispatching the named
+  method; until then it should raise rather than return a plausible
+  `nil`.
+
 - **Runtime diagnostics have no carets** (`Frame` records a line but no
   column). Promoted from Error reporting 2026-08-05 on a
   turn-churn argument specific to this use case: the cost of an
@@ -697,31 +704,15 @@ wins.
   scripts (a single heredoc per line covers the vast majority of real
   usage) that it wasn't worth blocking the rest of the pickup on.
 
-- **`break if cond; more_code` (or `next if cond; more_code`) mis-parses
-  when break/next has a modifier `if`/`unless` immediately followed by
-  more code on the same line (or block).** Found 2026-08-18 writing a
-  spec for endless-range `#each`/`#step` (a range with no `break`
-  never terminates, so the test needed one) — entirely unrelated to
-  ranges themselves, a pre-existing bug just newly exercised.
-  `parse_break` (parser.cr) grabs its own optional VALUE via
-  `at_any?(Newline, Semi, EOF) ? nil : parse_expression(0)` before
-  ever checking for a trailing `KwIf`/`KwUnless` modifier — but `if`
-  is a valid expression-START token (`parse_primary` has its own
-  `KwIf` case), so `break if n > 4; seen << n` parses `if n > 4; seen
-  << n` whole as break's VALUE (a real if-expression, greedily
-  consuming through to the enclosing block's own closing `}`/`end`
-  looking for the if's own `end`) rather than stopping after `if n >
-  4` and treating it as break's trailing modifier. Real Ruby's
-  break/next argument grammar is more restricted than a full
-  statement expression — it never starts with a bare `if`/`unless` —
-  so the fix is narrowing `parse_break`'s own "does a value follow"
-  check to also treat `KwIf`/`KwUnless` as "no value here, this is
-  the modifier" makes the code AVAILABLE to the later `case
-  current_kind when KwIf`/`KwUnless` branch already sitting right
-  below it, unchanged. Confirmed via the same real-Ruby-first
-  discipline as the rest of this session: `break if n > 4; seen << n`
-  in `irb` unambiguously executes `seen << n` unless `n > 4`, never
-  attempts to parse an if-expression as break's own value.
+- **A bare `next`, `break` or `return` directly before `}`, `end` or
+  `else` probably fails to parse.** Predicted 2026-09-24 while fixing
+  the modifier `if`/`unless` case; not yet confirmed by a spec or a
+  model. `jump_value_follows?` (parser.cr) treats only a newline, `;`,
+  end of file and a modifier `if`/`unless` as "no value here", so in
+  `items.each { |x| next }` or `if a then break end` the parser tries
+  to read `}` or `end` as the keyword's value. Ruby accepts both. The
+  likely fix is adding `RBrace`, `KwEnd` and `KwElse` to that list,
+  once a failure confirms it.
 
 - **`&:symbol` proc-shorthand (`arr.map(&:length)`) isn't supported —
   `&` can't start an expression there at all (P002).** Found
@@ -1114,6 +1105,21 @@ section).
   alias, since an LLM reaching for `#count` is at least as likely to
   want the filtered form.
 
+- **A TypeError from a binary operator renders nil as nothing at
+  all.** Found in the same round: a model's `counts[word] + 1` on a
+  missing key reported `cannot add  and 1`, because `ValueOps` builds
+  the message with `#{a}` and `Value#to_s` of nil is the empty string.
+  The gap in the message is where the answer is. `#{a.inspect}` gives
+  `cannot add nil and 1`; R013's data already uses `inspect` for
+  exactly this reason.
+
+- **`Float` has no `round`, `floor`, `ceil` or `abs`.** Found
+  2026-09-21 in the built-in census for the agent skill: `float.cr`
+  defines only `to_i`, `to_f`, `to_s` and `infinite?`. Integer has all
+  four, so a script that rounds a computed average fails where the
+  same code on an Integer works. `round(n)` with a digits argument is
+  the form models reach for most.
+
 - **Quoted Symbol literals (`:"..."`) don't decode backslash escape
   sequences.** Found 2026-08-13 fixing the identical gap for String
   literals (`decode_string_escapes`, parser.cr) — plain and
@@ -1348,6 +1354,23 @@ individually.
   the call itself regardless of AST position.
 
 ### Legate
+
+- **`Legate::Stream` implements 9 of the ~35 operations §6
+  specifies.** Found 2026-09-21 in the census for the agent skill.
+  `stream.cr` defines `map`, `select`, `reject`, `take`, `first`,
+  `each`, `count`, `sum` and `to_a`; the rest of §6.2–§6.4 (`each_slice`,
+  `with_index`, `find`, `min`/`max`, `reduce`, `top_by`, `tally`,
+  `sort_by`, `group_by`, …) do not exist, yet LEGATE.md §0 marks §6
+  "Built". §0 now says "Partial" and lists the nine. Build the rest by
+  what the skill exam shows models actually reach for.
+
+- **`Stream#to_a`'s `TooLarge` hint names methods that don't exist.**
+  Found alongside the above. The message recommends `each_slice`,
+  `top_by` or `tally`, none of which a stream has, so a model that
+  follows the diagnostic gets a second error. LEGATE.md §9's
+  `TooLarge`/`TooMany` rows have the same problem. Until those
+  operations exist, the hint should name what does: `each`, `take` or
+  `first(n)`.
 
 - **The pinned socket's TLS path is only exercised when a transcript
   is RECORDED.** Found 2026-08-30. The plain socket half is covered

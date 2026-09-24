@@ -1,0 +1,6 @@
+grants:
+  read:
+    roots:
+      - fixtures
+limits:
+  read_limit: 1KiB

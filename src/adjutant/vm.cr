@@ -35,13 +35,19 @@ module Adjutant
     getter ast_body : Body?
     getter ast_params : Array(Param)?
 
+    # For a block, the name of the method it was written in, recorded
+    # by the compiler. Read only by R007's message, which would
+    # otherwise name the block itself and leave the reader looking for
+    # a call named `<block>`.
+    getter home_method : String?
+
     # The class/module this proc was lexically defined inside, captured
     # once when DefMethod registers it. nil for top-level functions and
     # for blocks (which are lexically transparent — see Frame#lexical_scope).
     property lexical_scope : RubyClass?
 
     def initialize(@chunk, @name, @params = [] of String, @local_count = 0, @is_block = false,
-                   @ast_body = nil, @ast_params = nil)
+                   @ast_body = nil, @ast_params = nil, @home_method = nil)
     end
   end
 
@@ -143,6 +149,28 @@ module Adjutant
     # (see Op::Yield), so the two have to agree on representation.
     property block_outer_locals : OuterChain?
 
+    # `yield`'s target, for the two frame kinds that need more than
+    # `@block` to find it.
+    #
+    # `block_yield` travels with `@block`: the yield target of the
+    # method the attached block was WRITTEN in, captured at
+    # Op::SetBlock beside `block_outer_locals` and for the same
+    # reason. Handed on when this frame yields, so a block that
+    # itself contains `yield` reaches its own method's block.
+    #
+    # `own_yield` is that value once received: what `yield` means
+    # inside a block frame, whose `@block` is always nil.
+    property block_yield : ScriptProc?
+    property own_yield : ScriptProc?
+
+    # Each yield target's own closure context, carried alongside it.
+    # A block invoked by `yield` closes over where it was written, so
+    # a block frame that yields must hand on the chain that came with
+    # the target, not its own `block_outer_locals` — which belongs to
+    # whatever block IT was handed, usually an unrelated scope.
+    property block_yield_outer : OuterChain?
+    property own_yield_outer : OuterChain?
+
     # Number of positional args the call that created this frame
     # actually supplied — set once in call_script_proc, read only by
     # Op::GetArgc (see that opcode's comment). Distinct from
@@ -160,9 +188,24 @@ module Adjutant
     # which pass no keyword args at all.
     property kwarg_names : Set(String)?
 
+    # What `yield` resolves to in this frame: a method's own block, or
+    # for a block frame the block of the method it was written in.
+    # Ruby resolves `yield` lexically, so `items.each { |x| yield x }`
+    # reaches the enclosing method's block rather than finding none.
+    def yield_target : ScriptProc?
+      @proc.is_block? ? @own_yield : @block
+    end
+
+    # The closure context to invoke `yield_target` with.
+    def yield_outer : OuterChain?
+      @proc.is_block? ? @own_yield_outer : @block_outer_locals
+    end
+
     def initialize(@proc, @chunk, @stack_base, @filename, @block = nil, outer : OuterChain? = nil,
                    @self_val : Value = Value.nil_value, @lexical_scope : RubyClass? = nil,
-                   @block_outer_locals : OuterChain? = nil, @argc : Int32 = 0)
+                   @block_outer_locals : OuterChain? = nil, @argc : Int32 = 0,
+                   @block_yield : ScriptProc? = nil, @own_yield : ScriptProc? = nil,
+                   @block_yield_outer : OuterChain? = nil, @own_yield_outer : OuterChain? = nil)
       @ip = 0
       @line = 0
       @handlers = [] of HandlerEntry
@@ -327,6 +370,8 @@ module Adjutant
       # running yield. See Op::SetBlock, Op::Yield, and Frame#
       # block_outer_locals's own comment for the full mechanism.
       @current_block_locals = nil.as(OuterChain?)
+      @current_block_yield = nil.as(ScriptProc?)
+      @current_block_yield_outer = nil.as(OuterChain?)
       # Keyword args staged by Op::SetKwargNames for the Call that
       # immediately follows — the by-name counterpart to
       # @current_block above, same transient "stage, consume, clear"
@@ -409,7 +454,7 @@ module Adjutant
     # to this split).
     protected def invoke(proc : ScriptProc, args : Array(Value), self_val : Value? = nil,
                          kwargs : Hash(String, Value)? = nil) : Value
-      invoke_internal(proc, args, self_val, outer_locals: nil, kwargs: kwargs)
+      invoke_internal(proc, spread_block_args(proc, args, kwargs), self_val, outer_locals: nil, kwargs: kwargs)
     end
 
     # The only correct way for a native function to call a stored
@@ -492,6 +537,8 @@ module Adjutant
       saved_ins_count = @instruction_count
       saved_cur_block = @current_block
       saved_cur_block_locals = @current_block_locals
+      saved_cur_block_yield = @current_block_yield
+      saved_cur_block_yield_outer = @current_block_yield_outer
       saved_pending_kwargs = @pending_kwargs
       begin
         f = current_frame # before replacing @frames
@@ -535,8 +582,13 @@ module Adjutant
         # pending ON the stack (array literal, method args, ...)
         # around a nested `.call` exposed it.
         @stack = Array(Value).new(256)
+        # own_yield: a block a native method runs (Array#each, a
+        # stream's #each) is invoked from the frame that wrote it,
+        # since the native call is still in progress there, so that
+        # frame's own target is the one the block inherits.
         call_script_proc(proc, args, f.filename, nil, effective_outer, self_val: inherited_self,
-          lexical_scope: inherited_lexical, lexical_override: true, kwargs: kwargs)
+          lexical_scope: inherited_lexical, lexical_override: true, kwargs: kwargs,
+          own_yield: f.yield_target, own_yield_outer: f.yield_outer)
         # Let the VM execute the chunk
         result = execute
       ensure
@@ -545,6 +597,8 @@ module Adjutant
         @instruction_count = saved_ins_count
         @current_block = saved_cur_block
         @current_block_locals = saved_cur_block_locals
+        @current_block_yield = saved_cur_block_yield
+        @current_block_yield_outer = saved_cur_block_yield_outer
         @pending_kwargs = saved_pending_kwargs
       end
       result
@@ -823,13 +877,29 @@ module Adjutant
       end
     end
 
+    # The method a `yield` belongs to, for R007. A block frame's own
+    # name is `<block>`, which tells the reader nothing about which
+    # call is missing a block, so walk out to the method the block was
+    # written in — the same method `yield_target` resolves against.
+    private def yielding_method_name(f : Frame) : String
+      return f.proc.name unless f.proc.is_block?
+      # The compiler's record, not a walk up @frames: a block a native
+      # method runs executes in a swapped, single-frame @frames (see
+      # invoke_internal), where the method that wrote it is not on the
+      # stack to find.
+      f.proc.home_method || f.proc.name
+    end
+
     private def push_frame(proc : ScriptProc, filename : String, block : ScriptProc? = nil, stack_base : Int32 = @stack.size,
                            outer : OuterChain? = nil, self_val : Value = Value.nil_value, lexical_scope : RubyClass? = nil,
-                           block_outer_locals : OuterChain? = nil, argc : Int32 = 0) : Frame
+                           block_outer_locals : OuterChain? = nil, argc : Int32 = 0,
+                           block_yield : ScriptProc? = nil, own_yield : ScriptProc? = nil,
+                           block_yield_outer : OuterChain? = nil, own_yield_outer : OuterChain? = nil) : Frame
       if @limits.call_depth_limit > 0 && @frames.size >= @limits.call_depth_limit
         raise script_diagnostic("L002", {"limit" => @limits.call_depth_limit.to_s}, current_frame)
       end
-      frame = Frame.new(proc, proc.chunk, stack_base, filename, block, outer, self_val, lexical_scope, block_outer_locals, argc)
+      frame = Frame.new(proc, proc.chunk, stack_base, filename, block, outer, self_val, lexical_scope, block_outer_locals, argc,
+        block_yield, own_yield, block_yield_outer, own_yield_outer)
       @frames.push(frame)
       frame
     end
@@ -1119,6 +1189,10 @@ module Adjutant
             # lambda-capture case just above, same reason (found
             # 2026-08-10, SCOPE.md's "Closures / block scoping" entry).
             @current_block_locals = @current_block ? [f.locals] + (f.outer_locals || [] of Array(Value)) : nil
+            # Captured here, not read at yield time: the block's target
+            # is the one in force where it was written.
+            @current_block_yield = @current_block ? f.yield_target : nil
+            @current_block_yield_outer = @current_block ? f.yield_outer : nil
           when Op::SetKwargNames
             # Same "take the last N, pop them, read in push order"
             # idiom as Op::MakeHash's pairs — @stack.last(n) returns
@@ -1170,10 +1244,13 @@ module Adjutant
             # not just the native path that happened to surface it.
             result = begin
               dispatch_call(sym.name, args, safe, f.filename, inst.line, @current_block, has_receiver,
-                blk_outer: @current_block_locals, self_val: f.self_val, kwargs: @pending_kwargs)
+                blk_outer: @current_block_locals, self_val: f.self_val, kwargs: @pending_kwargs,
+                blk_yield: @current_block_yield, blk_yield_outer: @current_block_yield_outer)
             ensure
               @current_block = nil
               @current_block_locals = nil
+              @current_block_yield = nil
+              @current_block_yield_outer = nil
               @pending_kwargs = nil
             end
             # If dispatch pushed a new ScriptProc frame, do NOT push the
@@ -1214,10 +1291,10 @@ module Adjutant
             @risk_flow_log.record("Eq", [a.label, b.label], result.label, f.line)
             push(result)
           when Op::TripleEq then exec_binary(inst) { |subject, pattern| Value.bool(triple_eq_matches?(pattern, subject)) }
-          when Op::Lt       then exec_binary(inst) { |lhs, rhs| Value.bool(compare(lhs, rhs, :<)) }
-          when Op::Lte      then exec_binary(inst) { |lhs, rhs| Value.bool(compare(lhs, rhs, :<=)) }
-          when Op::Gt       then exec_binary(inst) { |lhs, rhs| Value.bool(compare(lhs, rhs, :>)) }
-          when Op::Gte      then exec_binary(inst) { |lhs, rhs| Value.bool(compare(lhs, rhs, :>=)) }
+          when Op::Lt       then exec_binary(inst) { |lhs, rhs| Value.bool(strict_compare(lhs, rhs, :<)) }
+          when Op::Lte      then exec_binary(inst) { |lhs, rhs| Value.bool(strict_compare(lhs, rhs, :<=)) }
+          when Op::Gt       then exec_binary(inst) { |lhs, rhs| Value.bool(strict_compare(lhs, rhs, :>)) }
+          when Op::Gte      then exec_binary(inst) { |lhs, rhs| Value.bool(strict_compare(lhs, rhs, :>=)) }
             # --- Unary ----------------------------------------------------------
 
           when Op::Not
@@ -1467,7 +1544,7 @@ module Adjutant
             argc = inst.a.to_i
             args = @stack.last(argc)
             @stack.pop(argc) if argc > 0
-            blk = f.block
+            blk = f.yield_target
             if blk
               depth_before = @frames.size
               # f.block_outer_locals — NOT f.locals. The block closes
@@ -1476,10 +1553,11 @@ module Adjutant
               # frame even existed — see Frame#block_outer_locals),
               # not over this frame's own locals, which are almost
               # always a completely unrelated method body.
-              result = call_script_proc(blk, args, f.filename, nil, f.block_outer_locals)
+              result = call_script_proc(blk, spread_block_args(blk, args), f.filename, nil, f.yield_outer,
+                own_yield: f.block_yield, own_yield_outer: f.block_yield_outer)
               push(result) if @frames.size == depth_before
             else
-              raise script_diagnostic("R007", {"method" => f.proc.name}, f)
+              raise script_diagnostic("R007", {"method" => yielding_method_name(f)}, f)
             end
           when Op::BlockBreak
             val = pop
@@ -1725,6 +1803,8 @@ module Adjutant
       saved_ins_count = @instruction_count
       saved_cur_block = @current_block
       saved_cur_block_locals = @current_block_locals
+      saved_cur_block_yield = @current_block_yield
+      saved_cur_block_yield_outer = @current_block_yield_outer
       saved_pending_kwargs = @pending_kwargs
       # A sentinel frame, not a truly empty @frames, so `current_frame`
       # (used pervasively for diagnostics, including dispatch_call's
@@ -1771,6 +1851,8 @@ module Adjutant
         @instruction_count = saved_ins_count
         @current_block = saved_cur_block
         @current_block_locals = saved_cur_block_locals
+        @current_block_yield = saved_cur_block_yield
+        @current_block_yield_outer = saved_cur_block_yield_outer
         @pending_kwargs = saved_pending_kwargs
       end
     end
@@ -1929,7 +2011,8 @@ module Adjutant
       # instead would silently rebind the block to the wrong
       # enclosing scope.
       call_script_proc(method, call_args, filename, f.block,
-        self_val: f.self_val, block_outer: f.block_outer_locals, kwargs: call_kwargs)
+        self_val: f.self_val, block_outer: f.block_outer_locals, kwargs: call_kwargs,
+        block_yield: f.block_yield, block_yield_outer: f.block_yield_outer)
     end
 
     # Shared by both branches of dispatch_super above — calling a
@@ -2127,7 +2210,9 @@ module Adjutant
                               has_receiver : Bool = false,
                               blk_outer : OuterChain? = nil,
                               self_val : Value? = nil,
-                              kwargs : Hash(String, Value)? = nil) : Value
+                              kwargs : Hash(String, Value)? = nil,
+                              blk_yield : ScriptProc? = nil,
+                              blk_yield_outer : OuterChain? = nil) : Value
       # 1) Safe navigation: skip call if receiver (first arg) is nil
       if safe && !args.empty? && args.first.null?
         return Value.nil_value
@@ -2158,7 +2243,7 @@ module Adjutant
           if sym_id = @symbols.lookup(name).try(&.value)
             if method = cls.find_method(sym_id)
               raise_if_private_call(cls, sym_id, name, recv, self_val, filename, line, native: false)
-              return call_script_proc(method, args[1..], filename, blk, nil, self_val: recv, block_outer: blk_outer, kwargs: kwargs)
+              return call_script_proc(method, args[1..], filename, blk, nil, self_val: recv, block_outer: blk_outer, kwargs: kwargs, block_yield: blk_yield, block_yield_outer: blk_yield_outer)
             end
             if native = cls.find_native_method(sym_id)
               raise_if_private_call(cls, sym_id, name, recv, self_val, filename, line, native: true)
@@ -2174,7 +2259,7 @@ module Adjutant
           cls = recv.as_rclass
           if sym_id = @symbols.lookup(name).try(&.value)
             if method = cls.find_singleton_method(sym_id)
-              return call_script_proc(method, args[1..], filename, blk, nil, self_val: recv, block_outer: blk_outer, kwargs: kwargs)
+              return call_script_proc(method, args[1..], filename, blk, nil, self_val: recv, block_outer: blk_outer, kwargs: kwargs, block_yield: blk_yield, block_yield_outer: blk_yield_outer)
             end
             if native = cls.find_native_singleton_method(sym_id)
               return call_native(native, args, filename, line, blk, "#{cls.name}.#{name}", kwargs: kwargs)
@@ -2276,7 +2361,7 @@ module Adjutant
             # use.
             cls = obj.rclass
             if method = cls.find_method(sym_id)
-              return call_script_proc(method, args, filename, blk, nil, self_val: self_val, block_outer: blk_outer, kwargs: kwargs)
+              return call_script_proc(method, args, filename, blk, nil, self_val: self_val, block_outer: blk_outer, kwargs: kwargs, block_yield: blk_yield, block_yield_outer: blk_yield_outer)
             end
             if native = cls.find_native_method(sym_id)
               return call_native(native, args, filename, line, blk, display_name_for_implicit_self(name), kwargs: kwargs)
@@ -2312,14 +2397,14 @@ module Adjutant
             # (methods available on instances OF this class), not
             # methods usable on the class object itself.
             if singleton = self_rclass.find_singleton_method(sym_id)
-              return call_script_proc(singleton, args, filename, blk, nil, self_val: self_val, block_outer: blk_outer, kwargs: kwargs)
+              return call_script_proc(singleton, args, filename, blk, nil, self_val: self_val, block_outer: blk_outer, kwargs: kwargs, block_yield: blk_yield, block_yield_outer: blk_yield_outer)
             end
             if native_singleton = self_rclass.find_native_singleton_method(sym_id)
               return call_native(native_singleton, args, filename, line, blk, display_name_for_implicit_self(name), kwargs: kwargs)
             end
             if meta = self_rclass.rclass
               if method = meta.find_method(sym_id)
-                return call_script_proc(method, args, filename, blk, nil, self_val: self_val, block_outer: blk_outer, kwargs: kwargs)
+                return call_script_proc(method, args, filename, blk, nil, self_val: self_val, block_outer: blk_outer, kwargs: kwargs, block_yield: blk_yield, block_yield_outer: blk_yield_outer)
               end
               if native = meta.find_native_method(sym_id)
                 return call_native(native, args, filename, line, blk, display_name_for_implicit_self(name), kwargs: kwargs)
@@ -2343,7 +2428,7 @@ module Adjutant
         gval = @globals[sym.value]?
         if gval && gval.proc?
           sproc = gval.as_proc.as(ScriptProc)
-          return call_script_proc(sproc, args, filename, blk, nil, self_val: self_val, block_outer: blk_outer, kwargs: kwargs)
+          return call_script_proc(sproc, args, filename, blk, nil, self_val: self_val, block_outer: blk_outer, kwargs: kwargs, block_yield: blk_yield, block_yield_outer: blk_yield_outer)
         end
       end
 
@@ -2708,7 +2793,11 @@ module Adjutant
                                  lexical_scope : RubyClass? = nil,
                                  lexical_override : Bool = false,
                                  block_outer : OuterChain? = nil,
-                                 kwargs : Hash(String, Value)? = nil) : Value
+                                 kwargs : Hash(String, Value)? = nil,
+                                 block_yield : ScriptProc? = nil,
+                                 own_yield : ScriptProc? = nil,
+                                 block_yield_outer : OuterChain? = nil,
+                                 own_yield_outer : OuterChain? = nil) : Value
       base = @stack.size
       inherited_self = self_val || (@frames.empty? ? Value.nil_value : current_frame.self_val)
       effective_lexical = if lexical_override
@@ -2724,10 +2813,30 @@ module Adjutant
       # advances it, once the callee's first instruction runs).
       caller_line = @frames.empty? ? 0 : current_frame.line
       frame = push_frame(proc, filename, block: blk, stack_base: base, outer: outer, self_val: inherited_self,
-        lexical_scope: effective_lexical, block_outer_locals: block_outer, argc: args.size)
+        lexical_scope: effective_lexical, block_outer_locals: block_outer, argc: args.size,
+        block_yield: block_yield, own_yield: own_yield,
+        block_yield_outer: block_yield_outer, own_yield_outer: own_yield_outer)
       frame.kwarg_names = kwargs.keys.to_set if kwargs
       bind_args(frame, proc, args, caller_line, kwargs)
       Value.nil_value # sentinel; Op::Ret will push the real return value
+    end
+
+    # Returns the arguments a block binds, spreading a lone Array across
+    # the block's parameters when it declares more than one, as Ruby
+    # does: `pairs.each { |k, v| }` binds each pair's two elements, and
+    # `|a, *rest|` takes the first element and the rest. A block with one
+    # parameter, or only a splat, keeps the Array whole. Lambdas never
+    # spread; they are called through `invoke_proc`, which does not come
+    # here. Elements keep their own labels, as `Array#first` returns them.
+    private def spread_block_args(proc : ScriptProc, args : Array(Value),
+                                  kwargs : Hash(String, Value)? = nil) : Array(Value)
+      return args unless proc.is_block? && args.size == 1 && (kwargs.nil? || kwargs.empty?)
+      arr = args[0].as_array?
+      params = proc.ast_params
+      return args unless arr && params
+      positional = params.count { |param| !param.splat? && !param.kwarg? && !param.block_param? }
+      spreads = positional > 1 || (positional == 1 && params.any?(&.splat?))
+      spreads ? arr.to_a : args
     end
 
     # Binds `args` (the caller's actual positional Values) and
@@ -3028,7 +3137,7 @@ module Adjutant
           # dispatch_call's receiver-based step finds and calls it
           # directly, before falling back this far.)
           nil
-        elsif sign = ValueOps.spaceship(a, b)
+        elsif sign = spaceship(a, b, filename, line)
           Value.int(sign.to_i64)
         else
           Value.nil_value
@@ -3281,6 +3390,82 @@ module Adjutant
       ValueOps.add(a, b, error_raiser(current_frame))
     end
 
+    # `<`/`<=`/`>`/`>=` in script code. Unlike `compare`, which answers
+    # `false` for a pair it cannot order (Range bounds and `===` rely on
+    # that), this raises R044 (`ArgumentError`) for two base-type values
+    # with no order between them, such as `1 < "a"` or two Arrays —
+    # matching Ruby, and turning a silent `false` into a visible error.
+    private def strict_compare(a : Value, b : Value, op : Symbol) : Bool
+      unless a.robject? || b.robject? || ValueOps.orderable?(a, b)
+        raise_incomparable(a, b, current_frame.filename, current_frame.line)
+      end
+      compare(a, b, op)
+    end
+
+    # Orders `a` against `b` as Ruby's `<=>` does: a negative, zero or
+    # positive Int32, or nil when the pair has no order. Arrays compare
+    # element by element, then by length. A RubyObject receiver uses its
+    # own `<=>`, which must return an Integer or nil (R013 otherwise).
+    protected def spaceship(a : Value, b : Value,
+                            filename : String = current_frame.filename,
+                            line : Int32 = current_frame.line) : Int32?
+      if a.array? && b.array?
+        xs = a.as_array
+        ys = b.as_array
+        Math.min(xs.size, ys.size).times do |i|
+          sign = spaceship(xs[i], ys[i], filename, line)
+          return unless sign
+          return sign unless sign == 0
+        end
+        return xs.size <=> ys.size
+      end
+
+      if a.robject?
+        sign_val = call_method(a, "<=>", [b], filename, line)
+        return if sign_val.null?
+        raise_bad_spaceship(a, b, sign_val, filename, line) unless sign_val.int?
+        return sign_val.as_int <=> 0
+      end
+
+      ValueOps.spaceship(a, b)
+    end
+
+    # `spaceship`, raising R044 (`ArgumentError`) when the pair has no
+    # order. For native methods that must order every pair they meet,
+    # such as `Array#sort`.
+    protected def order(a : Value, b : Value, filename : String, line : Int32) : Int32
+      spaceship(a, b, filename, line) || raise_incomparable(a, b, filename, line)
+    end
+
+    private def raise_incomparable(a : Value, b : Value, filename : String, line : Int32) : NoReturn
+      raise runtime_diagnostic(
+        Diagnostic.new(
+          code: "R044",
+          primary: Span.new(line: line, filename: filename),
+          data: {"left" => describe_value(a), "right" => describe_value(b)}
+        ),
+        current_frame,
+        error_class: "ArgumentError"
+      )
+    end
+
+    private def raise_bad_spaceship(a : Value, b : Value, sign_val : Value,
+                                    filename : String, line : Int32) : NoReturn
+      raise runtime_diagnostic(
+        Diagnostic.new(
+          code: "R013",
+          primary: Span.new(line: line, filename: filename),
+          data: {
+            "left"  => describe_value(a),
+            "right" => describe_value(b),
+            "value" => sign_val.inspect,
+          }
+        ),
+        current_frame,
+        error_class: "ArgumentError"
+      )
+    end
+
     # `a` is always the receiver — `a < b` reads as `a.<=>(b)`, the
     # same left-to-right receiver convention every other infix
     # operator in Adjutant already uses. No "is `<=>` defined?"
@@ -3303,19 +3488,7 @@ module Adjutant
         # unrecognized TYPE PAIRING (a base-type default), not a
         # script's own method returning a value that breaks its own
         # contract.
-        raise runtime_diagnostic(
-          Diagnostic.new(
-            code: "R013",
-            primary: Span.new(line: line, filename: filename),
-            data: {
-              "left"  => describe_value(a),
-              "right" => describe_value(b),
-              "value" => sign_val.inspect,
-            }
-          ),
-          current_frame,
-          error_class: "ArgumentError"
-        )
+        raise_bad_spaceship(a, b, sign_val, filename, line)
       end
       sign = sign_val.as_int
       case op

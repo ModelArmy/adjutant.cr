@@ -127,6 +127,29 @@ module Adjutant
         node.as(ModifierIf).negated?.should be_true
       end
 
+      it "parses next unless as a modifier on a bare next" do
+        node = parse_expr("next unless x")
+        mod = node.as(ModifierIf)
+        mod.negated?.should be_true
+        mod.body.as(NextNode).value.should be_nil
+      end
+
+      it "parses break if as a modifier on a bare break" do
+        mod = parse_expr("break if x").as(ModifierIf)
+        mod.negated?.should be_false
+        mod.body.as(BreakNode).value.should be_nil
+      end
+
+      it "parses return if as a modifier on a bare return" do
+        mod = parse_expr("return if x").as(ModifierIf)
+        mod.body.as(ReturnNode).value.should be_nil
+      end
+
+      it "parses a value before a modifier" do
+        mod = parse_expr("next 0 if x").as(ModifierIf)
+        mod.body.as(NextNode).value.should be_a(IntLiteral)
+      end
+
       it "parses modifier while" do
         node = parse_expr("x -= 1 while x > 0")
         node.should be_a(ModifierWhile)

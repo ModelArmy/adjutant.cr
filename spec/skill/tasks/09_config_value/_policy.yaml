@@ -1,0 +1,5 @@
+grants:
+  ambient:
+    env:
+      - PATH
+      - ADJUTANT_EXAM_UNSET
