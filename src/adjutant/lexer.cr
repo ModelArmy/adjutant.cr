@@ -1,15 +1,12 @@
 require "./token"
 
 module Adjutant
-  # Lexer: converts source text into a stream of Tokens.
-  #
-  # Call #next_token repeatedly until EOF, or use #tokenize to
-  # collect all tokens at once (useful for testing).
+  # Converts source text into Tokens. Call `next_token` until EOF, or
+  # `tokenize` to collect them all.
   class Lexer
-    # Which literal kind an in-progress `#{...}` interpolation belongs
-    # to, so `continue_interp` (resumed after the interpolation's
-    # closing `}`) knows whether it's looking for a closing `"` (Str)
-    # or a closing `/` plus trailing flags (Regex).
+    # The literal an open `#{...}` belongs to, so scanning resumes
+    # after its `}` looking for the right terminator: `"` for a
+    # string, `/` and flags for a regex.
     enum InterpKind
       Str
       Regex
@@ -18,16 +15,10 @@ module Adjutant
 
     getter filename : String
 
-    # The full source text, already read eagerly in the constructor.
-    # Exposed so `SourceMap` can retain it for diagnostic rendering —
-    # previously it was dropped once tokens were produced, leaving
-    # nothing to quote by the time anything failed.
+    # The full source text, kept for diagnostic rendering.
     getter source : String
 
-    # Primary constructor - reads the IO eagerly into a String.
-    # Random access (peek, backtrack, lexeme slicing) requires the full
-    # source in memory; true streaming would add complexity for no gain
-    # since scripts are short.
+    # Reads `io` into memory, since scanning needs random access.
     def initialize(io : IO, filename : String = "<input>")
       @source = io.gets_to_end
       @filename = filename
@@ -38,31 +29,17 @@ module Adjutant
       @interp_brace_depth = 0
       @interp_kind = InterpKind::Str
       @space_before = false
-      # Last significant (non-space, non-comment) token kind emitted,
-      # read by `regex_starts_here?` to disambiguate a bare `/` between
-      # division and the start of a regex literal — see that method's
-      # own comment for the actual heuristic. Nil only before the very
-      # first token of the source, which is itself a "start of
-      # expression" position (same bucket as Newline).
+      # The last non-space, non-comment token kind, which decides
+      # whether a bare `/` or `<<` starts a literal. Nil at the start
+      # of the source.
       @prev_kind = nil.as(TokenKind?)
-      # Heredoc support: `<<~ID`/`<<-ID`/`<<ID` are resolved eagerly
-      # the moment the opener is scanned (see `scan_heredoc_opener`),
-      # since the STRING token they produce belongs at the opener's
-      # own position in the token stream even though its body text
-      # sits physically later in `@source`. That eager resolution
-      # produces the heredoc's full token sequence (one token, or a
-      # StringPart/.../StringEnd chain for an interpolating body) all
-      # at once; `@pending_tokens` queues everything after the first
-      # for `next_token_inner` to drain before scanning anything else.
-      # The physical body+terminator block, once already consumed
-      # this way, must NOT be lexed again as ordinary top-level code
-      # when the cursor naturally reaches it — `@pending_heredoc_skip_at`
-      # (the position of the newline that starts that block) tells
-      # `next_token_inner` to jump straight past it (to
-      # `@pending_heredoc_skip_to_pos`/`_line`) once that exact
-      # newline is consumed. Only one heredoc opener per physical line
-      # is supported (see `heredoc_starts_here?`'s own comment) so a
-      # single set of these ivars, not a stack, is sufficient.
+      # Heredocs are tokenized whole when their opener is scanned, so
+      # their tokens sit at the opener's position. `@pending_tokens`
+      # holds the rest of that token sequence. The body sits on the
+      # following lines, so when the newline at `@pending_heredoc_skip_at`
+      # is reached, scanning jumps past the body to
+      # `@pending_heredoc_skip_to_pos`. One heredoc per line is
+      # supported, so one set of these suffices.
       @pending_tokens = [] of Token
       @pending_heredoc_skip_at = nil.as(Int32?)
       @pending_heredoc_skip_to_pos = 0
@@ -98,14 +75,8 @@ module Adjutant
         return continue_interp
       end
 
-      # Set once per token, read by `make_token` for every token scanned
-      # below (including nested calls like `scan_number`/`scan_string`
-      # that each call `make_token` themselves) — an instance variable
-      # rather than a threaded parameter, since threading a single bit
-      # through every `scan_*`/`make_token` call site (30+) would be a
-      # far larger, noisier diff for the same result. Safe as instance
-      # state because it's write-once-then-read within a single
-      # `next_token` call, same lifecycle as `line`/`col`/`start` below.
+      # Whether whitespace or a comment precedes the token being
+      # scanned; `make_token` attaches it to every token.
       @space_before = skip_whitespace_and_comments
 
       line = @line
@@ -116,11 +87,8 @@ module Adjutant
 
       c = advance
       if c == '\n'
-        # A pending heredoc body physically follows THIS exact newline
-        # (recorded when its opener was scanned — see
-        # `scan_heredoc_opener`); jump straight past the already-
-        # tokenized body+terminator block instead of re-lexing it as
-        # ordinary top-level code.
+        # A heredoc's body starts after this newline and has already
+        # been tokenized: skip it.
         if (skip_at = @pending_heredoc_skip_at) && skip_at == start
           @pos = @pending_heredoc_skip_to_pos
           @line = @pending_heredoc_skip_to_line
@@ -147,11 +115,7 @@ module Adjutant
       @pos + 1 < @source.size ? @source[@pos + 1] : '\0'
     end
 
-    # General n-ahead lookahead, needed for exponent scanning
-    # (`e`/`E`, optional `+`/`-`, then a digit — up to 2 characters
-    # ahead of the `e` itself). `peek_next` (offset 1) is kept as-is
-    # since it's already used elsewhere and reads slightly clearer at
-    # its one-ahead call sites.
+    # The character `offset` places ahead, or '\0' past the end.
     private def peek_at(offset : Int32) : Char
       @pos + offset < @source.size ? @source[@pos + offset] : '\0'
     end
@@ -174,14 +138,8 @@ module Adjutant
       true
     end
 
-    # Returns true iff at least one whitespace character or comment was
-    # actually consumed — i.e. whether the token about to be scanned is
-    # preceded by space, the fact `next_token` stashes into
-    # `@space_before` for `make_token` to attach to that token. A
-    # comment counts as "space" for this purpose: `x#comment\ny` and
-    # `x y` are equivalent from the parser's point of view (this only
-    # matters within a single line anyway, since a comment always runs
-    # to end-of-line and a real Newline token follows).
+    # Skips spaces, tabs and comments. Returns whether anything was
+    # skipped, which becomes the next token's `space_before`.
     private def skip_whitespace_and_comments : Bool
       consumed = false
       loop do
@@ -209,12 +167,7 @@ module Adjutant
       @source[start, @pos - start]
     end
 
-    # Resume scanning a string or regex body after the closing } of an
-    # interpolation. Dispatches on @interp_kind (set when the literal
-    # was first opened, in scan_string/scan_regex) since a string's
-    # terminator is a bare `"` while a regex's is `/` followed by
-    # optional trailing flags — two different shapes, not something a
-    # single shared terminator char could express.
+    # Resumes a string or regex body after an interpolation's `}`.
     private def continue_interp : Token
       case @interp_kind
       when InterpKind::Regex
@@ -228,11 +181,7 @@ module Adjutant
 
     private def continue_interp_string : Token
       @in_interp = false
-      # Resuming right after the interpolation's closing `}` — never
-      # "preceded by space" in the sense any parser rule cares about,
-      # regardless of whatever `@space_before` was left holding from
-      # the last real `next_token` call (the `}` itself). Set
-      # explicitly rather than left stale.
+      # A resumed literal is never preceded by space.
       @space_before = false
       line = @line
       col = @column
@@ -263,14 +212,8 @@ module Adjutant
       make_token(TokenKind::Error, "unterminated string", line, col)
     end
 
-    # Mirrors `continue_interp_string` above, for the interpolating
-    # body of a heredoc — only ever runs on a throwaway Lexer instance
-    # whose entire `@source` IS the heredoc's own (already extracted,
-    # already dedented) body text, produced by `Lexer.heredoc_body_tokens`.
-    # No closing-quote character exists to watch for (unlike
-    # `continue_interp_string`'s `"`), so a heredoc body containing a
-    # literal `"` is handled correctly for free — end-of-source is the
-    # only terminator.
+    # Resumes a heredoc body after an interpolation's `}`. The body is
+    # this lexer's whole source, so only end of source terminates it.
     private def continue_interp_heredoc : Token
       @in_interp = false
       @space_before = false
@@ -332,7 +275,8 @@ module Adjutant
       make_token(TokenKind::Error, "unterminated regex", line, col)
     end
 
-    # Main scan dispatch — called after consuming the first character `c`.
+    # Scans one token, starting from its already-consumed first
+    # character `c`.
     # ameba:disable Metrics/CyclomaticComplexity
     private def scan(c : Char, start : Int32, line : Int32, col : Int32) : Token
       case c
@@ -356,14 +300,8 @@ module Adjutant
         if match('=')
           make_token(TokenKind::NEq, "!=", line, col)
         elsif match('~')
-          # `!~` (negated match) — added 2026-08-20 alongside `=~`
-          # itself (see `EqTilde`'s own comment on `scan_eq`, and
-          # SCOPE.md's Will Fix entry this closes out). Same reasoning
-          # as `!=`/`NEq` just above: a single combined token, not
-          # separate `Bang`+`Tilde`, so it can get its own
-          # `PRECEDENCE` entry and so `.!~(x)` parses via the same
-          # generic dot-call mechanism `EqTilde` already gets for
-          # free.
+          # `!~` is one token so it gets its own precedence and
+          # `x.!~(y)` parses as a method call.
           make_token(TokenKind::BangTilde, "!~", line, col)
         else
           make_token(TokenKind::Bang, "!", line, col)
@@ -469,22 +407,8 @@ module Adjutant
       make_token(TokenKind::GVar, lexeme_from(start), line, col)
     end
 
-    # Continues a run of ASCII digits, allowing a single `_` wherever
-    # it sits strictly between two digits. IMPORTANT: at every real
-    # call site (scan_number's initial call, and after consuming `.`
-    # or `e`/sign for the fractional/exponent parts), the FIRST digit
-    # of the run has already been consumed by the caller before this
-    # runs — @pos is already sitting one character past it. This
-    # method must therefore check for a trailing `_`+digit FIRST,
-    # before requiring `current_char` itself to be a fresh digit —
-    # checking `current_char.ascii_number?` as a loop's leading
-    # condition (as an earlier version of this method did) fails
-    # immediately in the common case where current_char is already the
-    # SECOND digit or beyond, silently consuming nothing and leaving
-    # the rest of the run (e.g. "_000_000" after an already-consumed
-    # leading "1") for the next token entirely — caught via a failing
-    # spec (pairs("1_000_000") — see lexer_spec.cr), not by
-    # inspection.
+    # Consumes the rest of a digit run whose first digit the caller
+    # has already consumed, allowing a single `_` between digits.
     private def scan_digit_run : Nil
       while !at_end? && current_char.ascii_number?
         advance
@@ -517,17 +441,8 @@ module Adjutant
         is_float = true
       end
 
-      # Exponent — `e`/`E`, optional `+`/`-`, then at least one digit.
-      # Valid with OR without a preceding `.` (`1e20` is a bare integer
-      # digit run immediately followed by an exponent — no decimal
-      # point anywhere — and is still a Float in real Ruby, confirmed
-      # via Ruby's own literals doc: `1234e-2` is listed as one of
-      # three equivalent Float-literal forms for the same value,
-      # alongside `12.34` and `1.234E1`). This is why exponent
-      # scanning is unconditional here rather than nested inside the
-      # `is_float` branch above — the ONLY thing that makes a numeric
-      # literal a Float is having a `.` OR an exponent, not needing
-      # both.
+      # An exponent makes the literal a Float with or without a
+      # decimal point: `1e20`, as in Ruby.
       if current_char == 'e' || current_char == 'E'
         offset = 1
         offset += 1 if peek_at(offset) == '+' || peek_at(offset) == '-'
@@ -571,15 +486,9 @@ module Adjutant
       make_token(TokenKind::String, lexeme_from(start), line, col)
     end
 
-    # Trailing flag letters on a regex literal's closing `/` — real
-    # Ruby's `i`/`m`/`x` (IGNORECASE/MULTILINE/EXTENDED). Any other
-    # letter immediately after the closing `/` is a real Ruby error
-    # ("unknown regexp option") in the general case, but scoped v1
-    # here just stops consuming at the first unrecognized letter and
-    # leaves it for the next token — good enough to not choke on
-    # legitimate follow-on code like `/abc/.match(x)`, and a stricter
-    # "unknown flag" diagnostic is a small follow-up, not a blocker
-    # for v1.
+    # Consumes the flag letters `i`, `m` and `x` after a regex's
+    # closing `/`, stopping at any other character. Ruby would reject
+    # an unknown flag; here it becomes the next token.
     private def scan_regex_flags : String
       fstart = @pos
       while !at_end? && "imx".includes?(current_char)
@@ -588,26 +497,10 @@ module Adjutant
       @source[fstart, @pos - fstart]
     end
 
-    # Scans a /pattern/flags literal, starting right after the opening
-    # `/` has already been consumed by `scan` (mirrors scan_string's
-    # own contract). Interpolation (`#{...}`) is supported exactly
-    # like double-quoted strings — real Ruby regex literals interpolate
-    # too (see "Regexp#to_s - interpolation" in the mruby fixture) — by
-    # switching into the same @in_interp machinery, just tagged
-    # InterpKind::Regex so `continue_interp` resumes looking for a
-    # closing `/` instead of `"`.
-    #
-    # Escape sequences inside the pattern are NOT decoded here (unlike
-    # decode_string_escapes for string literals) — a regex pattern's
-    # backslash sequences (`\d`, `\bfoo\b`, `\A`, `\1`) belong to the
-    # regex engine's own syntax, not Adjutant's string-escape table, so
-    # the raw source text is exactly what Regexp.new must receive.
-    # `\/` is left as two characters (backslash + slash) rather than
-    # collapsed — PCRE2 (and Onigmo) both treat a backslash-escaped
-    # delimiter as a no-op escape of a literal `/`, so passing it
-    # through unmodified matches a bare `/` correctly without
-    # Adjutant's lexer needing to understand regex escape semantics
-    # itself.
+    # Scans a regex literal after its opening `/`. `#{...}` interpolates
+    # as in a double-quoted string. Escapes are not decoded: the
+    # pattern text goes to the regex engine as written, and `\/`
+    # matches a literal `/` there.
     private def scan_regex(start : Int32, line : Int32, col : Int32) : Token
       body_start = @pos
       while !at_end?
@@ -637,29 +530,17 @@ module Adjutant
       make_token(TokenKind::Error, "unterminated regex", line, col)
     end
 
-    # Ruby-style regex/division disambiguation for a bare `/`. Ruby's
-    # real lexer decides based on parser state (expr-beg vs expr-end);
-    # Adjutant has no such state machine, so this approximates it from
-    # the previous token alone, which covers the common cases:
+    # Whether a bare `/` starts a regex rather than dividing. Ruby
+    # decides from parser state; this approximates it from the
+    # previous token:
     #
-    #   - If the previous token is something that CAN end an
-    #     expression (a literal, identifier, closing bracket, `end`,
-    #     etc.) then `/` defaults to division — `x / y`, `arr[0] / 2`.
-    #   - Otherwise (after `(`, `,`, an operator, a keyword like
-    #     `return`/`if`/`and`, a newline, or at the very start of the
-    #     source) `/` starts a regex literal — `foo(/abc/)`, `if /x/`.
-    #   - The one genuinely ambiguous real-Ruby case is a bare
-    #     identifier immediately followed by `/`, since the identifier
-    #     might be a local variable (division) or a method call taking
-    #     a regex argument (`grep /foo/`). Real Ruby breaks the tie on
-    #     spacing: space before `/` but NOT after it means "argument",
-    #     i.e. regex; anything else means division. That heuristic is
-    #     applied here too, via a one-character lookahead.
+    #   1. After a token that can end an expression (a literal, a
+    #      closing bracket, `end`), it divides: `x / y`.
+    #   2. After an identifier, it starts a regex only with space
+    #      before and none after, as in Ruby: `grep /foo/`.
+    #   3. Anywhere else it starts a regex: `foo(/abc/)`.
     #
-    # Deliberately does not attempt full expr-beg/expr-end tracking —
-    # that would require threading parser-level context back into the
-    # lexer. This is a real, scoped simplification (worth a SCOPE.md
-    # line if a script turns up that it gets wrong), not a silent gap.
+    # A regex also needs a closing `/` on the same line.
     private def regex_starts_here? : Bool
       prev = @prev_kind
       wants_regex =
@@ -674,21 +555,9 @@ module Adjutant
       wants_regex && regex_closable_ahead?
     end
 
-    # Bounded lookahead confirming there's an actual closing `/` to be
-    # found before end-of-line/end-of-source, without consuming
-    # anything. Needed alongside the previous-token heuristic above:
-    # that heuristic alone treated every bare `/` at the very start of
-    # a line (or after `def`, `(`, etc.) as a regex opener, which is
-    # right for `/abc/` but wrong for the common "just division/an
-    # operator token, nothing regex-shaped here at all" case — e.g. a
-    # lone `/` or `/=` as an entire source (real lexer-spec cases),
-    # or `def /(o)` defining the `/` operator method itself. Real
-    # regex literals never span a newline unescaped (single-line
-    # `/pattern/` — the `%r{...}` multiline form is deliberately
-    # deferred, see SCOPE.md), so scanning to the next unescaped `/`
-    # or newline, whichever comes first, is a cheap and accurate
-    # feasibility check: no closing `/` on this line means it was
-    # never a regex to begin with.
+    # Whether an unescaped `/` follows on this line, without consuming
+    # anything. A regex literal can't span lines, so without one this
+    # `/` is an operator: a lone `/`, or `def /(o)`.
     private def regex_closable_ahead? : Bool
       i = @pos
       while i < @source.size
@@ -704,14 +573,8 @@ module Adjutant
       false
     end
 
-    # Token kinds after which a bare `/` is division, not the start of
-    # a regex literal — i.e. kinds that can end an expression. Every
-    # kind NOT in this set (operators, keywords like `return`/`if`,
-    # opening brackets, `,`, `;`, Newline, and start-of-source) is
-    # treated as "expression is about to begin", where `/` starts a
-    # regex. TokenKind::Identifier is handled separately in
-    # `regex_starts_here?` (see its own comment) since it's genuinely
-    # ambiguous rather than falling cleanly into either bucket.
+    # Token kinds that can end an expression, after which `/` divides.
+    # Identifiers are decided separately by `regex_starts_here?`.
     EXPR_END_KINDS = [
       TokenKind::Constant, TokenKind::IVar, TokenKind::CVar, TokenKind::GVar,
       TokenKind::Integer, TokenKind::Float, TokenKind::String,
@@ -771,19 +634,8 @@ module Adjutant
     private def scan_eq(start : Int32, line : Int32, col : Int32) : Token
       if current_char == '='
         advance
-        # A third `=` makes `===`. Originally checked here purely so
-        # `def ===(x)` could parse far enough to reach U017's clean,
-        # named rejection (rather than splitting into `EqEq` + a
-        # stray `Eq` and failing with a confusing, unrelated-looking
-        # `P002` partway through the method body) — `"==="` had no
-        # `PRECEDENCE` table entry at all at first, since case/when's
-        # real dispatch was compiler-generated, not parsed from
-        # `a === b` script syntax. `TripleEq` gained a real
-        # `PRECEDENCE` entry 2026-08-21, once `===` joined `==` as a
-        # second fixed VM opcode (`Op::TripleEq`, `vm.cr`) rather than
-        # gaining ordinary receiver dispatch — see `DEVELOPMENT.md`'s
-        # own entry on this for the full reasoning. This token's
-        # def-name-position role is unchanged either way.
+        # `===` is one token so it gets its own precedence and
+        # `def ===(x)` reaches U017's rejection.
         if current_char == '='
           advance
           return make_token(TokenKind::TripleEq, "===", line, col)
@@ -791,19 +643,8 @@ module Adjutant
         return make_token(TokenKind::EqEq, "==", line, col)
       end
       if current_char == '~'
-        # `=~` — the regex/string match operator, added 2026-08-20
-        # (SCOPE.md's Must Fix list). Unlike `===` above, this DOES
-        # get a real `PRECEDENCE` table entry (`parser.cr`) — it's an
-        # ordinary infix operator in real Ruby, not something whose
-        # only real caller is compiler-generated. A single combined
-        # token (rather than separate `Eq`+`Tilde`) is needed for the
-        # SAME two reasons `TripleEq` needed one: so `x =~ y` can get
-        # its own precedence entry at all, and so `x.=~(y)` parses —
-        # `parse_postfix`'s dot-call handling just grabs the very next
-        # token's lexeme as the method name, so it works here for
-        # free once `=~` is one token, same as it already does for
-        # `===`. No `!~` counterpart yet — a real, separate, smaller
-        # follow-up (see SCOPE.md), not implemented here.
+        # `=~` is one token so it gets its own precedence and
+        # `x.=~(y)` parses as a method call.
         advance
         return make_token(TokenKind::EqTilde, "=~", line, col)
       end
@@ -854,13 +695,8 @@ module Adjutant
       make_token(TokenKind::Amp, "&", line, col)
     end
 
-    # `%w[...]`/`%i[...]` word/symbol array literals — deliberately the
-    # ONLY `%`-literal forms supported (no `%W`/`%I` interpolating
-    # variants, no `%q`/`%Q`/`%r` general string/regex forms — those
-    # are a real, separate gap, not attempted here). Real Ruby allows
-    # ANY non-alphanumeric character as the delimiter, with the four
-    # bracket pairs nesting and every other character (same char both
-    # sides) not — both forms supported below via PERCENT_CLOSERS.
+    # Closing delimiters for `%w` and `%i` literals. These four pairs
+    # nest; any other delimiter closes with the same character.
     PERCENT_CLOSERS = {'(' => ')', '[' => ']', '{' => '}', '<' => '>'} of Char => Char
 
     private def percent_literal_starts_here? : Bool
@@ -871,16 +707,9 @@ module Adjutant
       true
     end
 
-    # Scans the raw body between a `%w`/`%i` literal's delimiters,
-    # tracking nesting depth for bracket-pair delimiters (a same-char
-    # delimiter like `%w|a b|` never nests, matching real Ruby). A
-    # backslash escapes the next character unconditionally at the
-    # lexer level — the parser's own word-splitting (see
-    # `split_percent_literal` in parser.cr) is what actually
-    # interprets `\ ` as a literal space rather than a word
-    # separator; no other escape sequence (`\n`, `\t`, etc.) is
-    # processed, matching real Ruby's own minimal `%w`/`%i` escaping
-    # (just the delimiter, backslash, and whitespace).
+    # Scans a `%w` or `%i` literal's raw body up to its closing
+    # delimiter. A backslash escapes the next character; the parser
+    # splits the words and treats `\ ` as a literal space.
     private def scan_percent_literal(start : Int32, line : Int32, col : Int32) : Token
       kind_char = advance # 'w' or 'i'
       open_delim = advance
@@ -916,30 +745,11 @@ module Adjutant
       make_token(TokenKind::Error, "unterminated %#{kind_char}#{open_delim}...", line, col)
     end
 
-    # Disambiguates a heredoc opener from ordinary `<<`/left-shift.
-    # `<<~ID`/`<<-ID` are unambiguous (neither `~` nor `-` immediately
-    # after `<<` means anything else in real Ruby) and are always
-    # treated as heredoc openers once a valid identifier or quote
-    # follows the modifier. Bare `<<ID` is genuinely ambiguous with
-    # `x << SomeConstant` (left-shift), so it additionally requires
-    # the same "previous token can't end an expression" condition
-    # `regex_starts_here?` uses for `/` — real Ruby resolves this via
-    # expr-beg parser state; this is the same scoped approximation
-    # already accepted for regex/division. `<<lowercase_id` is never
-    # treated as a heredoc (matches real Ruby convention — heredoc
-    # identifiers are effectively always uppercase in practice) so it
-    # falls through to left-shift, avoiding the far more common `x <<
-    # y` case ever being misread.
-    #
-    # NOTE — scoped limitation: only ONE heredoc opener per physical
-    # line is supported. Real Ruby allows stacking several
-    # (`foo(<<~A, <<~B)`), each consuming its own body block in
-    # order; this lexer's eager single-opener resolution (see
-    # `scan_heredoc_opener`) doesn't extend to that case and a second
-    # opener on the same line will scan as ordinary (likely
-    # nonsensical) `<<` tokens instead. Rare enough in practice not to
-    # block this pickup — worth a SCOPE.md line if a real script ever
-    # needs it.
+    # Whether `<<` opens a heredoc rather than shifting. The
+    # identifier must be uppercase or quoted, so `x << y` is never
+    # misread. `<<~ID` and `<<-ID` qualify anywhere; bare `<<ID` only
+    # after a token that can't end an expression, as for `/`. Only one
+    # heredoc per line is supported; a second opener scans as `<<`.
     private def heredoc_starts_here? : Bool
       return false unless current_char == '<'
       third = peek_at(1)
@@ -954,17 +764,10 @@ module Adjutant
       end
     end
 
-    # Scans a heredoc opener (`<<~ID`, `<<-ID`, `<<ID`, each optionally
-    # `'ID'`/`"ID"`-quoted) and eagerly resolves the ENTIRE heredoc —
-    # header, body, and terminator — in one call, since the STRING
-    # token it produces belongs at the opener's own position in the
-    # token stream (see the `@pending_tokens`/`@pending_heredoc_skip_*`
-    # comment on those ivars for why). Scanning the body/terminator
-    # only ever reads `@source` via direct indexing (never touches
-    # `@pos`/`@line`/`@column`), so the caller resumes scanning the
-    # REST of the current physical line completely normally once this
-    # returns — only the later newline that actually starts the body
-    # block triggers the recorded skip.
+    # Scans a heredoc opener (`<<~ID`, `<<-ID` or `<<ID`, the ID
+    # optionally quoted) and tokenizes the whole heredoc from the
+    # following lines, without moving the cursor. Scanning resumes on
+    # the opener's line; the body is skipped when reached.
     # ameba:disable Metrics/CyclomaticComplexity
     private def scan_heredoc_opener(start : Int32, line : Int32, col : Int32) : Token
       advance # second '<'
@@ -1036,14 +839,10 @@ module Adjutant
       end
     end
 
-    # Entry point for the throwaway sub-Lexer `scan_heredoc_opener`
-    # constructs over an interpolating heredoc's own (already
-    # extracted, already dedented) body text — its `@source` IS that
-    # body, in full. Returns the same StringPart/.../StringEnd (or
-    # single String, if no `#{}` occurs) token shape `parse_interp_string`
-    # already knows how to consume, so no parser changes are needed
-    # for heredoc content itself. `start_line` seeds `@line` so any
-    # diagnostics pointing into the interpolated code read correctly.
+    # Tokenizes an interpolating heredoc body, which is this lexer's
+    # whole source, into a String token or a StringPart...StringEnd
+    # sequence, as for a double-quoted string. `start_line` is the
+    # body's first line in the script, for diagnostics.
     def heredoc_body_tokens(start_line : Int32) : Array(Token)
       @line = start_line
       tokens = [] of Token
@@ -1056,14 +855,9 @@ module Adjutant
       tokens
     end
 
-    # First chunk of an interpolating heredoc body — mirrors
-    # `scan_string`'s own opening scan (which also emits either a
-    # whole `String` token or the first `StringPart` up to `#{`), just
-    # bounded by end-of-source instead of a closing quote character,
-    # and wrapping a no-interpolation result in synthetic `"` quotes
-    # so the parser's existing `is_double`/`strip_quotes` handling
-    # (which expects `TokenKind::String`'s lexeme to include its
-    # delimiters) applies unchanged.
+    # Scans the body's first chunk: the whole body as a String token,
+    # wrapped in `"` as the parser expects, or a StringPart up to the
+    # first `#{`.
     private def scan_heredoc_first_chunk : Token
       line = @line
       col = @column
@@ -1118,11 +912,8 @@ module Adjutant
       end
     end
 
-    # Escapes a literal (single-quoted-heredoc) body for embedding in
-    # a synthetic `'...'` token lexeme — the parser's existing
-    # `decode_single_quoted_escapes` only ever un-escapes `\\` and
-    # `\'`, so those are the only two characters that need protecting
-    # here for the round-trip to reproduce the original body exactly.
+    # Escapes `\` and `'` so the body survives as a `'...'` lexeme,
+    # which the parser un-escapes.
     private def escape_single_quoted(text : String) : String
       String.build do |io|
         text.each_char do |char|
