@@ -354,6 +354,7 @@ module Adjutant
     # Whether `recv` is an instance of `target` or of a class that
     # inherits from or includes it. For a class receiver the chain
     # starts at its class: `Integer.is_a?(Class)` is true.
+    # ameba:disable Naming/PredicateName - deliberately named to echo is_a?/kind_of?, not a generic predicate
     private def is_a_target?(recv : Value, target : RubyClass?) : Bool
       start_cls = recv.as_robject?.try(&.rclass) ||
                   recv.as_rclass?.try(&.rclass) ||
@@ -1206,6 +1207,7 @@ module Adjutant
     # so an included module between a class and its superclass is
     # found. self is unchanged. A proc with no lexical scope finds
     # nothing.
+    # ameba:disable Metrics/CyclomaticComplexity - two resolution paths (instance vs. the pre-existing singleton fallback), not tangled logic
     private def dispatch_super(f : Frame, args : Array(Value), filename : String, line : Int32,
                                zsuper : Bool = false) : Value
       proc = f.proc
