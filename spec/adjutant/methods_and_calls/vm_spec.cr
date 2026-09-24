@@ -204,6 +204,18 @@ module Adjutant
         eval(src).as_array.map(&.as_string).should eq ["from outer", "from outer"]
       end
 
+      it "gives a block yielded to from inside another block its own closure scope" do
+        src = <<-RUBY
+        def each_of(items)
+          items.each { |x| yield x }
+        end
+        seen = 0
+        each_of([1, 2, 3]) { |x| seen = seen + x }
+        seen
+        RUBY
+        eval(src).as_int.should eq 6_i64
+      end
+
       it "names the enclosing method, not <block>, when a yield inside a block has none" do
         src = <<-RUBY
         def needs_block(items)

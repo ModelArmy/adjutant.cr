@@ -74,3 +74,11 @@ def collect_from_outer
   results
 end
 assert_equal ["outer", "outer"], collect_from_outer { "outer" }
+
+# The block a forwarded yield runs must still see its own locals.
+def each_of(items)
+  items.each { |x| yield x }
+end
+seen = 0
+each_of([1, 2, 3]) { |x| seen = seen + x }
+assert_equal 6, seen
