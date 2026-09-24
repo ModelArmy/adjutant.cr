@@ -160,6 +160,63 @@ module Adjutant
         eval(src).as_int.should eq 0_i64
       end
 
+      it "yields from inside a block to the enclosing method's block" do
+        src = <<-RUBY
+        def keep_over(items, limit)
+          kept = []
+          items.each { |x| kept << x if yield(x, limit) }
+          kept
+        end
+        keep_over([1, 5, 9], 4) { |x, limit| x > limit }
+        RUBY
+        eval(src).as_array.map(&.as_int).should eq [5, 9]
+      end
+
+      it "yields from inside nested blocks" do
+        src = <<-RUBY
+        def total(rows)
+          sum = 0
+          rows.each do |row|
+            row.each do |cell|
+              sum = sum + yield(cell)
+            end
+          end
+          sum
+        end
+        total([[1, 2], [3]]) { |n| n * 10 }
+        RUBY
+        eval(src).as_int.should eq 60_i64
+      end
+
+      it "resolves yield to the method the block was written in, not the one running it" do
+        src = <<-RUBY
+        def run_twice
+          yield
+          yield
+        end
+        def outer
+          results = []
+          run_twice { results << yield }
+          results
+        end
+        outer { "from outer" }
+        RUBY
+        eval(src).as_array.map(&.as_string).should eq ["from outer", "from outer"]
+      end
+
+      it "names the enclosing method, not <block>, when a yield inside a block has none" do
+        src = <<-RUBY
+        def needs_block(items)
+          items.each { |x| yield x }
+        end
+        needs_block([1])
+        RUBY
+        error = expect_raises(RuntimeError) { eval(src) }
+        diag = error.diagnostic.not_nil!
+        diag.code.should eq("R007")
+        diag.data["method"].should eq("needs_block")
+      end
+
       it "block does not capture enclosing local via closure" do
         src = <<-RUBY
         def run
