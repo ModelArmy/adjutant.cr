@@ -57,7 +57,7 @@ just noise for the next reader.
 **Promoted 2026-09-24: Adjutant must be a proper subset of Ruby.**
 Anything it accepts and then runs differently from Ruby is Must Fix,
 whatever its frequency. A construct Adjutant rejects is only a gap and
-can stay in Will Fix. The first eleven entries below are divergences;
+can stay in Will Fix. The first sixteen entries below are divergences;
 where two remedies are listed, rejecting is always acceptable, since
 it restores the subset.
 
@@ -126,12 +126,51 @@ it restores the subset.
   unsupported, which is only a gap. Scanning is in
   `Lexer#scan_number`.
 
-- **Division by zero raises RuntimeError, not ZeroDivisionError.**
-  `ValueOps`' arithmetic errors are raised through `on_error` as
-  `RuntimeError`, so `rescue ZeroDivisionError` never matches and the
-  error escapes. The other `on_error` call sites in `value_ops.cr`
-  (TypeError and the like) should be audited against Ruby's classes
-  at the same time.
+- **Methods and lambdas don't check positional arity.**
+  `VM#bind_args` leaves a missing positional argument nil and ignores
+  extras, so `def f(a, b); end; f(1)` runs with `b` nil, where Ruby
+  raises ArgumentError. The comment there claimed Ruby is lenient
+  too; only blocks are. Lambdas must be strict as well: UNSUPPORTED.md's
+  U019 entry describes `lambda`'s arity as strict, which it isn't
+  yet. Keyword arguments are already checked (R011, R012).
+
+- **Indexing shapes the VM doesn't handle return nil or do nothing.**
+  `VM#exec_get_index` handles Array, Hash and String receivers and an
+  object's native `[]`; everything else falls to nil. So `arr[1..2]`
+  is nil, where Ruby slices (the skill tells models Arrays don't
+  slice, but the runtime doesn't say so); `s[1..]` and `s[..2]` are
+  nil, since a String range needs two Integer bounds; `nil[0]` and
+  `5[0]` are nil, where Ruby raises NoMethodError or returns a bit.
+  On the write side, `exec_set_index` ignores `arr[5] = x` past the
+  end (Ruby pads with nil) and `arr[-9] = x` before the start (Ruby
+  raises IndexError), and ignores every receiver but Array and Hash,
+  so `s[0] = "x"` does nothing. Each shape needs Ruby's result or an
+  error.
+
+- **`break` outside any loop or block is ignored.** A `break` with no
+  loop compiles to BlockBreak; in a method body with no block frame,
+  `Op::BlockBreak` pushes the value and carries on. Ruby rejects it
+  (SyntaxError, "Invalid break"). The compiler knows when no loop
+  encloses a `break`, but not whether it is in a block, so the
+  rejection may belong in the compiler's scope tracking.
+
+- **`is_a?` misses a module included by an included module.**
+  `VM#is_a_target?` checks each class's direct `included_modules`
+  only, so with `module A; end; module B; include A; end; class C;
+  include B; end`, `C.new.is_a?(A)` is false and `when A` doesn't
+  match (`Class#===` uses the same check). Ruby says true. Searching
+  `RubyClass#ancestors` would fix both.
+
+- **Float `%` by zero raises ZeroDivisionError.** `ValueOps.mod`
+  raises for a zero divisor of either type; Ruby raises only for
+  Integer `%` and returns NaN for `5.0 % 0` and `5 % 0.0`. Float `/`
+  by zero already returns Infinity, as in Ruby.
+
+- **`equal?` is true for equal Strings, and `superclass` is nil on a
+  non-class.** `exec_builtin`'s `equal?` compares values, so
+  `"a".equal?("a")` is true; Ruby compares identity and says false for
+  two String objects. Its `superclass` returns nil for any receiver
+  that isn't a class, where Ruby raises NoMethodError (`5.superclass`).
 
 - **Quoted Symbol literals don't decode escapes.** `:"a\nb"` keeps a
   literal backslash and `n`. The Symbol is built in `parser.cr` by
