@@ -1,13 +1,9 @@
 require "./native_callable"
 
 module Adjutant
-  # A user-defined class or module.
-  #
-  # Holds a method table keyed by interned symbol id (Sym#value) so
-  # method lookup is an O(1) hash access, consistent with how globals
-  # and ivars are already keyed. `is_module` distinguishes `module`
-  # from `class` for future `include` semantics; modules have no
-  # superclass and cannot be instantiated.
+  # A class or module, builtin or script-defined. Method tables are
+  # keyed by interned symbol id. A module has no superclass and cannot
+  # be instantiated.
   class RubyClass
     getter name : String
     property superclass : RubyClass?
@@ -20,70 +16,31 @@ module Adjutant
     getter constants : Hash(Int32, Value)
     getter? is_module : Bool
 
-    # True only for the two bootstrap RubyClasses representing Class and
-    # Module themselves (see Interpreter#bootstrap_core_hierarchy) —
-    # NOT for an ordinary `module Foo; end` (that's `is_module?`,
-    # already blocked from `.new` on its own terms). `Class`/`Module`
-    # exist purely so `.class`/`is_a?`/`superclass` resolve correctly
-    # for every other RubyClass; they were never meant to be
-    # instantiable from script (see UNSUPPORTED.md's U002,
-    # `Class.new`/`Module.new`). Checked by `VM#construct`.
+    # True only for the bootstrap `Class` and `Module` classes, which
+    # a script cannot instantiate (U002). `VM#construct` checks it.
     getter? uninstantiable : Bool
 
-    # The class OF this class — `Integer.rclass == Class`,
-    # `Class.rclass == Class` (the one genuinely self-referential case
-    # in the hierarchy). Nilable only to break the bootstrap
-    # chicken-and-egg: `Class` itself can't have a valid `rclass` at
-    # the moment it's allocated, since nothing exists yet to point to.
-    # See Interpreter#bootstrap_core_hierarchy — every RubyClass other
-    # than the three core ones is expected to have this set by the time
-    # a script can observe it (`.class` on a `nil` rclass is a bug, not
-    # a valid state to display to a script).
+    # The class of this class: `Integer.rclass` is `Class`, and so is
+    # `Class.rclass`. Nil only while the core hierarchy is being
+    # bootstrapped.
     property rclass : RubyClass?
 
-    # The class/module this one was lexically nested inside at the point
-    # it was defined (e.g. `class A; class B; end; end` → B.lexical_parent
-    # == A). Distinct from `superclass` — this tracks source nesting, not
-    # inheritance, and is what constant lookup walks.
+    # The class or module this one was defined inside:
+    # `class A; class B; end; end` gives B a lexical parent of A.
+    # Constant lookup walks this, not the superclass chain.
     property lexical_parent : RubyClass?
 
-    # Modules mixed in via `include`, in INSERTION order (index 0 =
-    # first included). `find_method`/`find_native_method` (below)
-    # walk this in REVERSE — real Ruby's MRO: the LAST module
-    # included sits CLOSEST to the class, so it's checked FIRST,
-    # ahead of earlier includes and ahead of the superclass. Empty for
-    # the overwhelming majority of classes/modules (no `include` in
-    # their body at all) — a plain `Array(RubyClass)`, not nilable,
-    # since checking `.empty?` costs nothing and every RubyClass
-    # already allocates several other always-present collections the
-    # same way (`methods`, `ivars`, ...).
+    # Modules added by `include`, in source order. Lookup walks them
+    # in reverse, so the last one included is checked first.
     getter included_modules : Array(RubyClass)
 
-    # Modules mixed in via `extend`, same shape as `included_modules`
-    # above but for the SINGLETON chain — `extend M` makes M's methods
-    # available as CLASS methods (callable on the class/module object
-    # itself), not instance methods. Genuinely separate storage from
-    # `included_modules`, not a reused field: the two lists mean
-    # different things (instance resolution vs. singleton resolution)
-    # — an `include`d module showing up in singleton resolution, or
-    # vice versa, would be a real correctness bug, not a harmless
-    # simplification. See `find_singleton_method`/
-    # `find_native_singleton_method`, below, for the read side.
+    # Modules added by `extend`, in source order. Their instance
+    # methods become this class's singleton methods.
     getter extended_modules : Array(RubyClass)
 
-    # Symbol ids of THIS class's own `methods`/`native_methods` entries
-    # that are implicitly private — currently populated only two ways
-    # (see `define_method`/`define_native_method`'s own `is_private`
-    # kwarg, below): a bare top-level `def` (Op::DefMethod, vm.cr —
-    # matching real Ruby's own top-level-def-is-private rule), and a
-    # native method that opts in at registration time. NOT a general
-    # script-declarable `private`/`protected`/`public` mechanism —
-    # that stays U008's own deliberate non-goal; a script has no way
-    # to add an entry here itself. A `Set`, not a second copy of the
-    # method table — `@methods`/`@native_methods` already hold the
-    # callable; this only tracks WHICH already-registered names are
-    # restricted, mirroring how `@private_methods` is genuinely a
-    # thin overlay, not parallel storage.
+    # Symbol ids of this class's own methods that are private: a
+    # top-level `def`, as in Ruby, and native methods registered with
+    # `is_private`. Scripts cannot declare visibility (U008).
     getter private_methods : Set(Int32)
     getter native_private_methods : Set(Int32)
 
@@ -101,34 +58,18 @@ module Adjutant
       @native_private_methods = Set(Int32).new
     end
 
-    # `include SomeModule` — mixes SomeModule's instance methods into
-    # this class/module's own resolution chain (see
-    # `find_method`/`find_native_method`, below). Appending, not
-    # prepending: insertion order is preserved here; it's the READ
-    # side (the two `find_*` methods) that walks the array in reverse
-    # to get real Ruby's "last included wins" MRO — keeping storage
-    # order the same as source order, rather than storing it
-    # pre-reversed, is easier to reason about from a debugger and
-    # matches how `methods`/`native_methods` etc. are populated
-    # (whatever order `define`/`define_method` were actually called
-    # in, no reordering).
+    # Appends `mod` to the modules this class includes.
     def include_module(mod : RubyClass) : Nil
       @included_modules << mod
     end
 
-    # `extend SomeModule` — same shape as `include_module` above, but
-    # into `extended_modules`. See that field's own comment for why
-    # this is genuinely separate storage, not a reused list.
+    # Appends `mod` to the modules this class extends.
     def extend_module(mod : RubyClass) : Nil
       @extended_modules << mod
     end
 
-    # `is_private` — see `private_methods`'s own comment for the two
-    # (and only two) legitimate callers today. Explicit, not inferred:
-    # a REDEFINITION of the same name defaults back to public unless
-    # it says otherwise, matching real Ruby (a subclass, or a second
-    # `def` of the same name, resets visibility rather than inheriting
-    # the prior definition's).
+    # Defines an instance method. A redefinition is public unless it
+    # passes `is_private` again, as in Ruby.
     def define_method(sym_id : Int32, proc : ScriptProc, is_private : Bool = false) : Nil
       @methods[sym_id] = proc
       if is_private
@@ -138,23 +79,14 @@ module Adjutant
       end
     end
 
-    # Register a script-defined singleton (class-level) method —
-    # `def self.foo` inside a class body. Separate table from
-    # `methods`, mirroring the native_methods/native_singleton_methods
-    # split: an instance never sees these, and a singleton call never
-    # sees `methods`.
+    # Defines a singleton method (`def self.foo`), which instances do
+    # not see.
     def define_singleton_method(sym_id : Int32, proc : ScriptProc) : Nil
       @singleton_methods[sym_id] = proc
     end
 
-    # Look up a script-defined singleton method by symbol id: this
-    # class/module's OWN singleton methods first, then its extended
-    # modules (STEP 3 of the extend-support build-out — see
-    # SCOPE.md's git history; the module was already being recorded
-    # since Step 2, but nothing consulted it until this), then repeat
-    # at the superclass, and so on up the chain. Same shape as
-    # find_method's own Step 3 (include), mirrored onto the singleton
-    # side.
+    # Finds a singleton method: this class's own, then its extended
+    # modules', then the same at each superclass.
     def find_singleton_method(sym_id : Int32) : ScriptProc?
       cls = self
       while cls
@@ -166,27 +98,10 @@ module Adjutant
       nil
     end
 
-    # Register a Crystal-implemented instance method under this class.
-    #
-    # `risk` has no default — unlike Interpreter#define_native. Base
-    # types are registered in bulk in one place, which is exactly where
-    # it's easiest to wave a whole batch through as RiskProfile.none
-    # without thinking about it; making the parameter mandatory here
-    # forces that judgment call at each method.
-    #
-    # The receiver is passed as `args.first`, matching the calling
-    # convention VM#exec_builtin already uses for receiver methods
-    # (`to_s`, `length`, `is_a?`, etc.) — native methods have no
-    # separate `self` binding the way ScriptProc methods do via Frame.
-    #
-    # `kwarg_names` declares which keyword names this method accepts
-    # (see NativeCallable#kwarg_names) — empty by default, matching
-    # every pre-existing native method, which accepted none.
-    #
-    # `authorities` declares the permissions this method exercises to
-    # reach outside the VM (see NativeCallable#authorities) — empty by
-    # default, which is correct for every pure native method and makes
-    # the risk flow check a no-op for it.
+    # Defines a native instance method. The receiver arrives as
+    # `args.first`. `risk` has no default, so each registration
+    # decides it; see `NativeCallable` for `kwarg_names` and
+    # `authorities`.
     def define_native_method(sym_id : Int32, risk : RiskProfile, kwarg_names : Set(String) = Set(String).new, is_private : Bool = false,
                              authorities : Set(Authority) = Set(Authority).new,
                              &block : Array(Value), ScriptProc?, NativeCallContext -> Value) : Nil
@@ -199,27 +114,11 @@ module Adjutant
       end
     end
 
-    # Register a Crystal-implemented singleton (class-level) method
-    # under this class — currently the only route in is `new`, for a
-    # builtin that needs to allocate a RubyObject subclass with real
-    # native state instead of the generic construct_object path (e.g.
-    # File.new opening a handle). Not a general `def self.foo`
-    # mechanism for script-defined classes — that stays unscoped, see
-    # DEVELOPMENT.md.
-    #
-    # `risk` has no default for the same reason as
-    # define_native_method: forces a judgment call at each
-    # registration rather than a batch rubber-stamp.
-    #
-    # Unlike an instance native method, the singleton method receives
-    # the RubyClass itself as args.first (not a receiver instance —
-    # there isn't one yet, that's the point of `new`), followed by the
-    # constructor arguments. It is responsible for its own allocation
-    # and must return a Value.robject.
-    #
-    # `kwarg_names` — see define_native_method's own note; lets a
-    # native `new` (e.g. `Config.new(retries:, timeout:)`) declare
-    # accepted keyword names the same way.
+    # Defines a native singleton method: a Legate verb, or a native
+    # `new` that allocates a `RubyObject` subclass. The class itself
+    # arrives as `args.first`, followed by the call's arguments; a
+    # native `new` must return a `Value.robject`. `risk` has no
+    # default, as for `define_native_method`.
     def define_native_singleton_method(sym_id : Int32, risk : RiskProfile, kwarg_names : Set(String) = Set(String).new,
                                        authorities : Set(Authority) = Set(Authority).new,
                                        &block : Array(Value), ScriptProc?, NativeCallContext -> Value) : Nil
@@ -227,11 +126,8 @@ module Adjutant
       @native_singleton_methods[sym_id] = NativeCallable.new(func, risk, kwarg_names, authorities)
     end
 
-    # Look up a native singleton method by symbol id, walking the
-    # superclass chain — same shape as find_native_method, separate
-    # table. A subclass with no native `new` of its own inherits its
-    # ancestor's (e.g. a File subclass reusing File.new).
-    # Same shape as find_singleton_method, native table.
+    # Finds a native singleton method: this class's own, then its
+    # extended modules', then the same at each superclass.
     def find_native_singleton_method(sym_id : Int32) : NativeCallable?
       cls = self
       while cls
@@ -243,40 +139,10 @@ module Adjutant
       nil
     end
 
-    # The full linearized method-resolution order (real Ruby's
-    # `Module#ancestors`) — this class/module itself, then its own
-    # included modules (reverse order — real MRO: the LAST module
-    # `include`d sits CLOSEST, so it's listed first among them, same
-    # reasoning as `find_own_or_included_method`'s own comment — each
-    # expanded RECURSIVELY via its own `ancestors`, since a module can
-    # itself `include` another module), then — if this is a class,
-    # not a module — the superclass's own full `ancestors`. A
-    # module's own `superclass` is always nil, so this naturally
-    # terminates there with no special-casing needed for the
-    # class-vs-module distinction; the SAME method works for both.
-    #
-    # Needed by `VM#dispatch_super` (STEP 4 of the include-support
-    # build-out — see SCOPE.md's git history): `super`'s resolution
-    # can't just jump from the currently-executing method's own class
-    # to that class's `superclass` anymore once modules exist in the
-    # picture — a module `include`d directly into that class sits
-    # BETWEEN it and its superclass in the real MRO, and if `super`
-    # is called from INSIDE a module's own method, that module has no
-    # `superclass` of its own to fall back on at all (only the ACTUAL
-    # receiver's full ancestry knows what comes next). `dispatch_super`
-    # computes this once per call, finds where the current method's
-    # own `lexical_scope` sits in it, and searches everything AFTER
-    # that position — see that method's own comment for the full
-    # reasoning.
-    #
-    # No de-duplication — matches `RubyClass#include_module`'s own
-    # currently-open question (see that method's comment): a module
-    # included twice, or reachable via two different paths, appears
-    # more than once here. Not a correctness problem for `super`'s
-    # own search (the right answer is still found, just possibly
-    # checked against the same module redundantly) — worth revisiting
-    # together with `include_module`'s own de-dup question if either
-    # is ever addressed.
+    # Ruby's `Module#ancestors`: this class, each included module's
+    # ancestors (last included first), then the superclass's
+    # ancestors. A module reachable twice appears twice. `super`
+    # searches this list from the current method's position onward.
     def ancestors : Array(RubyClass)
       result = [self] of RubyClass
       @included_modules.reverse_each { |mod| result.concat(mod.ancestors) }
@@ -286,30 +152,11 @@ module Adjutant
       result
     end
 
-    # The singleton-chain equivalent of `ancestors`, above — STEP 5 of
-    # the extend-support build-out (see SCOPE.md's git history), the
-    # piece that makes `super` from a class method correctly walk
-    # PAST an extended module before reaching the superclass, the same
-    # way instance-method `super` already does for `include`d modules.
-    #
-    # Genuinely more complex than `ancestors`, not just a find-and-
-    # replace of `included_modules`/`singleton_methods` for
-    # `extended_modules`/`methods`: `ancestors` can check EVERY entry
-    # uniformly via `.methods` (a class and an included module both
-    # store their instance methods there) — but an EXTENDED module's
-    # own methods live in ITS OWN `.methods` (ordinary instance
-    # methods, the exact ones `include` would also see — see
-    # `find_own_or_extended_method`'s own comment for why that's the
-    # correct table), while `self` and its OWN superclasses need
-    # `.singleton_methods` instead. A flat `Array(RubyClass)` can't
-    # represent "which table this entry means" — so each entry here
-    # is a `{RubyClass, Bool}` tuple: the class/module, and whether to
-    # check its SINGLETON table (`true`, for `self` and its
-    # superclasses) or its ordinary instance table (`false`, for an
-    # extended module's own contribution, pulled in via THAT module's
-    # own `ancestors` — not `singleton_ancestors`, since a module
-    # doesn't have its own singleton methods relevant here, only its
-    # ordinary ones).
+    # The singleton-side `ancestors`, for `super` in a class method.
+    # Each entry pairs a class or module with the table to search:
+    # `true` for singleton methods (this class and its superclasses),
+    # `false` for instance methods (the ancestors of each extended
+    # module, whose instance methods act as singleton methods here).
     def singleton_ancestors : Array({RubyClass, Bool})
       result = [{self, true}] of {RubyClass, Bool}
       @extended_modules.reverse_each do |mod|
@@ -321,11 +168,8 @@ module Adjutant
       result
     end
 
-    # Look up a method by symbol id: this class/module's OWN methods
-    # first, then its included modules (STEP 3 of the include-support
-    # build-out — see SCOPE.md's git history; the module was already
-    # being recorded since Step 2, but nothing consulted it until
-    # this), then repeat at the superclass, and so on up the chain.
+    # Finds an instance method: this class's own, then its included
+    # modules', then the same at each superclass.
     def find_method(sym_id : Int32) : ScriptProc?
       cls = self
       while cls
@@ -337,8 +181,7 @@ module Adjutant
       nil
     end
 
-    # Look up a native method by symbol id — same shape as
-    # find_method, separate table.
+    # `find_method` for native methods.
     def find_native_method(sym_id : Int32) : NativeCallable?
       cls = self
       while cls
@@ -350,20 +193,10 @@ module Adjutant
       nil
     end
 
-    # Whether the method `find_method` would ACTUALLY return for
-    # `sym_id` is private — mirrors `find_method`'s own walk (own
-    # table, then included modules, then superclass) exactly, so it
-    # reports the visibility of the SAME entry `find_method` resolves
-    # to, not just "is this name private somewhere in the chain."
-    # Matters for real Ruby parity: a subclass (or an included module
-    # checked earlier in MRO order) can redefine a name WITHOUT
-    # `private`, which correctly makes the closer definition public
-    # even if a farther-up class marked the same name private — this
-    # walk stops at the first class/module where the name resolves AT
-    # ALL, same as `find_method` does, and reports THAT one's
-    # visibility. Checked only after `find_method` itself already
-    # found something — never affects whether a name resolves, only
-    # whether an explicit-receiver call is allowed once it did.
+    # Whether the method `find_method` returns for `sym_id` is private.
+    # Only the definition that wins lookup counts: a public
+    # redefinition nearer the receiver overrides a private one
+    # further up.
     def find_method_private?(sym_id : Int32) : Bool
       cls = self
       while cls
@@ -374,7 +207,7 @@ module Adjutant
       false
     end
 
-    # Same shape as find_method_private?, native table.
+    # `find_method_private?` for native methods.
     def find_native_method_private?(sym_id : Int32) : Bool
       cls = self
       while cls
@@ -385,19 +218,9 @@ module Adjutant
       false
     end
 
-    # Checks THIS class/module's own method table, then its included
-    # modules — deliberately NOT the superclass (find_method's own
-    # loop, above, handles moving up that chain; folding it in here
-    # too would search each ancestor's own modules once per level
-    # AND once again via the outer loop's next iteration reaching the
-    # same class). `included_modules.reverse_each`: real Ruby's MRO —
-    # the LAST module `include`d sits CLOSEST to the class, so it's
-    # checked FIRST, ahead of earlier includes (RubyClass#
-    # include_module's own comment has the storage-order reasoning).
-    # Recurses into each module's OWN find_own_or_included_method,
-    # not just a flat one-level check — a module can itself `include`
-    # another module, and real Ruby's MRO flattens that nesting into
-    # the search too, not just the class's own direct includes.
+    # Searches this class's own methods, then its included modules
+    # (last included first, recursing into their own includes). The
+    # superclass is left to the caller's loop.
     protected def find_own_or_included_method(sym_id : Int32) : ScriptProc?
       if m = @methods[sym_id]?
         return m
@@ -410,12 +233,9 @@ module Adjutant
       nil
     end
 
-    # Bool? — nil means "sym_id doesn't resolve at THIS level at all"
-    # (own table, then included modules), distinct from `false`
-    # ("resolves here, and is public"). Mirrors
-    # find_own_or_included_method's own walk exactly, one level at a
-    # time, so find_method_private? (above) can stop searching
-    # superclasses at the same point find_method itself would.
+    # Nil when `sym_id` isn't defined at this level (own table and
+    # included modules); otherwise whether that definition is
+    # private.
     protected def find_own_or_included_method_private?(sym_id : Int32) : Bool?
       return @private_methods.includes?(sym_id) if @methods.has_key?(sym_id)
       @included_modules.reverse_each do |mod|
@@ -425,7 +245,7 @@ module Adjutant
       nil
     end
 
-    # Same shape as find_own_or_included_method, native table.
+    # `find_own_or_included_method` for native methods.
     protected def find_own_or_included_native_method(sym_id : Int32) : NativeCallable?
       if m = @native_methods[sym_id]?
         return m
@@ -438,7 +258,7 @@ module Adjutant
       nil
     end
 
-    # Same shape as find_own_or_included_method_private?, native table.
+    # `find_own_or_included_method_private?` for native methods.
     protected def find_own_or_included_native_method_private?(sym_id : Int32) : Bool?
       return @native_private_methods.includes?(sym_id) if @native_methods.has_key?(sym_id)
       @included_modules.reverse_each do |mod|
@@ -448,22 +268,10 @@ module Adjutant
       nil
     end
 
-    # Checks THIS class/module's own SINGLETON method table, then its
-    # extended modules — same shape as find_own_or_included_method,
-    # mirrored onto the singleton side (own table first, extended
-    # modules in reverse-insertion MRO order, deliberately NOT the
-    # superclass — the outer find_singleton_method loop handles
-    # that).
-    #
-    # Recurses into each extended module's OWN INSTANCE-side chain
-    # (find_own_or_included_method, not a separate "extended" variant)
-    # — this is the whole point of `extend`: a module's ordinary
-    # `def foo` methods (its own `methods` table, the same one
-    # `include` reads) become the EXTENDING class's singleton
-    # methods. `extend M` where M itself `include`s N correctly
-    # surfaces N's methods too, the same way M's own instance callers
-    # would see them, since this reuses that exact walk rather than
-    # inventing a parallel one.
+    # Searches this class's own singleton methods, then the instance
+    # methods of its extended modules (last extended first, including
+    # what those modules include). The superclass is left to the
+    # caller's loop.
     protected def find_own_or_extended_method(sym_id : Int32) : ScriptProc?
       if m = @singleton_methods[sym_id]?
         return m
@@ -476,7 +284,7 @@ module Adjutant
       nil
     end
 
-    # Same shape as find_own_or_extended_method, native table.
+    # `find_own_or_extended_method` for native methods.
     protected def find_own_or_extended_native_method(sym_id : Int32) : NativeCallable?
       if m = @native_singleton_methods[sym_id]?
         return m
@@ -517,13 +325,9 @@ module Adjutant
       @cvars[sym_id] = val
     end
 
-    # Class ivars (`@x` read/written directly in a class body or a
-    # `def self.foo` singleton method) live in their OWN slot, entirely
-    # separate from cvars (`@@x`) even when the name collides — this is
-    # real Ruby semantics, not a simplification: `A.x` and `A.new.x` can
-    # both be named `@x` and still hold independent values. Unlike
-    # cvars, class ivars are NOT inherited — no superclass walk, same
-    # as an instance's own ivars never leak to other instances.
+    # Class-level ivars (`@x` in a class body or `def self.foo`).
+    # Separate from `@@x` cvars even under the same name, and not
+    # inherited.
     def get_ivar(sym_id : Int32) : Value?
       @ivars[sym_id]?
     end
@@ -545,10 +349,7 @@ module Adjutant
       nil
     end
 
-    # Fully-qualified name, walking lexical_parent — `class A; class
-    # B; end; end` gives B.to_s == "A::B", matching real Ruby. A
-    # top-level class/module (lexical_parent nil) is just its own
-    # name.
+    # The qualified name: `A::B` for a class defined inside `A`.
     def to_s(io : IO) : Nil
       io << qualified_name
     end
@@ -562,53 +363,25 @@ module Adjutant
     end
   end
 
-  # An instance of a RubyClass.
+  # An instance of a RubyClass, with ivars keyed by symbol id.
   #
-  # Ivars are keyed by interned symbol id, mirroring RubyClass's
-  # method table and the existing GetIvar/SetIvar opcode contract.
-  #
-  # `rclass` here and RubyClass#rclass are the same relationship
-  # ("what class is THIS thing an instance of") at two different
-  # levels — an instance's rclass is the class that built it; a
-  # class's own rclass is (almost always) Class itself. They share a
-  # name deliberately, matching how `obj.class` and `SomeClass.class`
-  # are genuinely the same method in real Ruby — not a coincidence to
-  # be confused by.
-  #
-  # Open to subclassing: a native builtin with real internal state
-  # (e.g. an open file handle) defines a RubyObject subclass with its
-  # own typed ivars, allocated by a native singleton `new` method
-  # instead of the generic `construct_object` path — see
-  # RubyClass#native_singleton_methods. A subclass calls `super(rclass)`
-  # from its own initializer to set up the base rclass/ivars.
+  # A native builtin with internal state subclasses this, allocates
+  # it from a native singleton `new`, and calls `super(rclass)`.
   class RubyObject
     getter rclass : RubyClass
     getter ivars : Hash(Int32, Value)
 
-    # Closure snapshot for a Proc instance only — the enclosing
-    # frame's locals at the moment a `->(){}` literal was evaluated
-    # (see VM#make_lambda_object, Op::MakeProc's a=1 branch). Nil for
-    # every RubyObject that isn't a Proc.
-    #
-    # Not stored in `ivars` because that Hash is script-visible
-    # instance state and can only hold real `Value`s — there's no
-    # `Value` variant for a raw `Array(Value)` of VM locals, and there
-    # shouldn't be one; this is VM-internal plumbing a script can
-    # never read or assign, exactly like Frame#outer_locals itself
-    # (also a plain, non-Value-wrapped field). A Proc-specific
-    # RubyObject subclass was considered and rejected: nothing else
-    # can construct a RubyObject whose rclass is Proc, so there's no
-    # ambiguity a subtype would guard against — this field is simply
-    # unused (nil) for every other class, the same way `ivars` itself
-    # holds different keys depending on which class populated it.
+    # For a Proc, the closure captured where its `->(){}` or
+    # `lambda { }` was evaluated; nil for any other object. Not an
+    # ivar, since scripts must not read or assign it.
     property outer_locals : OuterChain?
 
     def initialize(@rclass : RubyClass)
       @ivars = {} of Int32 => Value
     end
 
-    # Return true if `class_name` matches one of this object's class chain.
-    # Checks superclass chain only. Included modules not yet supported
+    # Whether this object's class or one of its superclasses is named
+    # `class_name`. Included modules are not checked.
     def instance_of?(class_name : String)
       superclass = rclass
       while superclass && superclass.name != class_name

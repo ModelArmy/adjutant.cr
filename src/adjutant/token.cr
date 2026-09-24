@@ -63,19 +63,8 @@ module Adjutant
     KwRetry
     KwRequire
     KwLoad
-    # KwInclude deliberately removed 2026-08-10 (see SCOPE.md's git
-    # history) — unlike prepend below, `include` needs no new
-    # grammar at all: `include Foo` is just an ordinary bare method
-    # call (`Module#include`, real Ruby), and Adjutant's class/module
-    # body dispatch already resolves bare calls against Module's own
-    # method chain correctly (VM#dispatch_call's self_rclass branch).
-    # Keeping it reserved would have forced every `include Foo` to hit
-    # a parse error before ever reaching that already-working
-    # mechanism. KwExtend removed 2026-08-10 too, once `extend` itself
-    # was actually built — identical reasoning, `extend` is equally an
-    # ordinary Module method, not a keyword. prepend stays reserved
-    # for now — not implemented yet, and reserving it costs nothing
-    # until it is.
+    # `include` and `extend` are ordinary method calls, not keywords.
+    # `prepend` is reserved but not implemented.
     KwPrepend
     KwAttrReader
     KwAttrWriter
@@ -202,30 +191,14 @@ module Adjutant
     getter line : Int32
     getter column : Int32
 
-    # True when this token was preceded by whitespace (spaces/tabs) or
-    # a comment, i.e. it does NOT immediately abut the previous token.
-    # This is the one piece of context Adjutant's lexer previously
-    # discarded entirely (see `Lexer#skip_whitespace_and_comments`) that
-    # the parser had to reconstruct after the fact via column
-    # arithmetic for every whitespace-sensitive Ruby-compatibility rule
-    # (`eq -1, -1` vs `n - 1`, `-0.0.to_s` literal fusion, `eq (6/3), 2`
-    # bare-call-with-parenthesized-first-arg). Capturing it once, here,
-    # replaces those bespoke per-callsite column checks with a single
-    # source of truth. Defaults to `false` so every existing
-    # `Token.new(...)` call site (none of which pass this) keeps
-    # compiling unchanged — only call sites that care about spacing
-    # need to pass it explicitly.
+    # True when whitespace or a comment precedes this token. The
+    # parser uses it for Ruby's spacing-sensitive rules, such as
+    # `eq -1, -1` against `n - 1`.
     getter? space_before : Bool
 
-    # Trailing flag letters (some subset of "imx") captured off the
-    # closing `/` of a regex literal — e.g. the "i" in `/abc/i`. Only
-    # ever set on TokenKind::Regex and TokenKind::RegexEnd; every
-    # other token kind leaves this at its default "". Not folded into
-    # `lexeme` (which stays exactly the pattern text) because the
-    # parser needs the two pieces separately: pattern text becomes
-    # Regexp.new's first argument, flags become its second — same
-    # split real Ruby's own Regexp::IGNORECASE/MULTILINE/EXTENDED
-    # options represent.
+    # The flag letters after a regex literal's closing `/` (a subset
+    # of "imx"), set only on Regex and RegexEnd tokens. `lexeme` holds
+    # the pattern text alone.
     getter regex_flags : String
 
     def initialize(@kind, @lexeme, @line, @column, @space_before = false, @regex_flags = "")

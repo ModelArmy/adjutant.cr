@@ -74,13 +74,9 @@ module Adjutant
     end
   end
 
-  # A /pattern/flags regex literal: alternating RegexFragment/expression
-  # nodes, mirroring InterpString's own shape — a regex literal
-  # interpolates exactly like a double-quoted string does (see the
-  # mruby fixture's "Regexp#to_s - interpolation" case). `flags` is
-  # the trailing letters off the closing `/` (some subset of "imx"),
-  # kept as a separate field rather than folded into a part, matching
-  # Token#regex_flags upstream in the lexer.
+  # A regex literal `/pattern/flags`: alternating RegexFragment and
+  # expression nodes, interpolated like a double-quoted string.
+  # `flags` is the trailing letters, a subset of "imx".
   class RegexLiteral < Node
     getter parts : Array(Node) # RegexFragment | any expression node
     getter flags : String
@@ -90,15 +86,9 @@ module Adjutant
     end
   end
 
-  # A literal pattern-text fragment within a regex literal. Kept
-  # distinct from StringFragment (rather than reused) even though both
-  # are just "raw text between interpolations" — a regex fragment's
-  # text is never escape-decoded the way a string fragment's is (see
-  # decode_string_escapes and the lexer's own scan_regex comment):
-  # backslash sequences inside a pattern belong to the regex engine's
-  # syntax, not Adjutant's string-escape table, so keeping the two
-  # node types separate stops a future edit to one from accidentally
-  # also changing the other's (very different) semantics.
+  # Literal pattern text within a regex literal. Unlike a
+  # StringFragment, its backslash sequences are not escape-decoded:
+  # they belong to the regex engine.
   class RegexFragment < Node
     getter value : String
 
@@ -107,14 +97,8 @@ module Adjutant
     end
   end
 
-  # `start_node`/`end_node` are nilable to represent endless (`1..`)
-  # and beginless (`..10`) ranges — real Ruby syntax, not just the
-  # already-supported `Range.new(nil, 5)` constructor form. See
-  # `parse_expression`'s RangeIncl/RangeExcl handling (endless: no
-  # valid expression follows the operator) and `parse_primary`'s own
-  # RangeIncl/RangeExcl case (beginless: the operator itself starts
-  # the expression, with no left operand at all) for where each nil
-  # actually gets produced.
+  # A nil `start_node` is a beginless range (`..10`); a nil
+  # `end_node` is an endless one (`1..`).
   class RangeLiteral < Node
     getter start_node : Node?
     getter end_node : Node?
@@ -288,13 +272,8 @@ module Adjutant
     getter receiver : Node?
     getter method : String
     getter args : Array(Node)
-    # Keyword call arguments (`name: value`), kept separate from `args`
-    # rather than mixed in — a kwarg binds to a callee param by NAME,
-    # never by position, so folding it into the same ordered list would
-    # invite exactly the position-based bugs keeping it separate avoids.
-    # Defaulted so the many existing construction sites that never
-    # have keyword args (`::name`, bare block-only calls, `raise`)
-    # don't need to change.
+    # Keyword arguments (`name: value`), which bind by name and so
+    # are kept apart from the positional `args`.
     getter kwargs : Array({String, Node})
     getter block : BlockNode?
     getter? safe : Bool # &. safe navigation
@@ -325,13 +304,8 @@ module Adjutant
     end
   end
 
-  # `recv.attr = value` — an attribute-assignment call, built directly
-  # by `Parser#maybe_assignment` when its lhs is a receiver-based,
-  # arg-less `Call` (mirroring how `parse_postfix` builds `IndexAssign`
-  # directly for `a[i] = v`, rather than reusing generic `Assign`
-  # with a `Call` target). A dedicated node, not `Assign` wrapping a
-  # `Call`, specifically so `receiver` is compiled exactly ONCE — see
-  # `Compiler#compile_attr_assign`'s own comment for why that matters.
+  # `recv.attr = value`. A node of its own, rather than Assign with a
+  # Call target, so `receiver` is evaluated once.
   class AttrAssign < Node
     getter receiver : Node
     getter method : String
@@ -526,11 +500,9 @@ module Adjutant
   # Exception handling
   # -------------------------------------------------------------------------
 
-  # One `rescue` clause within a `begin`. `classes` holds one or more
-  # type expressions (`rescue A, B` — OR'd together, left-to-right,
-  # same as real Ruby); empty means a bare `rescue` (defaults to
-  # StandardError at compile time, same as before — see
-  # compile_rescue_clause). `var` is the optional `=> e` binding.
+  # One `rescue` clause. `classes` are tried left to right; empty
+  # means a bare `rescue`, which catches StandardError. `var` is the
+  # optional `=> e` binding.
   class RescueClause
     getter classes : Array(Node)
     getter var : String?

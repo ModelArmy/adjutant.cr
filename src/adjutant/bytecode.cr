@@ -38,49 +38,24 @@ module Adjutant
     # Calls
     SetBlock # register block proc from constants[c] before a call
 
-    # register keyword call arguments before a call, mirroring
-    # SetBlock's "stage something for the next Call" shape rather than
-    # extending Call's own operands (its `c` is already the method
-    # name, and there's nowhere to fit a set of argument NAMES, not
-    # just a count, into a single instruction). Emitted only when a
-    # call actually has keyword args — a=pair count; pops a*2 stack
-    # values pushed as alternating (name symbol, value), same
-    # convention as MakeHash, and stashes them for the Call that
-    # immediately follows to hand to VM#bind_args. Op::Call always
-    # clears the staged value after consuming it, so a call with no
-    # keyword args (the overwhelming majority — this instruction is
-    # simply never emitted before them) sees none pending.
+    # Stages keyword arguments for the next Call: pops a (name symbol,
+    # value) pairs, pushed alternately as for MakeHash. Emitted only
+    # before a call that passes keywords; Call clears the staged pairs.
     SetKwargNames
 
-    # push true if the CURRENT call supplied a keyword argument named
-    # constants[c], else false. The keyword-argument equivalent of
-    # GetArgc — used only by the default-param prologue (see
-    # Compiler#emit_default_prologue) to test whether a kwarg-with-a-
-    # default was actually passed, since (like GetArgc) a slot left at
-    # nil_value doesn't distinguish "omitted" from "explicitly nil".
-    # Not reachable from script source directly.
+    # Pushes whether the current call passed the keyword named
+    # constants[c]. Emitted only by the default-parameter prologue,
+    # since a nil slot can't tell "omitted" from "passed nil".
     HasKwarg
 
     Call     # call method constants[c], argc=a, b bit0=safe(&.), bit1=has_receiver
     SafeCall # &. nil-safe call
 
-    # call the method with the CURRENT frame's own method name,
-    # starting resolution at the current frame's lexical_scope's
-    # superclass rather than self's own class. Unlike Call, no name
-    # is carried in constants[c]: the method name is read from the
-    # running frame (Frame#proc#name) at the point Super executes,
-    # not baked into the instruction, since it's always "whatever
-    # method this bytecode is itself running inside." self stays the
-    # original receiver (Frame#self_val) — only the lookup's STARTING
-    # class moves up one level.
-    #
-    # b bit0 = zsuper (bare `super`, no parens): when set, argc(a) is
-    # always 0 and no args are read from the stack at all — instead
-    # the CURRENT values of the enclosing method's own parameters
-    # (Frame#locals, matching Frame#proc#ast_params — the same slots
-    # bind_args filled at call time, possibly reassigned since) are
-    # forwarded live, real Ruby's zsuper semantics. When clear,
-    # explicit args were compiled and pushed as usual — argc=a.
+    # Calls the current method's name on the next class or module
+    # after the method's lexical scope in the receiver's ancestors;
+    # self is unchanged. b bit0 = zsuper (bare `super`): a is 0 and the
+    # method's current parameter values are forwarded. Otherwise a
+    # arguments are popped as for Call.
     Super
 
     Ret # return top of stack from current frame
@@ -106,14 +81,12 @@ module Adjutant
     SetEnsure   # register ensure block at c
     EnterEnsure # enter ensure block
 
-    # end of ensure body — resumes VM#@pending_reraise if the
-    # ensure was entered via error unwinding, else no-op
+    # Ends an ensure body: re-raises the pending error if the ensure
+    # was entered by unwinding, else does nothing.
     EndEnsure
 
-    # pop an error value and re-raise it as-is (preserves its
-    # class/identity, unlike Throw which rebuilds a generic
-    # RuntimeError from a string) — used when `rescue ClassName`
-    # doesn't match and the error must keep propagating
+    # Pops an error and re-raises it unchanged, keeping its class.
+    # Used when no `rescue` clause matches.
     Reraise
 
     # Collections
@@ -167,21 +140,13 @@ module Adjutant
     GetLocal # push frame.locals[c]
     SetLocal # pop → frame.locals[c]; push value
 
-    # push Value.int(frame.argc) — the number of positional args the
-    # CURRENT call actually supplied, before any default-value/splat
-    # binding ran. Used only by the default-param prologue Compiler#
-    # emit_default_prologue emits (see that method) to test "was slot
-    # i given an argument," since Frame#locals is pre-filled with
-    # nil_value for every slot regardless of whether the caller
-    # supplied anything — nil is not distinguishable from "omitted"
-    # without this. Not reachable from script source directly.
+    # Pushes the number of positional arguments the current call
+    # passed. Emitted only by the default-parameter prologue, since a
+    # nil slot can't tell "omitted" from "passed nil".
     GetArgc
 
-    # Closure capture (block/lambda reading/writing an enclosing
-    # frame's locals, at any nesting depth — see Frame#outer_locals'
-    # OuterChain comment, vm.cr). a=depth (0 = nearest enclosing
-    # scope, 1 = one further out, ...), c=slot within that level's own
-    # locals array.
+    # Closure access to an enclosing scope's locals: a = depth (0 is
+    # the nearest enclosing scope), c = slot at that depth.
     GetOuter # push frame.outer_locals[a][c]
     SetOuter # pop → frame.outer_locals[a][c]; push value
 

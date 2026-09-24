@@ -892,6 +892,8 @@ tags + reversible + severity] --> NC[NativeCallable]
 
 An `Authority` plays one of two roles, and they are not the same thing. A **grant** is what a provider authorizes a call against (`EffectProvider#authorities`, via `Broker#authorize`). A **sink** is what a native method declares in its own `authorities:`, so that `VM#check_risk_flow` checks labeled arguments reaching it. `Read`/`Write`/`Delete`/`Net` are both. `Ambient` is a grant but never a sink: `Legate.env` authorizes against it because its allowlist is a real grant that belongs in the audit log, yet it names where sensitivity comes *from*, so `env` declares no `authorities:` and no `RiskFlowRule` needs an `Ambient` row (though `reject_all_flows` still applies to it). `Log` is the reverse — a sink with no grant, since `Legate.log` has no allowlist to consult.
 
+`EffectProvider` has one implementer, `Legate::Broker`, and its `authorities` is not yet read by anything. It exists for two things that will need to iterate providers rather than dispatch to them: a unified config, where each provider parses its own section, and LEGATE.md §10.1's grant inference. That inference is specified as walking the call graph for `Legate.*` names; it should key on registered providers instead, or a second provider would get enforcement but no static manifest.
+
 Effects are the reason; reversibility and severity are consequences — a `RiskProfile` with no effects must be `Reversibility::Yes` and `Severity::Info`. Setting either otherwise on an effect-less profile raises immediately, by design: it means an `Effect` is missing, not that the fields should be set freely.
 
 ```crystal
