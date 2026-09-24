@@ -23,6 +23,7 @@ module Adjutant
     "U017" => "def ==(o)",
     "U019" => "proc { }",
     "U020" => "retry",
+    "U021" => "The outside world is reached only through `Legate`",
   }
 
   # U-codes the skill leaves to their diagnostics, with the reason.
