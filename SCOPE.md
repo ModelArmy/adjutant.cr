@@ -106,7 +106,7 @@ just noise for the next reader.
 **Promoted 2026-09-24: Adjutant must be a proper subset of Ruby.**
 Anything it accepts and then runs differently from Ruby is Must Fix,
 whatever its frequency. A construct Adjutant rejects is only a gap and
-can stay in Will Fix. The first twenty-one entries below are divergences;
+can stay in Will Fix. The first twenty-three entries below are divergences;
 where two remedies are listed, rejecting is always acceptable, since
 it restores the subset.
 
@@ -261,6 +261,20 @@ it restores the subset.
 - **`String#each_line("")` splits on newlines, not paragraphs.** Ruby's
   empty separator is paragraph mode, splitting on runs of blank lines;
   Adjutant falls back to `"\n"` without saying so.
+
+- **Regexp and MatchData edge cases differ from Ruby.**
+  `Regexp#match(nil)` raises R022, where Ruby returns nil, so
+  `re.match(maybe_nil)` fails only in Adjutant. `MatchData#[]` with an
+  unknown group name returns nil, where Ruby raises IndexError. And in
+  a pattern with named groups, Ruby doesn't capture the unnamed ones,
+  so `/(a)(?<b>b)/.match("ab")[1]` is "b"; PCRE2 numbers both, so
+  Adjutant gives "a".
+
+- **Methods Ruby doesn't have.** `Range#exclusive?` is registered
+  alongside Ruby's `exclude_end?`; a script using it is not Ruby. The
+  fix is removing it. Other builtins may carry similar extras: the
+  whitelist check in `spec/skill/TODO.md` §3 lists every registered
+  method, which is where to compare each class against Ruby's.
 
 - **Quoted Symbol literals don't decode escapes.** `:"a\nb"` keeps a
   literal backslash and `n`. The Symbol is built in `parser.cr` by
