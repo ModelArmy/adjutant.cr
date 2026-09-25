@@ -54,6 +54,38 @@ DEVELOPMENT.md's "Destructive verbs" writeup. Removed here rather than
 marked done, since a completed entry in a list of open problems is
 just noise for the next reader.
 
+- **A recursive copy follows symlinks out of the read grant.**
+  Predicted 2026-09-24 by reading `verbs/cp.cr`, `verbs/mv.cr` and
+  Crystal's `file_utils.cr`. `Legate.cp(from, to, recursive: true)`
+  authorizes `from` once and hands the tree to `FileUtils.cp_r`,
+  which recurses with `Dir.exists?` and copies with `File.copy`, both
+  following symlinks. A link inside the tree is copied as its
+  target's content, wherever the target is: a repository carrying
+  `docs/keys -> /home/user/.ssh` puts the keys in the write area,
+  outside every read grant, unlabelled, under one audit record naming
+  the repository. A link to an ancestor loops until the disk fills,
+  since the write budget for a directory copy is recorded after the
+  copy (`directory_size`), and the read budget not at all. `mv`'s
+  cross-device fallback (`copy_tree`) checks type without following,
+  then `File.open`s a symlink, copying its target and deleting the
+  link. `rm` is unaffected: `FileUtils.rm_r` doesn't recurse into a
+  symlink. The fix is walking the tree in Legate, without following
+  links: recreate each link as a link, or refuse the copy; check
+  containment per entry; label per file; record both budgets as each
+  file is copied.
+
+- **`Legate.append` writes through a dangling symlink.** Predicted
+  2026-09-24 by reading `verbs/append.cr`. A dangling link resolves,
+  in `check_root_maybe_missing`, to a prospective path inside the
+  root, so `authorize_write` allows it; `File.open(raw, "a")` then
+  follows the link and creates its target. With
+  `out/log -> /etc/cron.d/job` in a write root and no file at the
+  target, `Legate.append("out/log", ...)` creates a file outside every
+  write root. `write` refuses an occupied destination and `write!`
+  and `cp` rename over the link, so neither is affected. The fix is
+  checking the destination without following symlinks and refusing a
+  link, or resolving it and authorizing the resolved target.
+
 - **A path on another Windows drive passes root containment.**
   Predicted 2026-09-24 by reading `grants.cr`; no spec has hit it.
   `Grants#under?` and `#under_maybe_missing?` call
