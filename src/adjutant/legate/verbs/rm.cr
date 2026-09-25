@@ -7,119 +7,29 @@ require "../../native_call_context"
 module Adjutant
   module Legate
     module Verbs
-      # The `delete` grant's three verbs — LEGATE.md §4.4:
+      # The `delete` grant's three verbs (LEGATE.md §4.4):
       #
       #   Legate.rm(path)      -> Bool      # a file
-      #   Legate.rmdir(path)   -> Bool      # an EMPTY directory
-      #   Legate.rmdir!(path)  -> Integer   # a whole tree, entries removed
+      #   Legate.rmdir(path)   -> Bool      # an empty directory
+      #   Legate.rmdir!(path)  -> Integer   # a tree; entries removed
       #
-      # ## Why three names and not one verb with a flag
+      # Three names rather than a `recursive:` flag, so the bang means
+      # "the more destructive form" here as it does on `write!`, `cp!`
+      # and `mv!`. A wrong choice raises `Legate::Conflict` naming the
+      # verb that would work: `rm` on a directory points to `rmdir`,
+      # `rmdir` on a file to `rm`, `rmdir` on a non-empty directory to
+      # `rmdir!`.
       #
-      # This REVERSES §4.4's explicit "`rm` subsumes `rmdir` and
-      # `unlink`," which was a deliberate simplification, and §4.4 has
-      # been rewritten rather than left in disagreement with this
-      # file. Recording the reasoning here as well, since the spec now
-      # states only the outcome:
+      # A missing path returns false or 0 (§2.3), after authorization,
+      # so a missing path outside every delete root is still denied.
       #
-      # Recursion only ever means directory-tree walking. It was
-      # therefore always mis-attached to a verb that ALSO deletes
-      # single files — `rm("f.txt", recursive: true)` is a sentence
-      # with no meaning. That was tolerable while `recursive:` was the
-      # only modifier in Legate. It stopped being tolerable once
-      # `write!`/`cp!`/`mv!` established the bang as "do the more
-      # destructive thing you would otherwise refuse", because `rm!`
-      # would then have had to mean "recursive" — a second, unrelated
-      # sense of the same suffix, in the same module, three verbs
-      # apart. The bang convention did not exist when §4.4's line was
-      # written, and it is what makes the extra name earn its place.
+      # Symlinks are never followed: these verbs remove the link, and
+      # `rmdir!`'s walk doesn't descend into a symlinked directory,
+      # which matters because only the tree's root is authorized. A
+      # symlink named directly is already resolved by the perimeter.
       #
-      # `cp` keeps its `recursive:` kwarg and this is not an
-      # inconsistency: there, `recursive:` governs the SOURCE (may I
-      # walk a tree) while the bang governs the DESTINATION (may I
-      # destroy what is there). Two orthogonal questions, two
-      # spellings. Here there is no destination at all, so the two
-      # questions collapse into one axis and a single spelling — the
-      # name — carries it.
-      #
-      # ## What each verb refuses, and why the refusals cross-name
-      #
-      # Every refusal below is `Legate::Conflict` and every message
-      # names the verb that WOULD have worked (principle 6). The three
-      # verbs partition the target space exactly, so a script that
-      # picked the wrong one is always one word from correct:
-      #
-      #   - `rm` on a directory     -> "use Legate.rmdir / Legate.rmdir!"
-      #   - `rmdir` on a file       -> "use Legate.rm"
-      #   - `rmdir` on a non-empty  -> "use Legate.rmdir!"
-      #   - `rmdir!` on a file      -> "use Legate.rm"
-      #
-      # ## Conventions carried over unchanged from the single verb
-      #
-      #   - **A missing path is not an error, for any of the three.**
-      #     `rm`/`rmdir` return `false`, `rmdir!` returns `0`. This is
-      #     §2.3's "nil/0 for a non-existent path" family and the same
-      #     spirit `mkdir` is idempotent in: "make sure this isn't
-      #     here" has already succeeded if it was never here. It is
-      #     deliberately a DIFFERENT convention from `cp`/`mv`'s
-      #     `NotFound`-on-missing-source, which have been asked to do
-      #     something impossible rather than something already done.
-      #
-      #     This is the reason `Broker#authorize_delete` has an
-      #     `allow_missing` parameter (see its own comment):
-      #     authorization still happens FIRST and in full, so a
-      #     missing path OUTSIDE every granted delete root is still a
-      #     fatal denial — "you may not delete here" is true
-      #     regardless of whether anything happens to be there. Only
-      #     once the grant says yes does absence become an ordinary
-      #     result.
-      #
-      #   - **Symlinks are never followed.** Every existence and type
-      #     test uses `File.info?(..., follow_symlinks: false)`, so
-      #     these verbs remove THE LINK, never the thing it points at.
-      #
-      #     CORRECTED 2026-09-04, and the correction matters because
-      #     the previous version of this comment claimed a hole the
-      #     perimeter already closes. It said following would let a
-      #     symlink planted inside a granted delete root delete an
-      #     arbitrary target outside every root, "with the broker
-      #     having authorized only the link's own in-bounds path."
-      #     That is not what happens. `authorize_delete` passes
-      #     `allow_missing: true`, so `check_root_maybe_missing`
-      #     realpaths the deepest EXISTING ancestor — and a symlink is
-      #     an existing entry, so it resolves to its out-of-root
-      #     target and is DENIED before any of these verbs runs. Same
-      #     finding as `write.cr`'s own destination check, reached the
-      #     same way: by reading `grants.cr` rather than inferring
-      #     from this file's prior comment.
-      #
-      #     What non-following actually buys, in decreasing order of
-      #     importance:
-      #       - `count_entries` does not DESCEND into a symlinked
-      #         directory inside a tree. This is the real security
-      #         property, and it is `rmdir!`-specific: the perimeter
-      #         authorizes the tree's root, not every entry the walk
-      #         reaches, so a link inside the tree is the one place a
-      #         following walk could still escape.
-      #       - `rm`/`rmdir` answer about the ENTRY the script named,
-      #         so an in-root link to an in-root file removes the
-      #         link and leaves the file, which is what "remove this
-      #         path" means.
-      #       - A dangling link is removable rather than reported as
-      #         absent.
-      #
-      #   - **No byte budget is recorded.** `Budget` models bytes read
-      #     and written; deletion moves neither, and there is no
-      #     `record_delete`. The wall-clock check inside
-      #     `authorize_delete` is the only budget mechanism a large
-      #     `rmdir!` interacts with. A real, accepted gap: a script can
-      #     delete an unbounded number of entries without touching its
-      #     read/write budgets.
-      #
-      #   - **`reversible`/`severity` are set explicitly on all three**
-      #     rather than left at their defaults. `Reversibility::Yes` on
-      #     a verb whose entire purpose is destroying data would be
-      #     wrong in the one direction a risk profile must never be
-      #     wrong in.
+      # No byte budget applies; deletion reads and writes nothing. Each
+      # verb declares its reversibility and severity explicitly.
       module Rm
         def self.bootstrap(interp : Interpreter, legate : RubyClass, broker : Broker) : Nil
           conflict = Helpers.fetch(legate, interp, "Conflict")
@@ -129,24 +39,12 @@ module Adjutant
           register_rmdir_bang(interp, legate, broker, conflict)
         end
 
-        # `Legate.rm(path) -> Bool` — files only.
-        #
-        # Returns `true` if a file was removed, `false` if nothing was
-        # there. Bool rather than the count §4.4 used to specify: a
-        # files-only verb can only ever return 0 or 1, and
-        # `if Legate.rm(p) > 0` is a clumsy spelling of a yes/no. The
-        # count survives on `rmdir!`, which is the verb where "how
-        # many" is worth knowing.
+        # `Legate.rm(path) -> Bool`: true if a file was removed, false
+        # if nothing was there.
         private def self.register_rm(interp : Interpreter, legate : RubyClass, broker : Broker,
                                      conflict : RubyClass) : Nil
-          # `authorities: Set{Authority::Delete}` — same fix as
-          # write.cr's own version, narrower in the same way mkdir's
-          # is: `rm` takes only a path, no content, so this protects
-          # against a TAINTED path being used as a delete target
-          # (this verb's own EXISTING `authorize_delete`/`declare_
-          # sensitivity` call only ever checks the path's own
-          # configured sensitivity, never whether it arrived tainted
-          # from somewhere else).
+          # A Delete sink, so a labelled path is checked against
+          # policy as well as the path's own sensitivity.
           legate.define_native_singleton_method(
             interp.symbols.intern("rm").value,
             RiskProfile.new(
@@ -173,14 +71,10 @@ module Adjutant
           end
         end
 
-        # `Legate.rmdir(path) -> Bool` — an EMPTY directory only.
-        #
-        # The non-recursive half of the old verb's directory case,
-        # with the same emptiness rule §4.4 always required, now
-        # carried by the name instead of the absence of a flag.
+        # `Legate.rmdir(path) -> Bool`: an empty directory only.
         private def self.register_rmdir(interp : Interpreter, legate : RubyClass, broker : Broker,
                                         conflict : RubyClass) : Nil
-          # See register_rm's own comment on this exact addition.
+          # A Delete sink.
           legate.define_native_singleton_method(
             interp.symbols.intern("rmdir").value,
             RiskProfile.new(
@@ -209,18 +103,11 @@ module Adjutant
           end
         end
 
-        # `Legate.rmdir!(path) -> Integer` — the whole tree.
-        #
-        # Carries `Effect::Recursive`, which until this split was
-        # declared and used by nothing: with `rm(path, recursive:
-        # true)` the walker would have had to read a kwarg's LITERAL
-        # value to know whether a given call recursed, which is why
-        # the effect was parked. A verb that recurses unconditionally
-        # needs no such inference — the name is the fact, and the
-        # static manifest can report it.
+        # `Legate.rmdir!(path) -> Integer`: the whole tree. Declares
+        # `Effect::Recursive`, which the name makes certain.
         private def self.register_rmdir_bang(interp : Interpreter, legate : RubyClass, broker : Broker,
                                              conflict : RubyClass) : Nil
-          # See register_rm's own comment on this exact addition.
+          # A Delete sink.
           legate.define_native_singleton_method(
             interp.symbols.intern("rmdir!").value,
             RiskProfile.new(
@@ -237,32 +124,18 @@ module Adjutant
 
             refuse_file(raw, info, "rmdir!", ncc, conflict)
 
-            # Counted BEFORE the removal, not during — `FileUtils.rm_rf`
-            # reports nothing about what it removed, and counting after
-            # the fact is impossible by construction. Counting first and
-            # then removing means the returned number is what the tree
-            # HELD, which for a successful removal is exactly what was
-            # removed; one that fails partway raises rather than
-            # returning, so no caller ever sees a count that overstates
-            # what happened.
+            # Counted before removing, since `FileUtils.rm_rf` reports
+            # nothing; a removal that fails partway raises instead of
+            # returning the count.
             total = count_entries(raw)
             FileUtils.rm_rf(raw)
             Value.int(total, label)
           end
         end
 
-        # Argument handling and authorization, identical for all
-        # three verbs and therefore written once.
-        #
-        # Convention 3: join the resolved label rather than discarding
-        # `authorize_delete`'s return value. Worth spelling out why a
-        # Bool or an Integer gets a label at all, since these verbs
-        # hand back no content: the result is derived from the target,
-        # and it is a real (if narrow) channel — "does this file exist
-        # inside a sensitive directory", or "how many entries does it
-        # hold", is exactly the sort of thing a High-sensitivity path
-        # should not answer into an unlabelled value that then flows
-        # freely onward.
+        # The target path and its label, after authorization. A Bool or
+        # count about a sensitive path still carries its label, since
+        # existence and size are information too.
         private def self.target(args : Array(Value), ncc : NativeCallContext,
                                 broker : Broker) : {String, RiskFlowLabel?}
           path_val = args[1]? || Value.nil_value
@@ -272,8 +145,8 @@ module Adjutant
           {raw, label}
         end
 
-        # Both directory verbs refuse a file target the same way, and
-        # point at the same replacement.
+        # Raises `Legate::Conflict` for a file given to a directory
+        # verb, pointing to `rm`.
         private def self.refuse_file(raw : String, info : File::Info, name : String,
                                      ncc : NativeCallContext, conflict : RubyClass) : Nil
           return if info.directory?
@@ -284,23 +157,10 @@ module Adjutant
           )
         end
 
-        # Deliberately a hand-written recursive walk rather than
-        # `Dir.glob("#{dir}/**/*")`, for two reasons that both bite:
-        # glob does NOT match dotfiles by default (a `.gitignore`
-        # inside the tree would go uncounted, silently understating
-        # the return value), and glob patterns need `/`-normalizing on
-        # Windows to work at all (the bug class this codebase has hit
-        # repeatedly — see `cp.cr`'s `directory_size` comment).
-        # `Dir.children` has neither problem: it lists dotfiles, and
-        # it takes a plain directory path rather than a pattern, so
-        # there is no glob metacharacter or separator semantics
-        # involved anywhere.
-        #
-        # Counts the directory ITSELF, plus every descendant — `rm -rf
-        # dir` on a directory containing one file removes two entries,
-        # and §4.4's "entries removed" is the honest reading of that.
-        # Symlinks count as one entry each and are NOT descended into,
-        # matching the non-following stance the whole module takes.
+        # Counts the directory and every descendant, dotfiles included,
+        # a symlink as one entry and not descended into. `Dir.children`
+        # rather than a glob, which skips dotfiles and needs `/`
+        # separators.
         private def self.count_entries(dir : String) : Int64
           total = 1_i64
           Dir.children(dir).each do |child|
