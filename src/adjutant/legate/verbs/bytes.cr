@@ -8,33 +8,13 @@ require "../../native_call_context"
 module Adjutant
   module Legate
     module Verbs
-      # `Legate.bytes(path, chunk: 65_536) -> Legate::Bytes` —
-      # LEGATE.md §4.2. The FIRST real `Legate::Stream`-backed verb
-      # (`Stream` itself has existed since step 3, proven only via a
-      # throwaway `TestStream` in specs until now) — proves out the
-      # "custom `Iterator(Value)` owning an open file handle, closing
-      # on exhaustion" pattern on the SIMPLEST possible case (fixed-
-      # size binary chunks, no text/encoding concerns) before `lines`
-      # builds the same pattern with a line-cap/scrub layer on top,
-      # and `records` builds real JSONL/CSV parsing on top of THAT.
+      # `Legate.bytes(path, chunk: 65_536) -> Legate::Bytes`
+      # (LEGATE.md §4.2): a stream of Legate::Chunks. Authorization and
+      # existence are checked when `Legate.bytes` is called (§4.2); the
+      # file is read lazily, one chunk per pull.
       #
-      # Eager on authority (§4.2's own text: "these verbs raise
-      # NotFound and Denied eagerly, at CONSTRUCTION") — unlike
-      # `read`'s single call that does everything at once, a stream
-      # verb's authorization+existence check happens the moment
-      # `Legate.bytes(...)` is CALLED, but the actual file reads (and
-      # per-chunk budget accounting) happen lazily, one chunk at a
-      # time, as the script walks the returned stream.
-      #
-      # NAMING NOTE: this module is named `Bytes`, matching the
-      # established 1:1 verb-name-to-module-name convention (Stat,
-      # Read, List) — but that COLLIDES with Crystal's own top-level
-      # `Bytes` (`= Slice(UInt8)`) inside this module's own body,
-      # since Crystal's constant lookup resolves a bare `Bytes` to
-      # THIS module first. Every reference to the real byte-slice type
-      # below is explicitly `::Bytes` for exactly this reason — same
-      # fix pattern already applied to `Grants`/`Path`'s own `::Path`
-      # qualification earlier this session.
+      # This module's name hides Crystal's top-level `Bytes`, so the
+      # byte-slice type is written `::Bytes` throughout.
       module Bytes
         KWARG_NAMES        = Set{"chunk"}
         DEFAULT_CHUNK_SIZE = 65_536
@@ -52,10 +32,7 @@ module Adjutant
             RiskProfile.new(effects: Set{Effect::ReadsFiles}), # complements declare_sensitivity — see stat.cr's own comment
             KWARG_NAMES,
           ) do |args, _blk, ncc|
-            # `chunk` validated FIRST — SCOPE.md's "kwarg-validation
-            # ordering inconsistent across the read-verb slice" entry
-            # (added 2026-08-27) — same reasoning as `read.cr`'s
-            # identical retrofit.
+            # `chunk:` is validated before authorizing.
             chunk_size = chunk_size_of(ncc)
 
             path_val = args[1]? || Value.nil_value
@@ -63,41 +40,27 @@ module Adjutant
             raw = str_val.as_string
             label = str_val.label
 
-            # `allow_missing: true` then an explicit existence check
-            # below — same §2.3-flavoured reasoning as `stat`/`read`:
-            # a missing path under a granted root is recoverable
-            # `NotFound`, not a fatal `Denied`; only a path outside
-            # every granted root is a real denial.
-            #
-            # `RiskFlowLabel.join` — see `stat.cr`'s own comment.
+            # A missing path inside a granted root is
+            # `Legate::NotFound`, not a denial. The label joins the path
+            # argument's with the one policy gives the path.
             label = RiskFlowLabel.join(label, broker.authorize_read(raw, ncc, allow_missing: true))
 
             unless File.info?(raw)
               ncc.raise_error_class("#{raw} not found", not_found)
             end
 
-            # Small, accepted TOCTOU-class race, same family §8.1
-            # already normalizes for this codebase: the file could
-            # vanish between the `File.info?` check above and this
-            # `File.open` call. Left to propagate as a raw, unhandled
-            # Crystal exception rather than caught and remapped to
-            # `Legate::NotFound` — this specific window is narrow
-            # enough, and the alternative (wrapping every possible
-            # `File.open` failure mode in a guess about which Legate
-            # error tier it belongs to) risks miscategorizing a
-            # DIFFERENT failure (e.g. a permissions error) as
-            # `NotFound` when it isn't.
-            # BEFORE `File.open`, so a refusal at the cap happens
-            # while there is still no handle to leak — see
-            # `Broker#check_stream_capacity!`.
+            # A file removed since the existence check fails in
+            # `File.open` as a Crystal error, not `NotFound`: other open
+            # failures, such as permissions, aren't a missing file. The
+            # stream cap is checked before opening, so a refusal leaves
+            # no handle.
             broker.check_stream_capacity!(ncc, too_many)
 
             io = File.open(raw, "rb")
             iterator = ChunkIterator.new(io, chunk_size, chunk_cls, label, broker)
-            # Registered here rather than inside the constructor: an
-            # object handing `self` to a collaborator before its own
-            # initialization has finished is avoidable, and the verb
-            # is the natural place for "this run now owns a handle."
+            # Registered by the verb rather than the iterator's
+            # constructor, so the object is complete before the run
+            # holds it.
             #
             broker.register_source(iterator)
             Value.robject(StreamObject.new(bytes_cls, iterator))
@@ -110,30 +73,12 @@ module Adjutant
           n > 0 ? n : DEFAULT_CHUNK_SIZE
         end
 
-        # Owns the open `File` handle for the LIFETIME of one stream
-        # walk — closes it the moment the source is physically
-        # exhausted (`IO#read` returning 0), matching
-        # `Legate::Stream`'s own single-pass semantics (stream.cr)
-        # exactly: once THIS iterator hits `Stop`, `Legate::EOF` on
-        # any further terminal is what a script sees, not a dangling
-        # open file handle.
-        #
-        # `broker.budget.record_read(n)` is called PER CHUNK, as it's
-        # pulled — not once at construction like `read`'s single
-        # `record_read(info.size)` call — so a script streaming a huge
-        # file hits `total_read` budget exhaustion (a fatal
-        # `Legate::FatalSignal`, propagating straight out of `next`
-        # through `Stream`'s own `walk` loop) partway through, which
-        # is the whole point of a per-run budget existing at all —
-        # §4.2's single eager `broker.authorize_read` call at
-        # construction only covers the STATIC grant/policy check, not
-        # budget accounting, which is necessarily progressive for a
-        # stream of unknown total size.
-        # Closing on exhaustion is the FAST path, not the only one —
-        # `first(n)`/`take(n)` halt a walk without exhausting the
-        # source, and an exception can leave the walk entirely, so the
-        # run's `OpenSources` registry closes whatever never got here
-        # (see `open_sources.cr`).
+        # Owns the open file for one walk and closes it when a read
+        # returns 0, so a later terminal gets `Legate::EOF`. Each chunk
+        # is recorded against the read budget as it is pulled, so a
+        # large file exhausts `total_read` partway. A walk halted by
+        # `first(n)` or an exception leaves the file open for
+        # `OpenSources` to close at the end of the run.
         class ChunkIterator
           include ::Iterator(Value)
           include Closable
@@ -155,12 +100,9 @@ module Adjutant
             Legate::Chunk.build(@chunk_cls, buf[0, n], @label)
           end
 
-          # Idempotent, as `Closable` requires: reached either from
-          # `#next` on genuine exhaustion or from `close_all` at the
-          # end of a run, and on an abandoned stream BOTH can happen
-          # if the script pulls again after teardown. `@done` also
-          # keeps `#next` returning `stop` rather than reading a
-          # closed handle.
+          # Idempotent, as `Closable` requires: exhaustion and the
+          # end-of-run teardown can both reach it. `@done` keeps `#next`
+          # from reading a closed handle.
           def close_source : Nil
             return if @done
             @done = true
