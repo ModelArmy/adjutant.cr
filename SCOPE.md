@@ -1862,6 +1862,14 @@ individually.
 
 ### Tooling
 
+- **Legate keeps aliases for types that moved to core.**
+  `legate/open_sources.cr`, `legate/audit_log.cr` and
+  `legate/budget.cr` exist only to alias `Closable`, `OpenSources`,
+  `AuditRecord`, `AuditLog` and `Budget` under `Legate::` names, and
+  28 references in `src/` and `spec/` still use them. For the
+  code-cleanup phase: rename the references to the core names and
+  delete the three files.
+
 - **Eleven ameba rule classes were excluded per-file rather than
   fixed.** Added 2026-09-01, when the `Effect` rename forced an ameba
   bump from 1.6.4 to 1.7.0 and the new version reported warnings
