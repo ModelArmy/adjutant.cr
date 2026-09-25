@@ -106,7 +106,7 @@ just noise for the next reader.
 **Promoted 2026-09-24: Adjutant must be a proper subset of Ruby.**
 Anything it accepts and then runs differently from Ruby is Must Fix,
 whatever its frequency. A construct Adjutant rejects is only a gap and
-can stay in Will Fix. The first twenty-three entries below are divergences;
+can stay in Will Fix. The first twenty-four entries below are divergences;
 where two remedies are listed, rejecting is always acceptable, since
 it restores the subset.
 
@@ -275,6 +275,13 @@ it restores the subset.
   fix is removing it. Other builtins may carry similar extras: the
   whitelist check in `spec/skill/TODO.md` §3 lists every registered
   method, which is where to compare each class against Ruby's.
+
+- **`include` and `extend` accept a class.** `mixins.cr` takes the
+  argument's RubyClass without checking `is_module?`, so
+  `include SomeClass` mixes a class's methods in, where Ruby raises
+  TypeError ("wrong argument type Class (expected Module)"). A
+  non-class argument fails in `as_rclass` as an internal error. Both
+  should raise TypeError.
 
 - **Quoted Symbol literals don't decode escapes.** `:"a\nb"` keeps a
   literal backslash and `n`. The Symbol is built in `parser.cr` by
