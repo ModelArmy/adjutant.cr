@@ -1,50 +1,25 @@
 module Adjutant
-  # Every diagnostic's wording, keyed by code.
+  # Every diagnostic's wording, keyed by code: the authoritative
+  # registry, which ERRORS.md documents and a spec checks against it.
+  # A new diagnostic needs an entry here and a row there.
   #
-  # This is the authoritative registry — `ERRORS.md` documents it for
-  # readers, and a spec checks the two agree so the duplication can't
-  # silently drift. Adding a diagnostic means adding an entry here AND
-  # a row there; the spec fails if you do only one.
+  # The code is the identity, stable when a check moves between
+  # phases, when wording changes, and across translations. Its letter
+  # names the kind of problem, not the subsystem that caught it:
   #
-  # Why the code, and not the message, is the identity:
+  #   P  malformed syntax           L  a limit reached
+  #   C  static semantic error      F  a risk-flow refusal
+  #   R  runtime fault              N  a native function raised
+  #   U  deliberately unsupported   H  the host misused the API
+  #                                 I  an internal invariant broke
   #
-  #   - It is stable when enforcement moves phases. The nested-`def`
-  #     check (U004) moved from the VM to the compiler mid-session; an
-  #     identity encoding the subsystem would have had to change with
-  #     it, which is not an identity.
-  #   - It is a stable key for translation. A second language is a
-  #     second catalog, not an audit of every raise site.
-  #   - It gives specs something to assert on that survives rewording.
-  #   - It gives the reader — often an LLM that generated the bad
-  #     script — something to look up in ERRORS.md or a skill, rather
-  #     than a sentence to pattern-match against.
-  #
-  # The letter encodes the KIND of problem, never the subsystem that
-  # caught it:
-  #
-  #   P — malformed syntax
-  #   C — static semantic error
-  #   R — runtime fault
-  #   U — deliberately unsupported (see UNSUPPORTED.md)
-  #   F — IFC / risk-flow refusal
-  #
-  # Codes are allocated sequentially within a letter, never reused,
+  # Codes are allocated in sequence within a letter, never reused and
   # never renumbered.
   module ErrorCatalog
-    # One diagnostic's wording. `summary` is the headline; `why`
-    # explains the reason the construct behaves this way; `help` says
-    # what to do instead. Keeping `why` and `help` separate matters
-    # because they answer different questions, and a reader who
-    # already knows the why still needs the how.
-    #
-    # All three may contain `{placeholder}`s, substituted from the
-    # Diagnostic's `data`.
-    #
-    # Messages must be self-contained. Never reference a file in this
-    # repository — a path like `SCOPE.md` means nothing to a script
-    # author or to an LLM reading the output. (Learned the hard way:
-    # the first draft of the 2026-07-27 enforcement messages did
-    # exactly this and had to be stripped.)
+    # One diagnostic's wording: `summary` the headline, `why` the
+    # reason, `help` what to do instead, each with `{placeholder}`s
+    # filled from the Diagnostic's `data`. Messages must stand alone:
+    # a repository file means nothing to the reader.
     struct Entry
       getter code : String
       getter summary : String
@@ -474,11 +449,9 @@ module Adjutant
 
       # --- L: limits reached ----------------------------------------
       #
-      # The script is valid; it is just larger than something Adjutant
-      # is prepared to handle. Distinct from `R` because the reader's
-      # move is different: not "this is wrong" but "this is too much".
-      # Where the ceiling is host-configurable the help says so — and
-      # where it is not, it must not pretend otherwise.
+      # The script is valid but larger than something Adjutant will
+      # handle. Where the ceiling is host-configurable, the help says
+      # so, and only then.
       "L001" => Entry.new(
         code: "L001",
         summary: "loops nested more than {limit} deep",
@@ -593,9 +566,7 @@ module Adjutant
 
       # --- F: risk-flow refusals ------------------------------------
       #
-      # Not a fault at all: the script asked for something the host's
-      # policy declines to allow. Nothing is broken, and the reader may
-      # well be the person who wrote the policy rather than the script.
+      # The host's policy declined the call; nothing is broken.
       "F001" => Entry.new(
         code: "F001",
         summary: "risk flow policy rejected `{call}`: {reason}",
@@ -611,12 +582,8 @@ module Adjutant
 
       # --- N: a native function raised ------------------------------
       #
-      # A host-registered function raised while the script called it,
-      # and Adjutant has no idea why — the detail below is the host's
-      # own message, passed through. Its own letter rather than an `R`
-      # code because the provenance is the useful part: neither
-      # Adjutant nor, necessarily, the script is at fault, and nothing
-      # here can say which.
+      # The detail is the host function's own message. Adjutant can't
+      # tell whether the script or the function is at fault.
       "N001" => Entry.new(
         code: "N001",
         summary: "native function `{function}` raised: {message}",
@@ -631,18 +598,9 @@ module Adjutant
 
       # --- H: the host misused Adjutant's API -----------------------
       #
-      # Not the script's fault and not Adjutant's: whoever embedded
-      # Adjutant called it wrongly. The reader is a developer with a
-      # stack trace, so these carry no span — most fail before any
-      # script exists, and where one is running, a position would aim
-      # the reader at innocent script source.
-      #
-      # These deliberately do NOT share one exception class. Most are
-      # about bad arguments and so are `ArgumentError`s, but an
-      # ambiguous policy is about configuration state rather than any
-      # one call's arguments, and claiming otherwise would be false.
-      # The code classifies the failure; the class stays whatever is
-      # actually accurate.
+      # For the developer embedding Adjutant, so no span: most fail
+      # before any script exists. The exception class varies with what
+      # actually went wrong (ArgumentError, HostStateError, ...).
       "H001" => Entry.new(
         code: "H001",
         summary: "a RiskProfile with no effects must be reversible and Info",
@@ -702,15 +660,9 @@ module Adjutant
 
       # --- I: internal invariant violations -------------------------
       #
-      # These mean Adjutant is broken, not the script. None carries a
-      # `help`: there is nothing the reader can do to their own code,
-      # and offering a suggestion would send them editing a script
-      # that was never at fault. Renderers append a report footer
-      # instead — see `Diagnostic#internal?`.
-      #
-      # `why` here is aimed at whoever ends up DEBUGGING Adjutant, not
-      # at the person who hit it: it should say enough for a
-      # maintainer reading a pasted report to know where to look.
+      # Adjutant is broken, not the script, so no `help`; renderers add
+      # a report footer. `why` is for the maintainer reading the
+      # report.
       "I001" => Entry.new(
         code: "I001",
         summary: "internal: unknown opcode {opcode}",
@@ -761,13 +713,9 @@ module Adjutant
              "Usually a new node type added to the AST and to the parser " \
              "without a matching case in the compiler."
       ),
-      # No `why`/`help`: P001 stands in for every `expect` failure the
-      # parser can have — a missing `)`, a missing `,`, a missing
-      # `then`. Any explanation general enough to cover all of them
-      # would be too vague to act on, and the span labels already say
-      # what was wanted and where. A syntax error that DOES have
-      # something general worth saying gets its own code instead —
-      # see P003.
+      # No `why` or `help`: P001 covers every expected-token failure,
+      # and the span labels say what was wanted. A syntax error with
+      # something general to say gets its own code, as P003 does.
       "P001" => Entry.new(
         code: "P001",
         summary: "expected {expected}, found {found}"
@@ -788,11 +736,7 @@ module Adjutant
               "too early closes the innermost block, and everything after " \
               "it then belongs to the wrong place."
       ),
-      # Matches real Ruby's own SyntaxError exactly (confirmed against
-      # `irb`, 2026-08-07) — `else` only means something as the
-      # "body raised nothing" branch of an actual rescue/else pairing,
-      # so a `begin` with no `rescue` clause at all has nothing for
-      # `else` to attach to.
+      # As Ruby's SyntaxError: `else` needs a `rescue`.
       "P004" => Entry.new(
         code: "P004",
         summary: "`else` without `rescue` is useless",
@@ -807,9 +751,7 @@ module Adjutant
               "just move `else`'s body to the end of the `begin` body " \
               "directly."
       ),
-      # Also matches real Ruby's own SyntaxError exactly (confirmed
-      # against `irb`, 2026-08-07) — a `begin` grammatically allows at
-      # most one `else`, same as at most one `ensure`.
+      # As Ruby's SyntaxError: at most one `else`.
       "P005" => Entry.new(
         code: "P005",
         summary: "a `begin` block can have only one `else` clause",
@@ -917,11 +859,8 @@ module Adjutant
       ),
     }
 
-    # Unknown codes render as themselves rather than raising. A
-    # diagnostic about a missing diagnostic helps nobody, and a
-    # reporting path that can itself explode is worse than one that
-    # degrades — the consistency spec is what actually catches this,
-    # at build time, where it belongs.
+    # An unknown code renders as itself rather than raising; the
+    # consistency spec catches it at build time.
     def self.[](code : String) : Entry
       ENTRIES[code]? || Entry.new(
         code: code,
@@ -937,22 +876,10 @@ module Adjutant
       ENTRIES.keys.sort!
     end
 
-    # Names Adjutant deliberately excludes, mapped to the code that
-    # says so.
-    #
-    # Consulted only AFTER normal resolution has failed. That ordering
-    # is the whole design: a script may legitimately define its own
-    # `send` — `class Mailer; def send; ...; end; end` is valid Ruby and
-    # valid Adjutant — and rejecting the name at compile time, as was
-    # first proposed, would break that. Reaching this table means the
-    # name resolved to nothing, so the script meant Ruby's construct.
-    #
-    # Deliberately conservative. Every entry here is a promise that the
-    # construct is excluded permanently, so only what UNSUPPORTED.md
-    # actually declares belongs. `methods`, `instance_variable_get` and
-    # similar are plausible additions but are NOT declared exclusions
-    # today — listing them would tell a reader "never coming" on our own
-    # authority.
+    # Names Adjutant excludes, mapped to the code that says so,
+    # consulted only after normal resolution fails, so a script's own
+    # `def send` still works. Only what UNSUPPORTED.md declares belongs
+    # here.
     EXCLUDED_METHODS = {
       "send"           => "U005",
       "public_send"    => "U005",
@@ -965,44 +892,33 @@ module Adjutant
       "module_eval"    => "U006",
       "instance_exec"  => "U006",
       "class_exec"     => "U006",
-      # extend/include still resolve fine as a bare, declarative
-      # statement inside the class/module body being mixed into (the
-      # implicit-self dispatch path in dispatch_call finds them via
-      # Module's own native methods before ever reaching this table) —
-      # this entry only ever fires for an EXPLICIT-RECEIVER call
-      # (`X.extend(M)`, `obj.extend(M)`, ...), which currently fails to
-      # resolve for an entirely different, mundane reason (no dispatch
-      # path checks the receiver's OWN class's class's native methods
-      # for either form) and would otherwise surface as a generic,
-      # misleading "undefined method" — see U018.
+      # Bare `include` and `extend` in a class or module body resolve
+      # to Module's native methods before reaching here; this fires
+      # for an explicit receiver (`X.extend(M)`).
       "extend"  => "U018",
       "include" => "U018",
       "proc"    => "U019",
     }
 
-    # Same, for constants — a different resolution path reports these.
+    # The same, for constants, consulted by constant resolution.
     EXCLUDED_CONSTANTS = {
       "ObjectSpace" => "U007",
     }
 
     PLACEHOLDER = /\{([a-z_][a-z0-9_]*)\}/
 
-    # Substitute `{key}` from `data`. An unmatched placeholder is left
-    # verbatim rather than blanked: a visible `{param}` in the output
-    # says "this diagnostic was built wrong," where silently emitting
-    # an empty string produces a grammatically fine sentence that has
-    # quietly lost the one detail the reader needed.
+    # Substitutes `{key}` from `data`. An unmatched placeholder is
+    # left as written, so a badly built diagnostic shows rather than
+    # quietly losing a detail.
     def self.interpolate(template : String, data : Hash(String, String)) : String
       template.gsub(PLACEHOLDER) do |match|
-        # `match` is the whole `{key}`; slice the braces off rather
-        # than relying on `$1`, which depends on `$~` being set for
-        # this block.
+        # The braces are sliced off rather than reading `$1`.
         data[match[1..-2]]? || match
       end
     end
 
-    # Placeholder names used by a code's templates. The consistency
-    # spec uses this to check ERRORS.md documents each one.
+    # The placeholder names in a code's templates, for the
+    # consistency spec.
     def self.placeholders(code : String) : Array(String)
       entry = self[code]
       found = [] of String

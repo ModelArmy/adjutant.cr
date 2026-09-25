@@ -1,13 +1,8 @@
 module Adjutant
-  # The effect boundary for script execution.
-  #
-  # All physical external effects a script can produce route through
-  # this interface. The harness supplies a concrete implementation;
-  # scripts cannot bypass it.
-  #
-  # Capability exposure (which modules a script can require) is handled
-  # separately by ModuleRegistry. EffectHandler is strictly for physical
-  # effects: output, filesystem access, etc.
+  # The host's implementation of a script's direct physical effects:
+  # standard output and the virtual filesystem `require` reads.
+  # Which modules a script can load is ModuleRegistry's concern;
+  # Legate's effects go through the Broker.
   abstract class EffectHandler
     # Write a string to standard output.
     abstract def write_stdout(s : String) : Nil
@@ -19,9 +14,8 @@ module Adjutant
     abstract def vfs_exists?(path : String) : Bool
   end
 
-  # A capturing EffectHandler for use in tests.
-  #
-  # Collects stdout output for assertion and supports an in-memory VFS.
+  # An EffectHandler for tests: captures stdout and serves an
+  # in-memory VFS.
   class TestEffectHandler < EffectHandler
     getter stdout_log : Array(String)
 

@@ -2,67 +2,35 @@ require "http/client"
 
 module Adjutant
   module Utils
-    # Reads an HTTP response body in chunks, without buffering the
-    # whole thing and without the caller ever seeing a fiber or a
-    # channel.
+    # Reads an HTTP response body in chunks, without buffering it and
+    # without the caller seeing a fiber or channel:
+    # `while chunk = stream.next_chunk`.
     #
-    # WHY THIS EXISTS AT ALL. Crystal's `HTTP::Client#exec` comes in
-    # two forms and neither one does what streaming needs on its own:
+    # `HTTP::Client#exec` either returns a buffered body or, in block
+    # form, closes the connection when the block returns. So a producer
+    # fiber keeps the block open and sends chunks over a channel to the
+    # consumer.
     #
-    #   - `exec(request)` returns a response whose body is already a
-    #     fully-read String. It buffers, which is the thing being
-    #     avoided.
-    #   - `exec(request) { |response| ... }` exposes an unconsumed
-    #     `response.body_io`, but closes the connection the moment the
-    #     block returns — so the body cannot outlive the call.
-    #
-    # The block form is the only one with a live `body_io`, so the
-    # block has to STAY OPEN for as long as the caller wants chunks.
-    # That means the reading has to happen on its own fiber, with the
-    # consumer pulling from the other end, and it means somebody has
-    # to own the shutdown handshake. All of that is here, so that a
-    # caller can write `while chunk = stream.next_chunk` and think
-    # about nothing else.
-    #
-    # DELIBERATELY KNOWS NOTHING ABOUT ITS CALLER. No budgets, no
-    # labels, no error classes, no policy — it speaks HTTP and fibers
-    # and nothing else. The concurrency lives here with no policy in
-    # it; the policy lives in the caller with no concurrency in it,
-    # which is what makes each half testable on its own.
-    #
-    # Not thread-safe, and not intended to be: one producer fiber and
-    # one consumer, on Crystal's default single-threaded scheduler.
-    #
-    # HOLDS NO TIMEOUTS OF ITS OWN, deliberately — it inherits
-    # whatever `connect_timeout`/`read_timeout` the client was given,
-    # so timeouts are configured in one place rather than two that can
-    # disagree. The consequence is worth stating plainly: a client
-    # with NO read timeout, pointed at a server that stalls mid-body
-    # or promises more bytes than it sends, parks the producer in
-    # `read` indefinitely and the consumer behind it. Nothing here
-    # will break that deadlock, because nothing here knows how long is
-    # too long. Callers should set a read timeout.
+    # Knows nothing of budgets, labels or policy; the caller layers
+    # those on. One producer and one consumer, on Crystal's
+    # single-threaded scheduler; not thread-safe. It has no timeouts of
+    # its own: a client without a read timeout, facing a server that
+    # stalls mid-body, blocks both fibers indefinitely, so callers
+    # should set one.
     class HttpResponseStream
       DEFAULT_CHUNK_SIZE = 64 * 1024
 
-      # What crosses the channel. Four cases rather than just
-      # "chunk or nil", because two of them carry information that is
-      # otherwise lost.
+      # What crosses the channel.
       private record Head, status : Int32, headers : HTTP::Headers
 
       private record Chunk, bytes : Bytes
 
       private record Done
 
-      # THE IMPORTANT ONE. A mid-stream `IO::Error`, a read timeout, a
-      # connection dropped by the peer — all happen on the PRODUCER
-      # fiber, where nothing is listening. A fiber that simply dies
-      # leaves the consumer seeing a clean end-of-stream, so a
-      # truncated download would look exactly like a complete one.
-      # That is silent data loss, and it is the worst outcome
-      # available here. So failures are sent across explicitly and
-      # re-raised on the consumer's own fiber, where the caller's
-      # own `begin`/`rescue` can actually see them.
+      # A failure on the producer fiber (an `IO::Error`, a timeout, a
+      # dropped connection), sent across and re-raised on the
+      # consumer's fiber. Otherwise a truncated body would look like a
+      # complete one.
       private record Failed, error : Exception
 
       private alias Message = Head | Chunk | Done | Failed
@@ -70,70 +38,47 @@ module Adjutant
       getter status : Int32
       getter headers : HTTP::Headers
 
-      # Opens the response and blocks until the status and headers
-      # have arrived, so both are readable before the first chunk is
-      # pulled — callers routinely need to decide what to do (follow,
-      # refuse, hand back) based on the status alone, without
-      # committing to reading a body.
+      # Opens the response and waits for the status and headers, so a
+      # caller can decide (follow, refuse, keep) before reading any
+      # body.
       def self.open(client : HTTP::Client, request : HTTP::Request,
                     chunk_size : Int32 = DEFAULT_CHUNK_SIZE) : self
         new(client, request, chunk_size)
       end
 
-      # UNBUFFERED CHANNEL, deliberately (capacity zero). The producer
-      # parks on `send` until the consumer actually pulls, which gives
-      # backpressure for free: a fast server cannot pile up chunks in
-      # memory behind a slow consumer. A buffered channel here would
-      # quietly reintroduce the buffering this class exists to avoid,
-      # bounded by the capacity rather than by the response size — but
-      # unbounded in the only sense that matters, since the caller
-      # chose streaming precisely because it does not know how big the
-      # body is.
+      # Unbuffered, so the producer waits until the consumer pulls:
+      # a fast server can't pile chunks up in memory.
       private def initialize(@client : HTTP::Client, request : HTTP::Request, @chunk_size : Int32)
         @channel = Channel(Message).new
-        # Closed by the producer's own `ensure`, never sent on. A
-        # receive on it therefore blocks until the producer has
-        # genuinely finished — see `close`.
+        # Closed by the producer's `ensure` and never sent on, so a
+        # receive returns once the producer has finished; `close`
+        # waits on it.
         @done = Channel(Nil).new
         @closed = false
         @finished = false
 
         spawn produce(request)
 
-        # The first message is always a `Head` or a `Failed` — the
-        # producer sends `Head` before reading a single byte of body.
+        # The producer sends `Head` before any body, or `Failed`.
         case first = @channel.receive
         in Head
           @status = first.status
           @headers = first.headers
         in Failed
-          # Nothing was ever opened, so there is nothing to tear down
-          # beyond what the producer's own ensure already did.
+          # Nothing was opened, so nothing to tear down.
           @finished = true
           raise first.error
         in Chunk, Done
-          # Unreachable: `produce` sends `Head` first or `Failed`.
-          # Stated as a real error rather than left to a nil status,
-          # because a silent default here would be a bug that only
-          # showed up as a mysterious zero status much later.
+          # Unreachable. Raised rather than defaulting to status 0.
           @finished = true
           raise "HttpResponseStream: producer sent #{first.class} before Head"
         end
       end
 
-      # The next chunk of body, or `nil` once the body is complete.
-      #
-      # Raises whatever the producer hit, on the CONSUMER's fiber —
-      # see `Failed`. A caller that wants `IO::Error` turned into
-      # something domain-specific wraps this call; that translation is
-      # deliberately not done here.
-      #
-      # Each chunk is a FRESHLY ALLOCATED `Bytes`. Reusing one buffer
-      # the way a single-fiber reader can (`read` into it, copy out,
-      # repeat) is unsafe once the reader and the consumer are
-      # different fibers: the consumer may still be holding chunk N
-      # when the producer overwrites it with N+1. The allocation is
-      # the price of the fiber boundary, and it is not optional.
+      # The next chunk, or nil once the body is complete. Re-raises the
+      # producer's failure here. Each chunk is newly allocated, since
+      # the consumer may still hold one when the producer reads the
+      # next.
       def next_chunk : Bytes?
         return if @finished
 
@@ -151,52 +96,24 @@ module Adjutant
           raise "HttpResponseStream: producer sent a second Head"
         end
       rescue Channel::ClosedError
-        # `close` ran while this fiber was parked waiting. Not an
-        # error: the caller asked for the stream to end.
+        # `close` ran while this fiber waited: the caller ended the
+        # stream.
         @finished = true
         nil
       end
 
-      # Ends the stream and releases the connection. Idempotent, and
-      # safe to call whether the body was fully read, partly read, or
-      # never read at all.
+      # Ends the stream and releases the connection, however much was
+      # read. Idempotent. Returns only once the producer has finished
+      # and closed the client, so a caller counting open sockets
+      # afterwards sees the true answer.
       #
-      # HOW CANCELLATION WORKS, since it is not obvious. Closing the
-      # channel makes the producer's parked `send` raise
-      # `Channel::ClosedError` inside the producer fiber. That
-      # propagates out of the read loop, out of the `exec` block —
-      # which closes the connection on its way, exactly as it would on
-      # a normal return — and into `produce`'s own `ensure`. So an
-      # abandoned stream and a completed one converge on the SAME
-      # teardown path, rather than cancellation needing machinery of
-      # its own.
-      #
-      # WAITING FOR THE PRODUCER, rather than assuming when it will
-      # run. Shutdown has to be observable to the caller and not
-      # merely eventual: an embedder tearing down a run and then
-      # counting open sockets must not see a stale answer.
-      #
-      # This used to be a single `Fiber.yield`, justified as "the
-      # producer's next scheduled step is the raise". That holds only
-      # when the producer is parked on `@channel.send`. When it is
-      # parked in a SOCKET READ — which it is for most of a body's
-      # life — closing a channel does not wake it at all, the yield
-      # returns immediately, and `close` returns with the connection
-      # still open. Corrected 2026-09-05.
-      #
-      # `@done` is closed by `produce`'s `ensure` and never sent on,
-      # so receiving from it raises `Channel::ClosedError` the moment
-      # the producer has actually finished — after `exec` has
-      # returned or unwound and the client is closed. That is the
-      # guarantee the yield was standing in for.
-      #
-      # Waiting is safe because the producer cannot deadlock against
-      # us: it is either parked on a send (which the channel close
-      # below breaks), or in a read bounded by the client's
-      # `read_timeout`. A client configured with no read timeout can
-      # still park indefinitely — the same caveat this class already
-      # documents at the top, now reaching `close` as well as
-      # `next_chunk`.
+      # Closing the channel makes a producer waiting on `send` raise
+      # `Channel::ClosedError`, which unwinds out of the `exec` block
+      # (closing the connection) and into `produce`'s `ensure`, the
+      # same path as a finished stream. A producer blocked in a socket
+      # read isn't woken by that; it stops at the next chunk or at the
+      # client's read timeout, which is why `close` waits on `@done`
+      # rather than yielding once.
       def close : Nil
         return if @closed
         @closed = true
@@ -205,7 +122,7 @@ module Adjutant
         begin
           @done.receive
         rescue Channel::ClosedError
-          # The producer finished. The expected path.
+          # The producer finished.
         end
       end
 
@@ -213,46 +130,35 @@ module Adjutant
         @closed
       end
 
-      # Runs on the producer fiber for the whole life of the stream.
+      # The producer fiber's body, for the life of the stream.
       private def produce(request : HTTP::Request) : Nil
         @client.exec(request) do |response|
           @channel.send(Head.new(response.status_code, response.headers))
           pump(response)
         end
       rescue Channel::ClosedError
-        # The consumer closed the stream. The expected way an
-        # abandoned stream ends, not a failure — and deliberately
-        # caught here rather than being allowed to escape, since an
-        # unhandled exception on a spawned fiber takes the whole
-        # process down.
+        # The consumer closed the stream. Caught, since an unhandled
+        # exception on a spawned fiber ends the process.
       rescue ex
-        # Best effort: if the consumer has already gone away the
-        # channel is closed and this send raises, which is fine —
-        # there is nobody left who needed to hear about it.
+        # If the consumer has gone, this send raises; nobody needs the
+        # failure then.
         begin
           @channel.send(Failed.new(ex))
         rescue Channel::ClosedError
         end
       ensure
-        # Closing the client here, on the producer's own fiber, rather
-        # than in `close` on the consumer's: `exec` may still be
-        # mid-read when cancellation arrives, and closing a client out
-        # from under an in-flight read from another fiber is a race.
-        # By the time this line runs, `exec` has returned or unwound,
-        # so the connection is genuinely idle.
+        # Closed here, on the producer's fiber, once `exec` has
+        # returned or unwound; closing it from the consumer's fiber
+        # could race an in-flight read.
         @client.close rescue nil
-        # LAST, and after the client is closed: this is what `close`
-        # waits on, so anything that must be true before `close`
-        # returns has to happen above this line.
+        # Last: `close` waits on this, so everything it relies on must
+        # happen above.
         @done.close
       end
 
-      # Reads the body and sends it on, one chunk at a time.
-      #
-      # A response with no `body_io` (a 204, a HEAD, anything the
-      # client already decided has no body) still sends `Done`, so the
-      # consumer's `next_chunk` returns nil rather than parking
-      # forever on a channel nobody will ever send to.
+      # Sends the body one chunk at a time. A response with no body
+      # (204, HEAD) still sends `Done`, so `next_chunk` returns nil
+      # rather than waiting forever.
       private def pump(response : HTTP::Client::Response) : Nil
         io = response.body_io?
         unless io

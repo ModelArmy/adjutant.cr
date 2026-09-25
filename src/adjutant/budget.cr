@@ -2,22 +2,11 @@ require "./resource_limits"
 require "./fatal_signal"
 
 module Adjutant
-  # Per-run cumulative budget tracking — the MIDDLE of three
-  # enforcement tiers (per-call limits in whatever performs the call;
-  # per-run budgets here; memory, CPU and file descriptors at the OS
-  # via cgroups or rlimit).
-  #
-  # `memory` is deliberately NOT tracked here even though
-  # `ResourceLimits` carries it — see that field's own comment for why
-  # it belongs to the OS tier.
-  #
-  # One Budget per run, started at construction — `wall_clock` counts
-  # from when the budget (and therefore the run) is built, not from the
-  # first effectful call, matching "per run" rather than "per active
-  # call time."
-  #
-  # Core rather than Legate as of 2026-09-01: nothing here is
-  # verb-shaped. It counts bytes and seconds.
+  # Per-run cumulative budgets: bytes read and written, and elapsed
+  # time. The middle of three tiers: per-call limits live with each
+  # call, and memory, CPU and descriptors with the OS. `memory` isn't
+  # tracked here. The wall clock starts when the Budget is built,
+  # which is when the run starts.
   class Budget
     getter total_read : Int64
     getter total_write : Int64
@@ -28,12 +17,8 @@ module Adjutant
       @started_at = Time.instant
     end
 
-    # Called AFTER `n` bytes have actually moved — not by whatever
-    # authorized the call, which runs before the read happens and has
-    # no byte count yet to add. `n` is counted first, then checked, so
-    # a call that pushes the total over the limit is itself the one
-    # that raises (consistent with "hitting the budget is exhaustion,"
-    # not "the call after the one that hit it").
+    # Counts `n` bytes after they have moved, then checks, so the call
+    # that crosses the budget is the one that raises.
     def record_read(n : Int64) : Nil
       @total_read += n
       return unless limit = @limits.total_read
@@ -46,12 +31,8 @@ module Adjutant
       exhausted!("total_write", @total_write, limit, "bytes") if @total_write > limit
     end
 
-    # Checked opportunistically at the start of every authorization
-    # rather than via a background timer — Adjutant has no other need
-    # for a timer thread, and a script that has been running long
-    # between effectful calls is caught at its NEXT one, which is the
-    # only point a fatal signal could meaningfully interrupt script
-    # execution anyway.
+    # Checked at the start of each authorization, with no timer, so a
+    # script that makes no effectful calls is never checked.
     def check_wall_clock! : Nil
       return unless limit = @limits.wall_clock
       elapsed = (Time.instant - @started_at).total_seconds
