@@ -138,6 +138,25 @@ just noise for the next reader.
   date and pid. The fix is `Dir.mkdir(dir, 0o700)`, which fails if
   the path exists, retrying with a new name on that failure.
 
+- **Per-run budgets default to unenforced, and `wall_clock` misses
+  pure computation.** Decided 2026-09-24 (D14): every per-run budget
+  gets a default, as the per-call limits have.
+  1. `wall_clock`, `total_read` and `total_write` are nil when a
+     policy omits them, which means not enforced (`Legate::Limits`,
+     `ResourceLimits`). LEGATE.md §7's example values (300s, 4GiB,
+     1GiB) are candidate defaults; the section should state whichever
+     are chosen.
+  2. `memory` is carried but enforced by nothing in Adjutant:
+     `budget.cr` leaves it to the OS tier (cgroups, rlimit). Its
+     default is advice to the host, and §7 should say so.
+  3. `wall_clock` is checked only in `Adjutant::Broker#authorize`,
+     before an effectful call, and in `Legate.grep`'s loop. A loop with
+     no effects never reaches either, so `loop { x += 1 }` runs past
+     any `wall_clock`. The VM's own `ExecutionLimits#instruction_limit`
+     defaults to 0, unlimited. The fix is checking the wall clock from
+     the VM's dispatch loop, every N instructions, alongside
+     `instruction_limit`.
+
 **Promoted 2026-09-24: Adjutant must be a proper subset of Ruby.**
 Anything it accepts and then runs differently from Ruby is Must Fix,
 whatever its frequency. A construct Adjutant rejects is only a gap and
@@ -1477,6 +1496,16 @@ individually.
   the call itself regardless of AST position.
 
 ### Legate
+
+- **`Legate::Path#under?` doesn't resolve `..`.** It compares
+  components lexically, so `Legate::Path.new("/work/../etc")` is
+  `under?` `/work`, and `split_path` splits on `/` only, so a Windows
+  path is one component. The broker doesn't use it, since grants
+  resolve with `realpath`, so this is no escape; but a script using
+  it as a boundary check, as LEGATE.md §5.1 invites, gets a wrong
+  answer. The fix is normalising `.` and `..` before comparing, and
+  refusing (or documenting) a relative path that climbs above its
+  start.
 
 - **Audit records lack §8.7's bytes, duration and argument detail.**
   LEGATE.md §8.7 asks for bytes moved, duration, and arguments with
