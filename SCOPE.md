@@ -86,6 +86,26 @@ just noise for the next reader.
   checking the destination without following symlinks and refusing a
   link, or resolving it and authorizing the resolved target.
 
+- **`Legate.fetch` forwards credentials on redirect and misses
+  IPv6-embedded metadata addresses.** Predicted 2026-09-24 by reading
+  `verbs/fetch.cr`.
+  1. Every hop reuses the call's `Options`, headers included, so an
+     `Authorization`, `Cookie` or `Proxy-Authorization` header set
+     for host A is sent to wherever A redirects, even another host the
+     policy allows. curl and browsers drop credentials when a
+     redirect changes origin; the fix is doing the same (scheme, host
+     and port).
+  2. `check_addresses!` decodes only `::ffff:`-mapped IPv6. NAT64
+     (`64:ff9b::/96`, `64:ff9b:1::/48`) and IPv4-compatible (`::/96`)
+     addresses carry an IPv4 address too; on a NAT64 network
+     `64:ff9b::a9fe:a9fe` reaches 169.254.169.254, which §8.2 refuses
+     unconditionally. The embedded address should be checked as IPv4.
+  3. AWS's IPv6 metadata endpoint, `fd00:ec2::254`, falls in
+     `fc00::/7`, so it is "local" and allowed under `local: true`
+     rather than always refused, as §8.2 requires of metadata.
+     Alibaba's `100.100.100.200` falls in carrier-grade NAT the same
+     way. Named metadata addresses belong in `always_blocked?`.
+
 - **A path on another Windows drive passes root containment.**
   Predicted 2026-09-24 by reading `grants.cr`; no spec has hit it.
   `Grants#under?` and `#under_maybe_missing?` call
