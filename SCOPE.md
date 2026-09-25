@@ -157,6 +157,37 @@ just noise for the next reader.
      the VM's dispatch loop, every N instructions, alongside
      `instruction_limit`.
 
+- **`Legate.read` and `Legate.grep` read files whole without a
+  bounded read.** Predicted 2026-09-24 by reading the verbs.
+  1. `Legate.read` checks `limit` against `File.info`'s size, then
+     `read_content` allocates `file.size` as reported at open. A file
+     that grows in between, such as an active log, is read whole past
+     `limit`, and `record_read` counts the earlier size. A pseudo-file
+     reporting size 0 (`/proc/...`) reads as "" without error.
+  2. `Legate.grep` reads each file whole into memory (`read_lines`)
+     with no size cap; its `limit:` counts matches. The byte budget is
+     recorded after the allocation, so a large file is held before
+     `total_read` can refuse it, and memory is enforced only by the OS.
+  The fix is reading at most `limit + 1` bytes from the opened handle
+  and deciding on what was read, counting those bytes; `grep` needs
+  `read_limit` per file, or a streaming match with a bounded window
+  for `context:`. `Legate.records(format: :csv)` has the same gap per
+  row: `CSV::Parser` has no row or field cap, so an unterminated
+  quoted field grows until `total_read` stops it, if one is set.
+
+- **`Legate.grep` and `Legate.list` label results by the pattern's
+  prefix, not by each file.** Predicted 2026-09-24 by reading the
+  verbs. Both consult the policy once, for the glob's fixed leading
+  directory (`Helpers.fixed_prefix`), and put that one label on every
+  result. With `/work/secrets/**` High and nothing else under `/work`,
+  `Legate.read("/work/secrets/key")` is labelled High, but
+  `Legate.grep(/./, "/work/**/*")` returns the same lines labelled as
+  `/work`, which is unlabelled, and they reach a network sink with no
+  Ask or Reject. `list` has the same shape for names, sizes and
+  mtimes. The fix is looking up each matched file's sensitivity
+  (`RiskFlowPolicy#sensitivity_for`) and labelling, and asking or
+  rejecting, per file, while keeping one audit record per call.
+
 **Promoted 2026-09-24: Adjutant must be a proper subset of Ruby.**
 Anything it accepts and then runs differently from Ruby is Must Fix,
 whatever its frequency. A construct Adjutant rejects is only a gap and
