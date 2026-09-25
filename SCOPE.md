@@ -106,6 +106,17 @@ just noise for the next reader.
      Alibaba's `100.100.100.200` falls in carrier-grade NAT the same
      way. Named metadata addresses belong in `always_blocked?`.
 
+- **Comparing self-containing containers overflows the host's
+  stack.** Predicted 2026-09-24 by reading `value_ops.cr`.
+  `ValueOps.equal?` compares Arrays and Hashes element by element,
+  recursing on the Crystal stack with no cycle check, so
+  `a = []; a << a; a == a.dup` recurses until the stack overflows,
+  which ends the host process rather than the script. `inspect` guards
+  the same shape (`guard_rendering`); Ruby's `==` detects the
+  recursion and answers. `Array#include?`, `Hash#==` and anything else
+  reaching `equal?` share it. The fix is a guard on the pair being
+  compared, as `guard_rendering` does for one container.
+
 - **A path on another Windows drive passes root containment.**
   Predicted 2026-09-24 by reading `grants.cr`; no spec has hit it.
   `Grants#under?` and `#under_maybe_missing?` call
@@ -1215,7 +1226,10 @@ current status.
   the construct, the failure shape `UNSUPPORTED.md`'s second principle
   forbids. U021 costs the most in practice: a model reaching for
   `File.read` or `ENV` is told the constant is uninitialized, not that
-  `Legate.read` or `Legate.env` is the way. U008, U009 and U021 are
+  `Legate.read` or `Legate.env` is the way. Enforcing U021 is mostly
+  entries in `ErrorCatalog::EXCLUDED_CONSTANTS` (`File`, `ENV`, ...)
+  and `EXCLUDED_METHODS` (`system`, `exec`, ...), which are consulted
+  only after resolution fails. U008, U009 and U021 are
   lookup-after-resolution-fails checks, the mechanism U005–U007 use
   (`dispatch_call` and constant resolution, `vm.cr`); U012–U015 fail
   in the parser today, so each needs its own enforcement point.
