@@ -1959,6 +1959,11 @@ individually.
 
 ### Tooling
 
+- **`Compiler::OVERLOADABLE_OPERATOR_NAMES` names the opposite of
+  what it holds.** It lists the operator method names a script may
+  not define (U017), because each compiles to a fixed opcode. For the
+  code-cleanup phase: rename it (`FIXED_OPCODE_OPERATORS`, say).
+
 - **Legate keeps aliases for types that moved to core.**
   `legate/open_sources.cr`, `legate/audit_log.cr` and
   `legate/budget.cr` exist only to alias `Closable`, `OpenSources`,

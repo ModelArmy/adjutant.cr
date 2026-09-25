@@ -7,50 +7,38 @@
 
 ## 0. Implementation status
 
-This document is written throughout in the present tense, including for
-parts that do not exist yet. That was deliberate — it is a
-specification — but it makes intent indistinguishable from behaviour on
-a casual read, and by 2026-09-02 that had caused real confusion twice.
-This table is the index of what is actually built. Add to it when a
-section lands; correct it when it drifts.
+This document is written in the present tense throughout, including for
+parts not built. This table is the index of what is. Update it when a
+section lands or drifts.
 
-Section                                  |Status      |Notes                                                                                  
------------------------------------------|------------|---------------------------------------------------------------------------------------
-§1–§3 principles, conventions, type index|Built       |                                                                                       
-§4.1 reading                             |Built       |`read` `stat` `list` `grep`                                                            
-§4.2 streaming reads                     |Built       |`lines` `bytes` `records`                                                              
-§4.3 writing                             |Built       |`write` `write!` `append` `mkdir` `cp` `cp!`                                           
-§4.4 destruction                         |Built       |`rm` `rmdir` `rmdir!` `mv` `mv!`; "`rm` subsumes `rmdir`" reversed 2026-09-04          
-§4.5 network                             |Built       |`fetch`; streamed request body still open                                              
-§4.6 execution                           |RETIRED     |No `exec` grant, no `run` verb — removed 2026-09-05 as unused scaffolding; see SCOPE.md
-§4.7 ambient                             |Built       |`scratch` `log` `fail` (2026-09-08), `env` `now` `random` (2026-09-08)                 
-§5 value types                           |Built       |All six — `Legate::Exit` retired 2026-09-10, see SCOPE.md                              
-§6 stream protocol                       |Partial     |`map` `select` `reject` `take` `first` `each` `count` `sum` `to_a` only; see SCOPE.md  
-§7 grants and policy                     |Built       |`ambient.now` removed 2026-09-01; see SCOPE.md                                         
-§8.1 path resolution / TOCTOU            |Built       |                                                                                       
-§8.2 network hardening                   |Built       |Resolved-address checks in `fetch.cr`                                                  
-§8.3 execution sandboxing                |RETIRED     |No `exec` grant to sandbox — see §4.6                                                  
-§8.4 caps                                |Built       |                                                                                       
-§8.5 exception construction              |Built       |                                                                                       
-§8.6 diagnostics for removed constructs  |Built       |`retry` resolved 2026-09-09 (UNSUPPORTED.md, U020); every table row now enforced       
-§8.7 audit log                           |Built       |Narrower than specified: no bytes/duration                                             
-§8.8 risk-flow sink enforcement          |Built       |As of 2026-09-10; `read`/`write`/`delete`/`net`/`log` only — see SCOPE.md              
-§9 exception taxonomy                    |Built       |                                                                                       
-§10 static analyser                      |NOT BUILT   |No part of it. See §10's own note                                                      
-§11 surface count                        |ASPIRATIONAL|Counts the specified surface, not the built one                                        
+Section                                  |Status      |Notes                                                             
+-----------------------------------------|------------|------------------------------------------------------------------
+§1–§3 principles, conventions, type index|Built       |                                                                  
+§4.1 reading                             |Built       |`read` `stat` `list` `grep`                                       
+§4.2 streaming reads                     |Built       |`lines` `bytes` `records`                                         
+§4.3 writing                             |Built       |`write` `write!` `append` `mkdir` `cp` `cp!`                      
+§4.4 destruction                         |Built       |`rm` `rmdir` `rmdir!` `mv` `mv!`                                  
+§4.5 network                             |Built       |`fetch`; the request body isn't streamed                          
+§4.6 execution                           |Retired     |No `exec` grant and no `run` verb                                 
+§4.7 ambient                             |Built       |`scratch` `log` `fail` `env` `now` `random`                       
+§5 value types                           |Built       |All six; `Response` headers aren't frozen                         
+§6 stream protocol                       |Partial     |`map` `select` `reject` `take` `first` `each` `count` `sum` `to_a`
+§7 grants and policy                     |Built       |The loader doesn't yet reject malformed input; see SCOPE.md       
+§8.1 path resolution / TOCTOU            |Built       |                                                                  
+§8.2 network hardening                   |Built       |Resolved-address checks in `fetch.cr`                             
+§8.3 execution sandboxing                |Retired     |No `exec` grant to sandbox                                        
+§8.4 caps                                |Built       |                                                                  
+§8.5 exception construction              |Built       |                                                                  
+§8.6 diagnostics for removed constructs  |Built       |Every row enforced                                                
+§8.7 audit log                           |Partial     |No bytes, duration or argument detail                             
+§8.8 risk-flow sink enforcement          |Built       |`read` `write` `delete` `net` `log`                               
+§9 exception taxonomy                    |Built       |`grep` raises `Exhausted`, not `Timeout`, on the wall clock       
+§10 static analyser                      |Not built   |See §10's note                                                    
+§11 surface count                        |Aspirational|Counts the specified surface, not the built one                   
 
-**What exists today is 25 verbs**, no submodules, and no static
-analyser — every verb §1–§4 specifies is now real; only §4.6's
-retired `run` was ever missing from that count, and it is gone from
-the spec entirely rather than counted as absent. The 22-to-25 step
-(2026-09-08) is `env`/`now`/`random`, the last three of §4.7's six
-ambient verbs, completing it. The 19-to-22 step (also 2026-09-08) was
-`scratch`/`log`/`fail`, the first three. The earlier 14-to-19 step
-(2026-09-05) was not 2026-09-02's 14 plus five new capabilities:
-`write!`/`cp!`/`mv!` are the old behaviour of `write`/`cp`/`mv` under
-a new name, and `rmdir`/`rmdir!` are the old `rm`'s directory cases.
-The verb COUNT has grown three times now; the surface's reach grew
-the second and third times, not the first.
+**What exists is 25 verbs**, no submodules and no static analyser:
+every verb §1–§4 specifies. Known defects in the built parts, several of
+them security defects, are in SCOPE.md's Must Fix.
 
 ---
 

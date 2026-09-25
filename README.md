@@ -1,6 +1,6 @@
 # adjutant.cr
 
-A Crystal shard that defines and implements a safe Ruby-like scripting interpreter for agent harnesses: with a controlled effect boundary, module capability registry, static risk assessment, and dynamic information flow control (risk flow).
+A Crystal shard that implements a safe subset of Ruby for agent harnesses, with a controlled effect boundary, a capability-based standard library (Legate), static risk assessment, and dynamic information flow control (risk flow).
 
 > **WARNING**: This shard is a work in progress and in development until this warning is removed.
 
@@ -26,6 +26,8 @@ Adjutant runs Ruby-like scripts — typically written by an LLM — inside a hos
 - **Risk flow (dynamic IFC)**: while the script actually runs, track where sensitive data came from and stop it before it reaches a dangerous call, live — including calls with no traceable data flow at all (a script that just writes `delete_file("/etc/passwd")` directly). Catches "this specific call, with this specific data, is dangerous right now," which static analysis alone cannot know for anything that isn't a literal.
 
 Neither layer replaces the other — see [`samples/run_script.cr`](./samples/run_script.cr) for both working together against the same script.
+
+Scripts reach files, the network and the environment only through **Legate**, Adjutant's standard library, and only as far as the host's grants allow; see "Legate" below.
 
 ## Quick start
 
@@ -53,7 +55,7 @@ puts effect.stdout
 
 `risk_flow_policy` and `on_risk_flow_decision` are always required — there is no default that silently means "skip risk assessment." An integration that wants no risk assessment has to say so explicitly via `RiskFlowPolicy.reject_all`, not by omission. See "Risk flow" below for what these actually do once you're ready to move past the quick-start default.
 
-`Adjutant::Interpreter` owns a symbol table and globals that persist across multiple `eval` calls, making it suitable for a long-lived agent session.
+`Adjutant::Interpreter` is meant to last a whole agent session: classes, constants and top-level methods defined by one `eval` are visible to the next. Top-level local variables are not; each `eval` starts with none.
 
 ## Static risk assessment
 
@@ -109,14 +111,14 @@ interp.modules.require("agent/io", interp)
 
 The third block param above (`ncc`) is a `NativeCallContext` — passed to every native function, it's how one reaches back into the VM for things a native function can't safely do standalone (calling back into script code, comparing/ordering `Value`s the same way script operators do, declaring risk on its own arguments). All of it is optional to use — a simple native function like `delete_file` above never touches it.
 
-|Method                                  |Use it for                                                                                                                                                                                                                                                                                     |
-|----------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-|`invoke(blk, args)`                     |Calling a **live call-site block** your function received — the `{ }`/`do...end` attached to the call itself (`blk` above; see `times`).                                                                                                                                                       |
-|`invoke_proc(proc_obj, args)`           |Calling a **stored `Proc`** passed to your function as a plain argument (from a `->(){}` literal held in a variable) — not a call-site block. Pass the `Proc` `RubyObject` itself, not an unwrapped script proc; it carries its own closure correctly no matter when or from where you call it.|
-|`values_equal?(a, b)`                   |Real Ruby `==` — needed if your function compares two `Value`s (e.g. a `Hash`-like container checking a key).                                                                                                                                                                                  |
-|`compare(a, b, op)`                     |Real Ruby ordering (`:<`, `:<=`, `:>`, `:>=`) for two `Value`s — needed if your function orders or sorts values it didn't originate.                                                                                                                                                           |
-|`call_method(recv, name, args)`         |Calling a method BY NAME on a `Value` the normal script-dispatch way, when your function needs to invoke a receiver's own method generically rather than assuming a specific native implementation.                                                                                            |
-|`declare_sensitivity(tag, kind, origin)`|Marking your function's OWN argument as risk-sensitive when the risk lives in the literal content passed in, not in a label the caller already attached — see "Risk flow" below.                                                                                                               |
+Method                                        |Use it for                                                                                                                                                                                                                                                                                     
+----------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+`invoke(blk, args)`                           |Calling a **live call-site block** your function received — the `{ }`/`do...end` attached to the call itself (`blk` above; see `times`).                                                                                                                                                       
+`invoke_proc(proc_obj, args)`                 |Calling a **stored `Proc`** passed to your function as a plain argument (from a `->(){}` literal held in a variable) — not a call-site block. Pass the `Proc` `RubyObject` itself, not an unwrapped script proc; it carries its own closure correctly no matter when or from where you call it.
+`values_equal?(a, b)`                         |Real Ruby `==` — needed if your function compares two `Value`s (e.g. a `Hash`-like container checking a key).                                                                                                                                                                                  
+`compare(a, b, op)`                           |Real Ruby ordering (`:<`, `:<=`, `:>`, `:>=`) for two `Value`s — needed if your function orders or sorts values it didn't originate.                                                                                                                                                           
+`call_method(recv, name, args)`               |Calling a method BY NAME on a `Value` the normal script-dispatch way, when your function needs to invoke a receiver's own method generically rather than assuming a specific native implementation.                                                                                            
+`declare_sensitivity(authority, kind, origin)`|Marking your function's OWN argument as risk-sensitive when the risk lives in the literal content passed in, not in a label the caller already attached — see "Risk flow" below.                                                                                                               
 
 `invoke` vs. `invoke_proc` is the one distinction worth being deliberate about: a call-site block is always invoked while its defining frame is still live, but a stored `Proc` might be called much later, possibly from your native function's own frame — `invoke_proc` is what keeps that `Proc`'s closure correct regardless.
 
@@ -179,7 +181,7 @@ end
 puts effect.stdout
 ```
 
-Globals persist across `eval` calls on the same interpreter instance, so scripts can be evaluated incrementally across a conversation turn.
+Classes, constants and top-level methods persist across `eval` calls on the same interpreter, so scripts can build on each other across a conversation; local variables don't carry over.
 
 ### Assessing without a live script (compile-only)
 
@@ -225,11 +227,11 @@ interp.render_error(e, Adjutant::DiagnosticRenderer::Format::PlainText, "script.
 
 Nothing is ever colourized: ANSI escapes are noise in a captured agent log, and carets don't need colour to work.
 
-Each code is stable and documented in [ERRORS.md](./ERRORS.md) — the leading letter says what kind of problem it is (`P` syntax, `C` static semantics, `R` runtime, `U` deliberately unsupported, `F` risk flow), never which part of the implementation caught it. A code is a durable thing to look up, match on in a test, or hand to a model as a retrieval key.
+Each code is stable and documented in [ERRORS.md](./ERRORS.md) — the leading letter says what kind of problem it is (`P` syntax, `C` static semantics, `R` runtime, `U` deliberately unsupported, `L` a limit reached, `F` risk flow, `N` a native function raised, `H` host API misuse, `I` an internal fault), never which part of the implementation caught it. A code is a durable thing to look up, match on in a test, or hand to a model as a retrieval key.
 
 ### Current limitations
 
-Static risk assessment is best-effort, not a guarantee — it can only see what a script's call *shapes* look like, not what data actually flows through them at runtime (that's what risk flow, below, is for). See [DEVELOPMENT.md](./DEVELOPMENT.md)'s "Structured risk" and "RiskWalker" sections for what's fully covered (control flow, most `Assign` shapes, def/class discovery) versus not yet (blocks/lambdas, `yield`, and method parameters, which are always treated as unknown-typed — see the documented precision gap there).
+Static risk assessment is best-effort, not a guarantee — it can only see what a script's call *shapes* look like, not what data actually flows through them at runtime (that's what risk flow, below, is for). See [DEVELOPMENT.md](./DEVELOPMENT.md)'s "Structured risk" and "RiskWalker" sections for what's covered: control flow, assignments, def/class/module discovery, blocks, and lambdas passed as arguments. The main precision gap is method parameters, which are always treated as unknown-typed, so a call on a parameter is reported as unresolved.
 
 ## Risk flow (dynamic information flow control)
 
@@ -324,6 +326,23 @@ A rejected call (from a matched `Reject` rule, or an `Ask` your callback answere
 
 Risk flow tracks explicit data flow only (assignment, arithmetic, string/array/hash construction) — not implicit flow through control structure (see [`research/IFC_DESIGN.md`](./research/IFC_DESIGN.md) for why this scope was chosen deliberately). There's no approval cache yet, so an `Ask` for the same origin repeats every time it's reached within one script run.
 
+## Legate
+
+Legate is the only way a script touches the world outside the VM: `Legate.read`, `Legate.write`, `Legate.fetch`, `Legate.env` and the rest. The host fixes what each run may reach before it starts, with grants (which roots, hosts, methods and environment variables) and limits (per call and per run). Every call is authorized against the grants, checked against the risk-flow policy, and recorded in an audit log the host can read.
+
+```crystal
+grants = Adjutant::Legate::Grants.from_yaml(File.read("policy.yaml"))
+interp = Adjutant::Interpreter.new(
+  risk_flow_policy: policy,
+  on_risk_flow_decision: decide,
+  effect: effect,
+  grants: grants,
+)
+interp.eval(%(Legate.write("out/report.txt", Legate.read("in/data.csv").upcase)))
+```
+
+A call outside the grants ends the run with an error no script can rescue; a script can rescue the recoverable ones, such as a missing file. See [LEGATE.md](./LEGATE.md) for the verbs, value types, grant format and error model.
+
 ## Unsupported language features
 
 Adjutant is a deliberate *subset* of Ruby, not a work-in-progress full implementation — a few constructs are permanently unsupported by design, not just "not yet built." Each one fails with a clear error naming the construct, not a silent wrong result:
@@ -333,6 +352,7 @@ Adjutant is a deliberate *subset* of Ruby, not a work-in-progress full implement
 - **Class/module reopening** (U003) — `class Foo; end` written a second time to extend it. Adjutant's constants are assign-once; this is the same rule applied to class/module names.
 - **Defining a method (`def` or `def self.foo`) nested inside another method's own body** (U004) — a method definition can only appear at the top level of a script or directly inside a class/module body.
 - **Dynamic dispatch by computed method name** (U005), **`eval`/`instance_eval`** (U006), and **reflection into native internals** (U007) — excluded permanently, because each makes a call site's target or effect unknowable without running the script, which is what static risk assessment depends on.
+- **Ruby's effectful classes and methods** (U021) — `File`, `IO`, `Dir`, `ENV`, `Net::HTTP`, `system`, backticks and the like. Use Legate instead. Not yet enforced by name: using one gives an ordinary undefined-constant or undefined-method error.
 
 See [UNSUPPORTED.md](./UNSUPPORTED.md) for the full reasoning behind each, what to write instead, and the current enforcement state. Every error carries a code documented in [ERRORS.md](./ERRORS.md).
 
