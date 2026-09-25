@@ -6,15 +6,10 @@ require "./adjutant"
 require "./testing/assert_module"
 require "./testing/wiretap_module"
 
-# Test scripts runner for Adjutant.
-#
-# Runs each .rb file in spec/scripts/ (or given scripts path) through the interpreter
-# using the AssertModule API (matching mruby's test conventions, so mruby test files
-# can be borrowed and pruned to what Adjutant supports).
-#
-# Reports results in a format consistent with `crystal spec`.
-# Run with: crystal run spec/script_runner.cr
-# Exit code: 0 if all assertions pass, 1 otherwise.
+# Runs each `.rb` script under spec/scripts/ (or the given path)
+# through an Interpreter with AssertModule, whose API matches mruby's
+# so mruby's test files can be borrowed. Output resembles
+# `crystal spec`'s; exits 0 if every assertion passes, 1 otherwise.
 module Testing
   record FileResult,
     path : String,
@@ -27,18 +22,10 @@ module Testing
 
     def initialize(@scripts_dir); end
 
-    # A script directory that wants real `Legate.*` access — rather
-    # than the blanket `Grants.deny_all` every OTHER script under
-    # `spec/scripts/` still gets, completely unchanged — drops a
-    # sibling file by this name, in LEGATE.md §7's OWN real config
-    # shape (`Legate::Grants.from_yaml`, reused as-is rather than
-    # inventing a second parallel config format), in the SAME
-    # directory as the script(s) that need it. Not any ancestor
-    # directory — different subfolders can carry different policies
-    # over time (the actual reason for a sibling-file convention
-    # rather than one shared config) without one leaking into
-    # another. Added 2026-08-26 to unblock `spec/scripts/legate/`
-    # example/regression scripts.
+    # A script directory that needs Legate access holds a policy file
+    # of this name, in LEGATE.md §7's format, beside its scripts;
+    # applies to that directory only. Scripts elsewhere run under
+    # `Grants.deny_all`.
     POLICY_FILE_NAME = "_policy.yaml"
 
     def run : Int32
@@ -49,7 +36,7 @@ module Testing
         return 0
       end
 
-      # Run each file in parallel
+      # Runs each file in parallel.
       results = [] of FileResult
       ctx = Fiber::ExecutionContext::Parallel.new("MULTI", maximum: System.cpu_count // 2)
       sync_results = Sync::Exclusive.new(results)
@@ -91,11 +78,9 @@ module Testing
           limits: limits,
         )
       rescue e : Exception
-        # Deliberately wide: anything that stops an interpreter being
-        # built belongs in this file's own result. Narrow it only by
-        # adding cases, never by letting one escape — an exception out
-        # of the fiber that calls this loses the FileResult entirely,
-        # and the run reports one row fewer instead of one failure.
+        # Anything that stops an interpreter being built becomes this
+        # file's failure. An exception escaping the fiber would drop the
+        # file's result from the report.
         cause = e
         error = describe_unexpected_error(e)
         nil
@@ -106,20 +91,9 @@ module Testing
         interp.modules.register(WiretapModule.new)
 
         begin
-          # `__FILE__` (parser.cr's `KwFile` case) resolves to exactly
-          # this SECOND `path` argument, verbatim — normalized to `/`
-          # via `Path#to_posix` here (a no-op on Linux/macOS) because
-          # `Dir.glob` above returns `\`-joined paths on Windows,
-          # matching `list.cr`'s own established Windows-portability
-          # fix earlier this session. Without this, any script using
-          # `__FILE__` and splitting on `/` (a script has no OTHER way
-          # to derive its own directory — there's no ambient File IO
-          # module, SCOPE.md's own noted gap) would silently get the
-          # wrong answer specifically on a Windows runner. `File.open`
-          # just below still uses the ORIGINAL, native-separator `path`
-          # — real filesystem access needs the OS's own separator
-          # convention, only the SCRIPT-VISIBLE `__FILE__` value needs
-          # normalizing.
+          # `__FILE__` is this name, with `/` separators on every
+          # platform, since `Dir.glob` returns `\` on Windows. The file
+          # itself is opened by its native path.
           eval_filename = ::Path.new(path).to_posix.to_s
           File.open(path) { |io| interp.eval(io, eval_filename) }
         rescue e : Adjutant::ParseError
@@ -132,17 +106,14 @@ module Testing
           error = describe_error(interp, e, "runtime error", path)
           cause = e
         rescue e : Exception
-          # Deliberately wide: anything that stops the interpreter
-          # belongs in this file's own result. Narrow it only by
-          # adding cases, never by letting one escape — an exception out
-          # of the fiber that calls this loses the FileResult entirely,
-          # and the run reports one row fewer instead of one failure.
+          # Anything that stops the interpreter becomes this file's
+          # failure, as above.
           error = describe_unexpected_error(e)
           cause = e
         end
       end
 
-      # Exclusive access to STDOUT
+      # Exclusive access to STDOUT.
       sync_io.lock do |stdout|
         mod.results.each do |result|
           stdout.print(result.passed ? ".".colorize(:green) : "F".colorize(:light_red))
@@ -159,17 +130,9 @@ module Testing
       return Adjutant::Legate::Grants.deny_all unless File.exists?(policy_path)
 
       raw = Adjutant::Legate::Grants.from_yaml(File.read(policy_path))
-      # `Grants.from_yaml` stores each root string exactly as written
-      # in the YAML — a RELATIVE root like `read_roots: [fixtures]`
-      # would otherwise resolve against wherever the `crystal spec`/
-      # `ops test` PROCESS happens to be invoked from, not against
-      # `_policy.yaml`'s own directory. That's exactly the class of
-      # bug `list.cr`'s own Windows path-separator fix (earlier this
-      # session) was about — fragile across machines/CI/OS — so every
-      # path-like entry (the roots; NOT `net_hosts`/`ambient_env`,
-      # which aren't filesystem paths at all) is expanded HERE,
-      # against `dir`, before building the real Grants a script
-      # actually runs under.
+      # Relative roots are expanded against the policy file's own
+      # directory, not the process's working directory. Hosts and
+      # environment names aren't paths, so are left as written.
       Adjutant::Legate::Grants.new(
         read_roots: raw.read_roots.map { |root| File.expand_path(root, dir) },
         write_roots: raw.write_roots.map { |root| File.expand_path(root, dir) },
@@ -181,7 +144,7 @@ module Testing
       )
     end
 
-    # Describe an unexpected error
+    # Describes an unexpected error.
     private def describe_unexpected_error(e : Exception) : String
       kind = "unexpected_error"
       if e.is_a?(Adjutant::RuntimeError)
@@ -191,10 +154,8 @@ module Testing
       end
     end
 
-    # Prefers a rendered diagnostic (source line + carets) when the
-    # raise site has been migrated, and falls back to the old
-    # one-line form otherwise. Plain text rather than Markdown: this
-    # goes to a terminal, and the fences would be noise.
+    # A rendered diagnostic, in plain text for the terminal, when the
+    # error has one; otherwise its one-line form.
     private def describe_error(interp : Adjutant::Interpreter,
                                error : Adjutant::ParseError | Adjutant::CompileError | Adjutant::RuntimeError,
                                kind : String,
@@ -205,9 +166,7 @@ module Testing
         path
       )
       return rendered if rendered
-      # RuntimeError records a filename and line but no column, unlike
-      # the parse/compile errors — position fidelity differs by phase
-      # in the fallback exactly as it does in a rendered diagnostic.
+      # A RuntimeError has a line but no column.
       if error.is_a?(Adjutant::RuntimeError)
         "#{kind}: #{error.filename}:#{error.line}: #{error.message}"
       else

@@ -1,39 +1,23 @@
 module Adjutant
-  # A native function callable from scripts.
-  # Receives the call arguments and returns a Value.
+  # A native function: called with the arguments, the block if any,
+  # and a NativeCallContext; returns a Value.
   alias NativeFunc = ::Proc(Array(Value), ScriptProc?, NativeCallContext, Value)
 
-  # Abstract base for a loadable script module.
-  #
-  # A ScriptModule is the unit of capability exposure in Adjutant.
-  # Scripts access external capabilities exclusively via `require` —
-  # each require path maps to a registered ScriptModule.
-  #
-  # When a script calls `require "agent/io"`, the registry finds the
-  # corresponding ScriptModule and calls `load`, which installs whatever
-  # globals, constants, and native functions the module provides into
-  # the interpreter's namespace.
-  #
-  # This makes the registry the auditable capability manifest: before
-  # executing a script, you can enumerate which modules it requires and
-  # surface that to the user.
-  #
-  # For IFC, modules are the natural label sources — when `agent/http`
-  # returns a response body, the module's native code attaches a
-  # `{source: :network}` label to the value.
+  # A module a script loads with `require`, which installs its
+  # globals, constants and native functions. The registry is the
+  # manifest of what a script can load. A module's native code labels
+  # the data it returns, as Legate's verbs do.
   abstract class ScriptModule
     # The require path this module handles, e.g. "agent/io".
     abstract def name : String
 
-    # Called once when a script requires this module.
-    # Install globals, native functions, and constants into interp.
+    # Installs the module's globals, functions and constants. Called
+    # once, on first `require`.
     abstract def load(interp : Interpreter) : Nil
   end
 
-  # Registry of ScriptModules, keyed by require path.
-  #
-  # Owned by the Interpreter — shared across all script executions
-  # within the same interpreter instance.
+  # ScriptModules by require path, shared by every run on the
+  # Interpreter that owns it.
   class ModuleRegistry
     def initialize
       @modules = {} of String => ScriptModule
@@ -77,7 +61,7 @@ module Adjutant
       @modules.keys
     end
 
-    # List all paths that have been loaded in this session.
+    # Every path loaded so far by this Interpreter.
     def loaded_paths : Array(String)
       @loaded.to_a
     end

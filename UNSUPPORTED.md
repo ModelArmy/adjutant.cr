@@ -914,6 +914,31 @@ U020. The prior runtime opcode (`Op::Retry`) is removed entirely from
 nothing needs to interpret it, per this file's own "remove, never
 cripple" standard. Verified via `begin_rescue_ensure/compiler_spec.cr`.
 
+### U021 — Ruby's effectful core classes and `Kernel` methods
+
+`File`, `IO`, `Dir`, `FileUtils`, `Pathname`, `ENV`, `STDIN` and
+`gets`, `Net::HTTP`, `open-uri`, `Socket`, `Process`, `Random`;
+`Kernel#system`, `exec`, `spawn`, `fork`, `open`, `rand`, `srand`;
+backticks and `%x{}`.
+
+**Why:** decided 2026-09-24. Legate is the only way a script reaches
+files, the network or the environment, and only as far as its policy
+grants. A second route would bypass the grant check and give the risk
+assessment two surfaces to model instead of one. This is a
+capability-boundary exclusion, not a scoping cut: implementing any of
+these faithfully would defeat the reason Legate exists, so effort does
+not make them safe to add. Core Ruby without external effects is still
+expected to grow.
+
+**Instead:** the Legate verb for the job. `skills/adjutant/SKILL.md`
+§1 maps each common Ruby call to its replacement, for example
+`File.read(p)` → `Legate.read(p)` and `ENV["X"]` → `Legate.env("X")`.
+
+**Enforcement — not enforced.** A script gets the generic
+uninitialized-constant or undefined-method error, which names the
+construct but not the Legate replacement. Tracked in
+[SCOPE.md](./SCOPE.md)'s Error reporting group.
+
 ---
 
 ## 2. Design decisions with no script-visible surface

@@ -1,41 +1,21 @@
 require "./risk_profile"
 
 module Adjutant
-  # Structured, static risk shape mirroring a script's control flow —
-  # a sum-type-aware alternative to flattening every call site's
-  # RiskProfile into one set of effects.
+  # A script's static risk, in the shape of its control flow, so that
+  # exclusive branches aren't merged as if both ran. Built from the
+  # AST, which keeps `if` and `case` apart for presentation.
   #
-  # Two other shapes were considered and rejected for v1:
-  #   - A flat Array(RiskProfile): loses conditionality entirely (an
-  #     if/else's two mutually-exclusive branches would merge into one
-  #     effect set, as if both could happen in the same run).
-  #   - Bytecode-level walk instead of AST: uniform Op::Jump shapes,
-  #     but loses the source-level distinction between "if" and "case"
-  #     the presentation layer wants, and requires reconstructing
-  #     control-flow shape the AST already gives for free.
-  #
-  # RiskNode keeps the AST's shape:
-  #   - Leaf       — one resolved call site's RiskProfile.
-  #   - Sequence   — children that ALL occur (straight-line code,
-  #                  loop bodies). `iterated` marks loop-body sequences,
-  #                  since a script can't generally know its own
-  #                  iteration count statically — presentation can say
-  #                  "may repeat" without guessing a multiplier.
-  #   - Choice     — children where exactly ONE occurs at runtime
-  #                  (if/elsif/else branches, case/when arms, rescue
-  #                  clauses vs. the protected body). Aggregating a
-  #                  Choice takes the worst-case member rather than a
-  #                  union, and the walker/aggregator should report
-  #                  *which* branch carries that worst case, not just
-  #                  the number.
-  #   - Unresolved — a call site the walker couldn't statically
-  #                  resolve to a NativeCallable or ScriptProc. Treated
-  #                  as worst-case (Severity::Error) by the aggregator,
-  #                  since a script language without dynamic dispatch
-  #                  (see DEVELOPMENT.md "Forbidden features") should
-  #                  make this rare; if it isn't, that's a sign the
-  #                  walker or the forbidden-features list needs work,
-  #                  not that this case should be silently downgraded.
+  #   Leaf:       one resolved call's RiskProfile.
+  #   Sequence:   children that all run; `iterated` marks a loop body,
+  #               which may repeat any number of times.
+  #   Choice:     children of which exactly one runs (branches, `when`
+  #               arms, rescue clauses against the body); aggregated as
+  #               the worst member, naming which.
+  #   Unresolved: a call the walker couldn't resolve, counted as
+  #               Severity::Error. Adjutant has no dynamic dispatch, so
+  #               these should be rare; frequent ones mean the walker
+  #               needs work, not that the case should count for less.
+  #   Deferred:   see RiskDeferred.
   abstract class RiskNode
     getter line : Int32
 
@@ -78,19 +58,11 @@ module Adjutant
     end
   end
 
-  # A risk that was handed off to something the walker can't see into —
-  # invocation isn't confirmed, only possible. Piece D (see SCOPE.md):
-  # a `Lambda` literal or constant-held lambda passed as a call
-  # argument is walked (so its body's risk IS known), but whether the
-  # callee actually invokes it is outside the walker's visibility (no
-  # confirmed `yield`-equivalent contract the way a BlockNode has via
-  # `yield`) — folding it in unconditionally, the way a BlockNode's
-  # risk folds into its call, would overstate risk for a lambda that's
-  # merely stored/inspected/never called. Deliberately not named
-  # "maybe"/"conditional": those read as branch semantics, easily
-  # confused with RiskChoice (where exactly one child is guaranteed to
-  # run) — "deferred" says the DECISION of whether this runs has been
-  # handed elsewhere, which is the real mechanism.
+  # A risk handed to a callee that may or may not run it: a lambda
+  # passed as an argument. Its body is walked, but nothing shows the
+  # callee calls it, unlike a block, which `yield` runs. "Deferred",
+  # not "maybe", to keep it apart from RiskChoice, where one child
+  # certainly runs.
   class RiskDeferred < RiskNode
     getter child : RiskNode
     getter reason : String

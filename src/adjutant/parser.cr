@@ -8,8 +8,8 @@ module Adjutant
     getter line : Int32
     getter column : Int32
 
-    # See `CompileError#diagnostic` — nil for raise sites not yet
-    # migrated to the diagnostic system.
+    # The structured diagnostic; nil only for an error built from a
+    # plain message.
     getter diagnostic : Diagnostic?
 
     def initialize(message : String, @line, @column)
@@ -29,72 +29,26 @@ module Adjutant
   end
 
   class Parser
-    # When true, `block_follows_no_paren?` ignores a bare `do` as a
-    # block-start signal. Set while parsing a `for`-loop's iterable
-    # expression or a `while`/`until`'s condition expression, where a
-    # trailing `do` belongs to the loop construct itself
-    # (`for i in a do ... end`, `while i < a.size do ... end`), not to
-    # a bare identifier immediately before it (`a do ... end` would
-    # otherwise parse as a parenless call-with-block, consuming the
-    # loop's own `end`). `{`-style blocks are unaffected — only
-    # literal `do` is ambiguous with a loop construct's own `do`.
+    # While true, a bare `do` doesn't start a block. Set while parsing
+    # a `for` iterable or a `while`/`until` condition, whose trailing
+    # `do` belongs to the loop: `while i < a.size do ... end`.
     @no_do_block = false
 
-    # True only while parsing a single block/lambda PARAM's default
-    # value (`|x = value|` — the `Eq` branch of parse_param, reached
-    # only from parse_block_params). `Pipe` is a real binary operator
-    # (bitwise-or, PRECEDENCE 7) AND the block-param-list delimiter, so
-    # parse_expression's operator loop can't otherwise tell "here's the
-    # closing `|`" from "here's a bitwise-or continuing the default" —
-    # without this, `{ |x = 9| x }` parses `9| x }` as the start of a
-    # (never-terminated) `9 | x` expression instead of stopping at the
-    # closing pipe. Suspended (not just left on) around parse_block
-    # itself — see that method — so a default value that CONTAINS its
-    # own nested block literal (`def f(g = xs.each { |y| y })`) doesn't
-    # leak this restriction into the nested block's own params or body,
-    # which have nothing to do with the outer param list. Deliberately
-    # narrower than a general "suspend inside any bracket" mechanism:
-    # nothing needs `|` used as bitwise-or unparenthesized inside a
-    # block-param default, so `{ |x = (a | b)| }` staying unsupported
-    # is an acceptable, documentable restriction rather than added risk
-    # for a case nothing exercises.
+    # While true, `|` ends the expression instead of meaning bitwise
+    # or. Set while parsing a block parameter's default (`|x = 9|`)
+    # and suspended inside a nested block. So `{ |x = (a | b)| }`
+    # needs its parentheses.
     @no_pipe = false
 
-    # Tracks, per open scope, which bare names have been established as
-    # locals so far in the CURRENT parse — used only to disambiguate
-    # `name [expr]` (no dot, no explicit call syntax) between indexing
-    # an existing local (`Index` node) and a bare call taking an
-    # array-literal first argument (`Call` node). This mirrors real
-    # Ruby's own parse-time rule exactly (confirmed via a series of
-    # `irb` experiments — a local variable name, once assigned or bound
-    # as a parameter, ALWAYS wins `name [x]` as indexing from that point
-    # on in the same visible scope, regardless of what the variable
-    # holds at runtime; an unassigned name always parses as a call,
-    # even if it turns out at runtime to not be a real method either —
-    # see `arg_follows_no_paren?`'s own comment for the resulting `[`
-    # branch and 2026-07-21's design conversation).
+    # The bare names known as locals in each open scope, used only to
+    # parse `name [x]`: indexing if `name` is a local, otherwise a call
+    # with an array argument, as in Ruby. A name becomes a local when
+    # assigned or bound as a parameter, whatever it holds at runtime.
     #
-    # Deliberately NOT the same thing as `CompilerScope` (compiler.cr) —
-    # this is a much shallower, syntax-only echo of it, existing a full
-    # phase earlier, purely to answer "is this name known as a local
-    # yet" during parsing. It does not need to be fully correct in
-    # every exotic case `CompilerScope` handles (that's out of scope —
-    # see SCOPE.md); it only needs to answer this one narrow question
-    # the same way Ruby's own parser does.
-    #
-    # A `def` body gets a FRESH, empty scope (`def` does not close over
-    # outer locals in Ruby — confirmed the same way `compile_lambda`'s
-    # non-inheriting `def` scope already works, DEVELOPMENT.md's
-    # scoping section). A block/lambda body INHERITS the enclosing
-    # scope's names (blocks/lambdas DO close over outer locals) — done
-    # by pushing a COPY of the current top set, not a live reference,
-    # since nothing needs writes inside the block to propagate back out
-    # (a block assigning a NEW name shouldn't make that name suddenly
-    # known outside it either — matches Ruby). A `for`-loop variable or
-    # a `rescue var` binding registers directly into the CURRENT scope
-    # instead of pushing a new one at all — neither opens a new scope in
-    # Ruby (confirmed: a for-loop's variable is readable after the loop
-    # ends, same as a rescue-bound variable after the `begin/end`).
+    # A `def` pushes an empty scope; a block or lambda pushes a copy of
+    # the enclosing one, so its new names don't leak out. A `for`
+    # variable or `rescue => e` binding joins the current scope, since
+    # neither opens one in Ruby.
     @local_scopes = [Set(String).new]
 
     private def push_local_scope(inherit : Bool) : Nil
@@ -113,38 +67,20 @@ module Adjutant
       @local_scopes.last.includes?(name)
     end
 
-    # True when @current (expected to be a Minus or Plus token, not yet
-    # consumed) has NO whitespace between it and @next — i.e. the
-    # operator is hugging its operand (`-1`, `+1`, `-x`), not a
-    # spaced-out binary operator (`- 1`, `+ 1`, `- x`). Uses the
-    # parser's existing one-token lookahead buffer (`@next`, populated
-    # by `advance` — see the constructor and `advance` itself), so this
-    # never needs to consume anything to check. Delegates to
-    # `@next.space_before?` — the lexer now tracks this directly (see
-    # `Token#space_before?`, set by `Lexer#skip_whitespace_and_comments`)
-    # rather than this method reconstructing it from column arithmetic,
-    # which is what an earlier version of this method did.
+    # Whether the current `-` or `+` touches the token after it
+    # (`-1`, `-x`) rather than being spaced as a binary operator.
     private def operand_immediately_follows? : Bool
       !@next.space_before?
     end
 
-    # Only a bare `Identifier` LHS introduces a new local name — `@ivar
-    # = x`, `arr[0] = x`, `obj.attr = x` etc. are all valid assignment
-    # targets too but none of them make a NEW bare name resolvable as a
-    # local afterward.
+    # Records `lhs` as a local if it's a bare identifier; other
+    # assignment targets (`@x`, `a[0]`, `obj.attr`) introduce no name.
     private def register_local_if_identifier(lhs : Node) : Nil
       register_local(lhs.name) if lhs.is_a?(Identifier)
     end
 
-    # A block-forming construct the parser is currently inside, with
-    # the position of the keyword that opened it.
-    #
-    # Exists so a missing `end` can point at the construct that was
-    # never closed, rather than only at wherever the parser gave up.
-    # Those are usually far apart and the second one is nearly useless
-    # on its own: `expected KwEnd, got EOF` at the last line of a file
-    # says nothing about which of the twelve `def`s above it lost its
-    # `end`.
+    # A construct being parsed that needs an `end`, with the position
+    # of its opening keyword, so a missing `end` can name it.
     record OpenBlock, kind : String, line : Int32, column : Int32
 
     def initialize(source : IO, filename : String = "<input>")
@@ -153,10 +89,8 @@ module Adjutant
       @next = @lexer.next_token
     end
 
-    # Delegates to the lexer, which read the whole IO up front. Safe
-    # to call immediately after construction — which matters, because
-    # a caller must be able to register the source BEFORE `parse`, or
-    # a ParseError would be the one error with nothing to quote.
+    # The source text, available before `parse` so a caller can
+    # register it for rendering a ParseError.
     def source : String
       @lexer.source
     end
@@ -203,10 +137,8 @@ module Adjutant
       @next.kind
     end
 
-    # Constructs currently open, innermost last. Pushed by
-    # `open_block`, popped by `close_block` — deliberately NOT popped
-    # on the error path, since an abandoned entry is exactly the
-    # information a missing-`end` diagnostic needs.
+    # Open constructs, innermost last. Not popped on error: a
+    # missing-`end` diagnostic needs the abandoned entry.
     @open_blocks = [] of OpenBlock
 
     private def open_block(kind : String, line : Int32, column : Int32) : Nil
@@ -225,14 +157,8 @@ module Adjutant
       advance
     end
 
-    # The diagnostic for "we needed X and found Y".
-    #
-    # When the thing we needed was an `end`, the caret alone is close to
-    # useless: it lands wherever the parser gave up, which for a missing
-    # `end` is the bottom of the file, nowhere near the construct that
-    # actually lost it. So that case adds a secondary span pointing at
-    # the innermost construct still open — the one that swallowed
-    # everything after it.
+    # The error for expecting `expected` and finding the current
+    # token. A missing `end` points at the construct left open.
     private def unexpected_token(expected : TokenKind) : ParseError
       span = Span.new(
         line: @current.line,
@@ -245,9 +171,7 @@ module Adjutant
         "found"    => describe_token(@current),
       }
 
-      # A missing `end` we can attribute to a specific open construct
-      # is a different diagnostic, not a variant of this one: it has a
-      # real explanation to offer, where P001 in general does not.
+      # A missing `end` with a known open construct is P003, not P001.
       if expected == TokenKind::KwEnd && (open = @open_blocks.last?)
         data["construct"] = open.kind
         return ParseError.new(
@@ -270,18 +194,12 @@ module Adjutant
       )
     end
 
-    # EOF has no text, so a caret would have nothing to sit under —
-    # one column is the honest width there.
+    # One column for EOF, which has no text.
     private def caret_width(token : Token) : Int32
       token.kind == TokenKind::EOF ? 1 : Math.max(1, token.lexeme.size)
     end
 
-    # Token kinds are internal enum names (`KwEnd`, `LParen`); a script
-    # author never wrote either. Render what they would have typed.
-    #
-    # A lookup table rather than a `case`: the mapping is data, and as
-    # a `case` it was a 14-branch method that only ever grows as more
-    # kinds earn a friendly name.
+    # Token kinds as a script author would have typed them.
     KIND_DESCRIPTIONS = {
       TokenKind::KwEnd    => "`end`",
       TokenKind::KwDo     => "`do`",
@@ -362,59 +280,15 @@ module Adjutant
       when TokenKind::KwAttrReader, TokenKind::KwAttrWriter, TokenKind::KwAttrAccessor
         parse_attr(current_kind)
       else
-        # KwSuper and KwYield deliberately NOT their own cases here
-        # (both were, until this fix): this table's shortcut cases
-        # return immediately,
-        # bypassing parse_expr_statement's full pipeline (parse_expression's
-        # operator-precedence climbing, assignment, trailing if/
-        # unless/while/until modifiers) entirely. Harmless for most
-        # of these (return/break/next/... aren't meaningfully combined
-        # with a following binary operator), but `super` routinely is
-        # — `super + 4` at STATEMENT position (not a sub-expression)
-        # hit this shortcut, consumed only `super` itself, and left
-        # `+ 4` to be parsed as a completely independent SECOND
-        # statement, silently discarding super's value. parse_primary
-        # already has its own `KwSuper => parse_super` case (added
-        # earlier in the super-dispatch rewrite — see SCOPE.md) for
-        # exactly this reason; falling through to parse_expr_statement
-        # here reaches that same case via the normal
-        # parse_expression → parse_unary → parse_primary chain,
-        # so `super` gets full expression-parsing treatment uniformly,
-        # whether it starts a statement or not. `yield` is the same
-        # story, found a session later: its shortcut here was the only
-        # dispatch it had, so `x = yield`, `return yield` and
-        # `yield.to_s` were all parse errors and a block could only be
-        # called for its side effects, never for its value.
+        # `super` and `yield` go through the expression parser, so
+        # `super + 4` and `x = yield` work at statement position.
         parse_expr_statement
       end
     end
 
-    # `begin...end while cond` / `begin...end until cond` (the do-while
-    # form — see UNSUPPORTED.md, U016) as a BARE statement (no
-    # assignment: `begin...end while cond` on its own, by far the more
-    # natural way to write this) never reaches compile_modifier_while's
-    # own U016 check at all: parse_statement's `KwBegin` case calls
-    # parse_begin directly and, before this guard existed, returned
-    # its bare BeginNode immediately — the trailing `while`/`until`
-    # was left dangling as what LOOKED like the start of a totally
-    # separate next statement, which the parser then reported as an
-    # unrelated, confusing "`while` is missing its `end`" (P003) with
-    # no hint that begin/rescue/ensure had anything to do with it.
-    # Found 2026-08-05 by the first tests in this repo's history to
-    # exercise this form at all.
-    #
-    # Deliberately does NOT build a ModifierWhile here the way a
-    # genuine parse (rather than a rejection) would need to — this
-    # form is never going to compile successfully, so there's
-    # nothing to hand off to compile_modifier_while's own check; this
-    # is simply the earlier of the two places that can recognize the
-    # shape (a `begin` immediately followed by while/until) and
-    # produce the same U016 with a precise span, rather than route
-    # through the assignment form's ModifierWhile detour just to reach
-    # a check with an identical outcome. `x = begin...end while cond`
-    # (the assigned form) still reaches compile_modifier_while's own
-    # U016 instead — this helper only covers the bare-statement
-    # form parse_statement's KwBegin case is responsible for.
+    # Rejects a bare `begin...end while cond` (or `until`) with U016.
+    # The assigned form, `x = begin...end while cond`, is rejected by
+    # the compiler instead.
     private def reject_do_while(node : Node) : Node
       if at_any?(TokenKind::KwWhile, TokenKind::KwUntil)
         raise ParseError.new(
@@ -436,22 +310,8 @@ module Adjutant
     # Modifiers are checked AFTER assignment so `x -= 1 while x > 0` works.
     private def parse_expr_statement : Node
       expr = parse_expression(0)
-      # A comma here can't mean anything else at statement level — the
-      # Pratt parser already stops `parse_expression` short of `,` (it
-      # carries no PRECEDENCE entry), so seeing one now means a
-      # multi-target assignment's target list (`a, b = ...`), not some
-      # other comma-bearing construct. Committing on sight (no
-      # backtracking) mirrors `parse_multi_rhs` below doing the same
-      # thing on the rhs side. Note `expr` may ALREADY be a fully-built
-      # assignment node here (`Assign`/`OpAssign`/`CondAssign`/
-      # `AttrAssign`) — `parse_expression` itself now resolves `=`/
-      # compound-assign as soon as it parses a bare lvalue immediately
-      # followed by one (see `parse_expression`'s own comment for why
-      # that's unconditional, not `min_prec`-gated), so there's no
-      # separate assignment step needed at the statement level
-      # anymore, only the multi-target case, which stays here since it
-      # needs the not-yet-assignment-resolved first target to decide
-      # whether a `,` follows it.
+      # A `,` after a statement's first expression can only begin a
+      # multiple assignment's target list: `a, b = ...`.
       result = at_kind?(TokenKind::Comma) ? parse_multi_assign(expr) : expr
       l, c = result.line, result.column
       case current_kind
@@ -472,49 +332,24 @@ module Adjutant
       end
     end
 
-    # Resolve assignment if expr is a valid lvalue and = follows. Called
-    # from `parse_expression` itself, immediately after the primary is
-    # parsed (see there for why that's unconditional, not gated on
-    # `min_prec`) rather than only at the statement level, so
-    # assignment can now appear anywhere a sub-expression is parsed:
-    # inside `()`, as a call/index argument, an array/hash element, a
-    # ternary branch, as an operator's own right-hand side, etc. —
-    # matching real Ruby, where assignment is a real, right-associative
-    # expression recognized locally at the lvalue, not a statement-only
-    # construct or an ordinary precedence-climbing operator. Right-
-    # associativity (`c = b = 5`) falls out for free: `rhs =
-    # parse_multi_rhs` below recurses into `parse_expression(0)`, which
-    # will itself resolve a further `=` if one follows, same mechanism,
-    # not a special case.
+    # If `lhs` is followed by `=` or a compound assignment, parses the
+    # assignment and returns it; otherwise returns `lhs`. Assignment is
+    # right-associative: `c = b = 5`.
     private def maybe_assignment(lhs : Node) : Node
       l, c = lhs.line, lhs.column
       case current_kind
       when TokenKind::Eq
         advance
         rhs = parse_multi_rhs
-        # A receiver-based, arg-less `Call` (`recv.attr`) followed by
-        # `=` is a real attribute-assignment call (`recv.attr =
-        # value` really means `recv.attr=(value)`), NOT an ordinary
-        # lvalue — build the dedicated `AttrAssign` node directly here
-        # (same reasoning `parse_postfix`'s own `LBracket`-then-`Eq`
-        # check uses for `IndexAssign`, just one level up: `lhs` here
-        # is already the fully-parsed `Call`, which correctly handles
-        # a chained receiver like `a.b.c = 1` for free — `lhs.receiver`
-        # is `a.b`, already parsed). `args.empty?`/`kwargs.empty?`/
-        # `block.nil?` guards against something that genuinely isn't
-        # an attribute reference (`recv.foo(1) = x` was never valid
-        # Ruby either) — anything that fails the guard falls through
-        # to the ordinary `Assign` path below, where `emit_store`'s
-        # generic fallback raises a clear C001, same as it always has.
+        # `recv.attr = value` is a call to `attr=`. A call with
+        # arguments or a block isn't an attribute, and falls through to
+        # Assign, which the compiler rejects (C001).
         if lhs.is_a?(Call) && (call = lhs.as(Call)) && (recv = call.receiver) &&
            call.args.empty? && call.kwargs.empty? && call.block.nil?
           return AttrAssign.new(recv, call.method, rhs, l, c)
         end
-        # Registered AFTER rhs parses, not before — matches real Ruby's
-        # own `x = x` behavior (an as-yet-unassigned `x` on the RHS of
-        # its own first assignment is still a bare call/undefined-name
-        # reference, not a read of a not-yet-existing local; see the
-        # local-tracking design comment near @local_scopes above).
+        # Registered after the right-hand side is parsed: in `x = x`,
+        # the right-hand `x` is not yet a local, as in Ruby.
         register_local_if_identifier(lhs)
         Assign.new(lhs, rhs, l, c)
       when TokenKind::PlusEq, TokenKind::MinusEq, TokenKind::StarEq,
@@ -534,22 +369,10 @@ module Adjutant
       end
     end
 
-    # Parse the remainder of a multi-target assignment once a `,` has
-    # been seen after the first already-parsed target. Lvalue-ness
-    # isn't checked here — same as the single-target path, that's left
-    # to `emit_store` at compile time (C001), so `1, 2 = 3, 4` fails
-    # there rather than here, consistent with how `1 = 2` already
-    # behaves.
-    #
-    # `resolve_assignment: false` on each target's own parse — a target
-    # here always ends at the next `,` or the multi-assign's own `=`;
-    # that `=` belongs to THIS construct (`expect(TokenKind::Eq)` right
-    # below), not to a nested assignment on the target itself. Without
-    # this, `a, b = 1, 2` would have `b`'s own `parse_expression(0)`
-    # greedily consume `= 1, 2` as ITS assignment (now that
-    # `parse_expression` resolves `=` generally — see that method's own
-    # comment), leaving nothing for `expect(TokenKind::Eq)` below to
-    # find.
+    # Parses the rest of a multiple assignment after its first target
+    # and `,`. The compiler checks that targets are assignable (C001).
+    # Targets are parsed without resolving `=`, which belongs to the
+    # multiple assignment.
     private def parse_multi_assign(first : Node) : Node
       l, c = first.line, first.column
       targets = [first] of Node
@@ -590,15 +413,9 @@ module Adjutant
 
     # --- Pratt expression parser --------------------------------------------
 
-    # `EqTilde` (`=~`) and `BangTilde` (`!~`) sit with `EqEq`/`NEq`/
-    # `TripleEq` at level 4, not with `Spaceship` at level 5 — real
-    # Ruby groups `<=> == === != =~ !~` at ONE precedence tier, below
-    # `< <= > >=`, which this table already splits across two tiers
-    # for `<=>` (a pre-existing simplification, not something this
-    # entry re-derives); level 4 is the more faithful of the two for
-    # these specifically. Doesn't change much in practice — `a =~ b ==
-    # c` is a rare thing to write regardless of which side of that
-    # split it lands on.
+    # Binding power of each binary operator; higher binds tighter.
+    # Ruby puts `<=>` on the same tier as `==`, `=~` and `!~`; here it
+    # sits one tier above.
     PRECEDENCE = {
       TokenKind::Question  => 1,
       TokenKind::KwOr      => 2,
@@ -633,10 +450,8 @@ module Adjutant
       PRECEDENCE[kind]? || 0
     end
 
-    # Assignment tokens (`=`, `+=`/`-=`/.../`||=`/`&&=`) — checked
-    # separately from `PRECEDENCE` below, since assignment sits at its
-    # own lowest, right-associative tier rather than the ordinary
-    # left-associative Pratt chain the ones in that table share.
+    # `=` and the compound assignments, which are resolved by
+    # `maybe_assignment` rather than through `PRECEDENCE`.
     private def assignment_token?(kind : TokenKind) : Bool
       kind.in?(
         TokenKind::Eq, TokenKind::PlusEq, TokenKind::MinusEq, TokenKind::StarEq,
@@ -646,55 +461,14 @@ module Adjutant
 
     private def parse_expression(min_prec : Int32, resolve_assignment : Bool = true) : Node
       left = parse_unary
-      # Assignment is checked HERE — immediately after the primary is
-      # parsed, before the binary-operator loop below even starts —
-      # deliberately NOT gated on `min_prec`. Confirmed against real
-      # Ruby (docs.ruby-lang.org/en/master/syntax/precedence_rdoc.html
-      # lists `=` below `==` in the precedence TABLE, which reads as
-      # "assignment binds looser," but that's not how the grammar
-      # actually behaves): `7 == tot = sum(3, 4)` parses as `7 == (tot
-      # = sum(3, 4))`, not as an attempt to assign into `(7 == tot)`.
-      # An identifier immediately followed by `=` commits to being an
-      # assignment target the moment it's reduced to a primary,
-      # regardless of what precedence level the surrounding recursive
-      # `parse_expression` call was invoked at — real Ruby's grammar
-      # has assignment as its own production keyed off the lhs shape,
-      # not a generic Pratt-chain operator competing on precedence
-      # alone. A first attempt gated this on `min_prec == 0` (checked
-      # only once, after the loop below had already fully run) —
-      # WRONG, caught by `spec/scripts/expressions.rb`'s "Assignment as
-      # expression" case (`7 == tot = sum(3, 4)`, expected to evaluate
-      # true): that version reduced `7 == tot` FIRST (since `==` sits
-      # in the ordinary `PRECEDENCE` table and the loop runs before the
-      # end-of-method check), then tried to assign into the resulting
-      # `Binary` node, raising C001. Checking immediately after
-      # `parse_unary` instead — before `==`'s own loop iteration ever
-      # combines `7` and `tot` — means `tot`'s assignment resolves
-      # first, consuming `sum(3, 4)` as its value via the same
-      # `maybe_assignment` → `parse_multi_rhs` → `parse_expression(0)`
-      # chain as ever; the resulting `Assign` node then becomes `==`'s
-      # right operand instead of `tot` alone. `a + b = 1` similarly now
-      # parses as `a + (b = 1)`, not a compile-time C001 — also
-      # confirmed as real Ruby's actual behavior (assignment operators
-      # "evaluate expressions to the right of them first"), not a
-      # regression.
-      #
-      # `resolve_assignment: false` (default true) is the one
-      # deliberate opt-out: `parse_multi_assign`'s own target-list loop
-      # parses each subsequent target (`b` in `a, b = 1, 2`) via this
-      # same method, and a trailing `=` there means "end of target
-      # list, multi-assign starts," NOT "this target has its own
-      # nested assignment" — with the default, `b`'s own parse would
-      # have greedily consumed `= 1, 2` as its own assignment before
-      # `parse_multi_assign` ever got a chance to see the `=` it's
-      # looking for (see `trailing_command_newline_spec.cr`'s
-      # multi-assign case for the regression this guards).
+      # Assignment is resolved as soon as its target is parsed,
+      # whatever `min_prec` is, since Ruby's grammar keys assignment on
+      # the target: `7 == tot = sum(3, 4)` is `7 == (tot = sum(3, 4))`,
+      # and `a + b = 1` is `a + (b = 1)`. `resolve_assignment: false`
+      # is for a multiple assignment's targets.
       left = maybe_assignment(left) if resolve_assignment && assignment_token?(current_kind)
       loop do
-        # See @no_pipe's own comment — while armed, a `Pipe` here is
-        # the closing delimiter of an enclosing block-param list, not
-        # a bitwise-or continuing this expression, regardless of what
-        # min_prec would otherwise allow through.
+        # A `|` closing a block parameter list; see `@no_pipe`.
         break if @no_pipe && current_kind == TokenKind::Pipe
         prec = token_precedence(current_kind)
         break if prec <= min_prec
@@ -724,17 +498,9 @@ module Adjutant
       left
     end
 
-    # True when nothing that could start an expression follows `..`/
-    # `...` — the range's end bound was omitted (an endless range,
-    # `1..`). Blocklist style (terminators), matching the same
-    # convention `parse_break`/`parse_yield`'s own optional-value
-    # checks already use, rather than an allowlist of every possible
-    # expression-start token — the realistic contexts this needs to
-    # cover are all closing/separator tokens: `arr[2..]` (RBracket),
-    # `case age when 18.. then` (KwThen), `f(2..)` (RParen), `[2.., 3]`
-    # (Comma), `{2..}` (RBrace, a block-literal default's own close),
-    # `2.. do |x| ... end`-shaped bare calls (KwDo), plus the ordinary
-    # statement terminators (Newline, Semi, EOF, KwEnd).
+    # Whether the range's end is omitted (`1..`): the next token is a
+    # closer, separator or terminator rather than an expression start,
+    # as in `arr[2..]`, `when 18.. then` and `f(2..)`.
     private def range_end_omitted? : Bool
       at_any?(
         TokenKind::Newline, TokenKind::Semi, TokenKind::EOF, TokenKind::KwEnd,
@@ -752,26 +518,9 @@ module Adjutant
       when TokenKind::Minus
         minus_l, minus_c = line, col
         advance
-        # Fuse `-` with an IMMEDIATELY ADJACENT (no space) numeric
-        # literal into a single negative-literal node, rather than the
-        # general Unary-wraps-postfix path below. This is NOT a general
-        # "unary minus binds tighter than postfix" rule — it would be
-        # WRONG to apply this whenever the operand happens to be a
-        # literal AST-node-shape; it specifically requires no
-        # whitespace between the `-` and the digit, mirroring Ruby's
-        # actual lexer-level `tUMINUS_NUM` token (confirmed empirically
-        # 2026-07-25: `-0.0.to_s` → "-0.0" (fused), `- 0.0.to_s` → the
-        # unary-operator-on-a-call form). `advance` above already
-        # consumed the `-`, so `@current` is now the literal token
-        # itself — its own `space_before?` (see `Token#space_before?`,
-        # set by the lexer) directly answers "was there space right
-        # before this token," no column arithmetic needed. Every other
-        # unary-minus target (a variable, a call result, a
-        # parenthesized expression, OR a numeric literal with a space
-        # after the `-`) still goes through the ordinary
-        # Unary-wraps-postfix path below, unchanged — see SCOPE.md's
-        # entry on this fix for the full research trail (Ruby core bug
-        # #19583, parse.y's own tUMINUS_NUM grammar rule).
+        # `-` touching a numeric literal makes a negative literal, as
+        # Ruby's lexer does: `-0.0.to_s` is "-0.0", while `- 0.0.to_s`
+        # negates the result of the call.
         if (current_kind == TokenKind::Integer || current_kind == TokenKind::Float) && !@current.space_before?
           lit_tok = advance
           negated_lexeme = "-" + lit_tok.lexeme
@@ -785,41 +534,17 @@ module Adjutant
           Unary.new(TokenKind::Minus, parse_unary, minus_l, minus_c)
         end
       when TokenKind::Plus
-        # Same precedence tier as Bang (real Ruby: `!`, `~`, unary `+`
-        # are all the single highest-precedence tier — see
-        # docs.ruby-lang.org/en/3.3/syntax/precedence_rdoc.html). NOT
-        # given the same literal-fusion treatment TokenKind::Minus
-        # gets elsewhere for `-<literal>`: there's no such thing as a
-        # "positive literal" AST node in Ruby (`+1` is just `1`'s
-        # ordinary parse, with a real but no-op-for-numerics unary `+`
-        # wrapped around it) — this is a genuinely simpler case than
-        # unary minus, not a smaller version of the same fix.
+        # Unary `+`, `!` and `~`, Ruby's tightest tier. Unlike `-`,
+        # `+` never fuses into a literal.
         op = advance.kind
         Unary.new(op, parse_unary, l, c)
       when TokenKind::Tilde
         op = advance.kind
         Unary.new(op, parse_unary, l, c)
       when TokenKind::BangTilde
-        # `!~x` in PREFIX position (nothing to its left) is real
-        # Ruby's double-unary `!(~x)` — bitwise-not then logical-not —
-        # NOT the infix negated-match operator, which needs a LEFT
-        # operand to make sense at all (`a !~ b`). Before `!~`
-        # existed as its own combined token, this fell out for free:
-        # `!~x` lexed as separate `Bang`+`Tilde`, and the `Bang` case
-        # just above already recurses into `parse_unary` for its
-        # operand, composing the two automatically. Now that `!~` is
-        # ONE token (needed so `a !~ b` can get its own `PRECEDENCE`
-        # entry — see `scan`'s own comment on `'!'`), that composition
-        # has to be rebuilt explicitly here instead, or `!~x` in this
-        # position would be a parse error where it used to work.
-        # `a !~ b` itself is UNAFFECTED — that's parsed by
-        # `parse_expression`'s infix loop via the `PRECEDENCE` table,
-        # never reaching `parse_unary`'s prefix handling at all, since
-        # `a` is already a complete left operand by the time `!~` is
-        # seen there. Both synthesized `Unary` nodes share the SAME
-        # position (`l, c` — the one real `!~` token's own position);
-        # there's no separate `Tilde` token to give the inner one a
-        # distinct column.
+        # `!~x` in prefix position is `!(~x)`. The lexer makes `!~` one
+        # token for the infix operator, so the two unary nodes are
+        # rebuilt here, both at the `!~` token's position.
         advance
         Unary.new(TokenKind::Bang, Unary.new(TokenKind::Tilde, parse_unary, l, c), l, c)
       when TokenKind::KwNot
@@ -878,21 +603,7 @@ module Adjutant
       l, c = line, col
       case current_kind
       when TokenKind::RangeIncl, TokenKind::RangeExcl
-        # Beginless range (`..10`, `...10`) — the ONLY place `..`/
-        # `...` is ever consumed as the START of an expression rather
-        # than an infix operator on an already-parsed left operand.
-        # Reachable here because parse_unary falls through to
-        # parse_primary for anything that isn't a prefix operator
-        # (Bang/Minus/Plus/Tilde/KwNot) — RangeIncl/RangeExcl was
-        # previously absent from every `when` branch in this method,
-        # so `..10` had no valid parse at all (P002). Same
-        # `range_end_omitted?` check the infix (endless) case uses —
-        # a bare `..`/`...` with nothing meaningful on either side
-        # isn't valid Ruby (a range needs at least one real bound),
-        # but this method doesn't need to reject that itself: an
-        # omitted end here still returns SOME node, and whatever
-        # follows (or doesn't) fails on its own merits same as any
-        # other malformed expression.
+        # A beginless range: `..10` or `...10`.
         op_tok = @current
         advance
         right = range_end_omitted? ? nil : parse_expression(token_precedence(op_tok.kind))
@@ -915,28 +626,13 @@ module Adjutant
         advance
         SelfNode.new(l, c)
       when TokenKind::KwFile
-        # Resolved directly to a StringLiteral HERE, at parse time —
-        # not a dedicated runtime-resolved node the way `KwMethodName`/
-        # `KwCalleeName` below are. Those need the VM's call stack
-        # (the current method name isn't known until a call actually
-        # happens); `__FILE__` is a property of the SOURCE TEXT itself
-        # — the same filename for every token in this parse, already
-        # sitting on `@lexer` (it's what `Lexer.new` was constructed
-        # with) — so there's nothing to defer to runtime. Matches
-        # `KwNil`/`KwTrue`/`KwFalse` just above: a keyword that's
-        # already fully known information at parse time compiles to
-        # an ordinary literal, no new AST node or VM opcode needed.
+        # `__FILE__` is known at parse time, so it becomes a string
+        # literal.
         advance
         StringLiteral.new(@lexer.filename, l, c)
       when TokenKind::KwLine
-        # Same reasoning as `KwFile` just above — `l` here IS this
-        # `__LINE__` token's own source line (set at the top of
-        # `parse_primary`, before this `case`), so it's a compile-time
-        # constant, not something the VM resolves. `IntLiteral` stores
-        # its value as a raw LEXEME STRING (parsed to Int64 at compile
-        # time, matching `TokenKind::Integer`'s own case below) —
-        # `l.to_s` produces exactly that shape from an already-parsed
-        # Int32, not a re-lex of anything.
+        # `__LINE__` is known at parse time, so it becomes an integer
+        # literal.
         advance
         IntLiteral.new(l.to_s, l, c)
       when TokenKind::KwMethodName, TokenKind::KwCalleeName
@@ -1005,25 +701,11 @@ module Adjutant
       when TokenKind::KwYield
         parse_yield
       when TokenKind::KwSuper
-        # `super` was previously only reachable via parse_statement's
-        # own dispatch (see that table, above) — fine for `super()`
-        # as a whole statement/line, but not as a sub-expression like
-        # `"B-" + super()` or `x = super`, which route through
-        # parse_unary → parse_primary instead. Same shape as
-        # `KwRaise` just above, added here for the same reason: any
-        # keyword-headed construct that's a real expression, not just
-        # a statement, needs a case in BOTH dispatch tables.
+        # `super` as a sub-expression: `"B-" + super()`, `x = super`.
         parse_super
       when TokenKind::GVar
-        # Deliberate exclusion (UNSUPPORTED.md's U011), not a gap —
-        # raised here explicitly rather than left to fall through to
-        # the generic P002 below, so a script (or the LLM agent
-        # writing one) sees "global variables aren't supported" by
-        # name instead of a bare "`$foo` not valid here" that reads
-        # like an ordinary syntax mistake worth retrying. No
-        # GlobalVar AST node exists anywhere in this parser — this is
-        # the ONLY place TokenKind::GVar is ever consumed at all,
-        # deliberately, so there's no path that could reach one.
+        # Global variables are excluded (U011), and rejected here by
+        # name rather than as a generic P002.
         raise ParseError.new(
           Diagnostic.new(
             code: "U011",
@@ -1052,164 +734,46 @@ module Adjutant
       end
     end
 
-    # True when @current is a Minus or Plus token that starts a bare
-    # call's first argument rather than a binary operator — i.e. space
-    # BEFORE the operator but NOT after it (`eq -1`, `eq +1`). Extracted
-    # from `parse_identifier_or_call`'s own dispatch chain specifically
-    # to keep that method's cyclomatic complexity under Ameba's
-    # threshold (flagged once this condition grew a second clause,
-    # `@current.space_before?`, alongside `operand_immediately_follows?`
-    # — see this method's own full research trail, moved here
-    # unchanged, for why BOTH conditions are required and not just the
-    # second one).
-    #
-    # Two conditions, not one: `@current.space_before?` (space BEFORE
-    # the operator) AND `operand_immediately_follows?` (no space AFTER
-    # it). An earlier version of this check used only the second
-    # condition, which happened to work for every case this arc's specs
-    # covered (`eq -1`, `a - b`, `n - 1`) but was WRONG for `a-b`/`a+b`
-    # — no space anywhere — which real Ruby parses as ordinary
-    # Binary(a, -, b), not as a bare call `a(-b)`. That gap went
-    # undetected until `spec/scripts/methods.rb`'s `def self.add(a,b);
-    # a+b; end` (an existing test script, not new coverage written for
-    # this fix) failed with R008, undefined method or variable `a` — `a+b`
-    # was being parsed as `a(+b)`, a bare call passing `+b` as an
-    # argument, so `a` (a real local parameter) was looked up as a
-    # callable instead. Confirmed via real Ruby that `a-b`/`a+b` (no
-    # space at all) is unambiguously binary, same as `a - b`/`a + b`
-    # (space on both sides) — the ONLY shape that means "bare call,
-    # first arg is a signed literal" is space-before-but-not-after,
-    # exactly what both conditions together require.
-    #
-    # known_local? (the disambiguator that already correctly resolves
-    # the `name [expr]` ambiguity in `parse_identifier_or_call`) does
-    # NOT work here — tried first for the Minus case, then caught via a
-    # failing pre-existing spec before shipping: `a + b` with `a` NOT a
-    # known local still must parse as Binary, not `a(+b)`. Confirmed
-    # precisely via `irb`: `def a; 999; end; def b; 111; end; p a + b`
-    # → `1110` (calls BOTH a and b with zero args, THEN adds) — binary,
-    # even though neither `a` nor `b` is a known local OR literal. Also
-    # `def a; 999; end; p a -1` → `ArgumentError: given 1, expected 0`
-    # — proving THIS specifically parsed as `a(-1)`, a call taking one
-    # argument, even though `a` is a zero-arg method with no special
-    # local-status either. The only structural difference between the
-    # two: `a - b`'s operand is a bare identifier (space on both sides
-    # of `-`); `a -1`'s operand is a literal IMMEDIATELY ADJACENT to
-    # the operator (no space between `-` and `1`, though there IS a
-    # space between `a` and `-`). The same structural distinction, and
-    # the same fix, applies to `+` — Ruby's own unary-vs-binary
-    # ambiguity for `+` follows the identical adjacency rule as `-`
-    # (both are covered by the same "space before but not after"
-    # warning class in Ruby's own parser), so this is one rule with two
-    # operators, not two rules — sharing one predicate (rather than
-    # duplicating it per-operator) is itself confirmation that Plus
-    # needed no bespoke logic of its own once the real (adjacency, not
-    # known_local?) rule was found.
-    #
-    # So the real rule is adjacency ON BOTH SIDES, not known_local? —
-    # confirmed via Ruby's own "`-' after local variable or literal is
-    # interpreted as binary operator, even though it seems like unary
-    # operator" warning (bugs.ruby-lang.org), which fires precisely for
-    # the space-before-but-not-after shape and documents that Ruby's
-    # default in that case is BINARY (and, by the same logic Ruby
-    # applies elsewhere, a no-space-at-all shape is unambiguously
-    # binary too — there is no bare-call reading of `a-b` in real Ruby
-    # at all). `eq -1`/`eq +1`: space before the operator, none between
-    # the operator and the literal → bare-call start. `n - 1`/`a -
-    # b`/`a-b`/`a+b`: NOT (space-before AND no-space-after) → this
-    # returns false, so `parse_identifier_or_call` falls all the way
-    # through to its own final `else` (`arg_follows_no_paren?` also
-    # still rejects a bare Minus/Plus regardless of spacing — see its
-    # own comment) — returning a plain Identifier and letting
-    # parse_expression's own operator-precedence loop see the `-`/`+`
-    # as binary, same as any other binary operator following a
-    # variable or call-result reference.
+    # Whether the current `-` or `+` starts a bare call's first
+    # argument rather than being binary: space before it and none
+    # after (`eq -1`). `a - b`, `a-b` and `n - 1` are binary, as in
+    # Ruby, whether or not `a` is a local.
     private def signed_literal_starts_bare_call? : Bool
       (at_kind?(TokenKind::Minus) || at_kind?(TokenKind::Plus)) &&
         @current.space_before? && operand_immediately_follows?
     end
 
-    # Bare identifier — may be a local variable, a bare method call, or
-    # a keyword-like call (puts, require handled in parse_statement).
+    # Parses a bare identifier as a local variable or a method call.
     private def parse_identifier_or_call(l : Int32, c : Int32) : Node
       tok = advance
       name = tok.lexeme
       if at_kind?(TokenKind::LParen) && !@current.space_before?
-        # `name(...)` — no space before `(` means THIS paren is name's
-        # own call-argument-list syntax. Deliberately excludes the
-        # space-before-`(` case (`name (...)`, handled by falling
-        # through to `arg_follows_no_paren?` below, which allows
-        # LParen unconditionally as an argument-start token) — a space
-        # before `(` means the parenthesized expression is the bare
-        # call's first ARGUMENT, not name's own arg-list delimiter.
-        # `eq (6/3), 2` was previously misparsed because this check had
-        # no lookahead beyond "is the current token `(`" at all: it
-        # unconditionally treated ANY following `(` as `eq`'s own
-        # call-syntax, so `parse_call_args_and_block` parsed `6/3` as
-        # arg one, hit the closing `)` (from eq's perspective, the
-        # wrong `)`), then choked on the bare `,` that followed with
-        # nowhere to go. Confirmed via Ruby's own issue tracker
-        # (bugs.ruby-lang.org/issues/20922) that `assert_equal (-1),
-        # minus_one` — the same shape as this bug — is valid, WORKING
-        # Ruby; separately confirmed (ruby-forum.com, "Space before
-        # parentheses leads to syntax error") that a space before `(`
-        # on a call with NO other args and a multi-value paren group
-        # (`additionner (2,7)`) IS a syntax error, because `(2,7)`
-        # isn't a valid single parenthesized expression the way
-        # `(6/3)`/`(-1)` each are — this fix doesn't need to
-        # distinguish those two cases itself, since `(2,7)` already
-        # fails on its own merits once parsed as a bare call's first
-        # argument (a bare tuple isn't a valid expression here either).
-        # See SCOPE.md's entry on this bug for the full research trail.
+        # `name(...)`: its own argument list. With a space before the
+        # `(`, as in `eq (6/3), 2`, the parenthesized expression is the
+        # first argument of a bare call instead.
         args, kwargs, blk = parse_call_args_and_block
         Call.new(nil, name, args, blk, false, l, c, kwargs: kwargs)
       elsif block_follows_no_paren?
         blk = parse_block
         Call.new(nil, name, [] of Node, blk, false, l, c)
       elsif at_kind?(TokenKind::LBracket)
-        # `name [expr]` — genuinely ambiguous between indexing an
-        # existing local (`Index` node, handled by parse_postfix once
-        # we fall through to a bare Identifier below) and a bare call
-        # taking an array literal as its first argument (`Call` node
-        # with an ArrayLiteral arg). Real Ruby's parser resolves this
-        # itself: a name that was already established as a local
-        # ALWAYS means indexing from that point on, regardless of what
-        # it holds at runtime; an unestablished name ALWAYS means a
-        # call, even if no such method actually exists either — it
-        # just fails at runtime instead of at parse time (confirmed via
-        # a series of `irb` experiments, incl. `c = 5; c [1]` → 0 via
-        # Integer#[], `d = true; d [1]` → NoMethodError not a parse
-        # error, and `totally_undefined [1,2,3]` → NoMethodError for
-        # 'totally_undefined', proving it parsed as a CALL even though
-        # no such method or variable exists — see 2026-07-21's design
-        # conversation for the full trace). `known_local?` (see
-        # @local_scopes above) is this parser's own lightweight,
-        # syntax-only echo of that same rule.
+        # `name [x]`: indexing if `name` is a local, otherwise a call
+        # with an array argument, as in Ruby.
         known_local?(name) ? Identifier.new(name, l, c) : parse_bare_call_args(name, l, c)
       elsif signed_literal_starts_bare_call?
-        # `name -expr` / `name +expr` — genuinely ambiguous between a
-        # BINARY operator (`n - 1`, `a - b`, `n + 1`) and the start of a
-        # bare call's first argument (`eq -1, -1`, `eq +1, -1`). See
-        # `signed_literal_starts_bare_call?`'s own comment for the full
-        # research trail (extracted there, unchanged, to keep this
-        # method's cyclomatic complexity under Ameba's threshold).
+        # `name -x` or `name +x`; see
+        # `signed_literal_starts_bare_call?`.
         parse_bare_call_args(name, l, c)
       elsif arg_follows_no_paren?
-        # bare call: `puts x`, `raise "msg"`, etc.
+        # A bare call: `puts x`, `raise "msg"`.
         parse_bare_call_args(name, l, c)
       else
         Identifier.new(name, l, c)
       end
     end
 
-    # Shared tail for every bare-(no-paren)-call shape above: parse a
-    # comma-separated argument list via `parse_expression`, then an
-    # optional trailing block. Factored out specifically to reduce
-    # `parse_identifier_or_call`'s cyclomatic complexity (flagged by
-    # Ameba after this method grew a third near-identical branch this
-    # session) — this was pure duplication, not three independent
-    # behaviors, so extracting it is a genuine simplification, not just
-    # a lint workaround.
+    # Parses a bare call's comma-separated arguments and optional
+    # block.
     private def parse_bare_call_args(name : String, l : Int32, c : Int32) : Call
       args = [] of Node
       kwargs = [] of {String, Node}
@@ -1227,24 +791,12 @@ module Adjutant
       at_any?(TokenKind::KwDo, TokenKind::LBrace)
     end
 
-    # True when the current token unambiguously starts an argument in a
-    # bare (no-paren) call position. We use a positive allowlist rather
-    # than a blocklist so that binary operators, postfix tokens, and
-    # terminators are never mistaken for argument starts.
-    #
-    # Allowed: literals, identifiers, constants, variables, unary prefix
-    # operators (-, !, ~), opening delimiters (including `[`, an array
-    # literal), and keyword literals.
-    #
-    # `LBracket` is safe to allow unconditionally HERE — unlike
-    # `parse_identifier_or_call`'s own `name [...]` case (handled by its
-    # own dedicated known_local? branch above `arg_follows_no_paren?`'s
-    # call there, precisely BECAUSE that one case is genuinely
-    # ambiguous), this method is only ever reached from `raise`/`super`
-    # (parse_raise, parse_super) — both keyword tokens, never possibly a
-    # variable name, so `raise [1,2,3]`/`super [1,2,3]` can only ever
-    # mean "call with an array-literal argument," no indexing
-    # interpretation is even grammatically possible.
+    # Whether the current token starts an argument of a bare call:
+    # a literal, identifier, constant, variable, prefix operator,
+    # opening delimiter or keyword literal. An allowlist, so operators
+    # and terminators are never read as arguments. `[` qualifies:
+    # `name [` has already been decided by `known_local?`, and after
+    # `raise` or `super` it can only start an array.
     private def arg_follows_no_paren? : Bool
       case current_kind
       when TokenKind::Integer, TokenKind::Float,
@@ -1258,21 +810,9 @@ module Adjutant
            TokenKind::Identifier, TokenKind::Constant
         true
       when TokenKind::Minus
-        # Correctly false HERE — Minus (and, since the unary-`+`
-        # fix, Plus too) is handled entirely by
-        # parse_identifier_or_call's own dedicated, adjacency-aware
-        # branch above (checked BEFORE this method is ever consulted
-        # for that call site), which needs to distinguish `eq -1`
-        # (bare-call start) from `n - 1`/`a - b` (binary) — a
-        # distinction this method has no way to make on its own, since
-        # it only sees a token kind, not the surrounding whitespace
-        # context now captured on `Token#space_before?`. `raise -1`
-        # (this method's OTHER call site, parse_raise) is consequently
-        # also not yet supported — `raise` is a keyword with no such
-        # ambiguity to resolve, so it COULD safely allow Minus (and
-        # Plus) unconditionally, but that's a separate, smaller,
-        # not-yet-reported gap, deliberately left alone here to keep
-        # this fix scoped to what was actually asked (see SCOPE.md).
+        # `-` and `+` are decided by
+        # `signed_literal_starts_bare_call?`, which sees spacing. So
+        # `raise -1` is not supported.
         false
       else
         false
@@ -1281,13 +821,9 @@ module Adjutant
 
     # --- Calls --------------------------------------------------------------
 
-    # One call argument: `name: value` (an Identifier immediately
-    # followed by a Colon, checked via one-token lookahead so it
-    # doesn't misfire on a ternary's `cond ? a : b`, whose colon is
-    # never the SECOND token of an argument) routes into `kwargs`;
-    # everything else is an ordinary positional expression. Shared
-    # between the parenthesized and bare (no-paren) call-argument
-    # loops so this lookahead lives in exactly one place.
+    # Parses one call argument into `args`, or into `kwargs` when it
+    # is `name: value`. The lookahead for `:` as the second token keeps
+    # a ternary's `? a : b` out.
     private def parse_call_arg(args : Array(Node), kwargs : Array({String, Node})) : Nil
       if at_kind?(TokenKind::Identifier) && peek_kind == TokenKind::Colon
         name = advance.lexeme
@@ -1321,17 +857,8 @@ module Adjutant
     end
 
     private def parse_block : BlockNode
-      # Suspended for this WHOLE block literal (params AND body), not
-      # just its params — see @no_pipe's own comment. Reachable with
-      # @no_pipe already true when this block is written as the
-      # default value of an ENCLOSING param (`def f(g = xs.each { |y|
-      # y })`): without suspending here, the outer flag would still be
-      # armed while parsing THIS block's own `|y|` and body, breaking
-      # both a bare `|` inside this block's body and (were block
-      # params ever nested two default-levels deep) this block's own
-      # param defaults. Saved/restored, not reset to a hardcoded
-      # false, so a block literal directly inside another block
-      # literal's default (however unlikely) still nests correctly.
+      # `@no_pipe` is off inside a block literal, even one written as
+      # a parameter default, and restored afterwards.
       saved_no_pipe = @no_pipe
       @no_pipe = false
       begin
@@ -1383,7 +910,7 @@ module Adjutant
       while at_kind?(TokenKind::StringPart)
         tok = advance
         parts << StringFragment.new(decode_string_escapes(tok.lexeme, true), tok.line, tok.column)
-        # parse the interpolated expression until InterpEnd
+        # Parses the interpolated expression up to InterpEnd.
         skip_newlines
         until at_kind?(TokenKind::InterpEnd) || at_kind?(TokenKind::EOF)
           parts << parse_expression(0)
@@ -1398,12 +925,8 @@ module Adjutant
       InterpString.new(parts, l, c)
     end
 
-    # Mirrors parse_interp_string above, for a /pattern/flags literal
-    # whose body contains #{...}. Fragment text is kept raw (no
-    # decode_string_escapes call) — see RegexFragment's own comment
-    # for why. Flags only ever appear on the final RegexEnd token,
-    # matching real Ruby (`/#{x}abc/i` — the `i` sits after the whole
-    # literal closes, not attached to any one part).
+    # Parses a regex literal containing `#{...}`. Fragments keep their
+    # raw text; the flags come from the final RegexEnd token.
     private def parse_regex_literal(l : Int32, c : Int32) : Node
       parts = [] of Node
       flags = ""
@@ -1440,9 +963,8 @@ module Adjutant
     end
 
     private def parse_hash_or_block_brace(l : Int32, c : Int32) : Node
-      # Heuristic: if after { we see key => or key: treat as hash, else block
-      # For now parse as hash literal; standalone braces without a call context
-      # will be caught as a block by parse_identifier_or_call.
+      # A `{` in expression position is always a hash literal; a
+      # block's `{` is consumed where a call is parsed.
       expect(TokenKind::LBrace)
       pairs = [] of {Node, Node}
       skip_newlines
@@ -1458,15 +980,9 @@ module Adjutant
       HashLiteral.new(pairs, l, c)
     end
 
-    # A hash entry's key, either spelling: `key => val` (any
-    # expression as key), or the symbol-shorthand `key: val` — an
-    # identifier, constant, or keyword immediately hugging a `:` (no
-    # space, same adjacency test `operand_immediately_follows?` uses
-    # for unary `-`/`+`) becomes `SymbolLiteral.new(key)`, consuming
-    # BOTH the label and its colon so the caller only ever parses the
-    # value. Real Ruby allows any reserved word as a label
-    # (`class:`, `if:`, ...), hence the generic `Kw`-prefix check
-    # rather than a hand-maintained keyword list.
+    # Parses a hash entry's key and its separator: `key => val` with
+    # any expression as key, or `key: val`, where an identifier,
+    # constant or keyword touching `:` becomes a Symbol.
     private def label_follows? : Bool
       return false unless at_kind?(TokenKind::Identifier) || at_kind?(TokenKind::Constant) ||
                           @current.kind.to_s.starts_with?("Kw")
@@ -1495,7 +1011,7 @@ module Adjutant
       recv = nil
       name_tok = @current
       advance
-      # Check for def obj.method / def self.method
+      # `def obj.method` or `def self.method`.
       if at_kind?(TokenKind::Dot)
         advance
         recv = if name_tok.kind == TokenKind::KwSelf
@@ -1506,34 +1022,8 @@ module Adjutant
         name_tok = @current
         advance
       end
-      # A setter method definition (`def name=(value)`) — the exact
-      # same class of bug `"==="` needed a dedicated `TripleEq` token
-      # for (see `OVERLOADABLE_OPERATOR_NAMES`'s own comment,
-      # compiler.cr): without this, `name_tok` above is just the bare
-      # identifier `name`, the following `=` is left as an ordinary
-      # `Eq` token, and `parse_def` — having no receiver-dot, and no
-      # `(` immediately after `name` — falls straight through to
-      # parsing the METHOD BODY starting at that stray `=`, which
-      # can't start an expression (`P002`), a confusing, unrelated-
-      # looking error with no hint that a setter-name shape was even
-      # attempted. Found 2026-08-08 while testing the (separately
-      # landed, same session) `AttrAssign`/`Op::SetAttr` work — a
-      # HAND-WRITTEN `def value=(v)` had never actually been
-      # exercised before; `attr_writer`/`attr_accessor` never hit
-      # this at all, since `Parser#parse_attr` builds its synthetic
-      # `DefNode`s with a `"name="`-suffixed Crystal string directly,
-      # bypassing this token-by-token path entirely.
-      #
-      # Fixed via adjacency (`Token#space_before?`), the same
-      # mechanism the unary-minus/plus ambiguities elsewhere in this
-      # parser already use, rather than a new lexer token: a plain
-      # `Identifier` name immediately (no space) followed by a lone
-      # `Eq` — never `EqEq`/`NEq`/`TripleEq`, which are their own
-      # distinct token kinds — unambiguously means a setter-name
-      # suffix in this position. `def foo == (x)` (a real `==`
-      # operator def, unaffected) tokenizes as `Identifier(foo)`,
-      # `EqEq`, never `Identifier` + adjacent lone `Eq`, so there is
-      # no ambiguity between the two shapes to resolve.
+      # A setter, `def name=(value)`: an identifier touching a lone
+      # `=`. `def foo ==(x)` lexes as `EqEq`, so doesn't match.
       if name_tok.kind == TokenKind::Identifier && at_kind?(TokenKind::Eq) && !@current.space_before?
         advance
         name_tok = Token.new(TokenKind::Identifier, "#{name_tok.lexeme}=", name_tok.line, name_tok.column)
@@ -1549,25 +1039,8 @@ module Adjutant
       skip_terminators
       body = parse_body_until_any(TokenKind::KwRescue, TokenKind::KwElse, TokenKind::KwEnsure, TokenKind::KwEnd)
       rescue_clauses, else_body, ensure_body = parse_rescue_else_ensure
-      # Real Ruby treats a method body as an IMPLICIT `begin` — `def
-      # foo; risky; rescue Bar; ...; end`, no explicit begin/end
-      # wrapper needed. Previously unsupported entirely (P002 at the
-      # `rescue` keyword — see SCOPE.md's Must Fix entry, filed
-      # 2026-08-10). Fixed by wrapping the parsed body in a synthetic
-      # BeginNode when rescue/ensure was actually present, rather than
-      # teaching the compiler or VM anything new: DefNode#body is
-      # already just an ordinary Body, compiled via plain
-      # compile_body — a Body containing one BeginNode statement
-      # compiles (compile_begin) and walks (RiskWalker#walk_begin)
-      # through the EXACT same paths a hand-written `begin`/`end`
-      # already does, both already fully implemented and tested. Only
-      # wrapped when something was actually there to wrap
-      # (rescue_clauses non-empty or an ensure present) — a plain
-      # `def foo; x; end` with no rescue/ensure at all stays a bare
-      # Body, unchanged from before this fix. (`else_body` alone can't
-      # trigger this on its own: parse_rescue_else_ensure's own
-      # parse_begin_else already raises if `else` appears with no
-      # `rescue` clause before it, matching real Ruby.)
+      # A method body is an implicit `begin`: with a `rescue` or
+      # `ensure`, the body is wrapped in a BeginNode.
       unless rescue_clauses.empty? && ensure_body.nil?
         begin_node = BeginNode.new(body, rescue_clauses, else_body, ensure_body, l, c)
         body = Body.new([begin_node.as(Node)], l, c)
@@ -1604,19 +1077,11 @@ module Adjutant
       end
       name = @current.lexeme
       advance
-      # keyword argument: name: or name: default
+      # A keyword parameter: `name:` or `name: default`.
       if at_kind?(TokenKind::Colon)
         advance
-        # The `at_any?` guard only covers an EMPTY default (`name:`
-        # immediately followed by `,`/`)`/`|`) — a non-trivial kwarg
-        # default (`name: 9`) still needs the same @no_pipe protection
-        # as an ordinary default just below, for the identical reason:
-        # `Pipe` closing a block's param list is otherwise
-        # indistinguishable from `Pipe` continuing the default
-        # expression as bitwise-or. Kwarg call-site syntax isn't
-        # implemented yet (see SCOPE.md's Must Fix), but kwarg
-        # DECLARATION on a block param is — `xs.each { |k: 9| k }` —
-        # so this is a live path, not dead code.
+        # A non-empty default needs `@no_pipe`, as below, for
+        # `|k: 9|`.
         default = if at_any?(TokenKind::Comma, TokenKind::RParen, TokenKind::Pipe)
                     nil
                   else
@@ -1629,15 +1094,11 @@ module Adjutant
                   end
         return Param.new(name, default, false, false, true, l, c)
       end
-      # default parameter: name = value
+      # An optional parameter: `name = value`.
       if at_kind?(TokenKind::Eq)
         advance
-        # @no_pipe is a no-op for a DEF param's default (no enclosing
-        # `|...|`, so Pipe never appears at min_prec=0 here regardless)
-        # — armed unconditionally anyway so this one code path is
-        # correct for both def-params and block-params, rather than
-        # branching parse_param itself on which kind of param list
-        # called it.
+        # `@no_pipe` matters only in a block's `|...|`, but is set for
+        # def parameters too, so one path serves both.
         default = begin
           @no_pipe = true
           parse_expression(0)
@@ -1763,11 +1224,7 @@ module Adjutant
         @no_do_block = false
       end
       skip_terminators
-      # Optional trailing `do`, same as `for ... in ... do` — Ruby
-      # allows (but doesn't require) `do` after a while/until
-      # condition. Previously never consumed here at all, so
-      # `while cond do` left `do` sitting as the next token and the
-      # body parse failed on it immediately.
+      # An optional `do` after the condition.
       if at_kind?(TokenKind::KwDo)
         advance
         skip_terminators
@@ -1781,9 +1238,8 @@ module Adjutant
       l, c = line, col
       expect(TokenKind::KwLoop)
       skip_terminators
-      # loop do ... end or loop { ... }. Only the `do` form is closed
-      # by an `end`, so only it is tracked — a `{ }` form can't produce
-      # a missing-`end` diagnostic.
+      # `loop do ... end` or `loop { ... }`. Only the `do` form needs
+      # an `end`, so only it is tracked.
       if at_kind?(TokenKind::KwDo)
         open_block("loop", l, c)
         advance
@@ -1816,10 +1272,8 @@ module Adjutant
       ensure
         @no_do_block = false
       end
-      # Registered into the CURRENT scope, not a new one — a for-loop
-      # does not open its own scope in Ruby (the loop variable is a
-      # real local, readable after the loop ends too), unlike a block
-      # or lambda's `|x|` params.
+      # A `for` variable joins the current scope and outlives the
+      # loop, as in Ruby.
       vars.each { |v| register_local(v) }
       skip_terminators
       if at_kind?(TokenKind::KwDo)
@@ -1913,11 +1367,8 @@ module Adjutant
         end
         expect(TokenKind::RParen)
       elsif arg_follows_no_paren?
-        # The guard `parse_super`/`parse_raise` already use for the
-        # identical ambiguity, and needed here for the same reason once
-        # `yield` became an expression: without it `x = yield + 1` reads
-        # `+ 1` as yield's own argument, discards it, and applies
-        # nothing to yield's value.
+        # Without the check, `x = yield + 1` would read `+ 1` as an
+        # argument.
         args << parse_expression(0)
         while match(TokenKind::Comma)
           skip_newlines
@@ -1943,19 +1394,8 @@ module Adjutant
         expect(TokenKind::RParen)
         SuperNode.new(args, false, l, c)
       elsif arg_follows_no_paren?
-        # Same guard parse_raise already uses for the identical
-        # ambiguity — without it, `super + 4` (bare `super`, then a
-        # binary `+`) was indistinguishable from `super +4` (explicit
-        # unary-plus argument), and this branch always guessed the
-        # latter: it swallowed `+ 4` as an argument to super, silently
-        # discarded it (a zero-param method just ignores an extra
-        # arg), and left nothing for `+` to apply to but super's own
-        # return value — `super + 4` quietly behaved as plain
-        # `super`. arg_follows_no_paren? deliberately excludes
-        # `+`/`-` (needs adjacency/whitespace context it doesn't have
-        # — see its own comment), so `super + 4`/`super - 4` now fall
-        # through to the zsuper branch below instead, correctly
-        # leaving `+`/`-` for the surrounding expression parser.
+        # `arg_follows_no_paren?` rejects `+` and `-`, so `super + 4`
+        # adds to super's result instead of passing `+4`.
         args = [parse_expression(0)] of Node
         while match(TokenKind::Comma)
           skip_newlines
@@ -1963,19 +1403,14 @@ module Adjutant
         end
         SuperNode.new(args, false, l, c)
       else
-        # Bare `super` with nothing that unambiguously starts an
-        # argument following — real Ruby's zsuper: forward the
-        # enclosing method's own current parameter values (see
-        # VM#zsuper_bindings), not "explicit call with zero args."
+        # Bare `super` forwards the method's current parameter values
+        # (zsuper), rather than calling with no arguments.
         SuperNode.new([] of Node, true, l, c)
       end
     end
 
-    # `raise` is a keyword token (KwRaise), so it never reaches
-    # parse_identifier_or_call's bare-call handling. Desugar to the same
-    # Call shape (receiver nil, method "raise") so the existing native
-    # "raise" builtin handles it unchanged. Supports `raise`, `raise "msg"`,
-    # and `raise("msg")`.
+    # Parses `raise`, `raise "msg"` or `raise("msg")` into a Call to
+    # the builtin `raise`.
     private def parse_raise(l : Int32, c : Int32) : Node
       advance # consume 'raise'
       args = [] of Node
@@ -2002,21 +1437,9 @@ module Adjutant
       BeginNode.new(body, rescue_clauses, else_body, ensure_body, l, c)
     end
 
-    # The rescue/else/ensure tail shared by an explicit `begin` and a
-    # method body's IMPLICIT one (real Ruby's "bodystmt" — a `def`
-    # body is itself a begin, without writing `begin`/`end` around
-    # it). Assumes the caller already parsed everything up to
-    # whichever of KwRescue/KwElse/KwEnsure/KwEnd stopped it (e.g. via
-    # parse_body_until_any with all three) and does NOT consume the
-    # final KwEnd — that stays the caller's own job (close_block),
-    # since parse_begin and parse_def have different bookkeeping
-    # (open_block naming, local-scope push/pop) around that point.
-    # Safe to call unconditionally even when none of
-    # rescue/else/ensure are actually present: parse_begin_else
-    # itself already no-ops when not at KwElse, and the `while
-    # at_kind?(KwRescue)`/`if match(KwEnsure)` checks below do the
-    # same for their own keywords — so a plain body with nothing
-    # trailing it costs nothing extra to check for.
+    # Parses the rescue, else and ensure clauses after a `begin` body
+    # or a method body (an implicit `begin`). Returns empty results
+    # when there are none. The caller consumes the closing `end`.
     private def parse_rescue_else_ensure : {Array(RescueClause), Body?, Body?}
       rescue_clauses = [] of RescueClause
       while at_kind?(TokenKind::KwRescue)
@@ -2031,17 +1454,14 @@ module Adjutant
       {rescue_clauses, else_body, ensure_body}
     end
 
-    # One `rescue` clause: optional comma-separated class list (`rescue
-    # A, B` — OR'd left-to-right against the raised error, same as
-    # real Ruby), optional `=> var` binding, then its body. Split out
-    # of parse_begin purely to keep its cyclomatic complexity down.
+    # Parses one `rescue` clause: optional classes (`rescue A, B`,
+    # tried left to right), optional `=> var` binding, then its body.
     private def parse_rescue_clause : RescueClause
       expect(TokenKind::KwRescue)
       classes = [] of Node
       rescue_var = nil
       if at_kind?(TokenKind::Constant)
-        # Reuses the normal expression parser so `rescue Foo::Bar`
-        # gets full constant-path support for free.
+        # Parsed as an expression so `rescue Foo::Bar` works.
         classes << parse_expression(0)
         while match(TokenKind::Comma)
           skip_newlines
@@ -2055,37 +1475,28 @@ module Adjutant
         rescue_var = @current.lexeme
         advance
       elsif at_kind?(TokenKind::Identifier)
-        # Legacy/bare form: `rescue e` binds a variable with no class
-        # filter (catches everything) — kept for backward compat.
+        # `rescue e` is accepted as `rescue => e`. Ruby would treat
+        # `e` as the class to match.
         rescue_var = @current.lexeme
         advance
       end
       skip_terminators
-      # Registered into the CURRENT scope, not a new one — a rescue
-      # clause does not open its own scope in Ruby (same reasoning as
-      # the for-loop variable above; a rescue-bound variable remains a
-      # real local after the whole begin/rescue/end too).
+      # A rescue variable joins the current scope and outlives the
+      # `begin`, as in Ruby.
       rescue_var.try { |v| register_local(v) }
       rescue_body = parse_body_until_any(TokenKind::KwRescue, TokenKind::KwElse, TokenKind::KwEnsure, TokenKind::KwEnd)
       RescueClause.new(classes, rescue_var, rescue_body)
     end
 
-    # `begin`'s optional `else` clause. Split out of parse_begin purely
-    # to keep its cyclomatic complexity down.
+    # Parses `begin`'s optional `else` clause.
     private def parse_begin_else(rescue_clauses : Array(RescueClause)) : Body?
       return unless at_kind?(TokenKind::KwElse)
-      # Matches real Ruby's own SyntaxError exactly (confirmed against
-      # `irb`, 2026-08-07): `else` only means something as the "body
-      # raised nothing" branch of an actual rescue/else pairing — a
-      # `begin` with no `rescue` clause at all has nothing for it to
-      # attach to.
+      # As in Ruby, `else` needs a `rescue` before it.
       raise else_without_rescue_error if rescue_clauses.empty?
       advance
       skip_terminators
       else_body = parse_body_until_any(TokenKind::KwElse, TokenKind::KwEnsure, TokenKind::KwEnd)
-      # A second `else` — also a real Ruby SyntaxError (confirmed
-      # against `irb`, 2026-08-07): a `begin` allows at most one, the
-      # same as it allows at most one `ensure`.
+      # As in Ruby, a `begin` has at most one `else`.
       raise duplicate_else_error if at_kind?(TokenKind::KwElse)
       else_body
     end
@@ -2117,28 +1528,10 @@ module Adjutant
       RequireNode.new(path, l, c)
     end
 
-    # `attr_reader :x, :y`, `attr_writer :x, :y`, `attr_accessor :x, :y`
-    # — real Ruby implements these as ordinary (private) Kernel
-    # methods that call `define_method` at runtime; Adjutant desugars
-    # them at PARSE time instead, straight into the same DefNode shape
-    # an equivalent hand-written `def x; @x; end` would produce. No
-    # new AST node, no compiler/risk-walker/type-inference case
-    # needed anywhere — this returns a `Body` wrapping N synthetic
-    # DefNodes (same multi-statement-as-one-Node trick a class/def/
-    # module body itself is built from), and `append_statement`
-    # (below) flattens that back into the enclosing statement list
-    # before anything else ever sees it — see that method's own
-    # comment for why the flattening step itself is load-bearing, not
-    # cosmetic.
-    #
-    # Deliberately requires each name to be a literal `:symbol` —
-    # every real-world example (including this project's own
-    # UNSUPPORTED.md, U009) writes it that way, and accepting a
-    # runtime-computed String name would mean this couldn't desugar
-    # at parse time at all, a genuinely different (and much rarer)
-    # feature. Optional parens accepted (`attr_accessor(:x, :y)`),
-    # matching real Ruby's own optional-parens-on-any-method-call
-    # syntax, even though this isn't a real method call here.
+    # Desugars `attr_reader`, `attr_writer` or `attr_accessor` with
+    # literal Symbol names (`attr_accessor :x, :y`, parentheses
+    # optional) into a Body of the DefNodes the equivalent
+    # hand-written methods would produce.
     private def parse_attr(kind : TokenKind) : Node
       l, c = line, col
       advance # consume attr_reader / attr_writer / attr_accessor itself
@@ -2203,28 +1596,9 @@ module Adjutant
       Body.new(stmts, l, c)
     end
 
-    # A single call to `parse_statement` occasionally returns a bare
-    # `Body` rather than one real statement — currently only
-    # `parse_attr` (`attr_accessor :x, :y` desugars to N separate
-    # DefNodes, and a `Body` is the existing multi-statement-as-one-
-    # Node wrapper, same trick a class/def/module body itself already
-    # uses). Splicing its `stmts` in flat here, rather than nesting it
-    # as a single child, matters beyond tidiness: `RiskWalker#walk_class`
-    # (risk_walker.cr) specifically pattern-matches `stmt.is_a?(DefNode)`
-    # on each of a class body's DIRECT statements to register it as a
-    # real method on the static class model it builds — a DefNode
-    # buried one level inside a nested Body would silently fall through
-    # to that method's generic `else` branch instead (walked for risk,
-    # but never registered), so `Config.new.name` would raise
-    # "undefined method" even though the compiled bytecode (which
-    # dispatches generically via `compile_body`, no such flattening
-    # requirement) runs it fine — a real vs. static-model divergence,
-    # exactly the shape of bug this project's own design invariants
-    # (SCOPE.md/DEVELOPMENT.md) warn to watch for. Flattening once,
-    # here, at the single choke point every statement list already
-    # passes through, means no downstream consumer (walk_class today,
-    # anything else tomorrow) has to know `Body`-wrapping happens at
-    # all.
+    # Appends `stmt`, splicing in a Body's statements (as `parse_attr`
+    # returns) rather than nesting it. `RiskWalker#walk_class` only
+    # registers DefNodes that are direct statements of a class body.
     private def append_statement(stmts : Array(Node), stmt : Node) : Nil
       if stmt.is_a?(Body)
         stmts.concat(stmt.stmts)
@@ -2240,15 +1614,9 @@ module Adjutant
       s
     end
 
-    # Splits a `%w[...]`/`%i[...]` literal's raw body (lexer-scanned,
-    # backslash-escaping already respected as "escape the next char
-    # unconditionally") into its individual words. Runs of whitespace
-    # separate words; a backslash-escaped whitespace character is kept
-    # as a literal character in the current word instead of splitting
-    # there, and a backslash-escaped backslash decodes to one
-    # backslash — the only two escapes real Ruby recognizes inside
-    # `%w`/`%i` (no `\n`/`\t`/etc., unlike a double-quoted string).
-    # Leading/trailing whitespace in the body produces no empty words.
+    # Splits a `%w` or `%i` literal's raw body into words at runs of
+    # whitespace. `\` before whitespace keeps it in the word, and `\\`
+    # is one backslash; no other escapes apply.
     private def split_percent_literal(raw : String) : Array(String)
       words = [] of String
       current = String::Builder.new
@@ -2280,31 +1648,10 @@ module Adjutant
       words
     end
 
-    # Decodes real Ruby's backslash escape sequences in a string
-    # literal's raw source text. Found 2026-08-13 while adding
-    # String#chomp/#gsub/etc: NOTHING in the parser/compiler pipeline
-    # ever did this before — `strip_quotes` only removed the
-    # surrounding quote characters, and `compile_string` fed that raw
-    # text straight into a Value.string constant. Every double-quoted
-    # string containing `\n`, `\t`, etc. silently held the literal
-    # two-character sequence (backslash + letter) instead of the
-    # intended control character — a severe, previously-unnoticed
-    # silent-wrong-answer bug, not a missing feature: no test anywhere
-    # in the suite exercised an escape sequence inside an
-    # Adjutant-PARSED string (as opposed to a real newline typed
-    # directly into a Crystal heredoc, which needed no decoding to
-    # begin with).
-    #
-    # Single-quoted strings only decode `\\` and `\'` — real Ruby's
-    # own rule; every other backslash sequence stays completely
-    # literal (`'\n'` is the two characters `\` and `n`, not a
-    # newline). `is_double` selects which ruleset applies.
-    #
-    # Interpolated-string fragments (StringFragment, built from
-    # TokenKind::StringPart/StringEnd) are always double-quoted in
-    # Ruby — the lexer never produces those tokens for a
-    # single-quoted string, which can't interpolate at all — so
-    # callers building those always pass `is_double: true`.
+    # Decodes backslash escapes in a string literal's raw text. With
+    # `is_double`, Ruby's double-quoted escapes apply; otherwise only
+    # `\\` and `\'` do, and every other backslash stays literal.
+    # Interpolated-string fragments are always double-quoted.
     # ameba:disable Metrics/CyclomaticComplexity - one `when` per escape letter, each a flat one-line case; not tangled branching
     private def decode_string_escapes(raw : String, is_double : Bool) : String
       return decode_single_quoted_escapes(raw) unless is_double
@@ -2358,9 +1705,8 @@ module Adjutant
                 i += 2
               end
             else
-              # Real Ruby's own rule for an unrecognized escape: drop
-              # the backslash, keep the character as-is (`"\d" ==
-              # "d"`), not an error.
+              # An unknown escape drops the backslash, as in Ruby:
+              # `"\d" == "d"`.
               io << nxt
               i += 2
             end
@@ -2376,13 +1722,8 @@ module Adjutant
       c.ascii_number? || ('a'..'f').includes?(c.downcase)
     end
 
-    # Real Ruby's single-quoted-string rule: only `\\` (literal
-    # backslash) and `\'` (literal single quote) are recognized
-    # escapes — every other backslash stays completely literal,
-    # backslash and all (`'\n'` is 2 chars, `\` and `n`, not a
-    # newline). An explicit left-to-right scan rather than chained
-    # global substitutions, to avoid any ambiguity from one
-    # substitution pass altering what the next pass would match.
+    # Decodes a single-quoted string's only escapes, `\\` and `\'`,
+    # in one left-to-right pass.
     private def decode_single_quoted_escapes(raw : String) : String
       String.build do |io|
         i = 0

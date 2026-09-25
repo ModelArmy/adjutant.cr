@@ -4,28 +4,13 @@ require "../risk_profile"
 require "./helpers"
 
 module Adjutant::Builtins
-  # Builds the `Integer` RubyClass and registers its native methods.
-  #
-  # All methods here are pure (RiskProfile.none) — Integer has no
-  # side-effecting operations. Arithmetic (`+`, `-`, `*`, `/`, `%`) is
-  # NOT registered here: it compiles to dedicated VM opcodes
-  # (Op::Add etc.), a separate fast path from method dispatch, and
-  # isn't reached through find_native_method. This class exists so
-  # `5.is_a?(Integer)`, `5.to_s`, etc. work against a real RubyClass
-  # rather than exec_builtin's receiver-agnostic fallback.
+  # Builds the `Integer` class and its native methods, all pure.
+  # Arithmetic is opcodes, not methods.
   def self.bootstrap_integer(interp : Adjutant::Interpreter) : Adjutant::RubyClass
     cls = Adjutant::RubyClass.new("Integer")
 
-    # Real Ruby's Integer#to_s(base) accepts an optional base (2..36);
-    # with no argument it's the plain base-10 rendering already
-    # covered below. Crystal's own Int64#to_s(base) already does the
-    # actual radix conversion — this is mostly argument validation:
-    # real Ruby raises ArgumentError for a base outside 2..36, so an
-    # out-of-range base is rejected the same way here (R015), rather
-    # than either silently clamping it or letting Crystal's own
-    # ArgumentError escape as an opaque internal N001 (see
-    # NativeCallContext#raise_error's own comment for why that path
-    # exists).
+    # `to_s(base)`, base 2 to 36; another base raises R015
+    # (ArgumentError), as in Ruby.
     define(cls, interp, "to_s") do |args, _blk, ncc|
       n = args.first.as_int
       if base_arg = args[1]?
@@ -47,10 +32,7 @@ module Adjutant::Builtins
       Adjutant::Value.float(args.first.as_int.to_f64)
     end
 
-    # Real Ruby's Integer#succ / #next (aliases of each other) — the
-    # mechanism Range#each iterates with (see builtins/range.cr),
-    # matching Ruby's own Range implementation rather than requiring
-    # a special-cased "is this an Integer range" branch there.
+    # `succ` and its alias `next`, which Range iteration uses.
     define(cls, interp, "succ") do |args|
       recv = args.first
       Adjutant::Value.int(recv.as_int + 1, recv.label)
@@ -77,11 +59,8 @@ module Adjutant::Builtins
       Adjutant::Value.bool(args.first.as_int.zero?)
     end
 
-    # Real Ruby's Integer#times yields 0...self and returns self,
-    # same shape as Array#each — a receiver with no block is valid
-    # Ruby too (would normally return an Enumerator; unsupported here
-    # per the Enumerator-less scope, so a blockless call is just a
-    # no-op that returns self).
+    # Yields 0 up to self, excluded, and returns self. Without a
+    # block, returns self.
     define(cls, interp, "times") do |args, blk, ncc|
       recv = args.first
       if blk
@@ -90,12 +69,8 @@ module Adjutant::Builtins
       recv
     end
 
-    # Real Ruby's Integer#ceil / #floor / #round / #truncate: with no
-    # argument (or a non-negative ndigits) these are no-ops that
-    # return self — an Integer is already integral. With a NEGATIVE
-    # ndigits, they round to the nearest power of 10 instead (e.g.
-    # `12345.round(-2) == 12300`) — see
-    # Builtins.integer_round_to_power_of_ten for the shared logic.
+    # With a negative `ndigits`, rounds to a power of ten
+    # (`12345.round(-2)` is 12300); otherwise returns self.
     define(cls, interp, "ceil") do |args|
       n = args.first.as_int
       ndigits = args[1]?.try(&.as_int) || 0_i64

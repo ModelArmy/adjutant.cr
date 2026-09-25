@@ -7,45 +7,16 @@ require "./exceptions"
 
 module Adjutant
   module Legate
-    # `Legate::Chunk` — a byte-exact chunk yielded by `Legate::Bytes`
-    # (LEGATE.md §4.2/§6, and a future byte-oriented network stream
-    # the same way `Legate::EOF` was designed to generalize — see
-    # stream.cr's own comment on that). NOT part of LEGATE.md as
-    # originally written; invented this session to resolve a real gap
-    # found while building `Legate.bytes`: Adjutant's `String` is
-    # Crystal's own `String`, which MUST be valid UTF-8 as a language
-    # invariant, so it cannot faithfully hold arbitrary binary content
-    # the way real Ruby's `ASCII-8BIT`-tagged String can. See this
-    # session's own design conversation for the fuller reasoning
-    # (why a raw `ValueRaw` variant was considered and rejected in
-    # favor of this — a Legate-scoped RubyObject, not a core-language
-    # change — and why `Chunk` deliberately does NOT pretend to be a
-    # `String`).
+    # `Legate::Chunk`: a byte-exact chunk from `Legate::Bytes`. An
+    # addition to LEGATE.md, because Adjutant's String is Crystal's,
+    # which must be valid UTF-8 and so can't hold arbitrary bytes. The
+    # bytes live in a typed field; there is no script-visible `new`.
     #
-    # Real Crystal-only state (`bytes : Bytes`, a genuine byte slice —
-    # not representable in `ivars : Hash(Int32, Value)`, which can
-    # only hold script-visible `Value`s), so this is a REAL RubyObject
-    # SUBCLASS with its own field, the same shape as `TimeObject`/
-    # `RegexpObject`/`StreamObject` — and inherits the SAME already-
-    # documented `dup`/`clone`-loses-typed-state gap those carry
-    # (SCOPE.md's Must Fix), not a new one this type introduces.
-    #
-    # No script-visible `.new` — broker-manufactured only via `.build`
-    # below, same convention as every other Legate value type.
-    #
-    # Deliberately Array-shaped, not String-shaped, where the two
-    # conventions would otherwise disagree: `#[](i)` returns a single
-    # BYTE (an Integer 0–255), matching `Array#[]` on a byte sequence,
-    # NOT `String#[]`'s own real-Ruby meaning (a substring). A model
-    # reaching for `chunk[0]` expecting a one-character String would
-    # get a clear, immediately-wrong-looking Integer rather than
-    # silently-plausible-but-incorrect behavor — a loud mismatch is
-    # recoverable; a silent one isn't. `#to_s`/`#to_a` are the two
-    # explicit, clearly-named escape hatches into shapes a script
-    # already knows how to work with (a real Adjutant String, once a
-    # script vouches for the bytes being text; a plain Array of
-    # Integer bytes, matching Ruby's own `String#bytes` convention)
-    # rather than trying to make `Chunk` itself pass as either.
+    # Array-shaped, not String-shaped: `chunk[0]` is one byte as an
+    # Integer, not a one-character String, so a script expecting text
+    # gets a visibly wrong value rather than a plausible one. `to_s`
+    # (decoding as UTF-8) and `to_a` (an Array of byte Integers) are the
+    # ways out.
     module Chunk
       class ChunkObject < RubyObject
         property bytes : ::Bytes
@@ -81,12 +52,8 @@ module Adjutant
           Value.new(LabeledArray.new(items, label), label)
         end
 
-        # `scrub:` mirrors `Legate.read`'s own kwarg — see that verb's
-        # comment on `String.new(Bytes)`'s substitution behavior being
-        # unverified against a live toolchain; the same caveat applies
-        # here, identically. Uses `define_native_method` directly
-        # (not the `Builtins.define` shorthand every other method here
-        # uses) since only the direct form accepts `kwarg_names`.
+        # `to_s(scrub:)`, as `Legate.read` takes it. Registered with
+        # `define_native_method`, the form that accepts `kwarg_names`.
         cls.define_native_method(
           interp.symbols.intern("to_s").value,
           RiskProfile.none,
@@ -118,9 +85,8 @@ module Adjutant
         args.first.as_robject.as(ChunkObject)
       end
 
-      # Crystal-facing constructor — every `Legate::Bytes` chunk pull
-      # (verbs/bytes.cr) calls this directly; no script-visible path
-      # to build one, matching every other Legate value type.
+      # Builds a Chunk from Crystal code; `Legate.bytes` calls it for
+      # each chunk it reads.
       def self.build(rclass : RubyClass, bytes : Bytes, label : RiskFlowLabel? = nil) : Value
         Value.robject(ChunkObject.new(rclass, bytes), label)
       end

@@ -54,6 +54,403 @@ DEVELOPMENT.md's "Destructive verbs" writeup. Removed here rather than
 marked done, since a completed entry in a list of open problems is
 just noise for the next reader.
 
+- **A recursive copy follows symlinks out of the read grant.**
+  Predicted 2026-09-24 by reading `verbs/cp.cr`, `verbs/mv.cr` and
+  Crystal's `file_utils.cr`. `Legate.cp(from, to, recursive: true)`
+  authorizes `from` once and hands the tree to `FileUtils.cp_r`,
+  which recurses with `Dir.exists?` and copies with `File.copy`, both
+  following symlinks. A link inside the tree is copied as its
+  target's content, wherever the target is: a repository carrying
+  `docs/keys -> /home/user/.ssh` puts the keys in the write area,
+  outside every read grant, unlabelled, under one audit record naming
+  the repository. A link to an ancestor loops until the disk fills,
+  since the write budget for a directory copy is recorded after the
+  copy (`directory_size`), and the read budget not at all. `mv`'s
+  cross-device fallback (`copy_tree`) checks type without following,
+  then `File.open`s a symlink, copying its target and deleting the
+  link. `rm` is unaffected: `FileUtils.rm_r` doesn't recurse into a
+  symlink. The fix is walking the tree in Legate, without following
+  links: recreate each link as a link, or refuse the copy; check
+  containment per entry; label per file; record both budgets as each
+  file is copied.
+
+- **`Legate.append` writes through a dangling symlink.** Predicted
+  2026-09-24 by reading `verbs/append.cr`. A dangling link resolves,
+  in `check_root_maybe_missing`, to a prospective path inside the
+  root, so `authorize_write` allows it; `File.open(raw, "a")` then
+  follows the link and creates its target. With
+  `out/log -> /etc/cron.d/job` in a write root and no file at the
+  target, `Legate.append("out/log", ...)` creates a file outside every
+  write root. `write` refuses an occupied destination and `write!`
+  and `cp` rename over the link, so neither is affected. The fix is
+  checking the destination without following symlinks and refusing a
+  link, or resolving it and authorizing the resolved target.
+
+- **`Legate.fetch` forwards credentials on redirect and misses
+  IPv6-embedded metadata addresses.** Predicted 2026-09-24 by reading
+  `verbs/fetch.cr`.
+  1. Every hop reuses the call's `Options`, headers included, so an
+     `Authorization`, `Cookie` or `Proxy-Authorization` header set
+     for host A is sent to wherever A redirects, even another host the
+     policy allows. curl and browsers drop credentials when a
+     redirect changes origin; the fix is doing the same (scheme, host
+     and port).
+  2. `check_addresses!` decodes only `::ffff:`-mapped IPv6. NAT64
+     (`64:ff9b::/96`, `64:ff9b:1::/48`) and IPv4-compatible (`::/96`)
+     addresses carry an IPv4 address too; on a NAT64 network
+     `64:ff9b::a9fe:a9fe` reaches 169.254.169.254, which §8.2 refuses
+     unconditionally. The embedded address should be checked as IPv4.
+  3. AWS's IPv6 metadata endpoint, `fd00:ec2::254`, falls in
+     `fc00::/7`, so it is "local" and allowed under `local: true`
+     rather than always refused, as §8.2 requires of metadata.
+     Alibaba's `100.100.100.200` falls in carrier-grade NAT the same
+     way. Named metadata addresses belong in `always_blocked?`.
+
+- **Comparing self-containing containers overflows the host's
+  stack.** Predicted 2026-09-24 by reading `value_ops.cr`.
+  `ValueOps.equal?` compares Arrays and Hashes element by element,
+  recursing on the Crystal stack with no cycle check, so
+  `a = []; a << a; a == a.dup` recurses until the stack overflows,
+  which ends the host process rather than the script. `inspect` guards
+  the same shape (`guard_rendering`); Ruby's `==` detects the
+  recursion and answers. `Array#include?`, `Hash#==` and anything else
+  reaching `equal?` share it. The fix is a guard on the pair being
+  compared, as `guard_rendering` does for one container.
+
+- **A path on another Windows drive passes root containment.**
+  Predicted 2026-09-24 by reading `grants.cr`; no spec has hit it.
+  `Grants#under?` and `#under_maybe_missing?` call
+  `Path#relative_to`, which returns the target path unchanged when
+  its anchor differs from the root's (Crystal's `relative_to?` returns
+  nil). The check then sees a first component that isn't `..` and
+  counts the path as inside, so with a root of `C:\work`, a path on
+  `D:\` is allowed. POSIX is unaffected, since every resolved path
+  shares the anchor `/`. The fix is `relative_to?`, with nil counting
+  as outside; a spec needs two drives, or a UNC path against a drive
+  root.
+
+- **A risk-flow policy with no rule for an authority allows sensitive
+  data through it.** `RiskFlowPolicy#action_for` returns Allow when
+  no rule matches, so a policy that marks `/etc/passwd` High and has
+  rules for `Net` and `Delete` but not `Write` (as
+  `samples/run_script.cr`'s does) lets a script copy the file into a
+  granted output directory without a prompt. The perimeter passes it,
+  since the directory is granted; nothing flags the missing row.
+  Decided 2026-09-24: reject an incomplete policy when it is built,
+  not at run time, so the mistake reaches the policy's author rather
+  than an unattended run.
+  1. A policy (other than `reject_all`) must have a rule for every
+     pair of a sink authority (`Read`, `Write`, `Delete`, `Net`,
+     `Log`; not `Ambient`, which is grant-only) and a sensitivity
+     above None (`Elevated`, `High`).
+  2. Checked in the constructor, so `from_json` and code-built
+     policies both get it. A host configuration error: a Crystal
+     exception like AmbiguousRiskFlowPolicyError, not script-visible
+     and not in the error catalog; its message lists every missing
+     pair.
+  3. With complete tables, the no-rule Allow default in
+     `action_for` becomes unreachable and can be removed.
+  4. About 45 construction sites in `src/`, `spec/` and `samples/`
+     build partial policies and need full tables. Worth deciding
+     whether a helper that fills unlisted pairs with one explicit
+     action (for example `default: Ask`) is allowed; it keeps specs
+     short but reintroduces a default, just a stated one.
+
+- **`sub` and `gsub` drop the replacement's label.** Their result's
+  label joins the receiver's and the pattern's only, so
+  `"x".sub("x", secret)` returns `secret`'s text unlabelled, and so
+  does `s.gsub(/./) { secret }`: a script can strip a label by
+  substitution and pass the data to a sink the policy would have
+  stopped. `string_sub_or_gsub` builds the result with one
+  `String.build`; the fix is joining the replacement's label, or every
+  block result's, into the result's, which over-labels but never
+  under-labels.
+
+- **The grants loader silently ignores what it can't read.**
+  Predicted 2026-09-24 by reading `legate/grants.cr` and
+  `net_rule.cr`; no spec covers it. The same decision as the
+  risk-flow policy entry above applies: a malformed policy should
+  fail when loaded, not surface at run time. Fail-open cases first:
+  1. A `net.hosts` mapping whose `methods:` is a scalar (`methods:
+     GET`) or misspelt (`method: [GET]`) reads as empty, and empty
+     means "inherit `net.methods`", so a rule meant to narrow to GET
+     allows every grant-wide method, POST included.
+  2. A per-run budget written as a YAML integer (`total_read:
+     1048576`, `wall_clock: 300`) is read with `as_s?`, gets nil, and
+     is not enforced. `SizeLiteral` accepts a bare byte count only as
+     a string.
+  3. A misspelt key anywhere (`total_raed:`, `limts:`) is ignored,
+     so its budget or grant is simply absent.
+  Fail-closed but silent: a malformed category reads as nothing
+  granted (`string_array`); a non-numeric, zero or negative
+  `max_open_streams` falls back to the default; a scalar `ports:`
+  gives the default port; a non-boolean `subdomains:` or `local:`
+  gives false. The fix is a strict loader: unknown keys, wrong types
+  and invalid values raise ArgumentError, as a malformed size literal
+  or net rule already does.
+
+- **The scratch directory is readable by other local users.**
+  Predicted 2026-09-24 by reading `legate/broker.cr`.
+  `Broker#scratch_dir` names it with `File.tempname` under the shared
+  temp directory and creates it with `FileUtils.mkdir_p`, whose mode
+  is 0o777; under a typical umask of 022 that is 0o755, so on a
+  multi-user POSIX host anyone can list and read what a script writes
+  there. `mkdir_p` also succeeds on a path that already exists, so a
+  directory (or symlink) planted at that name would be used as is;
+  the name's random part is 32 bits from the default PRNG, beside the
+  date and pid. The fix is `Dir.mkdir(dir, 0o700)`, which fails if
+  the path exists, retrying with a new name on that failure.
+
+- **Per-run budgets default to unenforced, and `wall_clock` misses
+  pure computation.** Decided 2026-09-24 (D14): every per-run budget
+  gets a default, as the per-call limits have.
+  1. `wall_clock`, `total_read` and `total_write` are nil when a
+     policy omits them, which means not enforced (`Legate::Limits`,
+     `ResourceLimits`). LEGATE.md §7's example values (300s, 4GiB,
+     1GiB) are candidate defaults; the section should state whichever
+     are chosen.
+  2. `memory` is carried but enforced by nothing in Adjutant:
+     `budget.cr` leaves it to the OS tier (cgroups, rlimit). Its
+     default is advice to the host, and §7 should say so.
+  3. `wall_clock` is checked only in `Adjutant::Broker#authorize`,
+     before an effectful call, and in `Legate.grep`'s loop. A loop with
+     no effects never reaches either, so `loop { x += 1 }` runs past
+     any `wall_clock`. The VM's own `ExecutionLimits#instruction_limit`
+     defaults to 0, unlimited. The fix is checking the wall clock from
+     the VM's dispatch loop, every N instructions, alongside
+     `instruction_limit`.
+
+- **`Legate.read` and `Legate.grep` read files whole without a
+  bounded read.** Predicted 2026-09-24 by reading the verbs.
+  1. `Legate.read` checks `limit` against `File.info`'s size, then
+     `read_content` allocates `file.size` as reported at open. A file
+     that grows in between, such as an active log, is read whole past
+     `limit`, and `record_read` counts the earlier size. A pseudo-file
+     reporting size 0 (`/proc/...`) reads as "" without error.
+  2. `Legate.grep` reads each file whole into memory (`read_lines`)
+     with no size cap; its `limit:` counts matches. The byte budget is
+     recorded after the allocation, so a large file is held before
+     `total_read` can refuse it, and memory is enforced only by the OS.
+  The fix is reading at most `limit + 1` bytes from the opened handle
+  and deciding on what was read, counting those bytes; `grep` needs
+  `read_limit` per file, or a streaming match with a bounded window
+  for `context:`. `Legate.records(format: :csv)` has the same gap per
+  row: `CSV::Parser` has no row or field cap, so an unterminated
+  quoted field grows until `total_read` stops it, if one is set.
+
+- **`Legate.grep` and `Legate.list` label results by the pattern's
+  prefix, not by each file.** Predicted 2026-09-24 by reading the
+  verbs. Both consult the policy once, for the glob's fixed leading
+  directory (`Helpers.fixed_prefix`), and put that one label on every
+  result. With `/work/secrets/**` High and nothing else under `/work`,
+  `Legate.read("/work/secrets/key")` is labelled High, but
+  `Legate.grep(/./, "/work/**/*")` returns the same lines labelled as
+  `/work`, which is unlabelled, and they reach a network sink with no
+  Ask or Reject. `list` has the same shape for names, sizes and
+  mtimes. The fix is looking up each matched file's sensitivity
+  (`RiskFlowPolicy#sensitivity_for`) and labelling, and asking or
+  rejecting, per file, while keeping one audit record per call.
+
+**Promoted 2026-09-24: Adjutant must be a proper subset of Ruby.**
+Anything it accepts and then runs differently from Ruby is Must Fix,
+whatever its frequency. A construct Adjutant rejects is only a gap and
+can stay in Will Fix. The first twenty-four entries below are divergences;
+where two remedies are listed, rejecting is always acceptable, since
+it restores the subset.
+
+- **A new name assigned inside a block becomes a global, not a
+  block-local.** Predicted 2026-09-24 by reading `compiler.cr`; no
+  spec or model has hit it. `Compiler#emit_store_name` emits
+  `SetGlobal` when a block (or lambda, or `for` body, which compiles
+  as a block) assigns a name no enclosing scope defines, so
+  `xs.each { |x| t = x * 2 }` writes `t` into the interpreter's
+  `@globals`. Unlike Ruby: `t` is still readable after the block
+  (Ruby raises NameError); recursive calls whose blocks use the same
+  name share one variable, so the script can run and answer wrongly;
+  and `@globals` is shared across `Interpreter#eval` calls, so the
+  name carries into later scripts in the session. Conversely, a
+  `for` loop's variable is unreadable after the loop, where Ruby
+  keeps it. DEVELOPMENT.md's Parser section describes the block rule
+  as Ruby's, which it isn't. The likely fix is a block-local slot for
+  a block or lambda, and a slot in the enclosing scope for a `for`
+  loop's variable and body.
+
+- **`and` and `or` bind tighter than assignment.** Predicted
+  2026-09-24 by reading `parser.cr`. `maybe_assignment` parses the
+  right-hand side with `parse_expression(0)`, and `KwAnd`/`KwOr` have
+  precedence 3 and 2, so `x = false or true` sets `x` to `true`. Ruby
+  parses `(x = false) or true` and sets `false`: `and` and `or` sit
+  below assignment. The idiom `x = fetch or raise "..."` is
+  unaffected, but `ok = check and log` is not. The fix is stopping an
+  assignment's right-hand side at `and`/`or`.
+
+- **`rescue e` is accepted as `rescue => e`.** `parse_rescue_clause`
+  treats a bare identifier after `rescue` as the binding, and the
+  clause catches StandardError. Ruby evaluates `e` as the class to
+  match, which raises TypeError at match time unless `e` holds a
+  class. About twenty specs use the form (`control_flow.rb`,
+  `exceptions_spec.cr`, `risk_flow_enforcement_spec.cr`, ...), so the
+  fix is rejecting it with a diagnostic that names `rescue => e`, then
+  rewriting those specs.
+
+- **An Integer and an equal Float are the same Hash key.**
+  `{5 => "a"}[5.0]` returns `"a"`; Ruby returns nil, since Hash keys
+  compare with `eql?` and `5.eql?(5.0)` is false. `Value#==` and
+  `Value#hash` delegate to the raw Crystal value, where `5 == 5.0`
+  and the hashes agree. `hash_spec.cr`'s "cross-type numeric key
+  lookup" asserts the current behaviour and must change with the
+  fix. Hash keys need an `eql?`-style comparison: same type and
+  value.
+
+- **`Hash#each` with one block parameter binds the key alone.**
+  Predicted 2026-09-24 by reading `hash.cr`; no spec or model has hit
+  it. `h.each { |pair| }` gives `pair` the key, where Ruby gives
+  `[k, v]`, so the script runs and answers wrongly. `Hash#each` passes
+  `k` and `v` as two arguments. The likely fix is passing one
+  `[k, v]` Array and letting `spread_block_args` (vm.cr) spread it for
+  `|k, v|`, which is how Ruby does it.
+
+- **An Array or Hash used as a Hash key is looked up by identity.**
+  `{[1, 2] => "a"}[[1, 2]]` returns nil; Ruby returns `"a"`. A
+  container key hashes and compares as the `LabeledArray` or
+  `LabeledHash` reference, not by contents. The fix is hashing and
+  comparing containers by contents, recursively, alongside the
+  numeric-key fix above.
+
+- **A leading-zero integer literal is decimal.** `0644` parses as 644;
+  Ruby reads it as octal 420. `s.mode == 0644` compares against the
+  wrong number without error. `0o`, `0x` and `0b` prefixes are also
+  unsupported, which is only a gap. Scanning is in
+  `Lexer#scan_number`.
+
+- **Methods and lambdas don't check positional arity.**
+  `VM#bind_args` leaves a missing positional argument nil and ignores
+  extras, so `def f(a, b); end; f(1)` runs with `b` nil, where Ruby
+  raises ArgumentError. The comment there claimed Ruby is lenient
+  too; only blocks are. Lambdas must be strict as well: UNSUPPORTED.md's
+  U019 entry describes `lambda`'s arity as strict, which it isn't
+  yet. Keyword arguments are already checked (R011, R012).
+
+- **Indexing shapes the VM doesn't handle return nil or do nothing.**
+  `VM#exec_get_index` handles Array, Hash and String receivers and an
+  object's native `[]`; everything else falls to nil. So `arr[1..2]`
+  is nil, where Ruby slices (the skill tells models Arrays don't
+  slice, but the runtime doesn't say so); `s[1..]` and `s[..2]` are
+  nil, since a String range needs two Integer bounds; `nil[0]` and
+  `5[0]` are nil, where Ruby raises NoMethodError or returns a bit.
+  On the write side, `exec_set_index` ignores `arr[5] = x` past the
+  end (Ruby pads with nil) and `arr[-9] = x` before the start (Ruby
+  raises IndexError), and ignores every receiver but Array and Hash,
+  so `s[0] = "x"` does nothing. Each shape needs Ruby's result or an
+  error.
+
+- **`break` outside any loop or block is ignored.** A `break` with no
+  loop compiles to BlockBreak; in a method body with no block frame,
+  `Op::BlockBreak` pushes the value and carries on. Ruby rejects it
+  (SyntaxError, "Invalid break"). The compiler knows when no loop
+  encloses a `break`, but not whether it is in a block, so the
+  rejection may belong in the compiler's scope tracking.
+
+- **`is_a?` misses a module included by an included module.**
+  `VM#is_a_target?` checks each class's direct `included_modules`
+  only, so with `module A; end; module B; include A; end; class C;
+  include B; end`, `C.new.is_a?(A)` is false and `when A` doesn't
+  match (`Class#===` uses the same check). Ruby says true. Searching
+  `RubyClass#ancestors` would fix both.
+
+- **Float `%` by zero raises ZeroDivisionError.** `ValueOps.mod`
+  raises for a zero divisor of either type; Ruby raises only for
+  Integer `%` and returns NaN for `5.0 % 0` and `5 % 0.0`. Float `/`
+  by zero already returns Infinity, as in Ruby.
+
+- **`equal?` is true for equal Strings, and `superclass` is nil on a
+  non-class.** `exec_builtin`'s `equal?` compares values, so
+  `"a".equal?("a")` is true; Ruby compares identity and says false for
+  two String objects. Its `superclass` returns nil for any receiver
+  that isn't a class, where Ruby raises NoMethodError (`5.superclass`).
+
+- **Native methods don't check positional arity either.** A native
+  method reads `args` directly, so extra arguments are ignored and a
+  missing one takes whatever the method's own fallback is:
+  `[1].include?` is false and `[1, 2].first(1, 2)` is `[1]`, where
+  Ruby raises ArgumentError for both. Keywords are checked
+  (`kwarg_names`, R012). The fix is declaring each native method's
+  positional arity, required and optional counts, in its
+  NativeCallable and checking it in `VM#call_native`, alongside the
+  script-method fix above.
+
+- **Blockless iterators return a value instead of an Enumerator.**
+  `Array#each` without a block returns the receiver, and `map`,
+  `select` and `reject` return `[]`, where Ruby returns an
+  Enumerator. So `arr.map` is silently empty; `arr.map.with_index`
+  fails only one call later. Adjutant has no Enumerator, so the fix is
+  raising, as `sort_by` already does (R045), for every block-taking
+  builtin method called without one. Audit `hash.cr`, `range.cr`,
+  `string.cr` and `integer.cr` (`times`) for the same shape.
+
+- **`Array#join` renders elements with Crystal's `to_s`, not the
+  script's.** `join` calls `Value#to_s`, which renders a nested Array
+  or Hash as `#<Adjutant::LabeledArray>` and ignores an object's own
+  `to_s`. Ruby joins nested arrays recursively (`[1, [2, 3]].join(",")`
+  is `"1,2,3"`) and calls each element's `to_s`. The fix is dispatching
+  `to_s` through `ncc.call_method`, recursing into Arrays, as
+  `inspect` already does.
+
+- **`String#split` follows Crystal's rules, not Ruby's.** `split`
+  calls Crystal's `String#split`, which keeps trailing empty fields:
+  `"a,b,,".split(",")` is `["a", "b", "", ""]`, where Ruby gives
+  `["a", "b"]`. A `" "` separator is literal, where Ruby treats it as
+  a whitespace split (`"a  b".split(" ")` is `["a", "b"]`). A `limit`
+  is passed to Crystal unchecked against Ruby's rules (positive caps
+  the fields, negative keeps trailing empties), and is ignored for a
+  whitespace split. CSV-style parsing, as in exam task 04, meets the
+  first case.
+
+- **`String#each_line("")` splits on newlines, not paragraphs.** Ruby's
+  empty separator is paragraph mode, splitting on runs of blank lines;
+  Adjutant falls back to `"\n"` without saying so.
+
+- **Regexp and MatchData edge cases differ from Ruby.**
+  `Regexp#match(nil)` raises R022, where Ruby returns nil, so
+  `re.match(maybe_nil)` fails only in Adjutant. `MatchData#[]` with an
+  unknown group name returns nil, where Ruby raises IndexError. And in
+  a pattern with named groups, Ruby doesn't capture the unnamed ones,
+  so `/(a)(?<b>b)/.match("ab")[1]` is "b"; PCRE2 numbers both, so
+  Adjutant gives "a".
+
+- **Methods Ruby doesn't have.** `Range#exclusive?` is registered
+  alongside Ruby's `exclude_end?`; a script using it is not Ruby. The
+  fix is removing it. Other builtins may carry similar extras: the
+  whitelist check in `spec/skill/TODO.md` §3 lists every registered
+  method, which is where to compare each class against Ruby's.
+
+- **`include` and `extend` accept a class.** `mixins.cr` takes the
+  argument's RubyClass without checking `is_module?`, so
+  `include SomeClass` mixes a class's methods in, where Ruby raises
+  TypeError ("wrong argument type Class (expected Module)"). A
+  non-class argument fails in `as_rclass` as an internal error. Both
+  should raise TypeError.
+
+- **Quoted Symbol literals don't decode escapes.** `:"a\nb"` keeps a
+  literal backslash and `n`. The Symbol is built in `parser.cr` by
+  stripping quotes from the lexeme (`SymbolLiteral.new(tok.lexeme
+  .lstrip(':')...)`) without `decode_string_escapes`, which string
+  literals use.
+
+- **A class's `self.inherited` is never called.** A script can define
+  `def self.inherited(subclass)`, and Ruby calls it when the class is
+  subclassed, before the subclass body runs; Adjutant never does, so
+  a registry built on it stays empty without error. Either call it
+  where `class Foo < Bar` links the superclass (`compiler.cr` and the
+  VM's MakeClass), or reject its definition with a U-code.
+
+- **A second heredoc opener on a line is lexed as `<<`.** `foo(<<~A,
+  <<~B)` is valid Ruby. Only the first opener's body is skipped, so
+  the second body's lines are lexed as code. The lexer resolves one
+  opener per line (`Lexer#scan_heredoc_opener`). At minimum a second
+  opener must be a parse error; full support means queueing the
+  openers and reading their bodies in order.
+
 - **`Array#inject`/`reduce` with a Symbol and no block returns `nil`.**
   Found 2026-09-21, same pass. `[1, 2, 3].inject(:+)` treats `:+` as
   the initial value and, finding no block, returns `nil`. Real Ruby
@@ -649,20 +1046,6 @@ still roughly ordered by how cheap/independent the fix is.
 Small, mechanical, independent of each other — good candidates for quick
 wins.
 
-- **No octal/hex/binary integer literal prefixes (`0o`/`0x`/`0b`) —
-  and, worse, a LEADING-ZERO decimal like `0644` silently parses as
-  plain decimal 644, not octal, with no error.** Found 2026-08-24
-  writing a spec for `Legate::Stat#mode` (a real Unix permission bit
-  value) — `s.mode == 0644` in a script silently compares against the
-  wrong number, no parse error or warning at all, exactly the "ran,
-  looked plausible, was wrong" bug shape worth staying alert for.
-  Low practical urgency (permission-bit-style literals are rare
-  outside exactly this kind of use), but worth fixing before any
-  Legate verb that surfaces a real mode value (`Legate.mkdir`,
-  anything touching `Stat#mode`) ships, since a script author's first
-  instinct for "check the mode" would reach for exactly this syntax
-  and get a silently wrong answer rather than a loud one.
-
 - **Leading-dot line continuation for a method chain isn't supported**
   (`obj\n  .method\n  .method` — real Ruby 1.9+ syntax) — raises P002
   (`.` can't start an expression here) rather than parsing. Found
@@ -686,23 +1069,6 @@ wins.
   the heredoc interpolation path than the plain `%w` one), and `%q`/
   `%Q`/`%r` are just `'...'`/`"..."`/`/.../ ` with an arbitrary
   delimiter instead of the fixed one.
-
-- **Heredocs support only ONE opener per physical line** — real Ruby
-  allows stacking several (`foo(<<~A, <<~B)`), each consuming its own
-  body block in order below the line, in sequence. Added 2026-08-19
-  alongside `%w[]`/`%i[]`/heredocs going in for the first time (see
-  `DEVELOPMENT.md`'s "The Lexer" writeup for the full mechanism) — a
-  deliberate scoping decision at the time, not something later found
-  broken: the lexer's eager single-opener resolution (`Lexer#scan_heredoc_opener`
-  jumps straight to extracting/tokenizing the ONE pending heredoc's
-  body the moment its opener is scanned) doesn't extend to a second
-  opener appearing before the first's body has even been reached. A
-  second opener on the same line currently just scans as ordinary
-  (almost certainly nonsensical) `<<` tokens instead of failing
-  loudly — worth tightening to a clean parse error at minimum, even
-  before real multi-heredoc support lands. Rare enough in ordinary
-  scripts (a single heredoc per line covers the vast majority of real
-  usage) that it wasn't worth blocking the rest of the pickup on.
 
 - **A bare `next`, `break` or `return` directly before `}`, `end` or
   `else` probably fails to parse.** Predicted 2026-09-24 while fixing
@@ -844,57 +1210,31 @@ Runtime diagnostic carets — same underlying gap as originally filed
 here — were promoted to `Must Fix` 2026-08-05; see that entry above for
 current status.
 
-- **U008, U009, U012–U015 are decided but not enforced; U011 was
-  enforced 2026-08-14, no longer part of this list.** Filed 2026-08-05
-  in two sessions (U008–U011, then U012–U015 added the same day after
-  the mruby full-repo sweep) — see `UNSUPPORTED.md` for the six
-  remaining entries (`private`/`protected`/`public`, `Struct.new`,
-  numbered block params, endless `def`, `class << self`, `undef`/
-  method-added hooks). `U010` (originally "`super` across multiple
-  `rescue` clauses") was retired 2026-08-10, the same session `super`
-  itself was built and shipped — the concern turned out not to be a
-  real gap once `super` actually worked; see `UNSUPPORTED.md`'s U010
-  entry. `U011` (`$globals`) was enforced 2026-08-14, prompted by
-  deciding against building real Ruby's `$~`/`$1`-`$9`.. match
-  globals for Regexp specifically (see `UNSUPPORTED.md`'s own U011
-  entry for the full reasoning and what covers the gap instead) — a
-  real `U011` diagnostic now fires at parse time by name rather than
-  the generic fallback. Each of the remaining six currently falls
-  through to a generic undefined-name/undefined-method/parse error
-  rather than naming the construct — the same gap U001–U004 had
-  before their 2026-07-27/28 enforcement pass, and the exact failure
-  shape `UNSUPPORTED.md`'s own design principle warns against. Follows
-  the established decide-first-enforce-second pattern rather than
-  waiting on enforcement to write the entries (see U007's own
-  precedent — already partially enforced/partially not, same file).
-  Most of the six are a lookup-after-resolution-fails check, same
-  mechanism as U005–U007 (`dispatch_call`/constant resolution,
-  `vm.cr`); U012–U015 are parse-time rather than
-  pattern rather than waiting on enforcement to write the entries (see
-  U007's own precedent — already partially enforced/partially not,
-  same file). Most of the seven are a lookup-after-resolution-fails
-  check, same mechanism as U005–U007 (`dispatch_call`/constant
-  resolution, `vm.cr`); U012–U015 are parse-time rather than
-  resolution-time (numbered params/`undef`/`class << self`/endless-
-  `def` all fail differently at the parser today, not via name
-  lookup) — worth confirming the right enforcement point per item
-  rather than assuming all seven share one mechanism.
+- **`ParseError` and `CompileError` keep a message-only constructor
+  nothing uses.** Every raise site in `parser.cr` and `compiler.cr`
+  builds a `Diagnostic`; `ParseError.new(message, line, column)` and
+  `CompileError.new(message, line, column)` are reached only by
+  `diagnostic_spec.cr:172`. `HostStateError.new(message)`
+  (`diagnostic.cr`) likewise has only a spec caller. Removing them
+  makes `diagnostic` non-nilable on those classes and lets callers
+  drop their nil handling. `InternalError.new(message)` is still used
+  and stays.
 
-- **No distinct `ZeroDivisionError` class — division by zero raises a
-  plain `RuntimeError`.** Found 2026-08-10, writing test coverage for
-  the method-body-rescue fix (`VM#error_raiser`/`VM#runtime_error`,
-  `vm.cr`): `ValueOps`' arithmetic error path hardcodes
-  `builtin_class_by_name("RuntimeError")`, unconditionally, regardless
-  of what actually went wrong. Real Ruby raises `ZeroDivisionError` (a
-  `StandardError` subclass) specifically for this — a script that
-  writes `rescue ZeroDivisionError` expecting to catch it (reasonable,
-  unsurprising Ruby) currently doesn't, silently: the rescue clause
-  just never matches, and the error propagates uncaught instead of a
-  clear "class doesn't exist" signal. Likely other arithmetic/type
-  error paths through the same `on_error` callback have the identical
-  gap (see `error_raiser`'s call sites in `value_ops.cr`) — worth
-  auditing all of them together rather than fixing this one class in
-  isolation.
+- **U008, U009, U012–U015 and U021 are decided but not enforced.**
+  See `UNSUPPORTED.md` for each. Using one falls through to a generic
+  undefined-name, undefined-method or parse error that doesn't name
+  the construct, the failure shape `UNSUPPORTED.md`'s second principle
+  forbids. U021 costs the most in practice: a model reaching for
+  `File.read` or `ENV` is told the constant is uninitialized, not that
+  `Legate.read` or `Legate.env` is the way. Enforcing U021 is mostly
+  entries in `ErrorCatalog::EXCLUDED_CONSTANTS` (`File`, `ENV`, ...)
+  and `EXCLUDED_METHODS` (`system`, `exec`, ...), which are consulted
+  only after resolution fails. U008, U009 and U021 are
+  lookup-after-resolution-fails checks, the mechanism U005–U007 use
+  (`dispatch_call` and constant resolution, `vm.cr`); U012–U015 fail
+  in the parser today, so each needs its own enforcement point.
+  Backticks and `%x{}` have no case in the lexer at all, so theirs is
+  there.
 
 - **U007's reflection exclusion is a category, not a list, so only
   `ObjectSpace` is enforced.** Added 2026-07-29 while enforcing U005–U007.
@@ -1012,28 +1352,6 @@ Quality-of-diagnostic gaps in the `Diagnostic`/`ErrorCatalog` system
   and is no longer the gap — what's left is specifically the
   class-hierarchy piece.
 
-- **`Class#inherited` hook not implemented.** Found 2026-08-05 in the
-  mruby full-repo sweep (`test/t/class.rb`). Real Ruby calls
-  `self.inherited(subclass)` automatically the instant a class is
-  subclassed, before the subclass body runs — there's no way to
-  reconstruct this after the fact (by the time you'd poll for
-  subclasses you'd need to already know their names). Distinct in kind
-  from `class << self` (below, WONTFIX) — that's alternate syntax for
-  something already expressible via `def self.x`; this is a real
-  capability with no equivalent already-supported spelling. Primary
-  use is registry/discovery patterns (a base class automatically
-  tracking every class that inherits from it — plugin systems, ORMs,
-  test-case discovery) without a separate manual-registration call in
-  each subclass — plausible for an agent building a small plugin or
-  multi-behavior dispatch system of its own. Considered against
-  monkey-patching concerns during triage (2026-08-05 chat) and judged
-  distinct: the hook's pragmatic use (registry-on-subclass) doesn't
-  require or enable monkey-patching, which stays excluded regardless.
-  Not yet traced to a starting file/method — likely lands wherever
-  `ClassNode`/`class Foo < Bar` compiles the superclass link
-  (`compiler.cr`), triggering a call to the superclass's own
-  `inherited` if defined, same shape as other hook-style dispatch.
-
 - **Bare `new` (implicit `self`, no explicit receiver) doesn't
   dispatch inside a class method.** Found 2026-08-10, writing test
   coverage for the method-body-rescue fix — `def self.run; c = new;
@@ -1113,25 +1431,6 @@ section).
   `cannot add nil and 1`; R013's data already uses `inspect` for
   exactly this reason.
 
-- **`Float` has no `round`, `floor`, `ceil` or `abs`.** Found
-  2026-09-21 in the built-in census for the agent skill: `float.cr`
-  defines only `to_i`, `to_f`, `to_s` and `infinite?`. Integer has all
-  four, so a script that rounds a computed average fails where the
-  same code on an Integer works. `round(n)` with a digits argument is
-  the form models reach for most.
-
-- **Quoted Symbol literals (`:"..."`) don't decode backslash escape
-  sequences.** Found 2026-08-13 fixing the identical gap for String
-  literals (`decode_string_escapes`, parser.cr) — plain and
-  interpolated strings now decode `\n`/`\t`/etc. correctly, but the
-  quoted-Symbol construction site (`SymbolLiteral.new(tok.lexeme
-  .lstrip(':').strip('"').strip('\'')...)`) was deliberately left
-  untouched in that same pass, since its quote-stripping approach is
-  structurally different (chained `lstrip`/`strip` rather than the
-  index-based `strip_quotes`) and riskier to edit without dedicated
-  attention. Lower priority than the String fix was — quoted symbols
-  with embedded escapes are rare — but the same category of gap.
-
 - **`Integer`/`Float` are both missing `#divmod`.** Found 2026-08-13
   triaging `spec/scripts/mruby/float.rb`'s commented-out `Float#divmod`
   block. Real Ruby's `#divmod` returns `[quotient, remainder]` as a
@@ -1157,24 +1456,6 @@ section).
   rather than assuming the whole feature is absent when `#each`'s own
   mechanism already generalizes.
 
-- **`Array`/`Hash` as a `Hash` key hashes by reference, not content.**
-  `Value` has no custom `hash(hasher)` override, so a `Hash(Value, Value)`
-  key lookup relies on Crystal's auto-generated struct hash — fine for
-  `Nil`/`Bool`/`Int64`/`Float64`/`String`/`Sym` (all of which Crystal
-  hashes consistently, INCLUDING cross-type for numerics: `5.hash ==
-  5.0.hash` when `5 == 5.0`, confirmed by `hash_spec.cr`'s own passing
-  regression test, not assumed), but an `Array` or `Hash` used AS a key
-  hashes by Crystal's default reference identity, not by the
-  elements/pairs it contains — so `{[1,2] => "a"}[[1,2]]` (a different
-  `Array` object with equal contents) would NOT find `"a"`, even though
-  `ValueOps.equal?([1,2], [1,2])` is `true`. Same root cause as the note
-  in `ValueOps.equal?`'s own comment (`value_ops.cr`) — noted here too
-  since it's the kind of gap easy to rediscover the hard way inside a
-  `Hash`-keyed-by-container script. Fixing this properly would mean
-  giving `Value` a real custom `hash(hasher)` for the `array?`/`hash?`
-  cases specifically (hashing by contents, recursively) — a deliberate,
-  scoped change, not a quick patch, and only matters for the (currently
-  rare) case of a container used as a hash key.
 - **String repetition** (`"ab" * 3`). `ValueOps.op` (the method backing
   `*`, see `value_ops.cr`) has real `Integer`/`Float` cases but no
   `String` one — `+`, `==`, and `<`/`<=`/`>`/`>=` all DO already work for
@@ -1228,48 +1509,6 @@ individually.
   new opcodes — natural fit for the core-API-library work rather than
   a standalone language-layer item. Filed here rather than under a
   language-gap group for that reason.
-- **Native functions have no positional-arg defaults or arity
-  binding — everything is hand-rolled `args` indexing today.** Found
-  2026-08-09 while designing native keyword argument support (see
-  git history/`DEVELOPMENT.md`'s "Native keyword arguments" section
-  for what DID ship): a native function reads `args` directly with
-  its own ad-hoc "was this supplied" convention inline (e.g.
-  `testing/assert_module.cr`'s `assert`: `args.first?.try { ... } ||
-  "assertion"`) — there's no `Param`-equivalent list, no arity check,
-  no declared-default concept at all for POSITIONAL native args
-  (kwargs now have declared names via `NativeCallable#kwarg_names`,
-  but still no defaults of their own either — see that section).
-  Deliberately scoped OUT of the kwargs work rather than done
-  together: real positional defaults would need a `bind_args`-
-  equivalent binding layer for native calls (a `Param`-like list
-  matched by POSITION, evaluated/defaulted before the Crystal block
-  runs), almost certainly a changed native function signature (a
-  pre-bound, defaults-already-applied `Array(Value)` rather than raw
-  `args`, since asking every native function to keep hand-rolling
-  `args.first?` defeats the point), and would touch every existing
-  `define_native`/`define_native_method` call site to adopt the new
-  shape (or leave two conventions live side by side indefinitely) —
-  a materially larger, more invasive change than kwargs turned out to
-  be. Not blocking anything today; flagged for whoever next writes a
-  native function wanting this so it isn't rediscovered cold.
-
-- **No native File IO/HTTP module — really a scoping question, not a
-  missing-feature bug.** Only `SampleModule`'s simulated I/O exists
-  today. Reframed 2026-07-27 (previously filed as a plain missing-
-  feature item, alongside the IFC items above): the actual open
-  question is which parts of a File/HTTP-shaped stdlib surface are
-  worth exposing at all, given every native method is a deliberate
-  IFC-relevant decision (provenance, sensitivity, risk-flow policy
-  implications — see `declare_sensitivity` and the IFC design arc), not
-  just a Ruby-compatibility checkbox. Needs its own design pass to
-  decide the actual surface (which methods, what they're allowed to
-  touch, how they interact with `RiskFlowPolicy`) before implementation
-  is meaningful — carried forward from the original 2026-07-14 handoff
-  as "no IO," refiled here now that the real blocker (undecided scope,
-  not undecided design mechanics) is clearer. Superseded by the
-  `Legate` design work (see `LEGATE.md`) — this entry can be removed
-  once `Legate` implementation lands.
-
 ### Streamed fetch on Windows
 
 - **A script that raises inside a streamed `Legate.fetch` walk
@@ -1354,6 +1593,27 @@ individually.
   the call itself regardless of AST position.
 
 ### Legate
+
+- **`Legate::Path#under?` doesn't resolve `..`.** It compares
+  components lexically, so `Legate::Path.new("/work/../etc")` is
+  `under?` `/work`, and `split_path` splits on `/` only, so a Windows
+  path is one component. The broker doesn't use it, since grants
+  resolve with `realpath`, so this is no escape; but a script using
+  it as a boundary check, as LEGATE.md §5.1 invites, gets a wrong
+  answer. The fix is normalising `.` and `..` before comparing, and
+  refusing (or documenting) a relative path that climbs above its
+  start.
+
+- **Audit records lack §8.7's bytes, duration and argument detail.**
+  LEGATE.md §8.7 asks for bytes moved, duration, and arguments with
+  bodies hashed; its status table already says "narrower than
+  specified". An `AuditRecord` has timestamp, verb, subject,
+  authority, decision and exception class. The broker writes it before
+  the effect runs, so bytes and duration aren't known yet; meeting §8.7
+  needs the record completed after the verb finishes, or a second
+  record. Unchecked: whether a stream's re-iteration writes a distinct
+  record, and whether a fatal exception is recorded before unwinding,
+  both of which §8.7 also requires.
 
 - **`Legate::Stream` implements 9 of the ~35 operations §6
   specifies.** Found 2026-09-21 in the census for the agent skill.
@@ -1698,6 +1958,19 @@ individually.
   the actual docs or a real run, not just this one.
 
 ### Tooling
+
+- **`Compiler::OVERLOADABLE_OPERATOR_NAMES` names the opposite of
+  what it holds.** It lists the operator method names a script may
+  not define (U017), because each compiles to a fixed opcode. For the
+  code-cleanup phase: rename it (`FIXED_OPCODE_OPERATORS`, say).
+
+- **Legate keeps aliases for types that moved to core.**
+  `legate/open_sources.cr`, `legate/audit_log.cr` and
+  `legate/budget.cr` exist only to alias `Closable`, `OpenSources`,
+  `AuditRecord`, `AuditLog` and `Budget` under `Legate::` names, and
+  28 references in `src/` and `spec/` still use them. For the
+  code-cleanup phase: rename the references to the core names and
+  delete the three files.
 
 - **Eleven ameba rule classes were excluded per-file rather than
   fixed.** Added 2026-09-01, when the `Effect` rename forced an ameba

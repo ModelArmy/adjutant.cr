@@ -1,46 +1,17 @@
 module Adjutant
-  # Every operator's actual type-dispatch logic (`+`, `-`, `*`, `/`,
-  # `%`, `&`, `|`, `^`, `<<`, `>>`, `<`, `<=`, `>`, `>=`, `==`), in one
-  # place. Previously scattered across VM as arith_add/arith_op/
-  # arith_div/arith_mod/int_op/exec_shl/compare_op/values_equal? —
-  # each VM opcode handler called straight into its own method, and at
-  # least one spec helper (FakeContext, in spec_helper.cr) had its own
-  # third copy of compare_op's int/float/string logic, since there was
-  # no VM-independent place to call into. This module is that place.
+  # The type dispatch behind every operator on builtin values (`+`,
+  # `-`, `*`, `/`, `%`, `&`, `|`, `^`, `<<`, `>>`, the comparisons and
+  # `==`), with no VM or Interpreter state. An object operand is
+  # dispatched by the VM before reaching here; one that does reach
+  # here gets the "no valid conversion" result.
   #
-  # Pure type dispatch — no VM/Interpreter/RubyClass-instance state.
-  # `RubyObject` operands are NOT handled here (a script class
-  # overriding `+`/`<=>`/etc. isn't supported yet — see the
-  # 2026-07-14-session design discussion on operator overloading,
-  # Option B piece 2); a RubyObject operand falls through to each
-  # method's own "no valid conversion" error/false case exactly like
-  # any other unrecognized type pairing would, with no special
-  # handling either way.
-  #
-  # The arithmetic family (`add`/`op`/`div`/`mod`/`int_op`) can fail
-  # (type errors, divide-by-zero) and takes an explicit `on_error`
-  # proc rather than raising a `RuntimeError` directly — `Value` and
-  # this module have no reference to a VM, so they can't build the
-  # rich, script-catchable error object VM#runtime_error constructs
-  # (a real RubyObject of the RuntimeError class, not just a message
-  # string — see VM#make_error_object). The caller supplies how to
-  # raise; VM passes a proc that calls its own runtime_error, so the
-  # only place that knows how to build a proper script-visible error
-  # stays VM#runtime_error, and the only place that knows operator
-  # semantics is here. `compare`/`equal?` never fail (an unrecognized
-  # pairing is `false`, matching real Ruby's `<=>` returning nil /
-  # `==` returning false rather than raising), so they take no
-  # `on_error` — nothing to thread through for them.
+  # The arithmetic methods take an `on_error` proc rather than
+  # raising, since only the VM can build a script-catchable error
+  # object. `compare` and `equal?` never fail: an unrecognised pair is
+  # false, as Ruby's `<=>` gives nil and `==` false.
   module ValueOps
-    # Second arg is the Ruby class the error should raise as (e.g.
-    # "TypeError", "ZeroDivisionError") — added so callers here can
-    # classify their own failures correctly rather than everything
-    # collapsing into a generic RuntimeError regardless of what
-    # actually went wrong (a real, previously-unnoticed gap: `0.0 +
-    # nil` raised plain RuntimeError instead of TypeError, and integer
-    # division/modulo by zero raised RuntimeError instead of the
-    # ZeroDivisionError class that already existed in the exception
-    # hierarchy but was never actually reachable from here).
+    # Raises an error of the named class ("TypeError",
+    # "ZeroDivisionError") with a message.
     alias OnError = String, String -> NoReturn
 
     # ameba:disable Metrics/CyclomaticComplexity
@@ -52,13 +23,8 @@ module Adjutant
       when a.float? && b.int?     then Value.float(a.as_float + b.as_int.to_f64)
       when a.string? && b.string? then Value.string(a.as_string + b.as_string)
       when a.array? && b.array?
-        # Real Ruby's Array#+ returns a NEW array (the two operands are
-        # untouched) — a fresh LabeledArray wrapping a fresh Crystal
-        # array, same construction Op::MakeArray itself uses, not a
-        # mutation of either a's or b's underlying array. The result's
-        # label is set by VM#exec_binary's outer with_label call (join
-        # of a's and b's labels), same as any other binary op — this
-        # module doesn't touch labels itself.
+        # A new Array; neither operand changes. The VM sets the
+        # result's label.
         Value.new(LabeledArray.new(a.as_array.dup_items + b.as_array.dup_items), nil)
       else
         on_error.call("cannot add #{a} and #{b}", "TypeError")
@@ -128,21 +94,13 @@ module Adjutant
       Value.int(n)
     end
 
-    # `<<` is overloaded in real Ruby between Integer's bit-shift and
-    # Array's append-and-return-self — genuinely different operations
-    # sharing one operator. Split out from int_op (which stays
-    # Integer-only, still backing `&`/`|`/`^`/`>>`) rather than adding
-    # an array branch inside it, so those other bitwise ops don't
-    # silently gain array behavior they were never meant to have.
+    # Integer shift, or Array append. Separate from `int_op`, so `&`,
+    # `|`, `^` and `>>` stay Integer-only.
     def self.shl(a : Value, b : Value, on_error : OnError) : Value
       if a.array?
-        # Real Ruby: mutates a in place AND returns a (so `arr << 1 <<
-        # 2` chains) — push onto the same underlying LabeledArray, not
-        # a new one. Returning `a` here means VM#exec_binary's outer
-        # `.with_label(join(a.label, b.label))` call mutates this same
-        # LabeledArray's own label field (see Value#with_label's
-        # container case) — the container accumulates b's taint for
-        # free, same as Op::SetIndex.
+        # Appends to `a` in place and returns it, so `arr << 1 << 2`
+        # chains; the VM's relabel then joins `b`'s label into the
+        # array's.
         a.as_array.push(b)
         a
       else
@@ -150,9 +108,7 @@ module Adjutant
       end
     end
 
-    # Never fails — an unrecognized type pairing is simply `false`,
-    # matching real Ruby's `<=>` returning nil for incomparable types
-    # rather than raising. No `on_error` to thread through.
+    # Never fails: an unrecognised pair is false.
     # ameba:disable Metrics/CyclomaticComplexity
     def self.compare(a : Value, b : Value, op : Symbol) : Bool
       case
@@ -187,22 +143,9 @@ module Adjutant
       end
     end
 
-    # `<=>`'s own dispatch for base types — what `<`/`<=`/`>`/`>=`
-    # (above) are themselves defined FROM in real Ruby, and the piece
-    # that was actually missing until now: `compare` gives one boolean
-    # per op, but the literal `<=>` operator (compile_spaceship, in
-    # compiler.cr) needs a real sign, and had nothing to call — no
-    # opcode, no exec_builtin case, nothing (see builtins/float.cr's
-    # own note, which already flagged this). Mirrors `compare`'s type
-    # cases exactly, but returns nil for a pairing it doesn't
-    # recognize rather than a boolean default — deriving from
-    # `compare(:<)`/`compare(:>)` directly would conflate "genuinely
-    # equal" with "genuinely incomparable" (both look like neither
-    # `<` nor `>`), which real Ruby's own `<=>` (nil for incomparable)
-    # distinguishes and script code can reasonably depend on.
-    # True when `compare` and `spaceship` have an order for this pair:
-    # two numbers, or two Strings. Everything else — including two
-    # Arrays, which only `VM#spaceship` orders — is incomparable here.
+    # True when `compare` and `spaceship` order this pair: two
+    # numbers, or two Strings. Two Arrays are ordered only by
+    # `VM#spaceship`.
     def self.orderable?(a : Value, b : Value) : Bool
       ((a.int? || a.float?) && (b.int? || b.float?)) || (a.string? && b.string?)
     end
@@ -220,9 +163,7 @@ module Adjutant
       end
     end
 
-    # Never fails — an unrecognized/mismatched type pairing is simply
-    # `false`, matching real Ruby's `==` (never raises by default). No
-    # `on_error` to thread through.
+    # Never fails: an unrecognised pair is false.
     # ameba:disable Metrics/CyclomaticComplexity
     def self.equal?(a : Value, b : Value) : Bool
       case
@@ -235,44 +176,19 @@ module Adjutant
       when a.string? && b.string? then a.as_string == b.as_string
       when a.symbol? && b.symbol? then a.as_sym == b.as_sym
       when a.rclass? && b.rclass?
-        # Reference identity — `Object.class == Class`, `Foo.superclass
-        # == Bar`, etc. RubyClass has no user-facing notion of two
-        # DIFFERENT classes comparing equal, so Crystal's default
-        # reference `==` on the underlying RubyClass is exactly right,
-        # not a placeholder pending a real override.
+        # Identity.
         a.as_rclass == b.as_rclass
       when a.robject? && b.robject?
-        # Reference identity — the correct DEFAULT for a plain
-        # RubyObject, matching real Ruby's own Object#== before any
-        # override. A RubyObject whose class defines `<=>` gets `==`
-        # derived from it instead (Comparable-style, `(a <=> b) == 0`)
-        # — but that dispatch needs VM access (call_method,
-        # script_responds_to?) ValueOps deliberately never has, so it
-        # lives one layer up: VM#values_equal? checks for a `<=>`
-        # first and only falls through to this plain identity case
-        # when none is defined. See VM#values_equal?/
-        # #robject_equal_via_spaceship? (vm.cr) for the full mechanism
-        # — this line itself is still exactly identity, unchanged.
+        # Identity. An object with `<=>` gets `==` from it in
+        # `VM#values_equal?`, which never reaches here for one.
         a.as_robject == b.as_robject
       when a.array? && b.array?
-        # Deep, element-wise equality — real Ruby's Array#== compares
-        # length then each element via ITS OWN ==, recursively (so
-        # [[1], [2]] == [[1], [2]] is true). Recursing through equal?
-        # itself, not Crystal's Array#== on the underlying
-        # Array(Value), is what makes that recursion use Adjutant's
-        # own equality rules at every level instead of Crystal's.
+        # Same length and each element equal by these rules,
+        # recursively, with no guard against a self-containing array.
         aa, ba = a.as_array, b.as_array
         aa.size == ba.size && aa.zip(ba) { |x, y| equal?(x, y) }
       when a.hash? && b.hash?
-        # Same reasoning as Array — same key set, and each value equal
-        # via equal? (not Crystal's own Hash#==, which would use
-        # Value's default struct == instead of this method's rules).
-        # Value has no custom hash() override, so key lookup itself
-        # still uses Crystal's structural hashing on the ValueRaw
-        # union — fine for the Nil/Bool/Int64/Float64/String/Sym keys
-        # real scripts actually use; an Array or Hash used AS a key
-        # would hash by reference instead of by content, a real but
-        # narrow gap worth knowing about rather than a silent one.
+        # Same keys and each value equal by these rules.
         ah, bh = a.as_hash, b.as_hash
         ah.size == bh.size && ah.all? { |k, v| bv = bh[k]?; bv ? equal?(v, bv) : false }
       else false

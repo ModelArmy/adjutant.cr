@@ -2,54 +2,17 @@ require "./grants"
 
 module Adjutant
   module Legate
-    # Reopens Legate::Grants (grants.cr) to add the STATIC network
-    # check and the `ambient.env` allowlist check, kept separate from
-    # grants.cr's own config-parsing concern so each file stays about
-    # one thing.
-    #
-    # The root and binary checks that used to live here moved to
-    # `Adjutant::Grants` on 2026-09-01 — containment under a root and
-    # membership in a binary allowlist say nothing about Legate. What
-    # remains is the part that does: authorizing a connection needs
-    # the protocol's own vocabulary (HTTP methods), and core has no
-    # business holding that. See SCOPE.md.
-    #
-    # `RiskFlowPolicy`'s dynamic, taint-driven check is a completely
-    # separate step the broker runs AFTER this passes, never instead
-    # of it.
-    #
-    # Deliberately narrow: this covers exactly what a Grants config
-    # can decide on its own, not the runtime hardening §8.2
-    # (SSRF/DNS-range checks, which need a real network call) calls
-    # for, nor §8.1's own step 3 (immediately-before-use re-check
-    # right at the open() call) — those need a live connection to
-    # attach to.
+    # Adds the static network check and the `ambient.env` allowlist
+    # check to Legate::Grants. The resolved-address checks of §8.2 are
+    # made by `Legate.fetch` during the call, and the risk-flow check
+    # runs after these pass.
     class Grants
-      # Replaces the old `check_host`, which matched a hostname string
-      # and nothing else. A connection is now authorized against all
-      # four of scheme, host, port and method together, because any
-      # three of them without the fourth is not a service — see
-      # net_rule.cr's own top comment for the full reasoning and for
-      # why each default fails closed.
-      #
-      # Still allowlist semantics: ANY rule matching all four allows.
-      # Still no SSRF/DNS-resolved-address-range check (§8.2) — that
-      # needs the actual connection attempt's resolved addresses,
-      # which only exist once `Legate.fetch` is mid-call, so it stays
-      # deferred there. This method is the STATIC half only.
-      #
-      # The denial reason names the closest miss rather than a bare
-      # "denied". A `net` denial is FATAL and unrescuable, so it ends
-      # the run; being told "host matched, port 22 is not in [443]"
-      # rather than "denied" is the difference between a one-line
-      # policy fix and an afternoon.
-      # The rules that authorize this exact connection — all four of
-      # scheme, host, port and method. Separate from `check_net`
-      # because a caller needs more than allowed/denied: `Legate.fetch`
-      # has to know whether the MATCHED rule opted into loopback and
-      # private address space (`local: true`) before it can vet the
-      # resolved addresses. Returning the rules rather than a bare
-      # boolean keeps that decision where the rule is.
+      # The rules that allow this connection: any rule matching all of
+      # scheme, host, port and method. Returned as rules rather than a
+      # Bool, since `Legate.fetch` needs to know whether the matched
+      # rule has `local: true`. `check_net` gives the decision, whose
+      # denial reason names the closest miss ("port 22 is not in
+      # [443]"), since a denial ends the run.
       def matching_net_rules(scheme : String, host : String, port : Int32, method : String) : Array(NetRule)
         return [] of NetRule if net_rules.empty? || net_methods.empty?
         net_rules.select do |rule|
@@ -58,10 +21,8 @@ module Adjutant
         end
       end
 
-      # Whether any rule authorizing this connection permits loopback
-      # and private address space. False unless a matching rule says
-      # `local: true` — see `NetRule#local?`, and note that link-local
-      # is never covered by it.
+      # Whether a matching rule has `local: true`. Link-local stays
+      # refused regardless.
       def net_allows_local?(scheme : String, host : String, port : Int32, method : String) : Bool
         matching_net_rules(scheme, host, port, method).any?(&.local?)
       end
@@ -93,10 +54,8 @@ module Adjutant
         end
       end
 
-      # Allows `name` only if it is in the `ambient.env` allowlist.
-      # Exact, case-sensitive match: environment variable names are
-      # case-sensitive on POSIX, and a looser match would grant names
-      # the policy never listed.
+      # Allows `name` only if the `ambient.env` allowlist has it,
+      # compared case-sensitively, as POSIX names are.
       def check_ambient_env(name : String) : Decision
         return Decision.deny("no ambient.env names granted") if ambient_env.empty?
         return Decision.allow if ambient_env.includes?(name)

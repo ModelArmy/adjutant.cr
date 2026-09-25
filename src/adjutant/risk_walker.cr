@@ -6,118 +6,54 @@ require "./type_inference"
 require "./interpreter"
 
 module Adjutant
-  # Walks an AST body (top-level script, or a ScriptProc's stored
-  # ast_body) into a RiskNode tree, resolving each Call node to a
-  # NativeCallable/ScriptProc risk profile via TypeInference.
+  # Walks an AST into a RiskNode tree, resolving each call to the
+  # risk profile of the native callable or script method it reaches.
   #
-  # Scope and honesty notes, deliberately conservative:
-  #
-  #   - A Call's receiver type comes from TypeInference, run linearly
-  #     alongside this walk (see walk_body — the two walks share one
-  #     Env, since risk and type both depend on the same var bindings
-  #     in the same control-flow order).
-  #   - A ScriptProc's own body is walked using ONLY its own param
-  #     scope (all params UnknownType) — NOT the caller's env. Method
-  #     risk is memoized per ScriptProc, independent of call site, so
-  #     it must not depend on caller-supplied argument types. This is
-  #     a real precision loss: `def process(f); f.read; end` always
-  #     sees `f` as UnknownType inside `process`, regardless of what
-  #     any call site passes, because Adjutant has no parameter type
-  #     declarations (see DEVELOPMENT.md's "Structured risk" section
-  #     for the caveat and why fixing it means adding real type
-  #     annotations to the language, not a bigger inference pass).
-  #   - Recursion: a ScriptProc currently being walked (@in_progress)
-  #     that calls itself (directly or via mutual recursion) becomes a
-  #     RiskLeaf tagged "recursive call" instead of a fresh descent —
-  #     prevents infinite walker recursion. Loops get the same
-  #     "unknown repeat count" treatment via RiskSequence#iterated;
-  #     recursion is escalated the same way, since neither the walker
-  #     nor the runtime can statically bound how many times either
-  #     will actually execute.
-  #   - Memoization is keyed on ScriptProc identity (object, not name)
-  #     — correct since risk assessment is a compile-time property
-  #     here, not a runtime one, and a proc's body risk never changes
-  #     between calls.
+  #   1. Receiver types come from TypeInference, run alongside the
+  #      walk on the same Env.
+  #   2. A script method's body is walked once, with every parameter
+  #      of unknown type, and the result is memoized per ScriptProc, so
+  #      its risk doesn't depend on the call site. `def process(f);
+  #      f.read; end` never learns what `f` is; see DEVELOPMENT.md,
+  #      "Structured risk".
+  #   3. A call to a method already being walked (recursion) becomes a
+  #      leaf marked "recursive call", escalated like a loop, since
+  #      neither can be bounded statically.
   class RiskWalker
-    # Top-level defs seen SO FAR in the walk — mirrors the VM's own
-    # linear execution: a call before its def is genuinely unresolved
-    # here, same as the NameError it would raise at runtime. Populated
-    # as walk_body encounters DefNode statements, not by a separate
-    # pre-pass.
+    # Top-level defs seen so far, in walk order: a call before its
+    # def is unresolved, as it would be a NameError at runtime.
     @top_level_procs : Hash(String, ScriptProc)
 
-    # Classes built SO FAR — same order-sensitivity for the class
-    # declaration itself (a class must be declared before use), but
-    # NOT for calls between its own methods (see walk_class): a method
-    # body is only ever invoked after the class body has fully
-    # finished executing, so by then every method in it is registered
-    # regardless of definition order within the class.
+    # Classes defined so far, in walk order. Calls between a class's
+    # own methods resolve whatever their order, since methods run
+    # only after the class body has finished.
     @known_classes : Hash(String, RubyClass)
 
-    # Constant-name -> the Lambda AST node it was assigned. Same
-    # "seen so far, in walk order" precedent as @top_level_procs/
-    # @known_classes above, and only trustworthy for the same reason
-    # those two are (a name, once bound, doesn't change again) — here
-    # specifically because Op::SetConstant now enforces that at
-    # runtime too (Piece D, SCOPE.md). Populated by walk_assign as
-    # `CONST = ->(){}` statements are walked.
+    # Constants bound to a lambda literal, so `F.call` and `f(F)`
+    # can resolve to its body. Trustworthy because constants are
+    # assign-once at runtime.
     @known_constant_lambdas : Hash(String, Lambda)
 
-    # Which RubyClass (if any) the method body CURRENTLY being walked
-    # belongs to — nil for a top-level def or a lambda. Set/restored
-    # around each walk_script_method call, same save-restore pattern as
-    # @in_progress. Needed so a BARE implicit-self call inside an
-    # instance method (`second` called from within `first`, both
-    # methods of the same class — no receiver, no parens) can resolve
-    # against that class's own method table, the same way an explicit
-    # `self.second` or `s.second` already does via resolve_on_class.
-    # Found 2026-07-18, via a pre-existing spec ("a class's own methods
-    # can call each other regardless of definition order") that started
-    # failing once walk_identifier began resolving bare names for real
-    # instead of silently treating every one as a harmless value read —
-    # `second` was ALWAYS meant to resolve here; the old passing test
-    # was passing for the wrong reason (nothing looked at `second` at
-    # all), not because resolution actually worked.
+    # The class whose method body is being walked, so a bare call to
+    # a sibling method (`second` inside `first`) resolves against it.
+    # Nil at top level and in a lambda.
     @current_self_class : RubyClass?
 
-    # Whether the body currently being walked is a SINGLETON method
-    # (`def self.foo`) rather than an instance method — these resolve
-    # bare sibling calls against genuinely different tables on the same
-    # RubyClass (singleton_methods/native_singleton_methods vs.
-    # methods/native_methods — mirrors the VM's own dispatch_call
-    # branching on self_val.as_robject? vs. .as_rclass?, see vm.cr).
-    # Found 2026-07-18: @current_self_class alone isn't enough —
-    # walk_bare_name_call was only ever checking the INSTANCE tables,
-    # so `def self.first; second; end` (second also a singleton method)
-    # fell through to RiskUnresolved even with self_class correctly set.
+    # Whether that method is a singleton method (`def self.foo`), whose
+    # bare sibling calls resolve against the singleton tables.
     @current_self_is_singleton : Bool = false
 
-    # The ScriptProc whose body is currently being walked — nil
-    # outside any method body (e.g. top-level statements, a class
-    # body's own bare statements). `super`'s target resolution needs
-    # this for the CURRENT method's own name (SuperNode carries none
-    # of its own — see VM#dispatch_super's identical reasoning at
-    # runtime), the same way @current_self_class supplies the class
-    # context. Saved/restored alongside @current_self_class in
-    # walk_script_method, for the same nesting reasons that one's own
-    # comment gives.
+    # The method being walked, whose name `super` needs; nil outside
+    # a method body.
     @current_method_proc : ScriptProc?
 
     def initialize(@interp : Interpreter)
       @inference = TypeInference.new(@interp)
       @method_cache = {} of ScriptProc => RiskNode
       @in_progress = Set(ScriptProc).new
-      # Same purpose as @method_cache/@in_progress, keyed by the Lambda
-      # AST node itself rather than a ScriptProc — walk_lambda_body
-      # works from the AST directly (a Lambda literal isn't compiled/
-      # instantiated at walk time the way a def's ScriptProc is).
-      # @in_progress_lambdas matters for real: a bare Lambda literal
-      # can't reference itself (no name exists yet inside its own
-      # body — real Ruby semantics), but a CONSTANT-held lambda's body
-      # calling `.call` on that same constant IS structurally possible
-      # (`F1 = ->() { F1.call }` — F1 exists by the time the body would
-      # run) and needs the same recursion guard walk_script_method
-      # already has for defs.
+      # Memo and recursion guard for lambda bodies, keyed by the
+      # Lambda node. A constant-held lambda can call itself
+      # (`F = ->() { F.call }`).
       @lambda_cache = {} of Lambda => RiskNode
       @in_progress_lambdas = Set(Lambda).new
       @top_level_procs = {} of String => ScriptProc
@@ -127,22 +63,14 @@ module Adjutant
       @inference.const_path_resolver = ->(node : ConstPath) { resolve_const_path(node) }
     end
 
-    # Classes the walker has built for itself take priority — they
-    # don't exist in @interp's globals at all, since the script hasn't
-    # run. Falls back to @interp for genuinely pre-existing classes
-    # (builtins, classes defined by a prior interp.eval in the host
-    # program) — see class docs above @known_classes.
+    # Classes the walk has defined first, then the interpreter's:
+    # builtins and classes from an earlier `eval`.
     private def resolve_class(name : String) : RubyClass?
       @known_classes[name]? || @interp.get_global(name).as_rclass?
     end
 
-    # Resolves a ConstPath (`M::A`, or deeper: `M::N::A`) to a
-    # RubyClass by walking its namespace chain — mirrors the VM's
-    # Op::GetConstantFrom (a direct, non-lexical lookup in each
-    # resolved namespace's own `constants` table, populated by
-    # walk_nested as class/module statements are walked). The
-    # innermost namespace is itself resolved via resolve_class if it's
-    # a bare Constant, or recursively if it's another ConstPath.
+    # Resolves `M::A` or `M::N::A` through each namespace's own
+    # constants, as Op::GetConstantFrom does at runtime.
     private def resolve_const_path(node : ConstPath) : RubyClass?
       ns = node.namespace
       owner = case ns
@@ -161,8 +89,7 @@ module Adjutant
       RiskSequence.new(children, body.line)
     end
 
-    # One case per node kind, not tangled logic — the branch count
-    # is the AST's shape, not this method's.
+    # One case per node kind.
     def walk_node(node : Node, env : TypeInference::Env) : RiskNode
       case node
       when IfNode, UnlessNode, CaseNode, WhileNode, LoopNode, ForNode, ModifierIf, ModifierWhile, BeginNode
@@ -179,9 +106,7 @@ module Adjutant
       when ArrayLiteral, HashLiteral
         walk_collection_literal(node, env)
       else
-        # Any other node kind (literals, etc.) carries no risk of its
-        # own, but may still affect var types (rare outside Assign) —
-        # run inference for env-tracking consistency.
+        # No risk of its own; inferred so the Env stays current.
         @inference.infer_node(node, env)
         RiskSequence.new([] of RiskNode, node.line)
       end
@@ -214,13 +139,9 @@ module Adjutant
       end
     end
 
-    # `unless cond; ...; else; ...; end` — same Choice shape as IfNode.
-    # Note: unlike walk_if, this does NOT call into TypeInference for
-    # env-merging (no infer_unless exists) — a var assigned only
-    # inside an unless-branch won't propagate as Known to later
-    # siblings. Safe direction to err (falls back to UnknownType, not
-    # a wrong guess), but a real gap if UnlessNode type-tracking
-    # becomes needed later.
+    # `unless`: a Choice, as for `if`. Unlike `walk_if`, branch
+    # bindings are not merged into the Env, so they read as unknown
+    # afterwards.
     private def walk_unless(node : UnlessNode, env : TypeInference::Env) : RiskNode
       branches = [] of RiskNode
       branches << walk_body(node.then_branch, env.dup)
@@ -232,9 +153,8 @@ module Adjutant
       RiskChoice.new(branches, "unless", node.line)
     end
 
-    # `expr if cond` / `expr unless cond` — a Choice between running
-    # expr once and not running it at all (the implicit "else" is a
-    # no-op, same treatment as IfNode's missing else_branch).
+    # `expr if cond` and `expr unless cond`: a Choice between running
+    # `expr` once and not at all.
     private def walk_modifier_if(node : ModifierIf, env : TypeInference::Env) : RiskNode
       body_env = env.dup
       body_risk = walk_node(node.body, body_env)
@@ -242,30 +162,24 @@ module Adjutant
         node.negated? ? "unless" : "if", node.line)
     end
 
-    # `expr while cond` / `expr until cond` — same "unknown repeat
-    # count" treatment as WhileNode, just a single-statement body.
+    # `expr while cond` and `expr until cond`: an unknown number of
+    # repeats, as for `while`.
     private def walk_modifier_while(node : ModifierWhile, env : TypeInference::Env) : RiskNode
       inner_env = env.dup
       body_risk = walk_node(node.body, inner_env)
       RiskSequence.new([body_risk] of RiskNode, node.line, iterated: true)
     end
 
-    # begin/rescue/else/ensure: (body [+ else]) and each rescue clause
-    # are mutually exclusive (Choice — exactly one runs), ensure_body
-    # always runs afterward regardless of which (Sequence wrapping the
-    # Choice). No rescue clause at all degrades to a plain
-    # Sequence(body, ensure) — there's nothing to choose between (and
-    # `else` can't appear without a `rescue`; see the parser's P004).
+    # A Choice between the body (then `else`) and each rescue clause,
+    # followed by the ensure body. Without rescue clauses, a plain
+    # Sequence.
     private def walk_begin(node : BeginNode, env : TypeInference::Env) : RiskNode
       body_env = env.dup
       body_risk = walk_body(node.body, body_env)
 
-      # `else` only runs once the body has fully succeeded — unlike
-      # every rescue/ensure branch below (each of which forks fresh
-      # from the OUTER env, since the walker can't know how far body
-      # got before an error), `else` is guaranteed to see body's
-      # completed bindings, so it chains from body_env directly
-      # rather than a fresh dup of env.
+      # `else` runs only after the body succeeded, so it continues
+      # from the body's Env; a rescue or ensure branch starts from the
+      # outer Env, since the body may have stopped anywhere.
       success_risk =
         if else_body = node.else_body
           RiskSequence.new([body_risk, walk_body(else_body, body_env.dup)] of RiskNode, node.line)
@@ -280,26 +194,14 @@ module Adjutant
           branches = [success_risk] of RiskNode
           node.rescue_clauses.each do |clause|
             rescue_env = env.dup
-            # The caught exception, if named (`rescue => e` / `rescue
-            # Foo => e`), is a real local for that clause's body —
-            # found 2026-07-18 alongside walk_identifier: without
-            # this, a bare `e` reference inside the rescue body would
-            # now (correctly for genuinely-unbound names, but wrongly
-            # here) resolve as an implicit zero-arg method call
-            # attempt instead of the local read it actually is.
-            # UnknownType since Adjutant has no way to know the
-            # exception's real class here beyond the clause's class
-            # name(s) (not themselves resolved to a RubyClass by this
-            # walker), same imprecision every other untyped binding
-            # already carries.
+            # `rescue => e` binds `e` as a local of unknown type, so
+            # it isn't mistaken for a method call.
             if rescue_var = clause.var
               rescue_env[rescue_var] = UnknownType.new
             end
             branches << walk_body(clause.body, rescue_env)
           end
-          # Only one clause ever actually runs — same Choice
-          # semantics as before, just with one branch per clause
-          # instead of a single fixed rescue branch.
+          # Exactly one branch runs.
           RiskChoice.new(branches, "rescue", node.line)
         end
 
@@ -312,17 +214,9 @@ module Adjutant
       end
     end
 
-    # A `module` statement — same treatment as ClassNode minus
-    # superclass/instantiation; modules can't be `.new`'d, but their
-    # methods can still be called (once `include`/module-function
-    # dispatch exists) and their bodies can contain bare statements
-    # that execute immediately, same as a class body.
-    # Mirrors walk_class's structure and bugs-fixed (see its own doc
-    # comment): singleton defs go into `singleton_methods`, not
-    # `@top_level_procs`; nested `class`/`module` statements register
-    # themselves into `mod.constants` (mirroring the VM's `SetConstant`
-    # under the enclosing self — see compile_class/compile_module),
-    # which is what makes `M::A` resolvable as a ConstPath afterward.
+    # A `module` statement, walked as `walk_class` walks a class:
+    # singleton defs go to `singleton_methods`, and nested classes and
+    # modules register in its `constants`, so `M::A` resolves.
     private def walk_module(node : ModuleNode) : RiskNode
       mod = RubyClass.new(node.name, nil, is_module: true)
       @known_classes[node.name] = mod
@@ -349,15 +243,9 @@ module Adjutant
       RiskSequence.new(children, node.line)
     end
 
-    # Walks a `class`/`module` statement nested directly inside another
-    # class/module body, then registers the result under the
-    # enclosing namespace's OWN constants table (RubyClass#constants) —
-    # the piece walk_class/walk_module alone don't do, since each only
-    # knows how to register itself into the flat @known_classes map.
-    # Without this, `M::A` (a ConstPath) has nothing to resolve
-    # against even though `A` alone is technically reachable via
-    # @known_classes's flat namespace — real Ruby scoping requires the
-    # lookup to go through M specifically.
+    # Walks a class or module statement inside `enclosing`'s body and
+    # registers it in `enclosing.constants`, so `M::A` resolves
+    # through `M`.
     private def walk_nested(stmt : Node, enclosing : RubyClass) : RiskNode
       risk = walk_node(stmt, TypeInference::Env.new).as(RiskNode)
       name = stmt.is_a?(ClassNode) ? stmt.as(ClassNode).name : stmt.as(ModuleNode).name
@@ -368,12 +256,9 @@ module Adjutant
       risk
     end
 
-    # A `def` statement itself has no risk — it registers a name,
-    # doesn't run the body. The body is walked lazily, on first call
-    # (see walk_script_method), same as today's memoization.
-    # Placeholder ScriptProc: chunk is never read by the walker (only
-    # ast_body/ast_params/params/name are), so an empty Chunk is a
-    # safe stand-in — this proc is never executed, only walked.
+    # A `def` registers a method and has no risk; the body is walked
+    # on first call. The ScriptProc's chunk is empty, since walked
+    # procs never run.
     private def walk_def(node : DefNode) : RiskNode
       proc = ScriptProc.new(Chunk.new, node.name, node.params.map(&.name),
         ast_body: node.body, ast_params: node.params)
@@ -381,81 +266,23 @@ module Adjutant
       RiskSequence.new([] of RiskNode, node.line)
     end
 
-    # A `class` statement walks its body immediately (bare statements
-    # in a class body execute right away, same as top-level — see
-    # DEVELOPMENT.md's RiskWalker section), registering each nested
-    # DefNode as a method on the RubyClass being built — an instance
-    # method (`stmt.receiver.nil?`) into `cls`'s own `methods` table,
-    # or a script singleton method (`def self.foo`, `stmt.receiver.
-    # is_a?(SelfNode)`) into `cls`'s SEPARATE `singleton_methods`
-    # table. Without this split, `def self.foo` would fall through to
-    # the generic `walk_node`/`walk_def` path, which registers into
-    # `@top_level_procs` — a real scope-crossing bug (silently
-    # treating a class-scoped singleton method as a top-level
-    # function), not just a missed case; `def obj.method` for any
-    # OTHER receiver besides `self` remains genuinely unsupported (see
-    # DEVELOPMENT.md) and falls through to walk_node like today. Any
-    # bare call in the class body resolves against the ENCLOSING
-    # scope's table (@top_level_procs, @known_classes as they stand at
-    # this point in the walk) — a class body isn't its own top-level
-    # scope.
-    # True when `stmt` is a bare `include SomeModule` call — the ONE
-    # shape STATICALLY recognized here and mirrored into RubyClass#
-    # include_module during the walk (see register_static_include,
-    # below). Real Ruby allows `include` with an explicit receiver
-    # too (`SomeClass.include(Foo)`) — deliberately NOT recognized
-    # here, same scoping decision the actual native `include` method
-    # itself made (see builtins/mixins.cr); only the bare,
-    # receiverless, single-constant-argument form ordinarily written
-    # inside a class/module body is handled.
+    # Whether `stmt` is a bare `include Module`, the only form the
+    # walk mirrors; `Foo.include(M)` is not recognized, as the native
+    # `include` doesn't accept it either.
     private def include_call?(stmt : Node) : Bool
       stmt.is_a?(Call) && stmt.receiver.nil? && stmt.method == "include" && stmt.args.size == 1
     end
 
-    # Same shape as include_call?, for `extend` — see that method's
-    # own comment; STEP 4 of the extend-support build-out (see
-    # SCOPE.md's git history) mirrors include's Step 3 exactly, on
-    # the singleton side.
+    # `include_call?` for `extend`.
     private def extend_call?(stmt : Node) : Bool
       stmt.is_a?(Call) && stmt.receiver.nil? && stmt.method == "extend" && stmt.args.size == 1
     end
 
-    # Mirrors the RUNTIME effect of `include SomeModule`
-    # (RubyClass#include_module, invoked by the real native `include`
-    # method when a script actually RUNS) into the class/module
-    # currently being statically walked. Found 2026-08-10 (see
-    # SCOPE.md's git history, Step 3 of the include-support
-    # build-out): RiskWalker never executes anything — it's a purely
-    # static walk — so without this, `A.included_modules` would stay
-    # empty for the ENTIRE walk regardless of what a script's
-    # `include` statements say, and find_method/find_native_method's
-    # own module-aware walk (Step 3's other half, ruby_class.cr)
-    # would have nothing to find; a method only reachable through an
-    # included module showed up as RiskUnresolved (severity Error —
-    # the "can't confirm, surface loudly" fallback, RiskAggregator's
-    # own unresolved_profile) rather than actually resolved.
-    #
-    # Silently no-ops if the argument doesn't resolve to a known
-    # class/module (e.g. one defined by a `require`d native
-    # ScriptModule this walker has no static knowledge of) — nothing
-    # else to do in that case, since (see walk_class/walk_module's
-    # own `elsif include_call?` branch) the `include` call itself is
-    # NOT generically re-walked either way. Real Ruby's `Module#
-    # include` has no risk of its own — it's class/mixin wiring, not
-    # code execution — so it's treated the same as `def`: a purely
-    # structural statement contributing an empty RiskSequence, not
-    # walked as an ordinary call. Walking it generically was tried
-    # first and reverted: RiskWalker's bare-call resolution doesn't
-    # model "self is the class currently being defined" outside a
-    # method body (only `super`'s own resolution does, via
-    # @current_self_class, set inside walk_script_method — a
-    # class/module body's own top-level statements run OUTSIDE
-    # that), so `include` itself came back RiskUnresolved every
-    # time — a spurious Error/{ExecutesCode} finding on every single
-    # `include` statement in any script that uses one, alongside
-    # whatever real risk its included module's OWN methods actually
-    # carry (found via the earlier, correctly-resolved DeletesFiles
-    # case in the VM spec for this).
+    # Mirrors `include SomeModule` into the class being walked, so
+    # methods reached through the module resolve. The call itself is
+    # structural, like `def`, so contributes no risk and isn't walked
+    # as a call. Does nothing if the module isn't known to the walk,
+    # such as one a native `require` defines.
     private def register_static_include(cls : RubyClass, node : Call) : Nil
       arg = node.args.first
       mod = case arg
@@ -465,12 +292,7 @@ module Adjutant
       cls.include_module(mod) if mod
     end
 
-    # Mirrors the RUNTIME effect of `extend SomeModule`
-    # (RubyClass#extend_module) into the class/module currently being
-    # statically walked — same reasoning as register_static_include's
-    # own comment, and the same "treat the call itself as purely
-    # structural, no generic re-walk" decision (see walk_class/
-    # walk_module's own `elsif extend_call?` branch, below).
+    # `register_static_include` for `extend`.
     private def register_static_extend(cls : RubyClass, node : Call) : Nil
       arg = node.args.first
       mod = case arg
@@ -480,6 +302,12 @@ module Adjutant
       cls.extend_module(mod) if mod
     end
 
+    # A `class` statement: its body runs at once, like top-level code.
+    # Instance and singleton defs register on the class, nested
+    # classes and modules in its constants, and `include`/`extend`
+    # are mirrored; other statements are walked, resolving bare calls
+    # against the enclosing scope. `def obj.method` for another
+    # receiver is not supported.
     private def walk_class(node : ClassNode) : RiskNode
       superclass = node.superclass.try { |name| resolve_class(name) }
       cls = RubyClass.new(node.name, superclass)
@@ -510,17 +338,7 @@ module Adjutant
     private def register_class_method(cls : RubyClass, node : DefNode) : Nil
       proc = ScriptProc.new(Chunk.new, node.name, node.params.map(&.name),
         ast_body: node.body, ast_params: node.params)
-      # Set explicitly — ScriptProc's own initialize doesn't take
-      # lexical_scope (it's a plain `property`, assigned after
-      # construction by the real compiler's compile_def when a method
-      # is genuinely registered — see that field's own comment,
-      # vm.cr). Without this, every RiskWalker-built ScriptProc's
-      # lexical_scope stayed nil regardless of which class/module it
-      # was actually registered on — silently broke walk_super_target's
-      # ancestors-based fix (found immediately, all super resolution
-      # failed, not just the include-specific cases it was meant to
-      # fix) the moment that fix started relying on lexical_scope
-      # being meaningful, which nothing here had ever needed before.
+      # `walk_super_target` searches ancestors from here.
       proc.lexical_scope = cls
       sym_id = @interp.symbols.intern(node.name).value
       cls.define_method(sym_id, proc)
@@ -534,43 +352,25 @@ module Adjutant
       cls.define_singleton_method(sym_id, proc)
     end
 
-    # The risk of an assignment's VALUE expression (e.g. a risky call
-    # used as an initializer, `f = File.new(path)`) must be walked for
-    # risk, not just inferred for type — walk_node's generic else
-    # branch only ran type inference and would silently drop this.
+    # An assignment's value is walked for risk as well as inferred:
+    # `f = fetch(url)` runs the call.
     private def walk_assign(node : Assign, env : TypeInference::Env) : RiskNode
       value_risk = walk_node(node.value, env)
-      # Mirror TypeInference#infer_assign's env update so subsequent
-      # siblings see the binding — infer_node on the value again here
-      # would be redundant work but is idempotent (no side effects
-      # beyond env, and env already reflects the walk above via
-      # walk_call/walk_node's own infer_node calls); simplest correct
-      # approach is to update env directly from the value's type here.
+      # Records the binding for later siblings.
       value_type = @inference.infer_node(node.value, env)
       if (target = node.target).is_a?(Identifier)
         env[target.name] = value_type
       elsif target.is_a?(Constant) && (value = node.value).is_a?(Lambda)
-        # CONST = ->(){} — record the binding so a later CONST.call(...)
-        # or some_fn(CONST) can resolve to this exact Lambda node. Only
-        # trustworthy because Op::SetConstant now enforces assign-once
-        # at runtime (see @known_constant_lambdas' own doc comment) —
-        # walk_node above already walked node.value as a bare Lambda
-        # (contributing nothing on its own, per walk_node's else
-        # branch), so this doesn't double-walk the body; the body
-        # itself is only ever actually walked lazily, on first
-        # confirmed resolution, via walk_lambda_body's own cache.
+        # `CONST = ->(){}`: recorded so later calls through the
+        # constant resolve to this lambda. Its body is walked on first
+        # resolved call, not here.
         @known_constant_lambdas[target.name] = value
       end
       value_risk
     end
 
-    # `x += expr` — same rationale as walk_assign: expr's risk must be
-    # walked, not just inferred for type. The target's post-op type
-    # isn't tracked precisely (e.g. `x += 1` doesn't know x stays
-    # Integer) — TypeInference has no infer_op_assign, so the target
-    # degrades to whatever infer_node says about a bare read of
-    # node.value, which is imprecise but errs toward UnknownType, not
-    # a wrong guess.
+    # `x += expr`: `expr` is walked for risk. The target's type after
+    # the operation isn't tracked, so it reads as unknown.
     private def walk_op_assign(node : OpAssign, env : TypeInference::Env) : RiskNode
       value_risk = walk_node(node.value, env)
       if (target = node.target).is_a?(Identifier)
@@ -588,11 +388,8 @@ module Adjutant
       value_risk
     end
 
-    # `a, b = 1, 2` — each value expression walked for risk in order
-    # (Sequence: all run); targets aren't type-tracked here (no
-    # infer_multi_assign in TypeInference) so they degrade to
-    # UnknownType on next read, same safe-imprecise direction as
-    # OpAssign/CondAssign above.
+    # `a, b = 1, 2`: each value is walked in order. Targets aren't
+    # type-tracked, so they read as unknown.
     private def walk_multi_assign(node : MultiAssign, env : TypeInference::Env) : RiskNode
       children = node.values.map { |value| walk_node(value, env).as(RiskNode) }
       node.targets.each do |target|
@@ -601,9 +398,8 @@ module Adjutant
       RiskSequence.new(children, node.line)
     end
 
-    # `arr[i] = expr` — target/index/value can each carry risk (e.g.
-    # `arr[compute_index()] = fetch_value()`); all three walked as a
-    # Sequence since all evaluate unconditionally.
+    # `arr[i] = expr`: target, index and value are each walked, in
+    # order.
     private def walk_index_assign(node : IndexAssign, env : TypeInference::Env) : RiskNode
       children = [
         walk_node(node.target, env).as(RiskNode),
@@ -613,20 +409,9 @@ module Adjutant
       RiskSequence.new(children, node.line)
     end
 
-    # `recv.attr = value` — same flat-Sequence shape as
-    # `walk_index_assign` immediately above (both sub-expressions
-    # evaluate unconditionally): the receiver and the value each need
-    # their own risk walked, since either could embed a risky call
-    # (`get_config().name = dangerous_delete()`, or the receiver
-    # expression itself being the risky part). The setter call ITSELF
-    # (`recv.attr=`) carries no risk of its own to walk here — unlike
-    # an ordinary `Call`, this never resolves to a native method
-    # (native receivers have no user-definable `attr=` mechanism; see
-    # SCOPE.md's "native methods have no kwargs" entry for the
-    # adjacent native-extensibility gap), so there is no
-    # `NativeCallable.risk` to consult, only a script-defined setter,
-    # whose OWN body is walked separately when ITS `DefNode` is
-    # walked, not from every call site that happens to invoke it.
+    # `recv.attr = value`: the receiver and value are walked. The
+    # setter call adds no risk here: a native receiver has no setters,
+    # and a script setter's body is walked with its def.
     private def walk_attr_assign(node : AttrAssign, env : TypeInference::Env) : RiskNode
       children = [
         walk_node(node.receiver, env).as(RiskNode),
@@ -635,20 +420,8 @@ module Adjutant
       RiskSequence.new(children, node.line)
     end
 
-    # `[a, b]` / `{k => v, ...}` — every element (or key AND value, for
-    # a hash) is walked for risk, since all of them evaluate
-    # unconditionally when the literal is built. Found 2026-08-08:
-    # before this, ArrayLiteral/HashLiteral fell through walk_node's
-    # generic `else` branch, which only runs type inference (a fixed
-    # "Array"/"Hash" TypeHint, no recursion) — so a risky call sitting
-    # inside a collection literal (`{ path: dangerous_delete() }`,
-    # `[dangerous_delete()]`) produced zero findings from
-    # RiskAggregator.summarize, a real gap in the static pass
-    # specifically (VM#call_native's runtime enforcement was always
-    # unaffected, since it fires from the call itself regardless of
-    # AST position). Same Sequence-of-sub-expressions shape as
-    # walk_multi_assign/walk_index_assign just above — nothing here is
-    # conditional, so nothing here is a Choice.
+    # `[a, b]` and `{k => v}`: every element, key and value is
+    # walked, in order.
     private def walk_collection_literal(node : Node, env : TypeInference::Env) : RiskNode
       children =
         case node
@@ -679,10 +452,7 @@ module Adjutant
         branches << RiskSequence.new([] of RiskNode, node.line)
       end
 
-      # Keep TypeInference's own env merge semantics for subsequent
-      # sibling statements — same merge the standalone inference pass
-      # uses, just invoked here so the risk walk and type env stay in
-      # lockstep as one traversal.
+      # Merges branch bindings into the Env for later siblings.
       @inference.infer_if(node, env)
       RiskChoice.new(branches, "if", node.line)
     end
@@ -705,36 +475,16 @@ module Adjutant
 
     private def walk_iterated(body : Body, env : TypeInference::Env, line : Int32, vars : Array(String) = [] of String) : RiskNode
       inner_env = env.dup
-      # Real local bindings for THIS iteration's body — a `for`
-      # loop's variable(s), or (via walk_call's block-folding) a
-      # block's own params (`{ |x| ... }`). Found 2026-07-18 alongside
-      # walk_identifier: without this, a bare reference to the loop/
-      # block variable inside the body would now (correctly for
-      # genuinely-unbound names, but wrongly here) resolve as an
-      # implicit zero-arg method call attempt instead of the local
-      # read it actually is. UnknownType, same imprecision every other
-      # untyped binding already carries (no declared param/loop-var
-      # types in Adjutant).
+      # The loop variables or block parameters, bound as locals of
+      # unknown type.
       vars.each { |name| inner_env[name] = UnknownType.new }
       node = walk_body(body, inner_env)
       RiskSequence.new([node.as(RiskNode)], line, iterated: true)
     end
 
-    # Was reaching walk_node's generic `else` branch entirely before
-    # this — SuperNode had no case of its own, so `super(risky_call)`
-    # was completely invisible to static analysis: no arg walked, no
-    # target resolved, same blind spot walk_call's own 2026-07-18 args
-    # fix closed for ordinary calls. See SCOPE.md's risk-flow-impact
-    # note for this session (super-dispatch rewrite).
-    #
-    # zsuper's forwarded params are deliberately NOT separately walked
-    # here — a bare reference to an already-bound param carries no
-    # risk of its OWN at the point it's referenced again (see
-    # walk_identifier: a known local resolves to an empty
-    # RiskSequence), the same as `some_call(x)` doesn't re-walk `x`
-    # beyond what walk_call_arg already does for it. Only EXPLICIT
-    # argument expressions actually written at this call site need
-    # walking, exactly like walk_call's own arg_risks.
+    # `super(...)`: its explicit arguments, then what it reaches.
+    # Bare `super` forwards parameters, which are local reads with no
+    # risk of their own.
     private def walk_super(node : SuperNode, env : TypeInference::Env) : RiskNode
       arg_risks = node.args.map { |arg| walk_call_arg(arg, env) }
       resolved = walk_super_target(node)
@@ -743,40 +493,9 @@ module Adjutant
       RiskSequence.new(children, node.line)
     end
 
-    # Resolves what `super` reaches: the CURRENT method's own name,
-    # looked up starting at the DEFINING class's superclass — the
-    # exact distinction VM#dispatch_super draws at runtime (see that
-    # method's own comment), mirrored here against
-    # walk_current_class_bare_call's shape (self's own class, one
-    # step up). self_class passed to walk_script_method stays `cls`
-    # (the ORIGINAL self, unchanged) — only the METHOD LOOKUP starts
-    # higher; a bare call inside the found method's own body still
-    # resolves against the real receiver's actual class, same virtual-
-    # dispatch behavior VM#dispatch_super preserves via `self_val`.
-    #
-    # @current_self_class/@current_method_proc are both nil outside
-    # any method body being walked — `super` used somewhere it has no
-    # meaning statically resolves Unresolved rather than crashing,
-    # consistent with every other resolution-failure case in this
-    # file.
-    # Resolves what `super` reaches: self's REAL ancestor chain
-    # (RubyClass#ancestors, real Ruby's linearized MRO), searching
-    # everything right AFTER wherever the current proc's own
-    # lexical_scope sits in it — mirrors VM#dispatch_super's own
-    # resolution exactly (see that method's comment for the full
-    # reasoning). Found and fixed 2026-08-10, alongside
-    # dispatch_super's own rewrite (see SCOPE.md's git history, the
-    # include-support build-out): this previously used
-    # `@current_self_class.superclass` — a fixed one-hop jump, same
-    # shape as dispatch_super's old bug, and a SEPARATE, pre-existing
-    # discrepancy from the VM's own semantics even before `include`
-    # existed (self's class isn't necessarily the DEFINING class a
-    # method actually came from — using `lex` as the search anchor,
-    # like the VM does, fixes both at once). A module included
-    # directly into `lex` sits BETWEEN it and its superclass in the
-    # real MRO, and `super` called from inside a MODULE's own method
-    # has no `superclass` of its own to fall back on at all — only
-    # self's full ancestry knows what comes next.
+    # Resolves what `super` reaches, as `VM#dispatch_super` does:
+    # the current method's name, searched in self's ancestors after the
+    # method's lexical scope. Unresolved outside a method body.
     private def walk_super_target(node : SuperNode) : RiskNode
       cls = @current_self_class
       proc = @current_method_proc
@@ -786,8 +505,7 @@ module Adjutant
       sym = @interp.symbols.lookup(proc.name)
       return RiskUnresolved.new("super", node.line) unless sym
 
-      # `def self.foo; super; end` searches a different chain and a
-      # different pair of method tables — see walk_super_singleton.
+      # A singleton method's `super` searches other tables.
       return walk_super_singleton(node, cls, lex, sym, proc) if @current_self_is_singleton
 
       chain = cls.ancestors
@@ -805,23 +523,9 @@ module Adjutant
       RiskUnresolved.new("super", node.line)
     end
 
-    # Singleton-method `super` (`def self.foo; super; end`) — STEP 5
-    # of the extend-support build-out (see SCOPE.md's git history):
-    # mirrors walk_super_target's instance-method branch exactly, on
-    # the singleton side, via RubyClass#singleton_ancestors — see that
-    # method's own comment (ruby_class.cr) for why each of its entries
-    # carries a Bool (an extended module's own contribution needs its
-    # ORDINARY method table checked, not singleton_methods; self and
-    # its superclasses need the opposite) and VM#dispatch_super's own
-    # comment for the parallel fix there. No longer a fixed one-hop
-    # jump to `lex.superclass` — a module `extend`ed directly into
-    # `lex` now correctly sits BETWEEN it and its superclass in the
-    # search, matching what `include` already did for the instance
-    # side.
-    #
-    # Split out of walk_super_target on 2026-09-02. The two branches
-    # share only their guards, and holding both method tables in mind
-    # at once was the reason the method read as tangled.
+    # `walk_super_target` for a singleton method: searches
+    # `RubyClass#singleton_ancestors`, where each entry says which table
+    # to check.
     private def walk_super_singleton(node : SuperNode, cls : RubyClass, lex : RubyClass,
                                      sym : Sym, proc : ScriptProc) : RiskNode
       chain = cls.singleton_ancestors
@@ -849,33 +553,9 @@ module Adjutant
     end
 
     private def walk_call(node : Call, env : TypeInference::Env) : RiskNode
-      # Every argument runs synchronously at THIS call site, regardless
-      # of what the callee does with its value afterward — safe and
-      # certain to fold in unconditionally, same footing as any other
-      # expression in a Sequence. Found 2026-07-18 mid-Piece-D-design
-      # (see SCOPE.md): args were never walked at all before this — a
-      # plain risky call used as an argument (`puts(delete_file(...))`,
-      # no lambda/block involved) was completely invisible.
-      #
-      # A `Lambda` LITERAL argument is a special case among these: its
-      # own definition contributes nothing on its own (same as any
-      # bare Lambda — see walk_node's else branch), but if the callee
-      # is later confirmed to invoke it we can't tell here, so
-      # walk_call_arg wraps a Lambda's walked body in RiskDeferred
-      # rather than returning it plain — see walk_call_arg below.
-      # Keyword-argument VALUES run synchronously at this call site
-      # exactly as positional args do — see this method's own doc
-      # comment above. Folded in here rather than left unwalked: found
-      # while designing native kwarg support (SCOPE.md) that this was
-      # a real, pre-existing static-analysis gap — `node.kwargs`
-      # (Array({String, Node})) was never walked at all, so a risky
-      # expression in a keyword position (`configure(handler:
-      # delete_file(path))`) was completely invisible to static
-      # analysis, the same kind of blind spot walk_call's own args
-      # fix closed for positional args on 2026-07-18. Not previously
-      # load-bearing (natives always rejected kwargs outright, so a
-      # real risky native call reached via a kwarg value couldn't
-      # happen), but native kwarg support makes it a live path.
+      # Positional and keyword argument values run at this call site,
+      # so their risk folds in. A lambda literal argument is deferred;
+      # see `walk_call_arg`.
       arg_risks = node.args.map { |arg| walk_call_arg(arg, env) } +
                   node.kwargs.map { |(_, value)| walk_call_arg(value, env) }
 
@@ -887,27 +567,15 @@ module Adjutant
                  when ConstPath
                    walk_class_receiver_call(node, resolve_const_path(receiver), const_path_name(receiver), nil)
                  else
-                   # The receiver expression itself runs unconditionally
-                   # too, before the method it names even dispatches —
-                   # same reasoning as args, just a single expression
-                   # instead of an array of them.
+                   # The receiver expression runs first.
                    receiver_risk = walk_node(receiver, env)
                    receiver_type = @inference.infer_node(receiver, env)
                    RiskSequence.new([receiver_risk, walk_receiver_call(node, receiver_type)], node.line)
                  end
 
-      # A `{ }`/`do...end` block attached to this call folds into its
-      # result unconditionally (unlike a Lambda argument — see
-      # walk_call_arg): `yield` inside the callee's own body is a real,
-      # statically-visible invocation contract, so unlike a lambda
-      # merely handed off, a block genuinely runs as part of this call
-      # (net Piece D judgment call: the callee might invoke it zero or
-      # many times at runtime, same "can't statically bound how many
-      # times" caveat walk_iterated already carries for while/for — but
-      # "does it run at all" is confirmed here, unlike a passed lambda).
-      # Walked with the ENCLOSING env (real closure semantics — a block
-      # can read/write outer locals) rather than a fresh param-only
-      # scope the way walk_lambda_body gives a Lambda literal.
+      # An attached block folds in as an iterated body: the callee
+      # may yield to it any number of times. It closes over the
+      # enclosing Env, unlike a lambda body.
       block_risk = node.block.try { |blk| walk_iterated(blk.body, env, blk.line, blk.params.map(&.name)) }
 
       children = [] of RiskNode
@@ -918,26 +586,10 @@ module Adjutant
       RiskSequence.new(children, node.line)
     end
 
-    # Walks a single call argument. An ordinary expression just gets
-    # walk_node'd like any other value-producing expression. A Lambda
-    # LITERAL gets special treatment: its body IS walkable (eagerly, so
-    # the memo is populated and structural errors surface now — same
-    # treatment walk_script_method gives a def's body), but whether the
-    # callee actually invokes it isn't confirmed by anything visible
-    # here (no yield-equivalent contract the way a BlockNode has), so
-    # the walked body is wrapped RiskDeferred rather than folded in
-    # unconditionally. A bare CONSTANT referencing a known lambda
-    # binding (`F1 = ->(){}; apply(F1)`) gets the exact same treatment
-    # as a literal — resolvable only because Op::SetConstant now
-    # enforces assign-once, same reasoning as the CONST.call(...) case
-    # in walk_class_receiver_call, but STILL wrapped RiskDeferred here
-    # (not resolved directly the way CONST.call is): passing F1 as an
-    # argument doesn't confirm the callee invokes it, unlike CONST.call
-    # itself which IS the invocation. A plain (non-constant) variable
-    # holding a lambda is NOT specially handled — falls through to
-    # walk_node like any other expression, correctly RiskUnresolved-ish
-    # via ordinary inference, since which literal a variable currently
-    # holds is real aliasing the walker can't safely resolve.
+    # Walks one call argument. A lambda literal, or a constant bound
+    # to one, is walked but wrapped in RiskDeferred, since passing it
+    # doesn't show the callee calls it. A variable holding a lambda is
+    # an ordinary expression: which lambda it holds can't be known.
     private def walk_call_arg(arg : Node, env : TypeInference::Env) : RiskNode
       if arg.is_a?(Lambda)
         RiskDeferred.new(walk_lambda_body(arg), "lambda literal passed as a call argument", arg.line)
@@ -948,13 +600,8 @@ module Adjutant
       end
     end
 
-    # Walks a Lambda node's body eagerly, own-param-only scope (mirrors
-    # walk_script_method's treatment of a def body — see class docs:
-    # a proc's own body is walked using ONLY its own param scope, not
-    # the caller's env, since Adjutant has no parameter type
-    # declarations to do better with). Shared by walk_call_arg (Lambda
-    # literal as an argument) and the constant-lambda .call resolution
-    # in walk_class_receiver_call.
+    # Walks a lambda's body with only its own parameters in scope, as
+    # for a method body. Memoized and guarded against recursion.
     private def walk_lambda_body(node : Lambda) : RiskNode
       if cached = @lambda_cache[node]?
         return cached
@@ -972,9 +619,7 @@ module Adjutant
       result
     end
 
-    # Render a ConstPath back to its dotted display form (`M::A`) for
-    # RiskUnresolved/RiskLeaf labels — cosmetic only, doesn't affect
-    # resolution.
+    # `M::A`, for labels only.
     private def const_path_name(node : ConstPath) : String
       prefix = case ns = node.namespace
                when Constant  then ns.name
@@ -984,39 +629,18 @@ module Adjutant
       "#{prefix}::#{node.name}"
     end
 
-    # `ClassName.method(...)` for any method, not just `new` — the
-    # receiver IS the class itself (already resolved by the caller,
-    # from either a bare Constant or a ConstPath), so this resolves
-    # against the class's own singleton tables
-    # (RubyClass#find_singleton_method / #find_native_singleton_method),
-    # never the instance method table. `.new` keeps its own dedicated
-    # path (walk_constructor_call) since unlike an ordinary singleton
-    # method it's also the one case with a generic, always-available
-    # fallback (script `initialize`) when no native `new` is
-    # registered. `display_name` is purely for RiskUnresolved/RiskLeaf
-    # labels — resolution itself only depends on `cls`.
+    # `ClassName.method(...)`: resolved against the class's singleton
+    # tables. `.new` goes to `walk_constructor_call`. `display_name` is
+    # for labels only.
     private def walk_class_receiver_call(node : Call, cls : RubyClass?, display_name : String, const_name : String?) : RiskNode
       if node.method == "new"
         return walk_constructor_call(node, cls, display_name)
       end
 
-      # CONST.call(...) where CONST is a known constant-held Lambda —
-      # checked before the `unless cls` RiskUnresolved fallback below,
-      # since this is exactly the case that fallback used to swallow
-      # silently: `cls` is nil here (resolve_class's `.as_rclass?`
-      # returns nil for a Proc-valued constant — it isn't a RubyClass
-      # at all), so without this branch every CONST.call(...) would
-      # read as an ordinary unresolved call, indistinguishable from a
-      # truly-unknowable one. Piece D (SCOPE.md), found by the person:
-      # unlike a Lambda passed onward as an ARGUMENT (see walk_call_arg
-      # — wrapped RiskDeferred, since invocation there isn't confirmed),
-      # invocation HERE is certain — `.call` is happening at this exact
-      # call site, not handed off elsewhere — so this resolves directly
-      # to the lambda's own walked-body risk, no RiskDeferred wrapper.
-      # Only `.call` itself is special-cased; any other method name on
-      # a Proc-valued constant (there are none today besides `call`/
-      # `lambda?` — see builtins/proc.cr) still falls through to the
-      # ordinary `unless cls` RiskUnresolved path below, correctly.
+      # `CONST.call(...)` on a constant bound to a lambda: the call is
+      # certain here, so the lambda's body risk folds in directly.
+      # Checked before the unresolved fallback, since `cls` is nil for
+      # a Proc-valued constant.
       if node.method == "call" && const_name && (lambda_node = @known_constant_lambdas[const_name]?)
         return walk_lambda_body(lambda_node)
       end
@@ -1035,14 +659,9 @@ module Adjutant
       end
     end
 
-    # `ClassName.new(...)` — mirrors TypeInference#infer_call's special
-    # case. If the class (or an ancestor) registered a native
-    # singleton `new` (see RubyClass#define_native_singleton_method —
-    # a builtin like File allocating real state), resolve to THAT
-    # method's real RiskProfile. Otherwise `.new` is the generic
-    # script-`initialize` path, which carries no RiskProfile of its
-    # own — treated as zero risk, same as before native singletons
-    # existed.
+    # `ClassName.new(...)`: a native `new`'s risk profile if the class
+    # or an ancestor has one; otherwise a script `initialize`, which
+    # adds no risk here.
     private def walk_constructor_call(node : Call, cls : RubyClass?, display_name : String) : RiskNode
       return RiskUnresolved.new("#{display_name}.new", node.line) unless cls
 
@@ -1053,35 +672,15 @@ module Adjutant
       end
     end
 
-    # `some_fn(args)` — resolves in the same order the VM would at
-    # this point in execution: native functions and any ALREADY
-    # EXECUTED top-level def (from a prior interp.eval — genuinely
-    # pre-existing, same footing as a native function), then a
-    # top-level def SEEN SO FAR in this walk itself. A call before its
-    # def within the walked script is genuinely unresolved, matching
-    # the NameError Adjutant would raise at runtime — see class docs
-    # for why this diverges from the "define once, call safely from
-    # anywhere in the class" rule that DOES apply inside method bodies
-    # (walk_class).
+    # `some_fn(args)`, resolved by `walk_bare_name_call`.
     private def walk_receiverless_call(node : Call) : RiskNode
       walk_bare_name_call(node.method, node.line)
     end
 
-    # self's own class's method chain FIRST — checked before native
-    # functions/top-level defs (see walk_bare_name_call) since a class's
-    # own methods take priority in real Ruby's own implicit-self
-    # resolution (mirrors the VM's dispatch_call: `obj.rclass.find_method`
-    # before anything else). Branches on @current_self_is_singleton
-    # since a singleton method body (`def self.foo`) resolves bare
-    # sibling calls against DIFFERENT tables (singleton_methods/
-    # native_singleton_methods) than an ordinary instance method body
-    # does (methods/native_methods) — found 2026-07-18, `def self.first;
-    # second; end` fell through to RiskUnresolved despite
-    # @current_self_class being set, because this distinction didn't
-    # exist yet. Returns nil (not RiskUnresolved) on a miss, so the
-    # caller can keep falling through its own remaining resolution
-    # steps — nil here doesn't mean "unresolved," it means "not found
-    # on self's own class specifically."
+    # Resolves a bare call against self's class first, as
+    # `dispatch_call` does, using the singleton tables in a singleton
+    # method. Nil when self's class doesn't have it, so the caller can
+    # keep looking.
     private def walk_current_class_bare_call(sym_id : Int32, method : String, line : Int32) : RiskNode?
       return unless cls = @current_self_class
       if @current_self_is_singleton
@@ -1102,20 +701,10 @@ module Adjutant
       nil
     end
 
-    # Shared by walk_receiverless_call (an explicit `foo()`/`foo x` Call
-    # node) and walk_identifier (a bare `foo` that turned out not to be
-    # a known local — see walk_identifier's own comment). Both compile
-    # to the exact same VM fallback (Op::GetGlobal falling through to
-    # dispatch_call for an unresolved bare name — see vm.cr), so both
-    # need the exact same static resolution, in the SAME order the VM's
-    # dispatch_call actually uses: self's own class first (see
-    # walk_current_class_bare_call above — this already subsumes
-    # native-function/top-level-def resolution too for anything
-    # registered on Object, every class's default superclass, via that
-    # helper's own ancestor-chain walk), THEN the walker's own
-    # forward-looking @top_level_procs (defs seen so far in THIS walk
-    # but not yet actually executed/registered anywhere the VM's own
-    # tables would show them), else honestly unresolved.
+    # Resolves a bare call, as `dispatch_call` would: self's class
+    # (which reaches Object, so native functions and executed
+    # top-level defs), then defs seen so far in this walk, else
+    # unresolved.
     private def walk_bare_name_call(method : String, line : Int32) : RiskNode
       sym = @interp.symbols.lookup(method)
       if sym
@@ -1125,13 +714,7 @@ module Adjutant
         if native = @interp.native_callable(sym.value)
           return RiskLeaf.new(native.risk, method, line)
         end
-        # A top-level def already executed via a PRIOR interp.eval
-        # call — genuinely pre-existing, same footing as a native
-        # function (see the comment above). Top-level defs live on
-        # Object's own methods table now (Interpreter#main is a
-        # RubyObject of class Object — see the 2026-07-16 root-scope
-        # work), not @globals, so this checks main.rclass directly
-        # rather than the removed @globals-ScriptProc lookup.
+        # A top-level def from an earlier `eval`: a method of Object.
         if proc = @interp.main.rclass.find_method(sym.value)
           return walk_script_method(proc, line)
         end
@@ -1142,19 +725,8 @@ module Adjutant
       RiskUnresolved.new(method, line)
     end
 
-    # A bare identifier (`delete_file`, no parens/args/block) is
-    # genuinely ambiguous at parse time — real Ruby's own rule, which
-    # Adjutant's compiler mirrors exactly (see compile_identifier):
-    # a name already bound as a local/param wins; otherwise it's an
-    # IMPLICIT ZERO-ARG METHOD CALL ATTEMPT (Op::GetGlobal falling
-    # through to dispatch_call — see vm.cr). Found 2026-07-18 (via the
-    # person's samples/risk_static_literal_lambda.rb): walk_node's
-    # generic `else` branch previously treated EVERY bare Identifier as
-    # a harmless value read, with no risk of its own — silently
-    # invisible to the walker if the name was actually a risky
-    # no-arg function called without parens. `env` (bindings seen so
-    # far in THIS walk — params, earlier assignments) is the walker's
-    # own equivalent of the compiler's `scope.resolve_local` check.
+    # A bare identifier is a local if the Env binds it, otherwise an
+    # implicit zero-argument call, as the compiler decides.
     private def walk_identifier(node : Identifier, env : TypeInference::Env) : RiskNode
       return RiskSequence.new([] of RiskNode, node.line) if env.has_key?(node.name)
       walk_bare_name_call(node.name, node.line)
@@ -1169,12 +741,8 @@ module Adjutant
       end
     end
 
-    # A KnownType may hold more than one class (union from a branch
-    # merge) — resolve the call against EACH possible class and treat
-    # the result as a Choice, since which class the receiver actually
-    # is at runtime is itself a runtime fact the walker can't narrow
-    # further. A receiver that's unambiguously one class (the common
-    # case) becomes a Choice of one child — harmless.
+    # A receiver whose type is a union: the call resolves against each
+    # possible class, as a Choice.
     private def walk_known_receiver_call(node : Call, receiver_type : KnownType) : RiskNode
       branches = receiver_type.classes.map { |cls| resolve_on_class(cls, node).as(RiskNode) }
       if branches.size == 1
@@ -1197,9 +765,8 @@ module Adjutant
       end
     end
 
-    # Walks a ScriptProc's body using only its own param scope — see
-    # class-level docs for why caller argument types can't flow in.
-    # Memoized per ScriptProc; guarded against recursion.
+    # Walks a script method's body with only its own parameters in
+    # scope. Memoized per ScriptProc; guarded against recursion.
     private def walk_script_method(proc : ScriptProc, call_line : Int32, self_class : RubyClass? = nil, is_singleton : Bool = false) : RiskNode
       if cached = @method_cache[proc]?
         return cached
@@ -1210,22 +777,14 @@ module Adjutant
 
       ast_body = proc.ast_body
       unless ast_body
-        # No AST retained (e.g. a ScriptProc built directly from a
-        # Chunk in a test, bypassing the compiler's normal path) —
-        # can't be walked; honestly unresolved rather than assumed safe.
+        # No AST to walk, as for a ScriptProc built straight from a
+        # Chunk: unresolved rather than assumed safe.
         return RiskUnresolved.new("#{proc.name} (no AST available)", call_line)
       end
 
       @in_progress << proc
-      # Save/restore, not just set — a top-level def's own body must
-      # see self_class as nil (real Ruby: implicit self inside a
-      # method body is that method's OWN defining context, never the
-      # caller's), even if walk_script_method is itself invoked from
-      # inside another method body that set this to non-nil. Passing
-      # self_class explicitly (rather than reading @current_self_class
-      # as "inherited" here) already ensures that; saving the OUTER
-      # value before overwriting, and restoring it after, is what makes
-      # this correctly nest for recursive/mutual class-method calls too.
+      # Saved and restored, so nested and recursive walks each see
+      # their own method's class.
       previous_self_class = @current_self_class
       previous_is_singleton = @current_self_is_singleton
       previous_method_proc = @current_method_proc

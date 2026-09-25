@@ -6,54 +6,19 @@ require "./helpers"
 
 module Adjutant
   module Legate
-    # `Legate::Path` — LEGATE.md §5.1. Pure: constructing, joining, and
-    # inspecting a path needs no grant; only passing one to a verb
-    # does (the broker's job, not this file's).
+    # `Legate::Path` (LEGATE.md §5.1). Pure: building, joining and
+    # inspecting a path needs no grant; passing one to a verb does.
+    # A plain RubyObject with two ivars, `__parts` (an Array of
+    # Strings) and `__absolute` (a Bool), as Range keeps its state.
     #
-    # Represented as a PLAIN `RubyObject` with two `__`-prefixed ivars
-    # (`__parts` : Array<String>, `__absolute` : Bool) — the same
-    # convention `Range` already uses (`__min`/`__max`/`__exclusive`,
-    # `vm.cr`'s `range_values_equal?`) — rather than a custom
-    # `PathObject < RubyObject` subclass carrying real Crystal-only
-    # fields the way `TimeObject`/`RegexpObject`/`MatchDataObject` do.
-    # Deliberate: nothing about a Path's state needs a type `ivars`
-    # can't hold (an Array<String> and a Bool are both ordinary
-    # Values), and staying plain-`RubyObject` sidesteps the `dup`/
-    # `clone` gap SCOPE.md's Must Fix now tracks entirely — a plain
-    # `RubyObject`'s `ivars` are shallow-copied correctly today; only
-    # subclasses with state OUTSIDE `ivars` are exposed to that bug.
-    #
-    # IFC LABEL PROPAGATION (added 2026-08-24, after the fact — a real
-    # bug, not a hardening pass: `Legate::Path.new(tainted_string)`
-    # silently laundered the taint away entirely, confirmed against
-    # `builtins/regexp.cr`'s own established convention for exactly
-    # this situation, which this file now follows). The rule, matching
-    # `regexp.cr`'s own (see its `Regexp.new` comment): actual
-    # extracted DATA carries the label forward; pure METADATA about
-    # that data does not — same distinction that keeps
-    # `String#length`/a match position/a bitmask unlabeled elsewhere
-    # in this codebase. Applied here: `__parts` (the actual path text,
-    # split apart) DOES carry the label; `__absolute` (a derived fact
-    # ABOUT the string, not itself extracted text) does NOT, matching
-    # `Regexp`'s own `__options` bitmask precedent exactly. Every
-    # method returning new STRING data derived from a Path
-    # (`basename`/`ext`/`stem`/`to_s`) carries the Path's own label
-    # forward; `absolute?`/`under?` (both booleans — computed FACTS,
-    # not extracted data) do not, same reasoning. `/`'s result carries
-    # the JOIN of both operands' labels — the same "combine, don't
-    # pick one side" rule `risk_flow_propagation_spec.cr` already
-    # establishes for arithmetic ops on tainted operands.
+    # Labels follow the rule that extracted text carries its source's
+    # label and derived facts don't: `__parts` and every String a
+    # method returns (`basename`, `ext`, `stem`, `to_s`) carry the
+    # Path's label; `__absolute`, `absolute?` and `under?` don't. `/`
+    # joins both operands' labels.
     module Path
-      # `Legate::Path.new("some/dir/file.log")` — the ONLY public
-      # constructor (LEGATE.md §5.1, amended to `.new` rather than the
-      # `Path[...]` bracket-literal form the spec originally showed —
-      # `ClassName[...]` bracket dispatch has no support for a class
-      # receiver in Adjutant today; see the design conversation this
-      # amendment came out of). A native singleton `new`, not a
-      # generic allocate-then-initialize path — same reasoning
-      # `Regexp.new`/`Exception.new` already establish for a builtin
-      # needing real construction-time work (here: parsing/splitting
-      # the string) rather than a bare ivars-only allocation.
+      # Registers Legate::Path with its native singleton `new`, the
+      # only script-facing constructor, which parses the string.
       def self.bootstrap(interp : Interpreter, legate : RubyClass) : Nil
         cls = Helpers.nest(legate, interp, "Path")
         parts_sym = interp.symbols.intern("__parts").value
@@ -94,20 +59,15 @@ module Adjutant
           args.first.as_robject.ivars[parts_sym]
         end
 
-        # Metadata (a derived fact ABOUT the path text, not itself
-        # extracted text) — deliberately unlabeled, matching
-        # `Regexp`'s own `__options` bitmask precedent. See this
-        # module's own top comment for the full data-vs-metadata rule.
+        # A derived fact, so unlabelled.
         Builtins.define(cls, interp, "absolute?") do |args|
           args.first.as_robject.ivars[absolute_sym]
         end
 
-        # A Path is considered `under?` itself too (inclusive) — the
-        # useful shape for a boundary check like `path.under?(root)`,
-        # which should accept `path == root` as satisfying the
-        # boundary rather than requiring a STRICT descendant.
-        # Returns a computed Bool FACT, not extracted data — same
-        # "metadata stays unlabeled" reasoning as `absolute?`.
+        # Inclusive: a path is `under?` itself. Compares components
+        # lexically without resolving `..` or `.`, so
+        # `/work/../etc` is `under?` `/work`; not a containment check.
+        # Unlabelled, as a derived fact.
         Builtins.define(cls, interp, "under?") do |args|
           under(args, parts_sym, absolute_sym)
         end
@@ -120,15 +80,8 @@ module Adjutant
         end
       end
 
-      # `Legate::Path#/`'s own body — extracted out of `bootstrap`
-      # purely for ameba's CyclomaticComplexity budget (the `if`/
-      # `elsif`/`&&` chain deciding how to interpret `other` pushed
-      # the enclosing method over the limit); no behavior change from
-      # having it inline. Result carries `RiskFlowLabel.join(self,
-      # other)` — both operands' taint combined onto the whole
-      # result, matching how `Add`/every other binary op already
-      # joins across BOTH sides rather than picking one (see this
-      # module's own top comment).
+      # The body of `Path#/`. The result's label joins both
+      # operands'.
       private def self.join(args : Array(Value), ncc : NativeCallContext,
                             parts_sym : Int32, absolute_sym : Int32, malformed : RubyClass) : Value
         self_val = args.first
@@ -158,8 +111,7 @@ module Adjutant
         make(self_obj.rclass, self_parts + other_parts, self_absolute, parts_sym, absolute_sym, joined)
       end
 
-      # `Legate::Path#under?`'s own body — same complexity-budget
-      # reasoning as `join` above.
+      # The body of `Path#under?`.
       private def self.under(args : Array(Value), parts_sym : Int32, absolute_sym : Int32) : Value
         self_obj = args.first.as_robject
         self_parts = self_obj.ivars[parts_sym].as_array.to_a.map(&.as_string)
@@ -174,10 +126,9 @@ module Adjutant
         Value.bool(self_absolute == other_absolute && self_parts.first(other_parts.size) == other_parts)
       end
 
-      # Splits a raw path string into (parts, absolute?) — leading
-      # `/` marks absolute; consecutive/trailing `/` collapse away via
-      # the empty-segment reject, matching ordinary path-splitting
-      # semantics (`"a//b/".split("/")` style).
+      # Splits on `/` into components, dropping empty ones, so
+      # repeated and trailing slashes vanish. A leading `/` makes the
+      # path absolute. `..` and `.` are kept as components.
       private def self.split_path(str : String) : {Array(String), Bool}
         absolute = str.starts_with?('/')
         parts = str.split('/').reject(&.empty?)
@@ -190,18 +141,9 @@ module Adjutant
         make(rclass, parts, absolute, parts_sym, absolute_sym, label)
       end
 
-      # `label` seeds BOTH the constructed Path's own outer label AND
-      # each `__parts` element directly — a tainted input string's
-      # taint has to survive into whatever `#parts`/`#basename`/etc
-      # later return, not just the object as a whole (same "seed
-      # derived values from the source's own label" principle
-      # `regexp.cr`'s own `Regexp.new` already establishes). The
-      # `__parts` container itself ALSO carries `label` (via
-      # `LabeledArray.new(..., label)`) — belt and suspenders with the
-      # per-element labels, matching `joined_label`'s own "container
-      # labels are monotonic, never shrink" philosophy elsewhere in
-      # this codebase. `__absolute` stays unlabeled — see this
-      # module's own top comment for why.
+      # Builds the object. `label` goes on the Path, on `__parts` and
+      # on each part, so every string later returned carries it;
+      # `__absolute` is unlabelled.
       private def self.make(rclass : RubyClass, parts : Array(String), absolute : Bool,
                             parts_sym : Int32, absolute_sym : Int32, label : RiskFlowLabel? = nil) : Value
         obj = RubyObject.new(rclass)
@@ -210,22 +152,9 @@ module Adjutant
         Value.robject(obj, label)
       end
 
-      # PUBLIC Crystal-level constructor — `Legate::Path.new(str)`
-      # (above) is the SCRIPT-facing entry point; this is the
-      # CRYSTAL-facing one, for code that already has a raw path
-      # string and needs a real `Legate::Path` Value without going
-      # through `eval`. Two real callers: this session's own specs
-      # (constructing fixture Paths for Entry/Match without a nested
-      # `interp.eval` call from inside an already-running native
-      # function — a reentrancy question not worth risking untested),
-      # and — the reason this exists as PUBLIC API rather than
-      # spec-only scaffolding — the future broker, which LEGATE.md §8
-      # requires to "convert every path argument to Legate::Path at
-      # the verb boundary": a verb receiving a raw `String` argument
-      # needs exactly this, called from Crystal, not a script-level
-      # round-trip. Takes an optional `label` so a broker converting
-      # an already-labeled argument Value can thread its taint through
-      # too, not just the raw string content.
+      # Builds a Legate::Path from Crystal code, as a verb does when
+      # converting a String argument at its boundary (LEGATE.md §8).
+      # Pass the argument's `label` so it carries over.
       def self.from_string(interp : Interpreter, rclass : RubyClass, str : String,
                            label : RiskFlowLabel? = nil) : Value
         build(rclass, str, interp.symbols.intern("__parts").value, interp.symbols.intern("__absolute").value, label)
@@ -236,11 +165,9 @@ module Adjutant
         parts.last?.try(&.as_string) || ""
       end
 
-      # Real Ruby's File.extname semantics, close enough for Legate's
-      # purposes: a dotfile with no other `.` (".hidden") has no
-      # extension; a trailing-only dot ("file.") counts as its own
-      # extension "."; everything else is the substring from the
-      # LAST `.` onward.
+      # Ruby's `File.extname`: from the last `.` onward, except that a
+      # dotfile with no other `.` (".hidden") has none, and a trailing
+      # dot ("file.") is its own extension.
       private def self.ext_of(basename : String) : String
         idx = basename.rindex('.')
         return "" unless idx

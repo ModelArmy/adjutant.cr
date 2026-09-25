@@ -3,37 +3,20 @@ require "./type_hint"
 require "./interpreter"
 
 module Adjutant
-  # Infers a TypeHint for AST nodes without running the script — a
-  # minimal pass, not full Hindley-Milner. Scope, deliberately:
+  # Infers types of AST nodes without running the script, enough for
+  # the risk walker to resolve receivers. Local variables only:
   #
-  #   - Literals with a real builtin RubyClass today (IntLiteral →
-  #     Integer, ArrayLiteral → Array, HashLiteral → Hash) resolve to
-  #     KnownType. Literals whose builtin isn't implemented yet
-  #     (String, ...) fall through to UnknownType until those land —
-  #     see BUILTIN_CLASS_NAMES below, which is the single place to
-  #     extend as more builtins exist.
-  #   - `ClassName.new(...)` resolves to KnownType({ClassName}) — a
-  #     real, cheap win: constructor calls are syntactically obvious
-  #     without any return-type declarations existing in the language.
-  #   - A local var's type is tracked linearly through a Body's
-  #     statements; reassignment updates it; reading before any
-  #     assignment (params included) is UnknownType.
-  #   - if/case: each branch is inferred against a COPY of the
-  #     incoming env; per-var results are merged via TypeHint.merge
-  #     after — a var assigned the same known type in every branch
-  #     stays Known; anything else (including a branch that never
-  #     touches it) merges down per TypeHint.merge's rules.
-  #   - Loops: body is inferred once against current env, then merged
-  #     back into it — approximates "after N iterations" as a 2-way
-  #     merge (0 vs. 1 pass), same shape as if/else.
-  #   - Any other node (unresolved call return, ivar, etc.) is
-  #     UnknownType. No attempt to track ivars/cvars/globals in this
-  #     pass — only local vars, which is what the risk walker's
-  #     nearest-term need (resolving `f = File.new; f.read`) requires.
+  #   1. Integer, Array and Hash literals, and `ClassName.new(...)`,
+  #      have a known type; other literals and call results are
+  #      unknown.
+  #   2. A local's type follows its assignments in order; a parameter
+  #      or unassigned name is unknown.
+  #   3. `if` and `case` branches are inferred on copies of the Env
+  #      and merged with `TypeHint.merge`.
+  #   4. A loop body is inferred once and merged with the Env from
+  #      before it, standing in for zero or more passes.
   class TypeInference
-    # AST-literal-node-name → builtin RubyClass name. Extend this as
-    # more builtins land (String, ...) — everything else about the
-    # pass stays the same.
+    # Literal node classes with a known builtin type.
     BUILTIN_CLASS_NAMES = {
       IntLiteral   => "Integer",
       ArrayLiteral => "Array",
@@ -42,20 +25,13 @@ module Adjutant
 
     alias Env = Hash(String, TypeHint)
 
-    # Resolves a class name to a RubyClass for `ClassName.new(...)`
-    # inference. Defaults to the interpreter's live globals (already-
-    # executed classes) — RiskWalker overrides this to ALSO see
-    # classes it has built for itself while walking a not-yet-executed
-    # script, since those don't exist in @interp's globals at all.
+    # Resolves a class name for `ClassName.new`. Defaults to the
+    # interpreter's classes; RiskWalker adds the classes it has
+    # defined during its walk.
     property class_resolver : String -> RubyClass?
 
-    # Resolves a ConstPath (`M::A`) to a RubyClass for `M::A.new(...)`
-    # inference — same rationale and override relationship as
-    # class_resolver, just for the namespaced-path shape rather than a
-    # bare name. Default walks the namespace via @interp's live
-    # globals/constants tables (mirrors the VM's Op::GetConstantFrom);
-    # RiskWalker overrides this to also see its own not-yet-executed
-    # nested classes/modules.
+    # `class_resolver` for `M::A.new`. The default walks the
+    # interpreter's constants, as Op::GetConstantFrom does.
     property const_path_resolver : ConstPath -> RubyClass?
 
     def initialize(@interp : Interpreter)
@@ -63,12 +39,9 @@ module Adjutant
       @const_path_resolver = ->(node : ConstPath) { default_resolve_const_path(node) }
     end
 
-    # Default const_path_resolver body, pulled out of the initializer's
-    # closure — a Proc literal in `initialize` that calls itself via
-    # `@const_path_resolver.call` doesn't compile: the ivar is still
-    # `Nil` at the point the closure body is type-checked, since
-    # assignment hasn't completed yet. A named method has no such
-    # ordering problem; the closure just delegates to it.
+    # The default `const_path_resolver`. A method, since a Proc in
+    # `initialize` can't call `@const_path_resolver` before the ivar
+    # is assigned.
     private def default_resolve_const_path(node : ConstPath) : RubyClass?
       ns = node.namespace
       owner = case ns
@@ -79,10 +52,8 @@ module Adjutant
       (owner && sym) ? owner.constants[sym.value]?.try(&.as_rclass?) : nil
     end
 
-    # Infers types through a Body's statements, returning the type of
-    # the Body's last expression (its implicit return value) alongside
-    # the final env — callers that need per-node hints (the risk
-    # walker) should call `infer_node` directly per node instead.
+    # Infers each statement in order; returns the last one's type and
+    # the final Env. For a hint per node, call `infer_node`.
     def infer_body(body : Body, env : Env) : {TypeHint, Env}
       result : TypeHint = UnknownType.new
       body.stmts.each do |stmt|
@@ -91,9 +62,8 @@ module Adjutant
       {result, env}
     end
 
-    # Infers a single node's TypeHint, mutating `env` in place for
-    # Assign nodes (so subsequent siblings in the same Body see the
-    # updated binding).
+    # Infers one node's type. An assignment updates `env` in place,
+    # so later siblings see it.
     def infer_node(node : Node, env : Env) : TypeHint
       case node
       when IfNode, CaseNode, WhileNode, LoopNode
@@ -141,9 +111,7 @@ module Adjutant
       value_type
     end
 
-    # `ClassName.new(...)` — the one call shape resolvable without any
-    # return-type system: a literal Constant OR ConstPath (`M::A.new`)
-    # receiver calling `new`.
+    # Only `ClassName.new(...)` and `M::A.new(...)` have a known type.
     private def infer_call(node : Call, env : Env) : TypeHint
       receiver = node.receiver
       return UnknownType.new unless node.method == "new"
@@ -154,14 +122,9 @@ module Adjutant
       cls ? KnownType.new(cls) : UnknownType.new
     end
 
-    # Each branch gets its own env copy; per-variable results are
-    # merged afterward via TypeHint.merge. A var untouched by a branch
-    # keeps its pre-branch type from that branch's copy, so "only
-    # touched in one arm" naturally merges with its own prior value
-    # rather than spuriously degrading to Unknown.
-    # Public: RiskWalker calls these directly to keep TypeInference's
-    # env-merge semantics in sync with its own risk-node walk, rather
-    # than duplicating the branch/merge logic.
+    # Infers each branch on its own copy of `env` and merges them
+    # back. A variable a branch doesn't touch keeps its earlier type
+    # there. Public so RiskWalker can keep its Env in step.
     def infer_if(node : IfNode, env : Env) : TypeHint
       branch_envs = [] of Env
       branch_types = [] of TypeHint
@@ -181,8 +144,7 @@ module Adjutant
         branch_types << infer_body(else_branch, else_env)[0]
         branch_envs << else_env
       else
-        # No else — the "nothing happened" path is itself a possible
-        # outcome, so merge in the original env too.
+        # Without an `else`, skipping every branch is an outcome too.
         branch_envs << env.dup
       end
 
@@ -212,10 +174,7 @@ module Adjutant
       branch_types.reduce(UnknownType.new.as(TypeHint)) { |merged, branch_type| TypeHint.merge(merged, branch_type) }
     end
 
-    # Loop body runs 0-or-more times — approximated as a 2-way merge
-    # between "never entered" (current env) and "ran the body once"
-    # (env after one pass), which is enough to catch a var whose type
-    # changes inside the loop without modeling iteration count.
+    # Merges the Env before the loop with the Env after one pass.
     private def infer_loop(body : Body, env : Env) : TypeHint
       after_env = env.dup
       infer_body(body, after_env)
@@ -223,10 +182,9 @@ module Adjutant
       UnknownType.new
     end
 
-    # Merges a set of branch envs back into `env` in place: any key
-    # present in every branch env merges via TypeHint.merge; a key
-    # missing from at least one branch is dropped (reverts to
-    # UnknownType via ordinary lookup miss) rather than guessed at.
+    # Merges `branch_envs` into `env`: a variable present in every
+    # branch merges with `TypeHint.merge`; one missing from any branch
+    # is dropped, so reads as unknown.
     private def merge_envs_into(env : Env, branch_envs : Array(Env)) : Nil
       return if branch_envs.empty?
       all_keys = branch_envs.flat_map(&.keys).uniq!
