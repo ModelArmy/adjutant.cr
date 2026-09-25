@@ -6,21 +6,10 @@ require "./helpers"
 
 module Adjutant
   module Legate
-    # `Legate::Entry` — LEGATE.md §5.3. Broker-manufactured only — see
-    # Stat's own comment for why (no public constructor; plain
-    # `RubyObject` + `__`-prefixed ivars, same as every value type but
-    # `Path`). Carries its own stat data so `Legate.list` followed by
-    # a size filter costs one syscall pass, not two (the spec's own
-    # stated reason for this type existing separately from a bare
-    # `Legate::Path`).
-    #
-    # IFC: `size` (actual DATA) and the outer object are labeled with
-    # the JOIN of `path`'s own label (an Entry is fundamentally "facts
-    # about this path," so its taint carries forward automatically)
-    # and an optional explicit `label` (for anything the broker wants
-    # to add beyond the path's own — e.g. a symlink target read).
-    # `type` stays unlabeled — metadata, same reasoning as
-    # `Legate::Stat`'s own comment.
+    # `Legate::Entry` (LEGATE.md §5.3), built only by `Legate.list`.
+    # Carries its stat data, so listing and then filtering by size
+    # needs one pass. `size` and the object carry the join of `path`'s
+    # label and `label`; `type` doesn't.
     module Entry
       def self.bootstrap(interp : Interpreter, legate : RubyClass) : Nil
         cls = Helpers.nest(legate, interp, "Entry")
@@ -35,9 +24,8 @@ module Adjutant
         Builtins.define(cls, interp, "mtime") { |args| args.first.as_robject.ivars[mtime_sym] }
       end
 
-      # `path` is a real `Legate::Path` Value; `type` one of `:file`/
-      # `:dir`/`:symlink`/`:other` (a real Sym, matching Stat.build's
-      # own convention); `mtime` a real `Time` Value.
+      # `path` is a Legate::Path, `type` one of `:file`, `:dir`,
+      # `:symlink` or `:other`, `mtime` a Time.
       def self.build(interp : Interpreter, rclass : RubyClass, path : Value, type : Symbol,
                      size : Int64, mtime : Value, label : RiskFlowLabel? = nil) : Value
         joined = RiskFlowLabel.join(path.label, label)

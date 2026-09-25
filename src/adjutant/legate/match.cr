@@ -6,17 +6,9 @@ require "./helpers"
 
 module Adjutant
   module Legate
-    # `Legate::Match` — LEGATE.md §5.4. Broker-manufactured only —
-    # see Stat's own comment for why (no public constructor; plain
-    # `RubyObject` + `__`-prefixed ivars).
-    #
-    # IFC: `text`/`before`/`after` (actual grep-matched file content —
-    # the whole point of this type) and the outer object are labeled
-    # with the JOIN of `path`'s own label and an optional explicit
-    # `label`, same reasoning as `Legate::Entry`'s own comment.
-    # `line_no` stays unlabeled — a position, not extracted text, same
-    # "metadata doesn't carry the label" rule as a Regexp match
-    # position elsewhere in this codebase.
+    # `Legate::Match` (LEGATE.md §5.4), built only by `Legate.grep`.
+    # `text`, `before`, `after` and the object carry the join of
+    # `path`'s label and `label`; `line_no` doesn't.
     module Match
       def self.bootstrap(interp : Interpreter, legate : RubyClass) : Nil
         cls = Helpers.nest(legate, interp, "Match")
@@ -33,8 +25,8 @@ module Adjutant
         Builtins.define(cls, interp, "after") { |args| args.first.as_robject.ivars[after_sym] }
       end
 
-      # `before`/`after` default to an empty Array — LEGATE.md §5.4:
-      # "empty unless context: was given".
+      # `before` and `after` are empty unless `context:` was given
+      # (§5.4).
       def self.build(interp : Interpreter, rclass : RubyClass, path : Value, line_no : Int64,
                      text : String, before : Array(String) = [] of String,
                      after : Array(String) = [] of String, label : RiskFlowLabel? = nil) : Value
