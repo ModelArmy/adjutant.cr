@@ -31,6 +31,8 @@ Only if the skill needs to serve larger models better. Put any extra depth in re
 
 1. **Check the method whitelist in both directions.** Extend `skill_spec.cr` to compare `SKILL.md` §3 with each class's registered native methods (`RubyClass#native_methods`), read from a live Interpreter rather than grepped from source: every listed method must exist, and every public registered method must be listed or named in an explicit omission list. The one-way check would have missed the 2026-09-24 error, where the census grepped for `define(cls, interp, "...")` and so missed Float's macro-registered `round`, `floor`, `ceil`, `truncate`, `abs`, `finite?` and `nan?`, and the skill told models to work around methods that existed.
 
+2. **Compare every builtin class with Ruby's.** Dump each builtin class's registered public methods from a live Interpreter (the same listing item 1 needs), then compare with Ruby's own lists on the host (`Integer.instance_methods(false)`, `Array.instance_methods(false)` and so on, plus singleton methods). Two outputs: methods Adjutant has and Ruby doesn't, which break the subset and go to SCOPE.md Must Fix (`Range#exclusive?` is the known one); and methods Ruby has and Adjutant doesn't, which are gaps and a reference for widening the skill. Ruby's lists depend on its version, so record which one was compared.
+
 ## 4. Source scripts
 
 Kept here so they survive between sessions. The workflow they served:
@@ -41,7 +43,7 @@ Kept here so they survive between sessions. The workflow they served:
 4. Assert every line in every range is a comment, then apply with `relines`.
 5. `code_unchanged.sh file` confirms code and directives match HEAD.
 
-The checker's blind spots: it treats only full-line comments as comments, so it fails on an edited trailing comment; a `#` line inside a string or heredoc counts as a comment, so a change there would pass; and it knows no magic comments other than `# ameba:`.
+The checker's blind spots: it treats only full-line comments as comments, so it fails on an edited trailing comment; a `#` line inside a string or heredoc counts as a comment, so a change there would pass; and it knows no magic comments other than `# ameba:`. It checks that each path exists, since a mistyped path would otherwise compare empty with empty and pass.
 
 ### blocks.py
 
@@ -86,12 +88,15 @@ def relines(path, edits):
 ```bash
 #!/bin/bash
 # Usage: code_unchanged.sh <file>...
-# Fails if any non-comment line, or any ameba directive, differs from HEAD.
+# Fails if a file is missing, or if any non-comment line or ameba
+# directive differs from HEAD.
 rc=0
 for f in "$@"; do
   strip() { grep -vE '^\s*(#.*)?$'; }
   directives() { grep -E '^\s*#\s*ameba:'; }
-  if ! diff <(git show HEAD:"$f" | strip) <(strip < "$f") >/dev/null; then
+  if [ ! -f "$f" ] || ! git cat-file -e HEAD:"$f" 2>/dev/null; then
+    echo "MISSING: $f"; rc=1
+  elif ! diff <(git show HEAD:"$f" | strip) <(strip < "$f") >/dev/null; then
     echo "CODE CHANGED: $f"; rc=1
   elif ! diff <(git show HEAD:"$f" | directives) <(directives < "$f") >/dev/null; then
     echo "DIRECTIVE CHANGED: $f"; rc=1
