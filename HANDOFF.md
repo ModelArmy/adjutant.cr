@@ -33,8 +33,6 @@ Key documents: `SCOPE.md` (known defects and gaps: Must Fix, Will Fix), `LEGATE.
 9. **Never `git reset --hard` with uncommitted work in the tree.**
 10. **Markdown tables:** no literal `|` inside a cell; reword instead.
 
-> **Gap to close:** the 2026-09-10 handoff's §4 conventions were carried forward by reference and are not reproduced here. Paste them into this section once, and delete this note.
-
 ## 3. The evidence method [Retain]
 
 1. **Adjutant is a proper subset of Ruby.** Anything it accepts and then runs differently from Ruby is a Must Fix defect, however rare; rejecting a construct Ruby accepts is only a gap. Adding a method or form Ruby lacks also breaks the subset.
@@ -62,11 +60,11 @@ Key documents: `SCOPE.md` (known defects and gaps: Must Fix, Will Fix), `LEGATE.
 
 The `cleaning-up-the-repo` branch rewrote the comments in `src/` (12,937 comment lines to 3,700) and the contributor docs to describe the current state. Reading every file closely for that found about 30 defects, and the subset rule (§3.1) promoted six older gaps; Must Fix went from 9 entries to 45. None has been fixed: Adjutant is not in general use, and fixing waits for its own session.
 
-| Model | Latest result | Notes |
-|---|---|---|
-| qwen3.8 (27B) | 10/10 | At the exam's ceiling |
-| Muse Glimmer 30b | 10/10 | At the exam's ceiling |
-| Ornith 1.5 (9B) | 6/10 | 03, 04, 08, 10 are model errors |
+Model           |Latest result|Notes                          
+----------------|-------------|-------------------------------
+qwen3.8 (27B)   |10/10        |At the exam's ceiling          
+Muse Glimmer 30b|10/10        |At the exam's ceiling          
+Ornith 1.5 (9B) |6/10         |03, 04, 08, 10 are model errors
 
 These sittings predate one skill edit: the Float whitelist was wrong (the census missed macro-registered methods), and `SKILL.md` now lists `round`, `floor`, `ceil`, `truncate`, `abs`, `finite?` and `nan?`.
 
