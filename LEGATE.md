@@ -876,23 +876,11 @@ When adding a new failure mode, ask: *would a correct script ever want to contin
 
 The specification is shaped to make these checks cheap. An implementation SHOULD perform them.
 
-> **Status: §10 is specified, not implemented.** No part of this
-> section exists in `src/` — there is no analyser, no grant inference,
-> no exception gate and no inclusion ledger. Read what follows as the
-> intended design. Where §9 previously described these checks as
-> guarantees already in force, that was wrong and has been corrected;
-> see SCOPE.md's entry on §10 for the full history. Both of that
-> entry's original contradictions between §10.2 and reality are now
-> resolved, by two different routes. `retry` (2026-09-09): by removing
-> `retry` from the language entirely — see UNSUPPORTED.md, U020 —
-> since the existing implementation turned out to be a genuinely
-> broken stub, not a working feature worth keeping. Bare `rescue`
-> (2026-09-10): the opposite route, keeping it permanently and
-> removing §10.2's own rule against it instead — unlike `retry`, it is
-> correctly implemented and exercised by real specs, and a future
-> analyser can give reduced-precision analysis to a function that uses
-> it rather than needing to forbid the construct outright (§10.2's own
-> note, below).
+> **Status: specified, not built.** Nothing in `src/` implements this
+> section: no grant inference, exception gate, inclusion ledger or
+> raise-set inference. Read it as the intended design. The fatal
+> tier's uncatchability (§9.2) does not depend on it. SCOPE.md tracks
+> the work under Static risk assessment.
 
 ### 10.1 Dataflow
 
@@ -901,11 +889,11 @@ The specification is shaped to make these checks cheap. An implementation SHOULD
 3. **Unbounded materialisation.** Flag any stream reaching a §6.4 terminal without an explicit bound.
 4. **Double consumption.** Flag a stream iterated twice; legal, but almost always a mistake.
 
-Check 2 is the security-critical one — its sibling, taint reaching an `argv`, was retired 2026-09-05 along with `Legate.run` itself (§4.6). Checks 3 and 4 exist because size, like taint, propagates along data edges — one machinery, two purposes.
+Check 2 is the security-critical one. Checks 3 and 4 exist because size, like taint, propagates along data edges: one machinery, two purposes.
 
 ### 10.2 Exception discipline
 
-Exceptions are worse for flow analysis than return values: every call site gains a control-flow edge to every enclosing handler, so the CFG stops being a tree. Three restrictions recover most of the tractability that remains available, and each is independently justified. (Two more were here until this session. `retry` being forbidden: resolved 2026-09-09 by removing `retry` from the language — UNSUPPORTED.md, U020. `rescue` being required to name a class: resolved 2026-09-10 by the opposite route — see the note below the table.)
+Exceptions are worse for flow analysis than return values: every call site gains a control-flow edge to every enclosing handler, so the CFG stops being a tree. Four restrictions recover most of the tractability that remains, each independently justified. `retry` needs no rule, since it is excluded (UNSUPPORTED.md, U020).
 
 Rule                                                          |Reason                                                          
 --------------------------------------------------------------|----------------------------------------------------------------
@@ -914,7 +902,7 @@ Rule                                                          |Reason
 `ensure` MUST NOT return, raise, or `break`                   |silently discards an in-flight exception, including a fatal one 
 re-raising as a different class is forbidden                  |would permit laundering a fatal exception into a recoverable one
 
-A bare `rescue` (no class named) is deliberately NOT in this table, and permanently so — decided 2026-09-10, correcting SCOPE.md's earlier open question. An ephemeral, agent-authored script reaching for `rescue` as a blanket escape hatch is a reasonable thing to want, and unlike `retry` — which needed a VM fix that didn't exist to work correctly at all — bare `rescue` is genuinely, correctly implemented today. The tractability cost this table's own preamble describes is real, but bounded: it is not a security concern. §9.2's uncatchability of the fatal tier holds regardless of syntax — `Compiler#compile_rescue` already substitutes `StandardError` as a bare `rescue`'s implicit class, matching real Ruby exactly, so it was never able to catch `Legate::Denied`/`Exhausted`/`Aborted` (direct `Exception` subclasses, not `StandardError` ones) in the first place. Keeping it changes nothing about what a script can evade; it only changes how precisely a future analyser can reason about a function that uses it. When that analyser is built, the intended treatment is reduced-precision analysis for such a function — its own handler treated as reaching every `StandardError`-family raise reachable from the body, rather than a narrower, computed set — not outright rejection of the construct.
+A bare `rescue` is deliberately not in the table. It is a reasonable escape hatch for a short, agent-written script, and it is no security concern: its implicit class is `StandardError` (`Compiler#compile_rescue`, as in Ruby), so it cannot catch the fatal tier, whose classes descend from `Exception` directly. It costs only precision. The analyser should treat such a handler as reaching every `StandardError` raise reachable from its body, not reject the function.
 
 ### 10.3 The inclusion ledger
 
