@@ -91,6 +91,10 @@ module Adjutant
     class Grants < ::Adjutant::Grants
       getter net_rules : Array(NetRule)
       getter net_methods : Array(String)
+      # Request headers a script's call may carry past a redirect to
+      # another origin, lowercase, in addition to
+      # `Verbs::Fetch::REDIRECT_HEADERS` (LEGATE.md §8.2).
+      getter net_redirect_headers : Array(String)
       getter ambient_env : Array(String)
 
       getter limits : Limits
@@ -99,8 +103,10 @@ module Adjutant
                      delete_roots = [] of String, @net_rules = [] of NetRule,
                      @net_methods = [] of String,
                      @ambient_env = [] of String,
-                     @limits = Limits.new)
+                     @limits = Limits.new,
+                     net_redirect_headers = [] of String)
         super(read_roots, write_roots, delete_roots)
+        @net_redirect_headers = net_redirect_headers.map(&.downcase)
       end
 
       # Grants nothing, with default limits: the choice for no policy
@@ -125,6 +131,7 @@ module Adjutant
           delete_roots: string_array(grants_node, "delete", "roots"),
           net_rules: net_rules_of(grants_node),
           net_methods: string_array(grants_node, "net", "methods").map(&.downcase),
+          net_redirect_headers: string_array(grants_node, "net", "redirect_headers"),
           ambient_env: string_array(grants_node, "ambient", "env"),
           limits: limits_of(limits_node),
         )
