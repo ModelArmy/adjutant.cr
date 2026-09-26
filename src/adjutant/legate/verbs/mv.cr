@@ -147,8 +147,8 @@ module Adjutant
           end
           begin
             TreeCopy.new(broker.budget) { }.copy_entry(raw_from, raw_to)
-          rescue special : TreeCopy::SpecialFile
-            ncc.raise_error_class("#{special.message}; Legate.#{name} can't move it across filesystems", conflict)
+          rescue e : TreeCopy::SpecialFile
+            ncc.raise_error_class("#{e.message}; Legate.#{name} can't move it across filesystems", conflict)
           end
           FileUtils.rm_rf(raw_from)
         end
