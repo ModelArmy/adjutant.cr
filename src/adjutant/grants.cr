@@ -56,8 +56,9 @@ module Adjutant
     # existing ancestor is resolved and the missing components are
     # appended as written; containment is checked on that prospective
     # path, so a path outside every root is denied whether or not it
-    # exists. A missing component that is later created as a symlink
-    # is not caught, the same race §8.1 accepts.
+    # exists. A dangling symlink counts as its target. A missing
+    # component that is later created as a symlink is not caught, the
+    # same race §8.1 accepts.
     def check_root_maybe_missing(path : String, roots : Array(String)) : Decision
       return Decision.deny("no roots granted for this operation") if roots.empty?
 
@@ -110,15 +111,33 @@ module Adjutant
       rel.parts.first? != ".."
     end
 
+    # Dangling links followed while resolving one path before it is
+    # denied, as the kernel's own limit denies a loop.
+    MAX_LINK_HOPS = 40
+
     # The realpath of `path`'s deepest existing ancestor, with the
-    # missing components below it in order. Nil if no ancestor
-    # resolves.
-    private def deepest_existing_ancestor(path : String) : {String, Array(String)}?
+    # missing components below it in order. A dangling symlink on the
+    # way up is replaced by its target, resolved the same way, since
+    # anything created through the link lands there. Nil if no
+    # ancestor resolves, or after `MAX_LINK_HOPS` dangling links.
+    private def deepest_existing_ancestor(path : String, hops : Int32 = 0) : {String, Array(String)}?
       trailing = [] of String
       current = path
       loop do
         if real = resolve(current)
           return {real, trailing}
+        end
+        if File.symlink?(current)
+          return if hops >= MAX_LINK_HOPS
+          # Joined, not normalized: a `..` in the target is left for
+          # `File.realpath` to apply after following links, as the
+          # kernel does.
+          return unless link = File.readlink?(current)
+          target = ::Path.new(link).absolute? ? link : File.join(File.dirname(current), link)
+          ancestor = deepest_existing_ancestor(target, hops + 1)
+          return unless ancestor
+          real_target, target_trailing = ancestor
+          return {real_target, target_trailing + trailing}
         end
         parent = File.dirname(current)
         return if parent == current

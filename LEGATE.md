@@ -475,7 +475,7 @@ nothing           |`false`             |`false`              |`0`
 
 `rm` returns a Bool rather than a count: a files-only verb can only ever remove one thing, and `if Legate.rm(p) > 0` is a clumsy spelling of a yes/no. The count survives on `rmdir!`, where "how many" is worth knowing. All three are idempotent on a missing path (§2.3).
 
-**Symlinks are never followed by any of the three** — they remove the LINK, never what it points at. For `rmdir!` this extends to the walk: it does not descend into a symlinked directory inside the tree. That last point is the load-bearing one, because the perimeter authorizes the tree's root, not every entry the walk reaches.
+**Symlinks are never followed by any of the three** — they remove the LINK, never what it points at. The perimeter still resolves a link named directly, so removing one whose target lies outside every `delete` root is denied, dangling or not. For `rmdir!` this extends to the walk: it does not descend into a symlinked directory inside the tree. That last point is the load-bearing one, because the perimeter authorizes the tree's root, not every entry the walk reaches.
 
 `mv` requires **both** `delete` on the source and `write` on the destination, because a move both destroys and creates. A script holding `write` but not `delete` can achieve a move only as `cp` followed by `rm`, which it cannot do; a script holding `delete` but not `write` is equally refused, since otherwise it could place content at any path it can name while holding no write grant at all. The grants exist precisely to be separable, and that cuts both ways.
 
@@ -716,7 +716,7 @@ These are the obligations that make the specification above true rather than dec
 ### 8.1 Path resolution and TOCTOU
 
 1. Convert every path argument to `Legate::Path` at the verb boundary.
-2. Resolve symlinks fully (`realpath`) and confirm the result is under a granted root.
+2. Resolve symlinks fully (`realpath`) and confirm the result is under a granted root. A dangling link resolves to its target, since whatever is created through it lands there; a path that doesn't exist yet resolves through its deepest existing ancestor.
 3. Re-verify immediately before use: `File.info(resolved_path, follow_symlinks: false)` and confirm the result is still the plain file/directory `realpath` reported, then open by the resolved (not the original) path.
 
 Steps 2–3 are check-then-open, not atomic — a real, accepted gap, not an oversight. The textbook fix is `openat(root_fd, name, O_NOFOLLOW)` against a directory descriptor held open since startup, which closes the race by construction; Crystal's stdlib exposes no way to do this (`File.open` has no `O_NOFOLLOW`, and there is no `openat`-relative-to-an-open-descriptor binding — confirmed against crystal-lang/crystal#7857, open as of this writing) and getting it would mean a `LibC` FFI binding for a handful of raw syscalls. Deliberately not done: Legate's threat model is a script running under a fixed, narrow grant set in an already-sandboxed environment, not a multi-tenant host defending against a concurrent adversary racing filesystem operations against the same paths — the residual exposure (something with independent write access swapping a path component inside the microseconds between steps 2 and 3) is real but assessed as small enough to accept, given that setting, rather than take on raw syscall bindings this codebase has no way to compile-test. Revisit if Legate is ever deployed somewhere that threat model no longer holds.

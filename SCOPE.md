@@ -21,18 +21,6 @@ after 1.0. Ordered for working through: security and policy defects
 first, then the Ruby divergences, then design work on policy and
 configuration.
 
-- **`Legate.append` writes through a dangling symlink.** Predicted by
-  reading `verbs/append.cr`. A dangling link resolves, in
-  `check_root_maybe_missing`, to a prospective path inside the root, so
-  `authorize_write` allows it; `File.open(raw, "a")` then follows the
-  link and creates its target. With `out/log -> /etc/cron.d/job` in a
-  write root and no file at the target, `Legate.append("out/log", ...)`
-  creates a file outside every write root. `write` refuses an occupied
-  destination and `write!` and `cp` rename over the link, so neither is
-  affected. The fix is checking the destination without following
-  symlinks and refusing a link, or resolving it and authorizing the
-  resolved target.
-
 - **`Legate.fetch` forwards credentials on redirect and misses
   IPv6-embedded metadata addresses.** Predicted by reading
   `verbs/fetch.cr`.
