@@ -151,6 +151,38 @@ module Adjutant
       end
     end
 
+    # The Windows runner can't create symlinks; see
+    # authorization_spec.cr's pending test.
+    {% if flag?(:windows) %}
+      pending "authorizes a dangling symlink's target (needs symlinks)" { }
+    {% else %}
+      it "denies with a FatalSignal for a dangling symlink pointing outside every write root, creating nothing" do
+        with_tmpdir do |dir|
+          with_tmpdir do |outside|
+            target = File.join(outside, "job")
+            link = File.join(dir, "log")
+            File.symlink(target, link)
+            interp, _ = make_interp(grants: Legate::Grants.new(write_roots: [dir]))
+            expect_raises(Legate::FatalSignal, /Legate\.write denied/) do
+              interp.eval(%(Legate.append(#{link.inspect}, "* * * * * evil")))
+            end
+            File.exists?(target).should be_false
+          end
+        end
+      end
+
+      it "creates the target of a dangling symlink inside the write root" do
+        with_tmpdir do |dir|
+          link = File.join(dir, "log")
+          File.symlink(File.join(dir, "real.log"), link)
+          interp, _ = make_interp(grants: Legate::Grants.new(write_roots: [dir]))
+          interp.eval(%(Legate.append(#{link.inspect}, "line")))
+          File.read(File.join(dir, "real.log")).should eq "line"
+          File.symlink?(link).should be_true
+        end
+      end
+    {% end %}
+
     it "logs exactly one :allowed audit record per invocation" do
       with_tmpdir do |dir|
         file = File.join(dir, "f.txt")

@@ -141,6 +141,53 @@ module Adjutant
         end
       end
 
+      # A dangling link doesn't resolve, but it exists: whatever is
+      # created through it lands at its target, so the target is what
+      # must be inside a root. The Windows runner can't create
+      # symlinks; see the pending test above.
+      {% if flag?(:windows) %}
+        pending "resolves dangling symlinks to their targets (needs symlinks)" { }
+      {% else %}
+        it "denies a dangling symlink whose target is outside every root" do
+          with_tmpdir do |dir|
+            with_tmpdir do |outside|
+              link = File.join(dir, "log")
+              File.symlink(File.join(outside, "job"), link)
+              Legate::Grants.new.check_root_maybe_missing(link, [dir]).allowed?.should be_false
+            end
+          end
+        end
+
+        it "denies a path beneath a dangling directory link whose target is outside every root" do
+          with_tmpdir do |dir|
+            with_tmpdir do |outside|
+              link = File.join(dir, "out")
+              File.symlink(File.join(outside, "not-yet"), link)
+              target = File.join(link, "file.txt")
+              Legate::Grants.new.check_root_maybe_missing(target, [dir]).allowed?.should be_false
+            end
+          end
+        end
+
+        it "allows a dangling symlink whose target is a missing path inside a root" do
+          with_tmpdir do |dir|
+            link = File.join(dir, "log")
+            File.symlink("real.log", link)
+            Legate::Grants.new.check_root_maybe_missing(link, [dir]).allowed?.should be_true
+          end
+        end
+
+        it "denies a symlink loop" do
+          with_tmpdir do |dir|
+            a = File.join(dir, "a")
+            b = File.join(dir, "b")
+            File.symlink(b, a)
+            File.symlink(a, b)
+            Legate::Grants.new.check_root_maybe_missing(a, [dir]).allowed?.should be_false
+          end
+        end
+      {% end %}
+
       it "denies when no roots are granted" do
         decision = Legate::Grants.deny_all.check_root_maybe_missing(__FILE__, [] of String)
         decision.allowed?.should be_false
