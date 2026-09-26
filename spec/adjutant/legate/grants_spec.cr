@@ -187,6 +187,17 @@ module Adjutant
         grants.net_methods.should eq ["get", "post"]
       end
 
+      it "reads net.redirect_headers, downcased, and defaults it to none" do
+        grants = Legate::Grants.from_yaml(<<-YAML)
+          grants:
+            net:
+              hosts: ["api.example.com"]
+              redirect_headers: [Accept, X-Trace]
+          YAML
+        grants.net_redirect_headers.should eq ["accept", "x-trace"]
+        Legate::Grants.deny_all.net_redirect_headers.should be_empty
+      end
+
       it "fills in spec-defaulted per-call limits when limits: is absent entirely" do
         grants = Legate::Grants.from_yaml(<<-YAML)
           grants:

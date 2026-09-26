@@ -21,68 +21,20 @@ after 1.0. Ordered for working through: security and policy defects
 first, then the Ruby divergences, then design work on policy and
 configuration.
 
-- **A recursive copy follows symlinks out of the read grant.**
-  Predicted by reading `verbs/cp.cr`, `verbs/mv.cr` and
-  Crystal's `file_utils.cr`. `Legate.cp(from, to, recursive: true)`
-  authorizes `from` once and hands the tree to `FileUtils.cp_r`,
-  which recurses with `Dir.exists?` and copies with `File.copy`, both
-  following symlinks. A link inside the tree is copied as its
-  target's content, wherever the target is: a repository carrying
-  `docs/keys -> /home/user/.ssh` puts the keys in the write area,
-  outside every read grant, unlabelled, under one audit record naming
-  the repository. A link to an ancestor loops until the disk fills,
-  since the write budget for a directory copy is recorded after the
-  copy (`directory_size`), and the read budget not at all. `mv`'s
-  cross-device fallback (`copy_tree`) checks type without following,
-  then `File.open`s a symlink, copying its target and deleting the
-  link. `rm` is unaffected: `FileUtils.rm_r` doesn't recurse into a
-  symlink. The fix is walking the tree in Legate, without following
-  links: recreate each link as a link, or refuse the copy; check
-  containment per entry; label per file; record both budgets as each
-  file is copied.
-
-- **`Legate.append` writes through a dangling symlink.** Predicted by
-  reading `verbs/append.cr`. A dangling link resolves, in
-  `check_root_maybe_missing`, to a prospective path inside the root, so
-  `authorize_write` allows it; `File.open(raw, "a")` then follows the
-  link and creates its target. With `out/log -> /etc/cron.d/job` in a
-  write root and no file at the target, `Legate.append("out/log", ...)`
-  creates a file outside every write root. `write` refuses an occupied
-  destination and `write!` and `cp` rename over the link, so neither is
-  affected. The fix is checking the destination without following
-  symlinks and refusing a link, or resolving it and authorizing the
-  resolved target.
-
-- **`Legate.fetch` forwards credentials on redirect and misses
-  IPv6-embedded metadata addresses.** Predicted by reading
-  `verbs/fetch.cr`.
-  1. Every hop reuses the call's `Options`, headers included, so an
-     `Authorization`, `Cookie` or `Proxy-Authorization` header set
-     for host A is sent to wherever A redirects, even another host the
-     policy allows. curl and browsers drop credentials when a
-     redirect changes origin; the fix is doing the same (scheme, host
-     and port).
-  2. `check_addresses!` decodes only `::ffff:`-mapped IPv6. NAT64
-     (`64:ff9b::/96`, `64:ff9b:1::/48`) and IPv4-compatible (`::/96`)
-     addresses carry an IPv4 address too; on a NAT64 network
-     `64:ff9b::a9fe:a9fe` reaches 169.254.169.254, which §8.2 refuses
-     unconditionally. The embedded address should be checked as IPv4.
-  3. AWS's IPv6 metadata endpoint, `fd00:ec2::254`, falls in
-     `fc00::/7`, so it is "local" and allowed under `local: true`
-     rather than always refused, as §8.2 requires of metadata.
-     Alibaba's `100.100.100.200` falls in carrier-grade NAT the same
-     way. Named metadata addresses belong in `always_blocked?`.
-
-- **Comparing self-containing containers overflows the host's
-  stack.** Predicted by reading `value_ops.cr`.
-  `ValueOps.equal?` compares Arrays and Hashes element by element,
-  recursing on the Crystal stack with no cycle check, so
-  `a = []; a << a; a == a.dup` recurses until the stack overflows,
-  which ends the host process rather than the script. `inspect` guards
-  the same shape (`guard_rendering`); Ruby's `==` detects the
-  recursion and answers. `Array#include?`, `Hash#==` and anything else
-  reaching `equal?` share it. The fix is a guard on the pair being
-  compared, as `guard_rendering` does for one container.
+- **Other script-built container shapes overflow the host's stack.**
+  Predicted by reading `value.cr` and `labeled_container.cr`. Each
+  ends the host process rather than the script.
+  1. A self-containing Array or Hash used as a Hash key. `Value#hash`
+     and `Value#==` delegate to `LabeledArray#hash` and `#==`, which
+     recurse through Crystal's `Array#hash` and `Array#==` with no
+     guard, so `a = []; a.push(a); {a => 1}` never returns.
+     `ValueOps.equal?` guards the pair being compared; these need the
+     same, and Ruby answers for both.
+  2. Deep nesting, with no cycle. `a = []; 100_000.times { a = [a] }`
+     costs little, and every recursive walk (`equal?`, `inspect`,
+     `hash`) then recurses once per level on the Crystal stack.
+     Neither cycle guard helps. Fix: a depth limit on those walks that
+     raises a script error.
 
 - **A path on another Windows drive passes root containment.**
   Predicted by reading `grants.cr`; no spec has hit it.
@@ -457,6 +409,14 @@ acceptable, since it restores the subset.
   `RubyObject`, overridden by each subclass, called before
   `initialize_copy`. A Stream needs its own decision, since the copy
   and the original would share one open source.
+
+- **Array and Hash `==` compare Ranges and objects with `<=>` inside
+  them by identity.** Predicted by reading `value_ops.cr` and
+  `VM#values_equal?`. `1..2 == 1..2` is true, since the VM compares
+  Ranges by bounds and derives `==` from a script's `<=>`, but
+  `ValueOps.equal?` recurses into itself rather than back into the VM,
+  so `[1..2] == [1..2]` is false. Ruby says true. Fix: have
+  `equal?` take the element comparison from its caller.
 
 - **A risk-flow rule can't name the sink's subject.** `RiskFlowRule`
   (`risk_flow_policy.cr`) is keyed on `(Authority, Sensitivity)`, so a
@@ -1104,6 +1064,15 @@ individually.
   entry).
 
 ### Legate
+
+- **A script can't take over a body-less redirect.** With
+  `redirects: 0`, a redirect raises `Legate::Transport`; only a
+  request with a body gets `Legate::Redirect`, which carries `status`
+  and `location`. Since a cross-origin hop drops every header but four
+  defaults and those `net.redirect_headers` names, a script whose
+  target needs another has no way to re-issue the request itself. Fix: raise
+  `Legate::Redirect` whenever the redirect budget is spent at 0. Wait
+  for a live case before building it.
 
 - **`Legate::Path#under?` doesn't resolve `..`.** It compares
   components lexically, so `Legate::Path.new("/work/../etc")` is

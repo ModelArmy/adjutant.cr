@@ -163,9 +163,15 @@ module Adjutant
       end
     end
 
-    # Never fails: an unrecognised pair is false.
+    # Container pairs whose comparison is in progress, by identity.
+    alias Comparing = Set({UInt64, UInt64})
+
+    # Never fails: an unrecognised pair is false. A pair of containers
+    # met again while it is still being compared counts as equal, as
+    # in Ruby, so a self-containing Array or Hash compares without
+    # recursing forever. Callers leave `comparing` out.
     # ameba:disable Metrics/CyclomaticComplexity
-    def self.equal?(a : Value, b : Value) : Bool
+    def self.equal?(a : Value, b : Value, comparing : Comparing? = nil) : Bool
       case
       when a.null? && b.null?     then true
       when a.bool? && b.bool?     then a.as_bool == b.as_bool
@@ -182,16 +188,46 @@ module Adjutant
         # Identity. An object with `<=>` gets `==` from it in
         # `VM#values_equal?`, which never reaches here for one.
         a.as_robject == b.as_robject
-      when a.array? && b.array?
-        # Same length and each element equal by these rules,
-        # recursively, with no guard against a self-containing array.
-        aa, ba = a.as_array, b.as_array
-        aa.size == ba.size && aa.zip(ba) { |x, y| equal?(x, y) }
-      when a.hash? && b.hash?
-        # Same keys and each value equal by these rules.
-        ah, bh = a.as_hash, b.as_hash
-        ah.size == bh.size && ah.all? { |k, v| bv = bh[k]?; bv ? equal?(v, bv) : false }
-      else false
+      when a.array? && b.array? then arrays_equal?(a.as_array, b.as_array, comparing)
+      when a.hash? && b.hash?   then hashes_equal?(a.as_hash, b.as_hash, comparing)
+      else                           false
+      end
+    end
+
+    # The same object, or the same length and each element equal by
+    # `equal?`.
+    private def self.arrays_equal?(aa : LabeledArray, ba : LabeledArray, comparing : Comparing?) : Bool
+      return true if aa.same?(ba)
+      return false unless aa.size == ba.size
+      guard_pair(aa.object_id, ba.object_id, comparing) do |inner|
+        aa.zip(ba) { |x, y| equal?(x, y, inner) }
+      end
+    end
+
+    # The same object, or the same keys and each value equal by
+    # `equal?`.
+    private def self.hashes_equal?(ah : LabeledHash, bh : LabeledHash, comparing : Comparing?) : Bool
+      return true if ah.same?(bh)
+      return false unless ah.size == bh.size
+      guard_pair(ah.object_id, bh.object_id, comparing) do |inner|
+        ah.all? do |k, v|
+          bv = bh[k]?
+          bv ? equal?(v, bv, inner) : false
+        end
+      end
+    end
+
+    # Runs the comparison of one container pair with the pair marked
+    # in progress; true without running it if the pair already is.
+    private def self.guard_pair(a_id : UInt64, b_id : UInt64, comparing : Comparing?, & : Comparing -> Bool) : Bool
+      in_progress = comparing || Comparing.new
+      pair = {a_id, b_id}
+      return true if in_progress.includes?(pair)
+      in_progress << pair
+      begin
+        yield in_progress
+      ensure
+        in_progress.delete(pair)
       end
     end
   end

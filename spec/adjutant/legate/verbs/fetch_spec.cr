@@ -312,6 +312,21 @@ module Adjutant
         end
       end
 
+      it "refuses a NAT64 address carrying loopback, naming the local: true remedy" do
+        with_resolver(["64:ff9b::7f00:1"]) do
+          interp, _ = make_interp(grants: net_grants)
+          eval = interp.eval(<<-RUBY)
+          begin
+            Legate.fetch("https://api.example.com/", timeout: 1)
+            "no error"
+          rescue Legate::Transport => e
+            e.message
+          end
+          RUBY
+          eval.as_string.should contain "local: true"
+        end
+      end
+
       # EVERY address is checked, not just the first — a host whose A
       # record is benign and whose AAAA record points at the metadata
       # service must still be refused.
@@ -472,6 +487,42 @@ module Adjutant
           end
           RUBY
           eval.as_string.should contain "link-local"
+        end
+      end
+
+      # Each of these reaches 169.254.169.254: mapped, compatible,
+      # NAT64, and local-use NAT64 with a /48 layout.
+      it "still refuses IPv6 addresses that carry the metadata address" do
+        {"::ffff:169.254.169.254", "::a9fe:a9fe", "64:ff9b::a9fe:a9fe", "64:ff9b:1:a9fe:a9:fe00::"}.each do |address|
+          with_resolver([address]) do
+            interp, _ = make_interp(grants: local_grants.call("api.example.com", 80))
+            eval = interp.eval(<<-RUBY)
+            begin
+              Legate.fetch("http://api.example.com/", timeout: 1)
+              "no error"
+            rescue Legate::Transport => e
+              e.message
+            end
+            RUBY
+            eval.as_string.should contain "metadata"
+          end
+        end
+      end
+
+      it "still refuses metadata endpoints that sit in local ranges" do
+        {"fd00:ec2::254", "100.100.100.200"}.each do |address|
+          with_resolver([address]) do
+            interp, _ = make_interp(grants: local_grants.call("api.example.com", 80))
+            eval = interp.eval(<<-RUBY)
+            begin
+              Legate.fetch("http://api.example.com/", timeout: 1)
+              "no error"
+            rescue Legate::Transport => e
+              e.message
+            end
+            RUBY
+            eval.as_string.should contain "metadata"
+          end
         end
       end
 
