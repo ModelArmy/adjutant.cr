@@ -435,6 +435,7 @@ Legate.cp(from, to, recursive: false)    -> Legate::Path
 Legate.cp!(from, to, recursive: false)   -> Legate::Path
 ```
 `mkdir` is always recursive and always idempotent — it succeeds on an existing directory, removing the `unless exist?` dance from every script.
+A recursive `cp` never follows a symlink inside the tree: it recreates the link, with the same target, at the destination, so nothing outside the tree is read. Each file it copies is authorized as a `read` of its own, so it is labelled, audited and budgeted as `Legate.read` would be. A FIFO, socket or device in the tree raises `Conflict`.
 **Raises** `NotFound` (`cp` source), `Conflict`.
 
 #### Replacement is opt-in: the bang convention

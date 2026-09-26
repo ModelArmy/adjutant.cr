@@ -21,26 +21,6 @@ after 1.0. Ordered for working through: security and policy defects
 first, then the Ruby divergences, then design work on policy and
 configuration.
 
-- **A recursive copy follows symlinks out of the read grant.**
-  Predicted by reading `verbs/cp.cr`, `verbs/mv.cr` and
-  Crystal's `file_utils.cr`. `Legate.cp(from, to, recursive: true)`
-  authorizes `from` once and hands the tree to `FileUtils.cp_r`,
-  which recurses with `Dir.exists?` and copies with `File.copy`, both
-  following symlinks. A link inside the tree is copied as its
-  target's content, wherever the target is: a repository carrying
-  `docs/keys -> /home/user/.ssh` puts the keys in the write area,
-  outside every read grant, unlabelled, under one audit record naming
-  the repository. A link to an ancestor loops until the disk fills,
-  since the write budget for a directory copy is recorded after the
-  copy (`directory_size`), and the read budget not at all. `mv`'s
-  cross-device fallback (`copy_tree`) checks type without following,
-  then `File.open`s a symlink, copying its target and deleting the
-  link. `rm` is unaffected: `FileUtils.rm_r` doesn't recurse into a
-  symlink. The fix is walking the tree in Legate, without following
-  links: recreate each link as a link, or refuse the copy; check
-  containment per entry; label per file; record both budgets as each
-  file is copied.
-
 - **`Legate.append` writes through a dangling symlink.** Predicted by
   reading `verbs/append.cr`. A dangling link resolves, in
   `check_root_maybe_missing`, to a prospective path inside the root, so

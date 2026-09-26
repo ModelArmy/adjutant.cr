@@ -1,6 +1,7 @@
 require "file_utils"
 require "../broker"
 require "../path"
+require "../tree_copy"
 require "../exceptions"
 require "../helpers"
 require "../../native_call_context"
@@ -23,9 +24,6 @@ module Adjutant
       # Delete and Write authority is about what it may do, not what
       # it does. `mv!` adds DeletesFiles for the file it replaces.
       module Mv
-        # Chunk size for the cross-device copy, as cp.cr's.
-        COPY_CHUNK_SIZE = 65_536
-
         def self.bootstrap(interp : Interpreter, legate : RubyClass, broker : Broker) : Nil
           not_found = Helpers.fetch(legate, interp, "NotFound")
           conflict = Helpers.fetch(legate, interp, "Conflict")
@@ -89,7 +87,7 @@ module Adjutant
             # `cp` do (§4.3).
             FileUtils.mkdir_p(File.dirname(raw_to))
 
-            relocate(raw_from, raw_to, broker)
+            relocate(raw_from, raw_to, broker, ncc, conflict, name)
 
             Legate::Path.from_string(interp, path_cls, ::Path.new(raw_to).to_posix.to_s, label)
           end
@@ -134,50 +132,25 @@ module Adjutant
         # `File.rename` when both paths share a filesystem: atomic, no
         # bytes moved, no budget used. On `EXDEV` (`File::Error`'s
         # `os_error`), falls back to copy then delete.
-        private def self.relocate(raw_from : String, raw_to : String, broker : Broker) : Nil
+        private def self.relocate(raw_from : String, raw_to : String, broker : Broker,
+                                  ncc : NativeCallContext, conflict : RubyClass, name : String) : Nil
           File.rename(raw_from, raw_to)
         rescue ex : File::Error
           raise ex unless ex.os_error == Errno::EXDEV
           # Not atomic: a failure partway leaves the source whole and a
           # partial destination, since the source is deleted only after
           # the copy succeeds. Unlike a rename, this uses read and write
-          # budget.
-          copy_tree(raw_from, raw_to, broker)
+          # budget. As a rename would, `mv!` replaces a file or symlink
+          # at `to` rather than writing through it.
+          if (to_info = File.info?(raw_to, follow_symlinks: false)) && !to_info.directory?
+            File.delete(raw_to)
+          end
+          begin
+            TreeCopy.new(broker.budget) { }.copy_entry(raw_from, raw_to)
+          rescue special : TreeCopy::SpecialFile
+            ncc.raise_error_class("#{special.message}; Legate.#{name} can't move it across filesystems", conflict)
+          end
           FileUtils.rm_rf(raw_from)
-        end
-
-        # Copies `raw_from` to `raw_to`, recursing into directories.
-        private def self.copy_tree(raw_from : String, raw_to : String, broker : Broker) : Nil
-          info = File.info?(raw_from, follow_symlinks: false)
-          return unless info
-
-          if info.directory?
-            Dir.mkdir_p(raw_to)
-            Dir.children(raw_from).each do |child|
-              copy_tree(File.join(raw_from, child), File.join(raw_to, child), broker)
-            end
-            return
-          end
-
-          # Anything not a directory is opened and copied, so a
-          # symlink's target content is copied rather than the link, and
-          # a symlinked directory fails to open. Both budgets are
-          # recorded per chunk. No temp file: the fallback isn't atomic
-          # as a whole.
-          File.open(raw_from, "rb") do |src|
-            File.open(raw_to, "wb") do |dst|
-              buf = ::Bytes.new(COPY_CHUNK_SIZE)
-              loop do
-                n = src.read(buf)
-                break if n == 0
-                broker.budget.record_read(n.to_i64)
-                dst.write(buf[0, n])
-                broker.budget.record_write(n.to_i64)
-              end
-              dst.flush
-              dst.fsync
-            end
-          end
         end
       end
     end
