@@ -326,6 +326,104 @@ module Adjutant
     end
   end
 
+  # A tree is checked file by file, as the walk reaches each one: the
+  # root's authorization says nothing about what is inside it.
+  describe "Legate.cp, recursive" do
+    it "meets the policy for each file, so a sensitive file inside the tree is rejected" do
+      with_tmpdir do |dir|
+        from = File.join(dir, "repo")
+        Dir.mkdir(from)
+        File.write(File.join(from, "README"), "hi")
+        secret = File.join(from, "secret.txt")
+        File.write(secret, "hunter2")
+        to = File.join(dir, "copy")
+        policy = RiskFlowPolicy.new(
+          sensitivity_patterns: [SensitivityPattern.new(ProvenanceKind::File, secret, 1, Sensitivity::High)],
+          risk_flow_rules: [RiskFlowRule.new(Authority::Read, Sensitivity::High, RiskFlowAction::Reject)],
+        )
+        interp, _ = make_interp(
+          risk_flow_policy: policy,
+          grants: Legate::Grants.new(read_roots: [dir], write_roots: [dir]),
+        )
+        expect_raises(RuntimeError, /risk flow policy rejected/) do
+          interp.eval(%(Legate.cp(#{from.inspect}, #{to.inspect}, recursive: true)))
+        end
+        File.exists?(to).should be_false
+        Dir.children(dir).to_set.should eq Set{"repo"}
+      end
+    end
+
+    it "records the read budget as it copies, stopping partway" do
+      with_tmpdir do |dir|
+        from = File.join(dir, "repo")
+        Dir.mkdir(from)
+        File.write(File.join(from, "big.txt"), "more than three bytes")
+        to = File.join(dir, "copy")
+        limits = Legate::Limits.new(total_read: 3_i64)
+        interp, _ = make_interp(grants: Legate::Grants.new(read_roots: [dir], write_roots: [dir], limits: limits))
+        expect_raises(Legate::FatalSignal) do
+          interp.eval(%(Legate.cp(#{from.inspect}, #{to.inspect}, recursive: true)))
+        end
+        Dir.children(dir).to_set.should eq Set{"repo"}
+      end
+    end
+
+    it "logs one read record for the root and one for each file" do
+      with_tmpdir do |dir|
+        from = File.join(dir, "repo")
+        Dir.mkdir(from)
+        Dir.mkdir(File.join(from, "sub"))
+        File.write(File.join(from, "a.txt"), "a")
+        File.write(File.join(from, "sub", "b.txt"), "b")
+        interp, _ = make_interp(grants: Legate::Grants.new(read_roots: [dir], write_roots: [dir]))
+        interp.eval(%(Legate.cp(#{from.inspect}, #{File.join(dir, "copy").inspect}, recursive: true)))
+        reads = interp.broker.audit_log.records.select { |r| r.verb == "read" }
+        reads.size.should eq 3
+        reads.all? { |r| r.decision == :allowed }.should be_true
+      end
+    end
+
+    # The Windows runner can't create symlinks; see
+    # authorization_spec.cr's pending test.
+    {% if flag?(:windows) %}
+      pending "recreates symlinks in the tree as links (needs symlinks)" { }
+    {% else %}
+      it "recreates a link pointing outside the read grant as a link, reading nothing through it" do
+        with_tmpdir do |dir|
+          with_tmpdir do |outside|
+            File.write(File.join(outside, "id_rsa"), "secret")
+            from = File.join(dir, "repo")
+            Dir.mkdir(from)
+            File.write(File.join(from, "README"), "hi")
+            File.symlink(outside, File.join(from, "keys"))
+            to = File.join(dir, "copy")
+            interp, _ = make_interp(grants: Legate::Grants.new(read_roots: [dir], write_roots: [dir]))
+            interp.eval(%(Legate.cp(#{from.inspect}, #{to.inspect}, recursive: true)))
+            copied = File.join(to, "keys")
+            File.symlink?(copied).should be_true
+            File.readlink(copied).should eq outside
+            File.read(File.join(to, "README")).should eq "hi"
+            interp.broker.budget.total_read.should eq 2
+          end
+        end
+      end
+
+      it "copies a link to an ancestor as a link instead of looping" do
+        with_tmpdir do |dir|
+          from = File.join(dir, "repo")
+          Dir.mkdir(from)
+          File.write(File.join(from, "README"), "hi")
+          File.symlink("..", File.join(from, "up"))
+          to = File.join(dir, "copy")
+          interp, _ = make_interp(grants: Legate::Grants.new(read_roots: [dir], write_roots: [dir]))
+          interp.eval(%(Legate.cp(#{from.inspect}, #{to.inspect}, recursive: true)))
+          File.readlink(File.join(to, "up")).should eq ".."
+          Dir.children(to).to_set.should eq Set{"README", "up"}
+        end
+      end
+    {% end %}
+  end
+
   describe "Legate.cp!" do
     it "replaces an existing destination file" do
       with_tmpdir do |dir|
