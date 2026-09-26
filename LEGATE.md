@@ -670,6 +670,7 @@ grants:
     roots: ["/work/output/tmp"]     # narrower than write, deliberately
   net:
     methods: [get, post]           # ceiling for every rule below
+    redirect_headers: [X-Api-Version] # added to those always sent past a cross-origin redirect
     hosts:
       - api.example.com            # https, port 443, exact host
       - "https://files.example.com:8443"
@@ -725,8 +726,11 @@ Steps 2–3 are check-then-open, not atomic — a real, accepted gap, not an ove
 
 - Resolve the hostname, check **every** resulting address, then pin the chosen address for the connection — so the name is never resolved a second time by the TCP stack, which would reopen the window to DNS rebinding.
 - Link-local, metadata, multicast, broadcast and reserved ranges are refused unconditionally; no policy can permit them. `169.254.169.254` is the highest-value SSRF target there is, and nothing legitimate listens on an address a host self-assigned because DHCP failed.
+- Metadata endpoints outside link-local space are named individually and refused the same way: AWS's `fd00:ec2::254` (inside unique-local space) and Alibaba Cloud's `100.100.100.200` (inside carrier-grade NAT).
+- An IPv6 address that carries an IPv4 one is judged as that IPv4 address, since that is where the packets go: IPv4-mapped (`::ffff:0:0/96`), IPv4-compatible (`::/96`) and NAT64 (`64:ff9b::/96`). Under the local-use NAT64 prefix `64:ff9b:1::/48` the operator chooses where the IPv4 address sits, so every layout RFC 6052 allows is checked, and the range is at least local.
 - Loopback and private ranges are refused **unless the matching rule sets `local: true`** (§7). The confused-deputy problem is a script reaching an internal address it never named; a policy that names `localhost` itself is not confused. The opt-in belongs to the rule, so it grants nothing to other hosts in the same policy and nothing to a redirect target.
 - Re-run the full check at every redirect hop. A permitted host that 302s to `169.254.169.254` is the standard SSRF.
+- Once a redirect leaves the first hop's origin (scheme, host and port), send only `Accept`, `Accept-Language`, `Content-Type` and `User-Agent`, plus any request headers `net.redirect_headers` names, for the rest of the call, even to a host the policy allows. Every other header the script set is dropped. Clients usually strip a fixed set (`Authorization`, `Cookie`, `Proxy-Authorization`), but a credential often travels in a header no fixed set names, such as `X-Api-Key`; listing what may pass fails closed where listing what may not fails open.
 - Enforce `limit` on the response as bytes arrive, not after.
 - TLS verification is mandatory and not configurable.
 

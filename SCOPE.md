@@ -21,26 +21,6 @@ after 1.0. Ordered for working through: security and policy defects
 first, then the Ruby divergences, then design work on policy and
 configuration.
 
-- **`Legate.fetch` forwards credentials on redirect and misses
-  IPv6-embedded metadata addresses.** Predicted by reading
-  `verbs/fetch.cr`.
-  1. Every hop reuses the call's `Options`, headers included, so an
-     `Authorization`, `Cookie` or `Proxy-Authorization` header set
-     for host A is sent to wherever A redirects, even another host the
-     policy allows. curl and browsers drop credentials when a
-     redirect changes origin; the fix is doing the same (scheme, host
-     and port).
-  2. `check_addresses!` decodes only `::ffff:`-mapped IPv6. NAT64
-     (`64:ff9b::/96`, `64:ff9b:1::/48`) and IPv4-compatible (`::/96`)
-     addresses carry an IPv4 address too; on a NAT64 network
-     `64:ff9b::a9fe:a9fe` reaches 169.254.169.254, which §8.2 refuses
-     unconditionally. The embedded address should be checked as IPv4.
-  3. AWS's IPv6 metadata endpoint, `fd00:ec2::254`, falls in
-     `fc00::/7`, so it is "local" and allowed under `local: true`
-     rather than always refused, as §8.2 requires of metadata.
-     Alibaba's `100.100.100.200` falls in carrier-grade NAT the same
-     way. Named metadata addresses belong in `always_blocked?`.
-
 - **Comparing self-containing containers overflows the host's
   stack.** Predicted by reading `value_ops.cr`.
   `ValueOps.equal?` compares Arrays and Hashes element by element,
@@ -1072,6 +1052,15 @@ individually.
   entry).
 
 ### Legate
+
+- **A script can't take over a body-less redirect.** With
+  `redirects: 0`, a redirect raises `Legate::Transport`; only a
+  request with a body gets `Legate::Redirect`, which carries `status`
+  and `location`. Since a cross-origin hop drops every header but four
+  defaults and those `net.redirect_headers` names, a script whose
+  target needs another has no way to re-issue the request itself. Fix: raise
+  `Legate::Redirect` whenever the redirect budget is spent at 0. Wait
+  for a live case before building it.
 
 - **`Legate::Path#under?` doesn't resolve `..`.** It compares
   components lexically, so `Legate::Path.new("/work/../etc")` is
