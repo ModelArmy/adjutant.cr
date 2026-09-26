@@ -21,16 +21,20 @@ after 1.0. Ordered for working through: security and policy defects
 first, then the Ruby divergences, then design work on policy and
 configuration.
 
-- **Comparing self-containing containers overflows the host's
-  stack.** Predicted by reading `value_ops.cr`.
-  `ValueOps.equal?` compares Arrays and Hashes element by element,
-  recursing on the Crystal stack with no cycle check, so
-  `a = []; a << a; a == a.dup` recurses until the stack overflows,
-  which ends the host process rather than the script. `inspect` guards
-  the same shape (`guard_rendering`); Ruby's `==` detects the
-  recursion and answers. `Array#include?`, `Hash#==` and anything else
-  reaching `equal?` share it. The fix is a guard on the pair being
-  compared, as `guard_rendering` does for one container.
+- **Other script-built container shapes overflow the host's stack.**
+  Predicted by reading `value.cr` and `labeled_container.cr`. Each
+  ends the host process rather than the script.
+  1. A self-containing Array or Hash used as a Hash key. `Value#hash`
+     and `Value#==` delegate to `LabeledArray#hash` and `#==`, which
+     recurse through Crystal's `Array#hash` and `Array#==` with no
+     guard, so `a = []; a.push(a); {a => 1}` never returns.
+     `ValueOps.equal?` guards the pair being compared; these need the
+     same, and Ruby answers for both.
+  2. Deep nesting, with no cycle. `a = []; 100_000.times { a = [a] }`
+     costs little, and every recursive walk (`equal?`, `inspect`,
+     `hash`) then recurses once per level on the Crystal stack.
+     Neither cycle guard helps. Fix: a depth limit on those walks that
+     raises a script error.
 
 - **A path on another Windows drive passes root containment.**
   Predicted by reading `grants.cr`; no spec has hit it.
@@ -405,6 +409,14 @@ acceptable, since it restores the subset.
   `RubyObject`, overridden by each subclass, called before
   `initialize_copy`. A Stream needs its own decision, since the copy
   and the original would share one open source.
+
+- **Array and Hash `==` compare Ranges and objects with `<=>` inside
+  them by identity.** Predicted by reading `value_ops.cr` and
+  `VM#values_equal?`. `1..2 == 1..2` is true, since the VM compares
+  Ranges by bounds and derives `==` from a script's `<=>`, but
+  `ValueOps.equal?` recurses into itself rather than back into the VM,
+  so `[1..2] == [1..2]` is false. Ruby says true. Fix: have
+  `equal?` take the element comparison from its caller.
 
 - **A risk-flow rule can't name the sink's subject.** `RiskFlowRule`
   (`risk_flow_policy.cr`) is keyed on `(Authority, Sensitivity)`, so a

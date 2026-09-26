@@ -458,5 +458,19 @@ module Adjutant
         result.label.should_not be_nil
       end
     end
+
+    describe "#==" do
+      it "answers for self-containing hashes rather than recursing forever" do
+        interp, _ = make_interp
+        result = interp.eval(<<-RUBY)
+          h = {}
+          h[:me] = h
+          g = {}
+          g[:me] = g
+          h == g
+        RUBY
+        result.truthy?.should be_true
+      end
+    end
   end
 end

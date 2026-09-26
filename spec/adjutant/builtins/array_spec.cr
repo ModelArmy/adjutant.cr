@@ -402,6 +402,52 @@ module Adjutant
         result = interp.eval("[[1], [2]] == [[1], [2]]")
         result.truthy?.should be_true
       end
+
+      # Ruby treats a pair met again mid-comparison as equal. Without
+      # that, each of these recurses until the host's stack overflows.
+      it "== answers for a self-containing array rather than recursing forever" do
+        interp, _ = make_interp
+        result = interp.eval(<<-RUBY)
+          a = []
+          a.push(a)
+          a == [a]
+        RUBY
+        result.truthy?.should be_true
+      end
+
+      it "== is true for two distinct self-containing arrays of the same shape" do
+        interp, _ = make_interp
+        result = interp.eval(<<-RUBY)
+          a = []
+          a.push(a)
+          b = []
+          b.push(b)
+          a == b
+        RUBY
+        result.truthy?.should be_true
+      end
+
+      it "== still finds a difference beside the cycle" do
+        interp, _ = make_interp
+        result = interp.eval(<<-RUBY)
+          a = [1]
+          a.push(a)
+          b = [2]
+          b.push(b)
+          a == b
+        RUBY
+        result.falsy?.should be_true
+      end
+
+      it "include? answers for a self-containing element" do
+        interp, _ = make_interp
+        result = interp.eval(<<-RUBY)
+          a = []
+          a.push(a)
+          [[a]].include?([a])
+        RUBY
+        result.truthy?.should be_true
+      end
     end
 
     describe "[]/[]= still work as existing opcodes, unaffected by this class landing" do
