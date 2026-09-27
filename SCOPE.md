@@ -21,16 +21,6 @@ after 1.0. Ordered for working through: security and policy defects
 first, then the Ruby divergences, then design work on policy and
 configuration.
 
-- **`sub` and `gsub` drop the replacement's label.** Their result's
-  label joins the receiver's and the pattern's only, so
-  `"x".sub("x", secret)` returns `secret`'s text unlabelled, and so
-  does `s.gsub(/./) { secret }`: a script can strip a label by
-  substitution and pass the data to a sink the policy would have
-  stopped. `string_sub_or_gsub` builds the result with one
-  `String.build`; the fix is joining the replacement's label, or every
-  block result's, into the result's, which over-labels but never
-  under-labels.
-
 - **`Legate.lines`, `bytes` and `records` skip the argument risk-flow
   check.** Predicted by reading the verb files. `read`, `stat`, `list`
   and `grep` declare `authorities: Set{Authority::Read}`, so

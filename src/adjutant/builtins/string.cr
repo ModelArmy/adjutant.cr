@@ -208,18 +208,18 @@ module Adjutant::Builtins
     # Replaces the first (`sub`) or every (`gsub`) match of `pattern`
     # with `replacement`, which honours `\0`, `\&`, `` \` ``, `\'`,
     # `\\` and `\1` to `\9`, or with the block's result for each
-    # match. The result's label joins the receiver's and the pattern's,
-    # but not the replacement's or the block results'.
+    # match. The result's label joins the receiver's, the pattern's,
+    # and whatever was substituted: the replacement's, or each block
+    # result's. The block's argument carries the receiver's and the
+    # pattern's, being text taken from the receiver.
     define(cls, interp, "sub") do |args, blk, ncc|
-      recv = args.first
-      result_label = Adjutant::RiskFlowLabel.join(recv.label, args[1]?.try(&.label))
-      Adjutant::Value.string(string_sub_or_gsub(recv.as_string, args, blk, ncc, "sub", all: false), result_label)
+      text, label = string_sub_or_gsub(args, blk, ncc, "sub", all: false)
+      Adjutant::Value.string(text, label)
     end
 
     define(cls, interp, "gsub") do |args, blk, ncc|
-      recv = args.first
-      result_label = Adjutant::RiskFlowLabel.join(recv.label, args[1]?.try(&.label))
-      Adjutant::Value.string(string_sub_or_gsub(recv.as_string, args, blk, ncc, "gsub", all: true), result_label)
+      text, label = string_sub_or_gsub(args, blk, ncc, "gsub", all: true)
+      Adjutant::Value.string(text, label)
     end
 
     # A String pattern is compiled as a regex, as in Ruby
@@ -393,8 +393,13 @@ module Adjutant::Builtins
   # The shared body of `sub` and `gsub`: validates the pattern,
   # requires a replacement String or a block (R018), and replaces
   # each match.
-  private def self.string_sub_or_gsub(s : String, args : Array(Adjutant::Value), blk : Adjutant::ScriptProc?,
-                                      ncc : Adjutant::NativeCallContext, method : String, all : Bool) : String
+  # The substituted text and its label: the receiver's and the
+  # pattern's, joined with the label of each substitution made.
+  private def self.string_sub_or_gsub(args : Array(Adjutant::Value), blk : Adjutant::ScriptProc?,
+                                      ncc : Adjutant::NativeCallContext, method : String,
+                                      all : Bool) : {String, Adjutant::RiskFlowLabel?}
+    s = args.first.as_string
+    source_label = Adjutant::RiskFlowLabel.join(args.first.label, args[1]?.try(&.label))
     pattern = string_pattern_arg(args, method, ncc)
     replacement_val = args[2]?
     # A replacement String wins over a block when both are given, as
@@ -411,30 +416,36 @@ module Adjutant::Builtins
 
     # Chosen once, outside the loop, with non-nil captures, since a
     # closure can't see an `if`'s narrowing of `blk`.
+    # Each resolver returns the substitution as a Value, so its label
+    # travels with it.
     resolver =
       if blk && replacement.nil?
         b = blk
         ->(matched : String, _pre : String, _post : String, _caps : Array(String?)) {
-          ncc.invoke(b, [Adjutant::Value.string(matched)]).to_s
+          ncc.invoke(b, [Adjutant::Value.string(matched, source_label)])
         }
       elsif r = replacement
+        replacement_label = replacement_val.try(&.label)
         ->(matched : String, pre : String, post : String, caps : Array(String?)) {
-          expand_backslash_refs(r, matched, pre, post, caps)
+          Adjutant::Value.string(expand_backslash_refs(r, matched, pre, post, caps), replacement_label)
         }
       else
         raise "unreachable: validated above that a replacement or a block is present"
       end
 
     positions = string_match_positions(s, pattern, all)
-    String.build do |io|
+    label = source_label
+    text = String.build do |io|
       last_end = 0
       positions.each do |(start, len, captures)|
         io << s[last_end...start]
-        matched = s[start, len]
-        io << resolver.call(matched, s[0...start], s[(start + len)..], captures)
+        substitution = resolver.call(s[start, len], s[0...start], s[(start + len)..], captures)
+        io << substitution.to_s
+        label = Adjutant::RiskFlowLabel.join(label, substitution.label)
         last_end = start + len
       end
       io << s[last_end..]
     end
+    {text, label}
   end
 end
