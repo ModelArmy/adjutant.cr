@@ -275,6 +275,45 @@ module Adjutant
       execute
     end
 
+    # Runs a file `require` loaded as a top-level script inside this
+    # VM, with its own frames and stack as in `invoke_internal`, so its
+    # instructions and frames count toward the requiring script's
+    # limits.
+    protected def run_required(chunk : Chunk, filename : String, local_count : Int32) : Value
+      saved_frames = @frames
+      saved_stack = @stack
+      saved_cur_block = @current_block
+      saved_cur_block_locals = @current_block_locals
+      saved_cur_block_yield = @current_block_yield
+      saved_cur_block_yield_outer = @current_block_yield_outer
+      saved_pending_kwargs = @pending_kwargs
+      saved_outer_frame_count = @outer_frame_count
+      enter_nested_run!
+      begin
+        @frames = [] of Frame
+        @stack = Array(Value).new(256)
+        @current_block = nil
+        @current_block_locals = nil
+        @current_block_yield = nil
+        @current_block_yield_outer = nil
+        @pending_kwargs = nil
+        main_proc = ScriptProc.new(chunk, "<main>", local_count: local_count)
+        self_val = @interpreter.try { |i| Value.robject(i.main) } || Value.nil_value
+        push_frame(main_proc, filename, self_val: self_val)
+        result = execute
+      ensure
+        @frames = saved_frames
+        @stack = saved_stack
+        @current_block = saved_cur_block
+        @current_block_locals = saved_cur_block_locals
+        @current_block_yield = saved_cur_block_yield
+        @current_block_yield_outer = saved_cur_block_yield_outer
+        @pending_kwargs = saved_pending_kwargs
+        @outer_frame_count = saved_outer_frame_count
+      end
+      result
+    end
+
     # Runs a block passed to a native function (its `blk`), closing
     # over the current frame. That frame is the block's defining frame,
     # since a block is only run during the call that received it; if
@@ -2000,7 +2039,7 @@ module Adjutant
       when "require"
         path = args.first? ? args.first.as_string : ""
         if interp = @interpreter
-          interp.require_module(path, filename)
+          interp.require_module(path, filename, self)
         else
           # A VM without an Interpreter can't `require`: a host
           # wiring fault (H006), not the script's.

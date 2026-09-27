@@ -21,19 +21,6 @@ after 1.0. Ordered for working through: security and policy defects
 first, then the Ruby divergences, then design work on policy and
 configuration.
 
-- **A file a script `require`s from the VFS runs in a fresh VM, and
-  again on every `require`.** Predicted by reading
-  `Interpreter#require_module`. The file runs inside the current run
-  (budgets, streams and scratch are shared), but in a VM of its own,
-  whose instruction count and call depth start at zero, so its work
-  counts toward neither `instruction_limit` nor `call_depth_limit`,
-  and a `require` inside it starts another. Nothing records a file as
-  loaded, so `require` runs it again each time, where Ruby's loads it
-  once and returns false after. Only reachable when the host's
-  `EffectHandler#vfs_read` serves files. Fix: record loaded paths, and
-  run the file in the requiring VM, or count its VM toward the
-  requirer's limits.
-
 - **`Legate.read` and `Legate.grep` read files whole without a
   bounded read.** Predicted by reading the verbs.
   1. `Legate.read` checks `limit` against `File.info`'s size, then
@@ -376,6 +363,13 @@ still roughly ordered by how cheap/independent the fix is.
 
 Small, mechanical, independent of each other — good candidates for quick
 wins.
+
+- **`require` parses only as a statement.** `parse_statement`
+  dispatches `KwRequire` to `parse_require`, but `parse_primary`
+  doesn't accept it, so `loaded = require "x"` and `require("x") if
+  ok` raise P002. Found writing the require specs. The call already
+  returns true or false, which a script can't yet capture. Fix: parse
+  `require` (and `load`) as a primary expression.
 
 - **`defined?` and `Module#const_defined?` don't exist.** Found in the
   mruby sweep (`test/t/syntax.rb`, `spec/scripts/mruby/float.rb`).
