@@ -21,18 +21,6 @@ after 1.0. Ordered for working through: security and policy defects
 first, then the Ruby divergences, then design work on policy and
 configuration.
 
-- **A path on another Windows drive passes root containment.**
-  Predicted by reading `grants.cr`; no spec has hit it.
-  `Grants#under?` and `#under_maybe_missing?` call
-  `Path#relative_to`, which returns the target path unchanged when
-  its anchor differs from the root's (Crystal's `relative_to?` returns
-  nil). The check then sees a first component that isn't `..` and
-  counts the path as inside, so with a root of `C:\work`, a path on
-  `D:\` is allowed. POSIX is unaffected, since every resolved path
-  shares the anchor `/`. The fix is `relative_to?`, with nil counting
-  as outside; a spec needs two drives, or a UNC path against a drive
-  root.
-
 - **A risk-flow policy with no rule for an authority allows sensitive
   data through it.** `RiskFlowPolicy#action_for` returns Allow when
   no rule matches, so a policy that marks `/etc/passwd` High and has

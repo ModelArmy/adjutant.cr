@@ -80,16 +80,23 @@ module Adjutant
       nil
     end
 
-    # Whether the resolved `real_path` is `root` or inside it, by
-    # path algebra (`Path#relative_to`), so Windows separators and
-    # drives are handled by Crystal.
+    # Whether `path` is `root` or inside it, by path algebra, so
+    # Windows separators and drives are handled by Crystal. Both should
+    # be resolved. A path with a different anchor, such as another
+    # drive or a UNC share, is outside.
+    def self.contains?(root : ::Path, path : ::Path) : Bool
+      rel = path.relative_to?(root)
+      return false unless rel
+      return true if rel.to_s == "."
+      rel.parts.first? != ".."
+    end
+
+    # Whether the resolved `real_path` is `root` or inside it.
     private def under?(real_path : String, root : String) : Bool
       real_root = resolve(root)
       return false unless real_root
 
-      rel = ::Path.new(real_path).relative_to(::Path.new(real_root))
-      return true if rel.to_s == "."
-      rel.parts.first? != ".."
+      Grants.contains?(::Path.new(real_root), ::Path.new(real_path))
     end
 
     # `under?` for a root that may not exist yet either, as when a
@@ -106,9 +113,7 @@ module Adjutant
         effective_root = root_trailing.empty? ? real_root_ancestor : File.join(real_root_ancestor, File.join(root_trailing))
       end
 
-      rel = ::Path.new(prospective_path).relative_to(::Path.new(effective_root))
-      return true if rel.to_s == "."
-      rel.parts.first? != ".."
+      Grants.contains?(::Path.new(effective_root), ::Path.new(prospective_path))
     end
 
     # Dangling links followed while resolving one path before it is

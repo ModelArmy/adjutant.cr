@@ -19,6 +19,36 @@ end
 
 module Adjutant
   describe Legate::Grants do
+    # Pure path algebra, so Windows paths are checked on every
+    # platform; resolving them needs a real second drive.
+    describe ".contains?" do
+      it "is true for the root itself and for paths inside it" do
+        root = ::Path.windows("C:\\work")
+        Grants.contains?(root, ::Path.windows("C:\\work")).should be_true
+        Grants.contains?(root, ::Path.windows("C:\\work\\out\\a.txt")).should be_true
+      end
+
+      it "is false for a sibling and for a path that climbs out" do
+        root = ::Path.windows("C:\\work")
+        Grants.contains?(root, ::Path.windows("C:\\workshop")).should be_false
+        Grants.contains?(root, ::Path.windows("C:\\work\\..\\etc")).should be_false
+      end
+
+      it "is false for a path on another drive" do
+        Grants.contains?(::Path.windows("C:\\work"), ::Path.windows("D:\\work\\a.txt")).should be_false
+      end
+
+      it "is false for a UNC path against a drive root" do
+        Grants.contains?(::Path.windows("C:\\"), ::Path.windows("\\\\server\\share\\a.txt")).should be_false
+      end
+
+      it "holds for POSIX paths" do
+        root = ::Path.posix("/work")
+        Grants.contains?(root, ::Path.posix("/work/a.txt")).should be_true
+        Grants.contains?(root, ::Path.posix("/etc/passwd")).should be_false
+      end
+    end
+
     describe "#check_root" do
       it "denies when no roots are granted" do
         grants = Legate::Grants.deny_all
