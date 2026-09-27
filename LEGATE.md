@@ -694,6 +694,8 @@ limits:
   total_write: 1GiB        # per run  — fatal
 ```
 
+The policy is read strictly, so a mistake fails when it is loaded rather than granting more, or enforcing less, than written. An unknown key at any level, a value of the wrong type, an empty `methods:` or `ports:` list in a `net.hosts` mapping, and a zero or negative limit each raise `ArgumentError` naming where. A key with no value counts as absent. Sizes may be written as literals (`8MiB`) or plain byte counts (`1048576`), and `wall_clock` as `300s` or `300`.
+
 A `net.hosts` entry is either a plain string or a mapping. Every default fails closed, and each field narrows rather than widens: a host is not a service, so an entry grants one scheme on one set of ports for one set of methods. There is no wildcard syntax — `subdomains: true` is the only widening lever, and it admits only names for which the rule's own host is a dot-boundary suffix (`x.y.com` admits `a.x.y.com`, never `a.y.com`).
 
 `local: true` opts a rule into loopback and private address space, for a local model server or a service on the LAN. See §8.2 for what it does and does not cover.

@@ -139,6 +139,7 @@ module Testing
         delete_roots: raw.delete_roots.map { |root| File.expand_path(root, dir) },
         net_rules: raw.net_rules,
         net_methods: raw.net_methods,
+        net_redirect_headers: raw.net_redirect_headers,
         ambient_env: raw.ambient_env,
         limits: raw.limits,
       )

@@ -21,29 +21,6 @@ after 1.0. Ordered for working through: security and policy defects
 first, then the Ruby divergences, then design work on policy and
 configuration.
 
-- **The grants loader silently ignores what it can't read.**
-  Predicted by reading `legate/grants.cr` and
-  `net_rule.cr`; no spec covers it. The same decision as the
-  risk-flow policy entry above applies: a malformed policy should
-  fail when loaded, not surface at run time. Fail-open cases first:
-  1. A `net.hosts` mapping whose `methods:` is a scalar (`methods:
-     GET`) or misspelt (`method: [GET]`) reads as empty, and empty
-     means "inherit `net.methods`", so a rule meant to narrow to GET
-     allows every grant-wide method, POST included.
-  2. A per-run budget written as a YAML integer (`total_read:
-     1048576`, `wall_clock: 300`) is read with `as_s?`, gets nil, and
-     is not enforced. `SizeLiteral` accepts a bare byte count only as
-     a string.
-  3. A misspelt key anywhere (`total_raed:`, `limts:`) is ignored,
-     so its budget or grant is simply absent.
-  Fail-closed but silent: a malformed category reads as nothing
-  granted (`string_array`); a non-numeric, zero or negative
-  `max_open_streams` falls back to the default; a scalar `ports:`
-  gives the default port; a non-boolean `subdomains:` or `local:`
-  gives false. The fix is a strict loader: unknown keys, wrong types
-  and invalid values raise ArgumentError, as a malformed size literal
-  or net rule already does.
-
 - **The scratch directory is readable by other local users.**
   Predicted by reading `legate/broker.cr`.
   `Broker#scratch_dir` names it with `File.tempname` under the shared

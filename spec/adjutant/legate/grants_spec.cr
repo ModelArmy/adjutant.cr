@@ -154,8 +154,32 @@ module Adjutant
         end
       end
 
-      it "denies everything for a document that is not a mapping" do
-        Legate::Grants.from_yaml("just a string").read_roots.should be_empty
+      it "rejects a document that is neither empty nor a mapping" do
+        expect_raises(ArgumentError, /the document must be a mapping/) do
+          Legate::Grants.from_yaml("just a string")
+        end
+      end
+
+      it "treats a key with no value as not given" do
+        grants = Legate::Grants.from_yaml(<<-YAML)
+          grants:
+            read:
+          limits:
+          YAML
+        grants.read_roots.should be_empty
+        grants.limits.read_limit.should eq Legate::Limits::DEFAULT_READ_LIMIT
+      end
+
+      it "reads budgets written as YAML integers, as bytes and seconds" do
+        limits = Legate::Grants.from_yaml(<<-YAML).limits
+          limits:
+            total_read: 1048576
+            wall_clock: 300
+            max_open_streams: 8
+          YAML
+        limits.total_read.should eq 1_048_576_i64
+        limits.wall_clock.should eq 300
+        limits.max_open_streams.should eq 8
       end
 
       it "treats a present-but-empty category the same as an absent one" do
@@ -196,6 +220,74 @@ module Adjutant
           YAML
         grants.net_redirect_headers.should eq ["accept", "x-trace"]
         Legate::Grants.deny_all.net_redirect_headers.should be_empty
+      end
+
+      # A mistake must fail when the policy is loaded: read leniently,
+      # each of these granted more, or enforced less, than written.
+      describe "strictness" do
+        it "rejects a misspelt key at any level, naming where" do
+          expect_raises(ArgumentError, /limits has an unknown key "total_raed"/) do
+            Legate::Grants.from_yaml("limits:\n  total_raed: 4GiB\n")
+          end
+          expect_raises(ArgumentError, /the document has an unknown key "limts"/) do
+            Legate::Grants.from_yaml("limts:\n  total_read: 4GiB\n")
+          end
+          expect_raises(ArgumentError, /grants.read has an unknown key "root"/) do
+            Legate::Grants.from_yaml("grants:\n  read:\n    root: [/work]\n")
+          end
+        end
+
+        it "rejects a net.hosts mapping whose methods are misspelt or a scalar" do
+          expect_raises(ArgumentError, /unknown key "method"/) do
+            Legate::Grants.from_yaml(<<-YAML)
+              grants:
+                net:
+                  methods: [get, post]
+                  hosts:
+                    - host: api.example.com
+                      method: [get]
+              YAML
+          end
+          expect_raises(ArgumentError, /methods must be a list/) do
+            Legate::Grants.from_yaml(<<-YAML)
+              grants:
+                net:
+                  methods: [get, post]
+                  hosts:
+                    - host: api.example.com
+                      methods: GET
+              YAML
+          end
+        end
+
+        it "rejects an empty methods or ports list in a net.hosts mapping" do
+          expect_raises(ArgumentError, /methods is empty/) do
+            Legate::Grants.from_yaml("grants:\n  net:\n    hosts:\n      - host: a.example.com\n        methods: []\n")
+          end
+          expect_raises(ArgumentError, /ports is empty/) do
+            Legate::Grants.from_yaml("grants:\n  net:\n    hosts:\n      - host: a.example.com\n        ports: []\n")
+          end
+        end
+
+        it "rejects values of the wrong type" do
+          {
+            "grants:\n  read: [/work]\n"                                                        => /grants.read must be a mapping/,
+            "grants:\n  net:\n    hosts:\n      - host: a.example.com\n        ports: 8443\n"   => /ports must be a list/,
+            "grants:\n  net:\n    hosts:\n      - host: a.example.com\n        local: maybe\n"  => /local must be true or false/,
+            "grants:\n  net:\n    hosts:\n      - host: a.example.com\n        subdomains: 1\n" => /subdomains must be true or false/,
+            "grants:\n  ambient:\n    env: TZ\n"                                                => /grants.ambient.env must be a list/,
+            "grants:\n  ambient:\n    env: [1]\n"                                               => /grants.ambient.env must list strings/,
+            "limits:\n  max_open_streams: many\n"                                               => /max_open_streams must be a whole number/,
+          }.each do |source, message|
+            expect_raises(ArgumentError, message) { Legate::Grants.from_yaml(source) }
+          end
+        end
+
+        it "rejects zero and negative limits" do
+          {"limits:\n  total_read: 0\n", "limits:\n  wall_clock: -5\n", "limits:\n  max_open_streams: 0\n"}.each do |source|
+            expect_raises(ArgumentError, /must be positive/) { Legate::Grants.from_yaml(source) }
+          end
+        end
       end
 
       it "fills in spec-defaulted per-call limits when limits: is absent entirely" do
