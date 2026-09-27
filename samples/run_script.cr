@@ -170,8 +170,11 @@ SAMPLE_POLICY_JSON = <<-JSON
     { "authority": "Delete", "sensitivity": "Elevated", "action": "Ask" },
     { "authority": "Delete", "sensitivity": "High", "action": "Reject" },
     { "authority": "Net", "sensitivity": "Elevated", "action": "Ask" },
-    { "authority": "Net", "sensitivity": "High", "action": "Ask" }
-  ]
+    { "authority": "Net", "sensitivity": "High", "action": "Ask" },
+    { "authority": "Read", "sensitivity": "Elevated", "action": "Allow" },
+    { "authority": "Read", "sensitivity": "High", "action": "Allow" }
+  ],
+  "default": "ask"
 }
 JSON
 

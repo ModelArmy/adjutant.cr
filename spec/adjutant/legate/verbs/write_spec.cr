@@ -400,7 +400,7 @@ module Adjutant
 
         policy = RiskFlowPolicy.new(
           sensitivity_patterns: [SensitivityPattern.new(ProvenanceKind::File, secret, 1, Sensitivity::High)],
-          risk_flow_rules: [RiskFlowRule.new(Authority::Write, Sensitivity::High, RiskFlowAction::Reject)],
+          risk_flow_rules: allow_unlisted([RiskFlowRule.new(Authority::Write, Sensitivity::High, RiskFlowAction::Reject)]),
         )
         interp, _ = make_interp(
           risk_flow_policy: policy,
@@ -422,7 +422,7 @@ module Adjutant
         File.write(plain, "nothing sensitive")
 
         policy = RiskFlowPolicy.new(
-          risk_flow_rules: [RiskFlowRule.new(Authority::Write, Sensitivity::High, RiskFlowAction::Reject)],
+          risk_flow_rules: allow_unlisted([RiskFlowRule.new(Authority::Write, Sensitivity::High, RiskFlowAction::Reject)]),
         )
         interp, _ = make_interp(
           risk_flow_policy: policy,

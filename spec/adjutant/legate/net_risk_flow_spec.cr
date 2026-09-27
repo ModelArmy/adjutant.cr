@@ -54,7 +54,7 @@ module Adjutant
       sensitivity_patterns: [
         SensitivityPattern.new(ProvenanceKind::Host, "http://127.0.0.1:#{port}", 10, sensitivity),
       ],
-      risk_flow_rules: [RiskFlowRule.new(Authority::Net, sensitivity, RiskFlowAction::Allow)],
+      risk_flow_rules: allow_unlisted([RiskFlowRule.new(Authority::Net, sensitivity, RiskFlowAction::Allow)]),
     )
   end
 
@@ -224,11 +224,11 @@ module Adjutant
                 SensitivityPattern.new(ProvenanceKind::Host, "http://127.0.0.1:#{port}", 10, Sensitivity::Elevated),
                 SensitivityPattern.new(ProvenanceKind::File, url_file, 10, Sensitivity::High),
               ],
-              risk_flow_rules: [
+              risk_flow_rules: allow_unlisted([
                 RiskFlowRule.new(Authority::Net, Sensitivity::Elevated, RiskFlowAction::Allow),
                 RiskFlowRule.new(Authority::Net, Sensitivity::High, RiskFlowAction::Allow),
                 RiskFlowRule.new(Authority::Read, Sensitivity::High, RiskFlowAction::Allow),
-              ],
+              ]),
             )
             grants = Legate::Grants.new(
               net_rules: [Legate::NetRule.new(host: "127.0.0.1", scheme: "http", ports: [port], local: true)],
@@ -249,7 +249,7 @@ module Adjutant
       # on yields unlabelled data, buffered or streamed.
       it "leaves a buffered body from an unremarked host unlabelled" do
         with_ifc_server(serving("public")) do |port|
-          interp, _ = make_interp(grants: loopback_grants(port), risk_flow_policy: RiskFlowPolicy.new)
+          interp, _ = make_interp(grants: loopback_grants(port), risk_flow_policy: RiskFlowPolicy.new(risk_flow_rules: allow_unlisted))
           result = interp.eval(%(Legate.fetch("http://127.0.0.1:#{port}/").body))
           result.label.should be_nil
         end
@@ -257,7 +257,7 @@ module Adjutant
 
       it "leaves streamed chunks from an unremarked host unlabelled" do
         with_ifc_server(serving("public")) do |port|
-          interp, _ = make_interp(grants: loopback_grants(port), risk_flow_policy: RiskFlowPolicy.new)
+          interp, _ = make_interp(grants: loopback_grants(port), risk_flow_policy: RiskFlowPolicy.new(risk_flow_rules: allow_unlisted))
           result = interp.eval(%(Legate.fetch("http://127.0.0.1:#{port}/", stream: true).body.to_a.first))
           result.label.should be_nil
         end
@@ -341,7 +341,7 @@ module Adjutant
             sensitivity_patterns: [
               SensitivityPattern.new(ProvenanceKind::Host, "http://127.0.0.1:#{port}", 10, Sensitivity::High),
             ],
-            risk_flow_rules: [RiskFlowRule.new(Authority::Net, Sensitivity::High, RiskFlowAction::Reject)],
+            risk_flow_rules: allow_unlisted([RiskFlowRule.new(Authority::Net, Sensitivity::High, RiskFlowAction::Reject)]),
           )
           interp, _ = make_interp(grants: loopback_grants(port), risk_flow_policy: policy)
           eval = interp.eval(<<-RUBY)
@@ -362,7 +362,7 @@ module Adjutant
             sensitivity_patterns: [
               SensitivityPattern.new(ProvenanceKind::Host, "http://127.0.0.1:#{port}", 10, Sensitivity::High),
             ],
-            risk_flow_rules: [RiskFlowRule.new(Authority::Net, Sensitivity::High, RiskFlowAction::Reject)],
+            risk_flow_rules: allow_unlisted([RiskFlowRule.new(Authority::Net, Sensitivity::High, RiskFlowAction::Reject)]),
           )
           interp, _ = make_interp(grants: loopback_grants(port), risk_flow_policy: policy)
           eval = interp.eval(<<-RUBY)
@@ -384,7 +384,7 @@ module Adjutant
             sensitivity_patterns: [
               SensitivityPattern.new(ProvenanceKind::Host, "http://127.0.0.1:#{port}", 10, Sensitivity::High),
             ],
-            risk_flow_rules: [RiskFlowRule.new(Authority::Net, Sensitivity::High, RiskFlowAction::Reject)],
+            risk_flow_rules: allow_unlisted([RiskFlowRule.new(Authority::Net, Sensitivity::High, RiskFlowAction::Reject)]),
           )
           interp, _ = make_interp(grants: loopback_grants(port), risk_flow_policy: policy)
           interp.eval(<<-RUBY)

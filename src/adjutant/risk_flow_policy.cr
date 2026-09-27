@@ -83,11 +83,28 @@ module Adjutant
     end
   end
 
+  # Raised when a policy is built without an action for some pair of
+  # authority and sensitivity, or with `default: Allow`. A Crystal
+  # exception, not script-visible: an incomplete policy is the host's
+  # configuration error, reported when the policy is built rather than
+  # when an unattended run first reaches the gap.
+  class InvalidRiskFlowPolicyError < Exception
+  end
+
   # A risk-flow policy: sensitivity patterns and action rules. The
   # host builds it and passes it to the Interpreter; Adjutant never
-  # reads one from disk. There is no allow-everything default: a host
-  # that wants no assessment must pass `RiskFlowPolicy.reject_all` or
-  # a real policy.
+  # reads one from disk. Every pair of `Authority` and a sensitivity
+  # above None has an action, from a rule or from `default_action`,
+  # which may be Ask or Reject but not Allow. A gap, including one an
+  # `Authority` added later opens, therefore never lets data through.
+  # A host that wants no assessment passes `RiskFlowPolicy.reject_all`.
+  #
+  #   RiskFlowPolicy.new(
+  #     risk_flow_rules: [RiskFlowRule.new(Authority::Read, Sensitivity::High, RiskFlowAction::Allow)],
+  #     default_action: RiskFlowAction::Ask,
+  #   )
+  #
+  # In JSON the default is `"default"`, such as `"default": "ask"`.
   class RiskFlowPolicy
     include JSON::Serializable
 
@@ -99,9 +116,48 @@ module Adjutant
     @[JSON::Field(ignore: true)]
     getter? reject_all_flows : Bool = false
 
+    # The action for a pair no rule names: Ask, Reject, or nil when
+    # the rules name every pair.
+    @[JSON::Field(key: "default")]
+    getter default_action : RiskFlowAction? = nil
+
     def initialize(@sensitivity_patterns : Array(SensitivityPattern) = [] of SensitivityPattern,
                    @risk_flow_rules : Array(RiskFlowRule) = [] of RiskFlowRule,
-                   @reject_all_flows : Bool = false)
+                   @reject_all_flows : Bool = false,
+                   @default_action : RiskFlowAction? = nil)
+      validate!
+    end
+
+    # Called by `JSON::Serializable` after `from_json`, which doesn't
+    # run `initialize`.
+    protected def after_initialize
+      validate!
+    end
+
+    # Every pair of authority and sensitivity a rule must cover when
+    # there is no default.
+    def self.required_pairs : Array({Authority, Sensitivity})
+      Authority.values.flat_map do |authority|
+        [Sensitivity::Elevated, Sensitivity::High].map { |sensitivity| {authority, sensitivity} }
+      end
+    end
+
+    # Raises InvalidRiskFlowPolicyError for `default: Allow`, or for
+    # pairs neither a rule nor a default covers, naming every one.
+    private def validate! : Nil
+      return if @reject_all_flows
+      if @default_action.try(&.allow?)
+        raise InvalidRiskFlowPolicyError.new(
+          "a risk-flow policy's default may be Ask or Reject, not Allow; write an Allow rule for each pair that should allow")
+      end
+      return if @default_action
+
+      covered = @risk_flow_rules.map { |rule| {rule.authority, rule.sensitivity} }.to_set
+      missing = RiskFlowPolicy.required_pairs.reject { |pair| covered.includes?(pair) }
+      return if missing.empty?
+      names = missing.map { |authority, sensitivity| "#{authority}/#{sensitivity}" }
+      raise InvalidRiskFlowPolicyError.new(
+        "a risk-flow policy needs a rule for each of #{names.join(", ")}, or a default (Ask or Reject)")
     end
 
     # A policy that rejects every flow of sensitive data, including
@@ -146,7 +202,9 @@ module Adjutant
       return {RiskFlowAction::Allow, nil} if sensitivity.none?
       return {RiskFlowAction::Reject, nil} if reject_all_flows?
       matched = risk_flow_rules.find { |rule| rule.authority == authority && rule.sensitivity == sensitivity }
-      {matched.try(&.action) || RiskFlowAction::Allow, matched}
+      # A valid policy covers every pair, so the last fallback is
+      # unreachable; it fails closed all the same.
+      {matched.try(&.action) || @default_action || RiskFlowAction::Reject, matched}
     end
   end
 end

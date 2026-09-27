@@ -39,12 +39,12 @@ module Adjutant
   describe RiskFlowPolicy do
     describe "#sensitivity_for" do
       it "returns None when nothing matches" do
-        policy = RiskFlowPolicy.new
+        policy = RiskFlowPolicy.new(default_action: RiskFlowAction::Reject)
         policy.sensitivity_for(ProvenanceKind::File, "/tmp/scratch").should eq Sensitivity::None
       end
 
       it "returns the sensitivity of the single matching rule" do
-        policy = RiskFlowPolicy.new(sensitivity_patterns: [
+        policy = RiskFlowPolicy.new(default_action: RiskFlowAction::Reject, sensitivity_patterns: [
           SensitivityPattern.new(ProvenanceKind::File, "/etc/passwd", 10, Sensitivity::High),
         ])
         policy.sensitivity_for(ProvenanceKind::File, "/etc/passwd").should eq Sensitivity::High
@@ -52,14 +52,14 @@ module Adjutant
       end
 
       it "does not cross-match a different ProvenanceKind with the same origin string" do
-        policy = RiskFlowPolicy.new(sensitivity_patterns: [
+        policy = RiskFlowPolicy.new(default_action: RiskFlowAction::Reject, sensitivity_patterns: [
           SensitivityPattern.new(ProvenanceKind::Host, "example.com", 10, Sensitivity::High),
         ])
         policy.sensitivity_for(ProvenanceKind::File, "example.com").should eq Sensitivity::None
       end
 
       it "highest priority wins among several matching rules" do
-        policy = RiskFlowPolicy.new(sensitivity_patterns: [
+        policy = RiskFlowPolicy.new(default_action: RiskFlowAction::Reject, sensitivity_patterns: [
           SensitivityPattern.new(ProvenanceKind::File, "^/etc/", 0, Sensitivity::Elevated, PatternType::Regex),
           SensitivityPattern.new(ProvenanceKind::File, "/etc/passwd", 10, Sensitivity::High),
           SensitivityPattern.new(ProvenanceKind::File, "/etc/hosts", 10, Sensitivity::None),
@@ -74,7 +74,7 @@ module Adjutant
         # Same rules as above but with the specific ones listed first —
         # result must be identical, since priority (not array position)
         # decides the winner.
-        policy = RiskFlowPolicy.new(sensitivity_patterns: [
+        policy = RiskFlowPolicy.new(default_action: RiskFlowAction::Reject, sensitivity_patterns: [
           SensitivityPattern.new(ProvenanceKind::File, "/etc/passwd", 10, Sensitivity::High),
           SensitivityPattern.new(ProvenanceKind::File, "/etc/hosts", 10, Sensitivity::None),
           SensitivityPattern.new(ProvenanceKind::File, "^/etc/", 0, Sensitivity::Elevated, PatternType::Regex),
@@ -84,7 +84,7 @@ module Adjutant
       end
 
       it "raises AmbiguousRiskFlowPolicyError when two rules tie at the top priority" do
-        policy = RiskFlowPolicy.new(sensitivity_patterns: [
+        policy = RiskFlowPolicy.new(default_action: RiskFlowAction::Reject, sensitivity_patterns: [
           SensitivityPattern.new(ProvenanceKind::File, "^/etc/", 5, Sensitivity::Elevated, PatternType::Regex),
           SensitivityPattern.new(ProvenanceKind::File, "/etc/passwd", 5, Sensitivity::High),
         ])
@@ -101,7 +101,7 @@ module Adjutant
       end
 
       it "does not raise for an origin that only hits the non-tied rule" do
-        policy = RiskFlowPolicy.new(sensitivity_patterns: [
+        policy = RiskFlowPolicy.new(default_action: RiskFlowAction::Reject, sensitivity_patterns: [
           SensitivityPattern.new(ProvenanceKind::File, "^/etc/", 5, Sensitivity::Elevated, PatternType::Regex),
           SensitivityPattern.new(ProvenanceKind::File, "/etc/passwd", 5, Sensitivity::High),
         ])
@@ -114,23 +114,23 @@ module Adjutant
       it "always allows Sensitivity::None regardless of table contents" do
         policy = RiskFlowPolicy.new(risk_flow_rules: [
           RiskFlowRule.new(Authority::Delete, Sensitivity::None, RiskFlowAction::Reject),
-        ])
+        ], default_action: RiskFlowAction::Reject)
         action, rule = policy.action_for(Authority::Delete, Sensitivity::None)
         action.should eq RiskFlowAction::Allow
         rule.should be_nil
       end
 
-      it "returns Allow and no matched rule when no rule matches a non-None sensitivity" do
-        policy = RiskFlowPolicy.new
+      it "returns the default and no matched rule when no rule names the pair" do
+        policy = RiskFlowPolicy.new(default_action: RiskFlowAction::Ask)
         action, rule = policy.action_for(Authority::Net, Sensitivity::High)
-        action.should eq RiskFlowAction::Allow
+        action.should eq RiskFlowAction::Ask
         rule.should be_nil
       end
 
       it "returns the matching rule's action and the rule itself" do
         ask_rule = RiskFlowRule.new(Authority::Delete, Sensitivity::Elevated, RiskFlowAction::Ask)
         reject_rule = RiskFlowRule.new(Authority::Write, Sensitivity::High, RiskFlowAction::Reject)
-        policy = RiskFlowPolicy.new(risk_flow_rules: [ask_rule, reject_rule])
+        policy = RiskFlowPolicy.new(risk_flow_rules: [ask_rule, reject_rule], default_action: RiskFlowAction::Reject)
 
         action, rule = policy.action_for(Authority::Delete, Sensitivity::Elevated)
         action.should eq RiskFlowAction::Ask
@@ -141,13 +141,63 @@ module Adjutant
         rule2.should eq reject_rule
       end
 
-      it "does not cross-match a different Effect with the same sensitivity" do
+      it "does not cross-match a different authority with the same sensitivity" do
         policy = RiskFlowPolicy.new(risk_flow_rules: [
           RiskFlowRule.new(Authority::Delete, Sensitivity::High, RiskFlowAction::Reject),
-        ])
+        ], default_action: RiskFlowAction::Ask)
         action, rule = policy.action_for(Authority::Net, Sensitivity::High)
-        action.should eq RiskFlowAction::Allow
+        action.should eq RiskFlowAction::Ask
         rule.should be_nil
+      end
+    end
+
+    # A gap in a policy must reach its author when it is built, not an
+    # unattended run when a flow first meets it.
+    describe "completeness" do
+      it "rejects a policy that leaves pairs to no rule and no default, naming each" do
+        rules = RiskFlowPolicy.required_pairs.reject { |authority, _| authority.write? }.map do |authority, sensitivity|
+          RiskFlowRule.new(authority, sensitivity, RiskFlowAction::Ask)
+        end
+        error = expect_raises(InvalidRiskFlowPolicyError) do
+          RiskFlowPolicy.new(risk_flow_rules: rules)
+        end
+        error.message.not_nil!.should contain "Write/Elevated, Write/High"
+      end
+
+      it "requires Ambient, which Legate.env consults for a variable's own sensitivity" do
+        rules = RiskFlowPolicy.required_pairs.reject { |authority, _| authority.ambient? }.map do |authority, sensitivity|
+          RiskFlowRule.new(authority, sensitivity, RiskFlowAction::Ask)
+        end
+        expect_raises(InvalidRiskFlowPolicyError, /Ambient\/Elevated, Ambient\/High/) do
+          RiskFlowPolicy.new(risk_flow_rules: rules)
+        end
+      end
+
+      it "accepts a policy whose rules name every pair" do
+        rules = RiskFlowPolicy.required_pairs.map do |authority, sensitivity|
+          RiskFlowRule.new(authority, sensitivity, RiskFlowAction::Allow)
+        end
+        RiskFlowPolicy.new(risk_flow_rules: rules).action_for(Authority::Log, Sensitivity::High)[0].should eq RiskFlowAction::Allow
+      end
+
+      it "rejects a default of Allow" do
+        expect_raises(InvalidRiskFlowPolicyError, /not Allow/) do
+          RiskFlowPolicy.new(default_action: RiskFlowAction::Allow)
+        end
+      end
+
+      it "checks a policy loaded from JSON the same way" do
+        expect_raises(InvalidRiskFlowPolicyError, /Read\/Elevated/) do
+          RiskFlowPolicy.from_json(%({"sensitivity_patterns": [], "risk_flow_rules": []}))
+        end
+        expect_raises(InvalidRiskFlowPolicyError, /not Allow/) do
+          RiskFlowPolicy.from_json(%({"sensitivity_patterns": [], "risk_flow_rules": [], "default": "allow"}))
+        end
+      end
+
+      it "reads the default from JSON" do
+        policy = RiskFlowPolicy.from_json(%({"sensitivity_patterns": [], "risk_flow_rules": [], "default": "ask"}))
+        policy.action_for(Authority::Write, Sensitivity::High)[0].should eq RiskFlowAction::Ask
       end
     end
 
@@ -185,10 +235,10 @@ module Adjutant
       it "a loaded policy JSON (never containing reject_all_flows) does not accidentally reject everything" do
         policy = RiskFlowPolicy.new(risk_flow_rules: [
           RiskFlowRule.new(Authority::Delete, Sensitivity::High, RiskFlowAction::Ask),
-        ])
+        ], default_action: RiskFlowAction::Ask)
         parsed = RiskFlowPolicy.from_json(policy.to_json)
         parsed.reject_all_flows?.should be_false
-        parsed.action_for(Authority::Net, Sensitivity::High)[0].should eq RiskFlowAction::Allow
+        parsed.action_for(Authority::Net, Sensitivity::High)[0].should eq RiskFlowAction::Ask
       end
     end
 
@@ -202,9 +252,11 @@ module Adjutant
           risk_flow_rules: [
             RiskFlowRule.new(Authority::Delete, Sensitivity::Elevated, RiskFlowAction::Ask),
             RiskFlowRule.new(Authority::Write, Sensitivity::High, RiskFlowAction::Reject),
-          ]
+          ],
+          default_action: RiskFlowAction::Ask,
         )
         parsed = RiskFlowPolicy.from_json(original.to_json)
+        parsed.default_action.should eq RiskFlowAction::Ask
         parsed.sensitivity_for(ProvenanceKind::File, "/etc/passwd").should eq Sensitivity::High
         parsed.sensitivity_for(ProvenanceKind::File, "/etc/shadow").should eq Sensitivity::Elevated
         parsed.action_for(Authority::Delete, Sensitivity::Elevated)[0].should eq RiskFlowAction::Ask
@@ -231,7 +283,8 @@ module Adjutant
             RiskFlowRule.new(Authority::Delete, Sensitivity::High, RiskFlowAction::Ask),
             RiskFlowRule.new(Authority::Net, Sensitivity::High, RiskFlowAction::Ask),
             RiskFlowRule.new(Authority::Write, Sensitivity::High, RiskFlowAction::Reject),
-          ]
+          ],
+          default_action: RiskFlowAction::Ask,
         )
         policy = RiskFlowPolicy.from_json(original.to_json)
         policy.sensitivity_for(ProvenanceKind::File, "/etc/passwd").should eq Sensitivity::High
@@ -249,7 +302,7 @@ module Adjutant
   describe "Interpreter risk_flow_policy wiring" do
     it "accepts a RiskFlowPolicy at construction" do
       ef = TestEffectHandler.new
-      policy = RiskFlowPolicy.new(sensitivity_patterns: [
+      policy = RiskFlowPolicy.new(default_action: RiskFlowAction::Reject, sensitivity_patterns: [
         SensitivityPattern.new(ProvenanceKind::File, "/etc/passwd", 10, Sensitivity::High),
       ])
       interp = Interpreter.new(

@@ -36,7 +36,7 @@ module Adjutant
       sensitivity_patterns: [
         SensitivityPattern.new(ProvenanceKind::File, sensitive_path, priority, Sensitivity::High),
       ],
-      risk_flow_rules: [RiskFlowRule.new(authority, Sensitivity::High, action)],
+      risk_flow_rules: allow_unlisted([RiskFlowRule.new(authority, Sensitivity::High, action)]),
     )
   end
 

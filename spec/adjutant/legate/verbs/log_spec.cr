@@ -148,7 +148,7 @@ module Adjutant
       begin
         policy = RiskFlowPolicy.new(
           sensitivity_patterns: [SensitivityPattern.new(ProvenanceKind::Env, "ADJUTANT_SPEC_SECRET", 1, Sensitivity::High)],
-          risk_flow_rules: [RiskFlowRule.new(Authority::Log, Sensitivity::High, RiskFlowAction::Reject)],
+          risk_flow_rules: allow_unlisted([RiskFlowRule.new(Authority::Log, Sensitivity::High, RiskFlowAction::Reject)]),
         )
         interp, _ = make_interp(
           risk_flow_policy: policy,
@@ -167,7 +167,7 @@ module Adjutant
 
     it "does NOT reject an untainted value under the identical rule — no false positive" do
       policy = RiskFlowPolicy.new(
-        risk_flow_rules: [RiskFlowRule.new(Authority::Log, Sensitivity::High, RiskFlowAction::Reject)],
+        risk_flow_rules: allow_unlisted([RiskFlowRule.new(Authority::Log, Sensitivity::High, RiskFlowAction::Reject)]),
       )
       interp, _ = make_interp(risk_flow_policy: policy, grants: Legate::Grants.deny_all)
       eval = interp.eval(<<-RUBY)
@@ -186,7 +186,7 @@ module Adjutant
       begin
         policy = RiskFlowPolicy.new(
           sensitivity_patterns: [SensitivityPattern.new(ProvenanceKind::Env, "ADJUTANT_SPEC_SECRET", 1, Sensitivity::High)],
-          risk_flow_rules: [RiskFlowRule.new(Authority::Log, Sensitivity::High, RiskFlowAction::Allow)],
+          risk_flow_rules: allow_unlisted([RiskFlowRule.new(Authority::Log, Sensitivity::High, RiskFlowAction::Allow)]),
         )
         interp, _ = make_interp(
           risk_flow_policy: policy,

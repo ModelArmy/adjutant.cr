@@ -33,6 +33,18 @@ module Adjutant
     raise "unexpected RiskFlowDecisionRequest in a spec not testing risk flow decisions: #{req.call_name}"
   }
 
+  # `rules` plus an Allow rule for every pair of authority and
+  # sensitivity they leave out, so a spec written before policies had
+  # to be complete keeps the behaviour it was written against.
+  # Spec-only: a real policy states a default of Ask or Reject instead
+  # (RiskFlowPolicy).
+  private def self.allow_unlisted(rules : Array(RiskFlowRule) = [] of RiskFlowRule) : Array(RiskFlowRule)
+    listed = rules.map { |rule| {rule.authority, rule.sensitivity} }.to_set
+    rules + RiskFlowPolicy.required_pairs.reject { |pair| listed.includes?(pair) }.map do |authority, sensitivity|
+      RiskFlowRule.new(authority, sensitivity, RiskFlowAction::Allow)
+    end
+  end
+
   # Helper: create an interpreter with a capturing effect handler.
   private def self.make_interp(
     limits : ExecutionLimits = ExecutionLimits.new,

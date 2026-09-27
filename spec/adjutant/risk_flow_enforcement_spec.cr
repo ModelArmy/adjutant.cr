@@ -14,9 +14,9 @@ module Adjutant
   # sensitivity from a pattern at check time (it doesn't — sensitivity
   # lives on the ProvenanceTag already, set when the tag was created).
   private def self.enforcement_policy_for(action : RiskFlowAction) : RiskFlowPolicy
-    RiskFlowPolicy.new(risk_flow_rules: [
+    RiskFlowPolicy.new(risk_flow_rules: allow_unlisted([
       RiskFlowRule.new(Authority::Delete, Sensitivity::High, action),
-    ])
+    ]))
   end
 
   # An interpreter with a native `delete_file(path)` tagged
@@ -60,9 +60,9 @@ module Adjutant
         # None short-circuit means the check never even consults the
         # rule table, regardless of what Effect the call carries.
         ef = TestEffectHandler.new
-        policy = RiskFlowPolicy.new(risk_flow_rules: [
+        policy = RiskFlowPolicy.new(risk_flow_rules: allow_unlisted([
           RiskFlowRule.new(Authority::Delete, Sensitivity::High, RiskFlowAction::Reject),
-        ])
+        ]))
         interp = Interpreter.new(risk_flow_policy: policy, on_risk_flow_decision: TEST_UNEXPECTED_ASK_CALLBACK, effect: ef)
         interp.define_native("delete_file", risk: RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error),
       authorities: Set{Authority::Delete}) do |args|
@@ -252,9 +252,9 @@ module Adjutant
           called = true
           RiskFlowDecision::Allow
         }
-        policy = RiskFlowPolicy.new(risk_flow_rules: [
+        policy = RiskFlowPolicy.new(risk_flow_rules: allow_unlisted([
           RiskFlowRule.new(Authority::Delete, Sensitivity::High, RiskFlowAction::Ask),
-        ])
+        ]))
         interp, _ = make_enforcement_interp(policy, callback)
         interp.eval(%(delete_file("/tmp/scratch")))
         called.should be_false

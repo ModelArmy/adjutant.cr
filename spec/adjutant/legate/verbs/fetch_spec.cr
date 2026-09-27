@@ -166,7 +166,7 @@ module Adjutant
     describe "risk-flow enforcement (the actual exfiltration fix)" do
       it "rejects a request body carrying a pre-existing taint, before any network call is attempted" do
         policy = RiskFlowPolicy.new(
-          risk_flow_rules: [RiskFlowRule.new(Authority::Net, Sensitivity::Elevated, RiskFlowAction::Reject)],
+          risk_flow_rules: allow_unlisted([RiskFlowRule.new(Authority::Net, Sensitivity::Elevated, RiskFlowAction::Reject)]),
         )
         interp, _ = make_interp(risk_flow_policy: policy, grants: net_grants(methods: ["get", "post"]))
         interp.define_native("tainted_str") do |args|

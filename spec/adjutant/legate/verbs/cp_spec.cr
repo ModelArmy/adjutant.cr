@@ -339,7 +339,7 @@ module Adjutant
         to = File.join(dir, "copy")
         policy = RiskFlowPolicy.new(
           sensitivity_patterns: [SensitivityPattern.new(ProvenanceKind::File, secret, 1, Sensitivity::High)],
-          risk_flow_rules: [RiskFlowRule.new(Authority::Read, Sensitivity::High, RiskFlowAction::Reject)],
+          risk_flow_rules: allow_unlisted([RiskFlowRule.new(Authority::Read, Sensitivity::High, RiskFlowAction::Reject)]),
         )
         interp, _ = make_interp(
           risk_flow_policy: policy,
