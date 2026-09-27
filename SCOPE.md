@@ -21,24 +21,18 @@ after 1.0. Ordered for working through: security and policy defects
 first, then the Ruby divergences, then design work on policy and
 configuration.
 
-- **Per-run budgets default to unenforced, and `wall_clock` misses
-  pure computation.** Decided: every per-run budget
-  gets a default, as the per-call limits have.
-  1. `wall_clock`, `total_read` and `total_write` are nil when a
-     policy omits them, which means not enforced (`Legate::Limits`,
-     `ResourceLimits`). LEGATE.md §7's example values (300s, 4GiB,
-     1GiB) are candidate defaults; the section should state whichever
-     are chosen.
-  2. `memory` is carried but enforced by nothing in Adjutant:
-     `budget.cr` leaves it to the OS tier (cgroups, rlimit). Its
-     default is advice to the host, and §7 should say so.
-  3. `wall_clock` is checked only in `Adjutant::Broker#authorize`,
-     before an effectful call, and in `Legate.grep`'s loop. A loop with
-     no effects never reaches either, so `loop { x += 1 }` runs past
-     any `wall_clock`. The VM's own `ExecutionLimits#instruction_limit`
-     defaults to 0, unlimited. The fix is checking the wall clock from
-     the VM's dispatch loop, every N instructions, alongside
-     `instruction_limit`.
+- **A file a script `require`s from the VFS runs in a fresh VM, and
+  again on every `require`.** Predicted by reading
+  `Interpreter#require_module`. The file runs inside the current run
+  (budgets, streams and scratch are shared), but in a VM of its own,
+  whose instruction count and call depth start at zero, so its work
+  counts toward neither `instruction_limit` nor `call_depth_limit`,
+  and a `require` inside it starts another. Nothing records a file as
+  loaded, so `require` runs it again each time, where Ruby's loads it
+  once and returns false after. Only reachable when the host's
+  `EffectHandler#vfs_read` serves files. Fix: record loaded paths, and
+  run the file in the requiring VM, or count its VM toward the
+  requirer's limits.
 
 - **`Legate.read` and `Legate.grep` read files whole without a
   bounded read.** Predicted by reading the verbs.

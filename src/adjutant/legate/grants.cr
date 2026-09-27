@@ -186,7 +186,8 @@ module Adjutant
                      @url_limit = DEFAULT_URL_LIMIT,
                      @stream_limit = DEFAULT_STREAM_LIMIT,
                      max_open_streams = DEFAULT_MAX_OPEN_STREAMS,
-                     memory = nil, wall_clock = nil, total_read = nil, total_write = nil)
+                     memory : Int64? = DEFAULT_MEMORY, wall_clock : Int32? = DEFAULT_WALL_CLOCK,
+                     total_read : Int64? = DEFAULT_TOTAL_READ, total_write : Int64? = DEFAULT_TOTAL_WRITE)
         super(max_open_streams, memory, wall_clock, total_read, total_write)
       end
     end
@@ -284,10 +285,10 @@ module Adjutant
           url_limit: YamlPolicy.size(node, "url_limit") || Limits::DEFAULT_URL_LIMIT,
           stream_limit: YamlPolicy.size(node, "stream_limit") || Limits::DEFAULT_STREAM_LIMIT,
           max_open_streams: YamlPolicy.count(node, "max_open_streams") || Limits::DEFAULT_MAX_OPEN_STREAMS,
-          memory: YamlPolicy.size(node, "memory"),
-          wall_clock: YamlPolicy.seconds(node, "wall_clock"),
-          total_read: YamlPolicy.size(node, "total_read"),
-          total_write: YamlPolicy.size(node, "total_write"),
+          memory: YamlPolicy.size(node, "memory") || Limits::DEFAULT_MEMORY,
+          wall_clock: YamlPolicy.seconds(node, "wall_clock") || Limits::DEFAULT_WALL_CLOCK,
+          total_read: YamlPolicy.size(node, "total_read") || Limits::DEFAULT_TOTAL_READ,
+          total_write: YamlPolicy.size(node, "total_write") || Limits::DEFAULT_TOTAL_WRITE,
         )
       end
     end

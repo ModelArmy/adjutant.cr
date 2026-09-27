@@ -175,9 +175,9 @@ module Adjutant
         File.write(file, "0123456789") # 10 bytes
         limits = Legate::Limits.new(total_read: 15_i64)
         interp, _ = make_interp(grants: Legate::Grants.new(read_roots: [dir], limits: limits))
-        interp.eval(%(Legate.read(#{(file).inspect}))) # 10, ok
+        # Both reads in one run: each `eval` gets the whole budget.
         expect_raises(Legate::FatalSignal, /total_read budget exceeded/) do
-          interp.eval(%(Legate.read(#{(file).inspect}))) # 20 > 15
+          interp.eval(%(Legate.read(#{(file).inspect})\nLegate.read(#{(file).inspect}))) # 10, then 20 > 15
         end
       end
     end

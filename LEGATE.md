@@ -708,6 +708,8 @@ A `net.hosts` entry is either a plain string or a mapping. Every default fails c
 
 It is the one limit that is **per run and recoverable**, and deliberately so: it caps simultaneous holdings rather than cumulative consumption, so a script that hits it and then finishes walking one stream has genuinely freed the resource and may legitimately open another. That is unlike `total_read`, where catching and retrying past the budget would reinstate the exhaustion the budget exists to prevent.
 
+Every limit has a default, and the values above are those defaults, so a policy that names no limit still bounds a run. A run is one `Interpreter#eval`: the per-run budgets start afresh with each, as `Legate.scratch` does. `wall_clock` is checked before every effectful call and, every 1,024 instructions, by the VM itself, so a loop that makes no calls meets it too. `memory` is not enforced by Adjutant; its value is advice to whatever enforces memory at the OS tier (cgroups, rlimit).
+
 Absent grants are denied. **Per-call limits are recoverable; per-run budgets are fatal.** Hitting the 8 MiB read limit is advice — the script should switch to `Legate.lines`. Hitting the 4 GiB total-read budget is exhaustion, and permitting a script to catch and retry past it reinstates exactly the denial-of-service the budget existed to prevent.
 
 ---

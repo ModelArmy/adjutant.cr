@@ -205,6 +205,10 @@ module Adjutant
   class VM
     MAX_STACK = 4096
 
+    # Instructions between checks of the run's wall clock, a power of
+    # two so the test is a mask.
+    WALL_CLOCK_INTERVAL = 1024_u64
+
     # An empty chunk for the sentinel frame `call_method` runs under,
     # which carries a filename and line but no code. Never mutated, so
     # one instance is shared.
@@ -584,6 +588,11 @@ module Adjutant
       @instruction_count += 1
       if @limits.instruction_limit > 0 && @instruction_count > @limits.instruction_limit
         raise script_diagnostic("L004", {"limit" => @limits.instruction_limit.to_s}, current_frame)
+      end
+      # A loop with no effects never reaches `Broker#authorize`, the
+      # other place the wall clock is checked.
+      if (@instruction_count & (WALL_CLOCK_INTERVAL - 1)) == 0
+        @interpreter.try(&.effect_broker.budget.check_wall_clock!)
       end
     end
 

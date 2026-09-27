@@ -141,11 +141,16 @@ module Adjutant
     # assessed runs, with no second parse. Pass the filename given to
     # `parse`; a Body doesn't record it, and a different name loses the
     # source snippets.
+    #
+    # Each call is one run: per-run budgets start afresh, and open
+    # streams and `Legate.scratch` are cleaned up when it ends. The
+    # audit log keeps building up across runs. A file a script
+    # `require`s runs inside the current run instead (`run_body`), so
+    # it can't reset the budgets or clean up underneath the script.
     def eval(body : Body, filename : String) : Value
-      chunk, local_count = Compiler.compile(body, @symbols)
-      vm = make_vm
+      @effect_broker.budget.start_run!
       begin
-        vm.run(chunk, filename, local_count)
+        run_body(body, filename)
       ensure
         # Closes every stream source still open, after a normal return
         # or an exception, so the next script on this Interpreter starts
@@ -158,6 +163,12 @@ module Adjutant
         # collecting failures as above.
         @broker.cleanup_scratch!
       end
+    end
+
+    # Compiles and runs `body` within whatever run is in progress.
+    private def run_body(body : Body, filename : String) : Value
+      chunk, local_count = Compiler.compile(body, @symbols)
+      make_vm.run(chunk, filename, local_count)
     end
 
     # Compiles a source string without running it.
@@ -190,7 +201,7 @@ module Adjutant
 
       if ef = @effect
         if src = ef.vfs_read(path)
-          eval(IO::Memory.new(src), path)
+          run_body(parse(IO::Memory.new(src), path), path)
           return Value.bool(true)
         end
       end

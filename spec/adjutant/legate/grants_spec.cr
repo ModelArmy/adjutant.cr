@@ -66,12 +66,12 @@ module Adjutant
         limits.url_limit.should eq Legate::Limits::DEFAULT_URL_LIMIT
       end
 
-      it "leaves per-run budgets unenforced (nil)" do
+      it "gives every per-run budget its default" do
         limits = Legate::Grants.deny_all.limits
-        limits.memory.should be_nil
-        limits.wall_clock.should be_nil
-        limits.total_read.should be_nil
-        limits.total_write.should be_nil
+        limits.memory.should eq 536_870_912_i64
+        limits.wall_clock.should eq 300
+        limits.total_read.should eq 4_294_967_296_i64
+        limits.total_write.should eq 1_073_741_824_i64
       end
     end
 
@@ -140,10 +140,11 @@ module Adjutant
         limits.url_limit.should eq 4_096_i64
       end
 
-      it "denies everything and leaves budgets unenforced when both top-level keys are absent" do
+      it "denies everything and applies the default budgets when both top-level keys are absent" do
         grants = Legate::Grants.from_yaml("{}")
         grants.read_roots.should be_empty
-        grants.limits.memory.should be_nil
+        grants.limits.wall_clock.should eq Legate::Limits::DEFAULT_WALL_CLOCK
+        grants.limits.total_write.should eq Legate::Limits::DEFAULT_TOTAL_WRITE
       end
 
       it "denies everything for a blank document, rather than raising YAML's own error" do
