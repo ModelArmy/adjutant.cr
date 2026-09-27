@@ -134,6 +134,28 @@ module Adjutant
       end
     end
 
+    # Each file is read whole, so each is held to `read_limit`, as
+    # `Legate.read` would hold it.
+    it "raises Legate::TooLarge for a file over read_limit, naming it and the streaming alternative" do
+      with_tmpdir do |dir|
+        big = File.join(dir, "big.txt")
+        File.write(big, "x\n" * 100)
+        limits = Legate::Limits.new(read_limit: 50_i64)
+        interp, _ = make_interp(grants: Legate::Grants.new(read_roots: [dir], limits: limits))
+        eval = interp.eval(<<-RUBY)
+        begin
+          Legate.grep("x", #{(File.join(dir, "*.txt")).inspect})
+          "no error"
+        rescue Legate::TooLarge => e
+          e.message
+        end
+        RUBY
+        eval.as_string.should contain "big.txt is over the 50 B read limit"
+        eval.as_string.should contain "Legate.lines"
+        interp.broker.budget.total_read.should eq 51
+      end
+    end
+
     it "raises ArgumentError (R018) when pattern is missing" do
       interp, _ = make_interp(grants: Legate::Grants.deny_all)
       eval = interp.eval(<<-RUBY)

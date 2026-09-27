@@ -129,6 +129,17 @@ module Adjutant
         end
       end
 
+      # A size is only what the file reported when checked; the read
+      # itself stops at the limit whatever the file turns out to hold.
+      {% if flag?(:linux) %}
+        it "reads a pseudo-file that reports its size as 0" do
+          interp, _ = make_interp(grants: Legate::Grants.new(read_roots: ["/proc"]))
+          eval = interp.eval(%(Legate.read("/proc/self/status")))
+          eval.as_string.should contain "Name:"
+          interp.broker.budget.total_read.should eq eval.as_string.bytesize
+        end
+      {% end %}
+
       it "a script-given limit: cannot exceed the policy's own read_limit" do
         with_tmpdir do |dir|
           file = File.join(dir, "f.txt")
