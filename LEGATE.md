@@ -386,7 +386,7 @@ Signatures use Ruby keyword-argument syntax. `->` names the return type. **Raise
 ```ruby
 Legate.read(path, limit: policy.read_limit, scrub: true, missing: :raise)  -> String
 ```
-Whole-file read. MUST check size before allocating. Raises `Legate::TooLarge` whose message names `Legate.lines` and `Legate.bytes`. Default limit 8 MiB.
+Whole-file read. MUST check size before allocating, and MUST bound the read itself, since a file may grow after its size is checked and a pseudo-file may report 0. Raises `Legate::TooLarge` whose message names `Legate.lines` and `Legate.bytes`. Default limit 8 MiB.
 **Raises** `NotFound`, `TooLarge`, `Malformed` (encoding, when `scrub: false`). **Suppressible** `NotFound`, via `missing:`.
 
 ```ruby
@@ -404,8 +404,8 @@ Glob. `Legate.list("src/*")` is `ls`; `Legate.list("**/*.rb")` is `find`. Result
 ```ruby
 Legate.grep(pattern, paths, context: 0, limit: 10_000)  -> Array<Legate::Match>
 ```
-Content search. `pattern` is a `Regexp` or `String`; `paths` is a glob string or an Array. Binary files skipped. This verb exists so that scripts do not need to shell out to `rg`.
-**Raises** `TooMany`, `Timeout`.
+Content search. `pattern` is a `Regexp` or `String`; `paths` is a glob string or an Array. Binary files skipped. Each file is read whole, so each is held to `read_limit`, as `Legate.read` holds it; a larger one raises `TooLarge` naming the file, and `Legate.lines` streams it instead. This verb exists so that scripts do not need to shell out to `rg`.
+**Raises** `TooMany`, `TooLarge`, `Timeout`.
 
 ### 4.2 Streaming reads — grant `read`
 

@@ -26,6 +26,7 @@ module Adjutant
 
         def self.bootstrap(interp : Interpreter, legate : RubyClass, broker : Broker) : Nil
           too_many = Helpers.fetch(legate, interp, "TooMany")
+          too_large = Helpers.fetch(legate, interp, "TooLarge")
           match_cls = Helpers.fetch(legate, interp, "Match")
           path_cls = Helpers.fetch(legate, interp, "Path")
 
@@ -72,7 +73,7 @@ module Adjutant
               next unless File.file?(file) # a glob can match a directory; nothing to grep there
               next if looks_binary?(file)
 
-              lines = read_lines(file, broker)
+              lines = read_lines(file, broker, ncc, too_large)
               # `Dir.glob` returns `\` separators on Windows, and
               # Legate::Path splits on `/` only, so the path is
               # converted first.
@@ -148,15 +149,20 @@ module Adjutant
         end
 
         # The file's lines, read whole (`context:` needs random access)
-        # and recorded against the read budget after reading. Invalid
-        # UTF-8 is always scrubbed; grep has no `scrub:`.
-        private def self.read_lines(path : String, broker : Broker) : Array(String)
-          raw_bytes = File.open(path, "rb") do |file|
-            slice = ::Bytes.new(file.size)
-            file.read_fully(slice)
-            slice
+        # but no larger than the policy's `read_limit`, as `Legate.read`
+        # would take it: a larger file raises `too_large`, naming the
+        # file and `Legate.lines`, which streams it. Invalid UTF-8 is
+        # always scrubbed; grep has no `scrub:`.
+        private def self.read_lines(path : String, broker : Broker, ncc : NativeCallContext,
+                                    too_large : RubyClass) : Array(String)
+          limit = broker.grants.limits.read_limit
+          raw_bytes = Helpers.read_bounded(path, limit, broker.budget)
+          unless raw_bytes
+            ncc.raise_error_class(
+              "#{path} is over the #{Helpers.humanize_bytes(limit)} read limit — use Legate.lines(path).select { |line| ... } to search it as a stream.",
+              too_large,
+            )
           end
-          broker.budget.record_read(raw_bytes.size.to_i64)
           raw_str = String.new(raw_bytes)
           scrubbed = raw_str.valid_encoding? ? raw_str : raw_str.scrub
           lines = scrubbed.split('\n')

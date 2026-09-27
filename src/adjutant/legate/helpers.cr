@@ -78,6 +78,41 @@ module Adjutant
         prefix.empty? ? "." : prefix
       end
 
+      # At most `limit` bytes of the file at `path`, or nil if it holds
+      # more. Reads from the opened file in chunks, up to `limit + 1`
+      # bytes, and counts them against `budget` as they arrive, so no
+      # more than that is ever held or read. The size a file reports
+      # isn't trusted: one can grow after it is checked, and a
+      # pseudo-file such as `/proc/self/status` reports 0.
+      def self.read_bounded(path : String, limit : Int64, budget : Budget) : ::Bytes?
+        io = IO::Memory.new
+        buf = ::Bytes.new(65_536)
+        File.open(path, "rb") do |file|
+          loop do
+            want = Math.min(buf.size.to_i64, limit + 1 - io.size)
+            break if want <= 0
+            n = file.read(buf[0, want.to_i32])
+            break if n == 0
+            budget.record_read(n.to_i64)
+            io.write(buf[0, n])
+          end
+        end
+        io.size > limit ? nil : io.to_slice
+      end
+
+      # A byte count in binary units, for messages: "512 B", "8.0 MiB".
+      def self.humanize_bytes(n : Int64) : String
+        if n >= 1024_i64 ** 3
+          "#{(n / (1024.0 ** 3)).round(1)} GiB"
+        elsif n >= 1024_i64 ** 2
+          "#{(n / (1024.0 ** 2)).round(1)} MiB"
+        elsif n >= 1024_i64
+          "#{(n / 1024.0).round(1)} KiB"
+        else
+          "#{n} B"
+        end
+      end
+
       # Reads keyword `kwarg` with a type check: nil if omitted, the
       # value if the right type, otherwise R036 (`TypeError`) rather
       # than a Crystal cast error. Verbs read their keywords through
