@@ -24,6 +24,30 @@ module Adjutant
       eval.as_string.should eq "hi"
     end
 
+    # Another local user must not be able to read what a script
+    # writes there, nor plant the directory in advance.
+    it "names the directory with 128 random bits" do
+      interp, _ = make_interp(grants: Legate::Grants.deny_all)
+      dir = interp.broker.scratch_dir
+      begin
+        File.basename(dir).should match /\Aadjutant-legate-scratch-[0-9a-f]{32}\z/
+      ensure
+        interp.broker.cleanup_scratch!
+      end
+    end
+
+    {% unless flag?(:windows) %}
+      it "creates the directory readable only by its owner" do
+        interp, _ = make_interp(grants: Legate::Grants.deny_all)
+        dir = interp.broker.scratch_dir
+        begin
+          (File.info(dir).permissions.value & 0o777).should eq 0o700
+        ensure
+          interp.broker.cleanup_scratch!
+        end
+      end
+    {% end %}
+
     it "returns the SAME directory for every call within one run" do
       interp, _ = make_interp(grants: Legate::Grants.deny_all)
       eval = interp.eval(%(Legate.scratch.to_s == Legate.scratch.to_s))
