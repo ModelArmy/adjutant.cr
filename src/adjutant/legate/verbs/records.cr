@@ -34,6 +34,10 @@ module Adjutant
             interp.symbols.intern("records").value,
             RiskProfile.new(effects: Set{Effect::ReadsFiles}),
             KWARG_NAMES,
+            # A Read sink, as `Legate.read` is, so `VM#check_risk_flow`
+            # checks labelled arguments; `declare_sensitivity` labels
+            # the path itself.
+            authorities: Set{Authority::Read},
           ) do |args, _blk, ncc|
             # `format:` is validated before authorizing, so a bad
             # keyword costs no audit record.

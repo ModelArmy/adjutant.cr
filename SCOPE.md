@@ -21,17 +21,6 @@ after 1.0. Ordered for working through: security and policy defects
 first, then the Ruby divergences, then design work on policy and
 configuration.
 
-- **`Legate.lines`, `bytes` and `records` skip the argument risk-flow
-  check.** Predicted by reading the verb files. `read`, `stat`, `list`
-  and `grep` declare `authorities: Set{Authority::Read}`, so
-  `VM#check_risk_flow` checks a labelled path argument against the
-  policy's `Read` rules. The three streaming reads declare no
-  authorities, so the same path reaches them unchecked, and a policy
-  that forbids it is bypassed by switching verbs. `lines.cr` and
-  `bytes.cr` point to `stat.cr`'s comment, which describes both checks
-  as applying. Fix: declare `Authority::Read` on all three, with a spec
-  reaching each from a labelled source, as `read_spec.cr` does.
-
 - **The grants loader silently ignores what it can't read.**
   Predicted by reading `legate/grants.cr` and
   `net_rule.cr`; no spec covers it. The same decision as the
