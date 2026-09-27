@@ -21,13 +21,6 @@ after 1.0. Ordered for working through: security and policy defects
 first, then the Ruby divergences, then design work on policy and
 configuration.
 
-- **`Legate.records(format: :csv)` has no cap on a row.**
-  Predicted by reading the verb. `CSV::Parser` has no row or field
-  cap, so an unterminated quoted field grows in memory until
-  `total_read` stops the run, where JSONL rows are capped by
-  `Lines::DEFAULT_MAX_LINE`. Fix: bound the bytes one row may consume,
-  raising `Legate::TooLarge`, as `Legate.lines` does for a line.
-
 - **`Legate.grep` and `Legate.list` label results by the pattern's
   prefix, not by each file.** Predicted by reading the
   verbs. Both consult the policy once, for the glob's fixed leading

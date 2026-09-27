@@ -414,7 +414,7 @@ Legate.lines(path, max_line: 1_048_576, scrub: true)  -> Legate::Lines
 Legate.bytes(path, chunk: 65_536)                     -> Legate::Bytes
 Legate.records(path, format:, headers: true)          -> Legate::Records
 ```
-`format:` is `:jsonl` or `:csv`. Streams are lazy, single-pass, constant-memory (§6).
+`format:` is `:jsonl` or `:csv`. Streams are lazy, single-pass, constant-memory (§6). A `records` row, JSONL line or CSV row, is capped at 1 MiB, as `lines`' default `max_line` caps a line; a longer one raises `TooLarge`.
 
 Note the timing: these verbs raise `NotFound` and `Denied` **eagerly**, at construction, not on first iteration. A lazy failure that surfaces three method calls later is unreadable in a stack trace and confusing to a model. Parse and cap failures necessarily raise during iteration.
 **Raises** at construction `NotFound`; during iteration `Malformed`, `TooLarge` (a line exceeding `max_line`), `Timeout`.

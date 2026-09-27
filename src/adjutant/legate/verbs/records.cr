@@ -74,9 +74,12 @@ module Adjutant
                 broker.register_source(line_iter)
                 JsonlIterator.new(line_iter, malformed, ncc, interp, label)
               when "csv"
-                counting_io = BudgetCountingIO.new(io, broker)
+                # Each row is capped at `Lines::DEFAULT_MAX_LINE` bytes, as
+                # a JSONL row is, so an unterminated quoted field can't
+                # grow without bound.
+                counting_io = BudgetCountingIO.new(io, broker, Lines::DEFAULT_MAX_LINE.to_i64, too_large, raw, ncc)
                 parser = ::CSV::Parser.new(counting_io)
-                csv_iter = CsvIterator.new(parser, io, interp, headers_flag, label, ncc, malformed, raw, broker)
+                csv_iter = CsvIterator.new(parser, counting_io, io, interp, headers_flag, label, ncc, malformed, raw, broker)
                 # The CSV iterator owns the handle.
                 broker.register_source(csv_iter)
                 csv_iter
@@ -152,15 +155,30 @@ module Adjutant
         end
 
         # A read-only IO that records every underlying `read` against
-        # the read budget, since `CSV::Parser` reads ahead on its own.
-        # `write` raises.
+        # the read budget, since `CSV::Parser` reads ahead on its own,
+        # and counts the bytes read since `start_row!`, raising
+        # `too_large` past `row_limit`. `write` raises.
         class BudgetCountingIO < IO
-          def initialize(@io : File, @broker : Broker)
+          def initialize(@io : File, @broker : Broker, @row_limit : Int64, @too_large : RubyClass,
+                         @path : String, @ncc : NativeCallContext)
+            @row_bytes = 0_i64
+          end
+
+          def start_row! : Nil
+            @row_bytes = 0_i64
           end
 
           def read(slice : ::Bytes) : Int32
             n = @io.read(slice)
-            @broker.budget.record_read(n.to_i64) if n > 0
+            return n unless n > 0
+            @broker.budget.record_read(n.to_i64)
+            @row_bytes += n
+            if @row_bytes > @row_limit
+              @ncc.raise_error_class(
+                "#{@path} has a CSV row over #{@row_limit} bytes, such as an unterminated quoted field — use Legate.lines(path) or Legate.bytes(path) to stream it instead.",
+                @too_large,
+              )
+            end
             n
           end
 
@@ -171,13 +189,13 @@ module Adjutant
 
         # The `:csv` parser. `next_row` returns nil at the end, and
         # malformed input raises `CSV::MalformedCSVError`, a
-        # `CSV::Error`. There is no per-row size cap: a quoted field
-        # can grow until the read budget stops it.
+        # `CSV::Error`. A row is capped by `BudgetCountingIO`.
         class CsvIterator
           include ::Iterator(Value)
           include Closable
 
-          def initialize(@parser : ::CSV::Parser, @io : File, @interp : Interpreter, @headers_flag : Bool,
+          def initialize(@parser : ::CSV::Parser, @counting_io : BudgetCountingIO, @io : File,
+                         @interp : Interpreter, @headers_flag : Bool,
                          @label : RiskFlowLabel?, @ncc : NativeCallContext, @malformed : RubyClass, @path : String,
                          @broker : Broker)
             @header_syms = nil.as(Array(Sym)?)
@@ -216,6 +234,7 @@ module Adjutant
           end
 
           private def pull_row : Array(String)?
+            @counting_io.start_row!
             @parser.next_row
           rescue ex : ::CSV::Error
             @ncc.raise_error_class("#{@path}: malformed CSV: #{ex.message}", @malformed)
