@@ -21,18 +21,6 @@ after 1.0. Ordered for working through: security and policy defects
 first, then the Ruby divergences, then design work on policy and
 configuration.
 
-- **The scratch directory is readable by other local users.**
-  Predicted by reading `legate/broker.cr`.
-  `Broker#scratch_dir` names it with `File.tempname` under the shared
-  temp directory and creates it with `FileUtils.mkdir_p`, whose mode
-  is 0o777; under a typical umask of 022 that is 0o755, so on a
-  multi-user POSIX host anyone can list and read what a script writes
-  there. `mkdir_p` also succeeds on a path that already exists, so a
-  directory (or symlink) planted at that name would be used as is;
-  the name's random part is 32 bits from the default PRNG, beside the
-  date and pid. The fix is `Dir.mkdir(dir, 0o700)`, which fails if
-  the path exists, retrying with a new name on that failure.
-
 - **Per-run budgets default to unenforced, and `wall_clock` misses
   pure computation.** Decided: every per-run budget
   gets a default, as the per-call limits have.
