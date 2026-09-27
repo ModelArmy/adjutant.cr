@@ -306,12 +306,12 @@ module Adjutant
 
     # Runs `proc` in an isolated frame and value stack and returns its
     # result. `outer_locals` is the closure to run it with, or nil for
-    # the current frame and the scopes it closes over.
+    # the current frame and the scopes it closes over. Its instructions
+    # and frames count toward the same limits as the caller's.
     private def invoke_internal(proc : ScriptProc, args : Array(Value), self_val : Value? = nil,
                                 outer_locals : OuterChain? = nil, kwargs : Hash(String, Value)? = nil) : Value
       saved_frames = @frames
       saved_stack = @stack
-      saved_ins_count = @instruction_count
       saved_cur_block = @current_block
       saved_cur_block_locals = @current_block_locals
       saved_cur_block_yield = @current_block_yield
@@ -341,7 +341,6 @@ module Adjutant
       ensure
         @frames = saved_frames
         @stack = saved_stack
-        @instruction_count = saved_ins_count
         @current_block = saved_cur_block
         @current_block_locals = saved_cur_block_locals
         @current_block_yield = saved_cur_block_yield
@@ -1178,12 +1177,12 @@ module Adjutant
     # Calls `recv.name(*args)` from native code and returns the
     # result, as `x.name(...)` in a script would. A script method runs
     # to completion in isolated frames and stack, as in
-    # `invoke_internal`; a native one returns directly.
+    # `invoke_internal`, and counts toward the same limits; a native
+    # one returns directly.
     protected def call_method(recv : Value, name : String, args : Array(Value),
                               filename : String = "<native>", line : Int32 = 0) : Value
       saved_frames = @frames
       saved_stack = @stack
-      saved_ins_count = @instruction_count
       saved_cur_block = @current_block
       saved_cur_block_locals = @current_block_locals
       saved_cur_block_yield = @current_block_yield
@@ -1208,7 +1207,6 @@ module Adjutant
       ensure
         @frames = saved_frames
         @stack = saved_stack
-        @instruction_count = saved_ins_count
         @current_block = saved_cur_block
         @current_block_locals = saved_cur_block_locals
         @current_block_yield = saved_cur_block_yield

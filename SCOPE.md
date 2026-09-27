@@ -21,16 +21,6 @@ after 1.0. Ordered for working through: security and policy defects
 first, then the Ruby divergences, then design work on policy and
 configuration.
 
-- **Work in a nested run doesn't count toward `instruction_limit`.**
-  Predicted by reading `vm.cr`. `invoke_internal` (a block run by a
-  native method such as `each` or `times`) and `call_method` (a native
-  method calling a script's) save `@instruction_count` before the run
-  and restore it after, so what the run executed is forgotten. A limit
-  can then stop a single long block call but not `100_000.times { ...
-  }`, whose calls each start from the same count. Fix: keep the count
-  running across nested runs, with a spec that a loop of short block
-  calls meets the limit.
-
 - **A Hash key nested inside a Hash key recurses through lookups.**
   Predicted by reading `container_walk.cr`. `ContainerWalk.equal?`
   finds each Hash entry's counterpart with a lookup, and a lookup whose
