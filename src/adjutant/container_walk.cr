@@ -4,6 +4,19 @@ module Adjutant
   # make one contain itself, without ending the host process. Equality
   # keeps its to-do list on the heap; hashing looks one level deep.
   module ContainerWalk
+    # How many walks may run inside one another before the run ends
+    # with `FatalSignal` (`:exhausted`). A walk runs inside another only
+    # when a Hash lookup's key is itself a container, so this bounds a
+    # chain of Hashes each used as a key of the next, the one shape
+    # whose comparison still recurses. Ruby would answer; Adjutant
+    # declines, which keeps it a subset of Ruby.
+    MAX_NESTED_WALKS = 256
+
+    # Walks in progress. Module-wide, since a nested walk starts from
+    # `LabeledArray#==` or `LabeledHash#==` inside `Hash#[]?`; a walk
+    # never yields to another fiber.
+    @@active = 0
+
     # Pairs of values still to compare.
     alias Pending = Array({Value, Value})
     # Container pairs already met, by identity.
@@ -24,6 +37,18 @@ module Adjutant
     #
     #   ContainerWalk.equal?(a, b) { |x, y| x.raw == y.raw }
     def self.equal?(a : Value, b : Value, & : Value, Value -> Bool) : Bool
+      @@active += 1
+      begin
+        if @@active > MAX_NESTED_WALKS
+          raise FatalSignal.new(:exhausted, "Hash keys nested inside Hash keys more than #{MAX_NESTED_WALKS} deep")
+        end
+        walk(a, b) { |x, y| yield x, y }
+      ensure
+        @@active -= 1
+      end
+    end
+
+    private def self.walk(a : Value, b : Value, & : Value, Value -> Bool) : Bool
       pending = [{a, b}]
       seen = Seen.new
       while pair = pending.pop?

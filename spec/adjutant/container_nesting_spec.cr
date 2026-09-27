@@ -72,6 +72,34 @@ module Adjutant
         result.as_int.should eq 1
       end
 
+      it "compares hashes whose keys are hashes" do
+        interp, _ = make_interp
+        result = interp.eval(<<-RUBY)
+          a = {{{} => 1} => 2}
+          b = {{{} => 1} => 2}
+          a == b
+        RUBY
+        result.truthy?.should be_true
+      end
+
+      # Matching a Hash key that is itself a container runs a walk
+      # inside the walk, so a chain of Hashes each keyed by the last
+      # still recurses; past a limit the run ends instead.
+      it "ends the run when Hash keys nest inside Hash keys past the limit" do
+        interp, _ = make_interp
+        expect_raises(FatalSignal, /Hash keys nested inside Hash keys/) do
+          interp.eval(<<-RUBY)
+            a = {}
+            b = {}
+            100_000.times do
+              a = {a => 1}
+              b = {b => 1}
+            end
+            a == b
+          RUBY
+        end
+      end
+
       it "still tells keys apart that differ below the first level" do
         interp, _ = make_interp
         result = interp.eval(<<-RUBY)

@@ -21,14 +21,6 @@ after 1.0. Ordered for working through: security and policy defects
 first, then the Ruby divergences, then design work on policy and
 configuration.
 
-- **A Hash key nested inside a Hash key recurses through lookups.**
-  Predicted by reading `container_walk.cr`. `ContainerWalk.equal?`
-  finds each Hash entry's counterpart with a lookup, and a lookup whose
-  key is a container runs its own walk. A chain of Hashes each used as
-  the next one's key therefore recurses once per link. Building one
-  takes deliberate effort. Fix: match container keys inside the walk
-  rather than through `Hash#[]?`.
-
 - **A path on another Windows drive passes root containment.**
   Predicted by reading `grants.cr`; no spec has hit it.
   `Grants#under?` and `#under_maybe_missing?` call
