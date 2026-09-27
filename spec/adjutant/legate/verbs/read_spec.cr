@@ -290,5 +290,28 @@ module Adjutant
         end
       end
     end
+
+    # The streaming reads are the same sink; without the check, a policy
+    # that forbids the read above is bypassed by switching verbs.
+    {"lines", "bytes", "records"}.each do |verb|
+      it "rejects a tainted target path for Legate.#{verb} as for Legate.read" do
+        with_tmpdir do |dir|
+          file = File.join(dir, "f.txt")
+          File.write(file, "hi")
+
+          policy = RiskFlowPolicy.new(
+            risk_flow_rules: allow_unlisted([RiskFlowRule.new(Authority::Read, Sensitivity::Elevated, RiskFlowAction::Reject)]),
+          )
+          interp, _ = make_interp(risk_flow_policy: policy, grants: Legate::Grants.new(read_roots: [dir]))
+          interp.define_native("tainted_path") do |args|
+            Value.string(args.first.as_string, RiskFlowLabel.of(ProvenanceKind::UserInput, "cli-arg", Sensitivity::Elevated))
+          end
+
+          expect_raises(RuntimeError, /risk flow policy rejected/) do
+            interp.eval(%(Legate.#{verb}(tainted_path(#{file.inspect}))))
+          end
+        end
+      end
+    end
   end
 end
