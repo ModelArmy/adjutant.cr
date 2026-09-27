@@ -90,12 +90,18 @@ module Adjutant
       @items.dup
     end
 
+    # Structural, by `ContainerWalk.equal?` with `Value#==` for
+    # everything else. `Hash(Value, Value)` matches keys with it.
     def ==(other : LabeledArray) : Bool
-      @items == other.@items
+      ContainerWalk.equal?(Value.new(self, nil), Value.new(other, nil)) { |x, y| x == y }
     end
 
+    # The size and each element, a nested container by kind and size
+    # alone (`ContainerWalk.shallow_hash`).
     def hash(hasher)
-      @items.hash(hasher)
+      hasher = size.hash(hasher)
+      @items.each { |item| hasher = ContainerWalk.shallow_hash(item, hasher) }
+      hasher
     end
   end
 
@@ -161,12 +167,22 @@ module Adjutant
       @entries.dup
     end
 
+    # Structural, as `LabeledArray#==`.
     def ==(other : LabeledHash) : Bool
-      @entries == other.@entries
+      ContainerWalk.equal?(Value.new(self, nil), Value.new(other, nil)) { |x, y| x == y }
     end
 
+    # Each entry's key and value, a nested container by kind and size
+    # alone (`ContainerWalk.shallow_hash`), summed so the order of
+    # entries doesn't matter, as `Hash#hash` does.
     def hash(hasher)
-      @entries.hash(hasher)
+      result = hasher.result
+      @entries.each do |key, value|
+        copy = ContainerWalk.shallow_hash(key, hasher)
+        copy = ContainerWalk.shallow_hash(value, copy)
+        result &+= copy.result
+      end
+      result.hash(hasher)
     end
   end
 end

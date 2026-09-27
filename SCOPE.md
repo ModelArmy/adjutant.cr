@@ -21,20 +21,23 @@ after 1.0. Ordered for working through: security and policy defects
 first, then the Ruby divergences, then design work on policy and
 configuration.
 
-- **Other script-built container shapes overflow the host's stack.**
-  Predicted by reading `value.cr` and `labeled_container.cr`. Each
-  ends the host process rather than the script.
-  1. A self-containing Array or Hash used as a Hash key. `Value#hash`
-     and `Value#==` delegate to `LabeledArray#hash` and `#==`, which
-     recurse through Crystal's `Array#hash` and `Array#==` with no
-     guard, so `a = []; a.push(a); {a => 1}` never returns.
-     `ValueOps.equal?` guards the pair being compared; these need the
-     same, and Ruby answers for both.
-  2. Deep nesting, with no cycle. `a = []; 100_000.times { a = [a] }`
-     costs little, and every recursive walk (`equal?`, `inspect`,
-     `hash`) then recurses once per level on the Crystal stack.
-     Neither cycle guard helps. Fix: a depth limit on those walks that
-     raises a script error.
+- **Work in a nested run doesn't count toward `instruction_limit`.**
+  Predicted by reading `vm.cr`. `invoke_internal` (a block run by a
+  native method such as `each` or `times`) and `call_method` (a native
+  method calling a script's) save `@instruction_count` before the run
+  and restore it after, so what the run executed is forgotten. A limit
+  can then stop a single long block call but not `100_000.times { ...
+  }`, whose calls each start from the same count. Fix: keep the count
+  running across nested runs, with a spec that a loop of short block
+  calls meets the limit.
+
+- **A Hash key nested inside a Hash key recurses through lookups.**
+  Predicted by reading `container_walk.cr`. `ContainerWalk.equal?`
+  finds each Hash entry's counterpart with a lookup, and a lookup whose
+  key is a container runs its own walk. A chain of Hashes each used as
+  the next one's key therefore recurses once per link. Building one
+  takes deliberate effort. Fix: match container keys inside the walk
+  rather than through `Hash#[]?`.
 
 - **A path on another Windows drive passes root containment.**
   Predicted by reading `grants.cr`; no spec has hit it.

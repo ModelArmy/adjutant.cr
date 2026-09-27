@@ -249,6 +249,10 @@ module Adjutant
       # Containers being rendered, for `guard_rendering`. VM-wide,
       # since a recursive `inspect` re-enters the VM at each level.
       @rendering_ids = Set(UInt64).new
+      # Frames set aside by the nested runs in progress
+      # (`invoke_internal`, `call_method`), which still count toward
+      # `call_depth_limit`.
+      @outer_frame_count = 0
     end
 
     # Runs a compiled top-level chunk and returns its value.
@@ -313,6 +317,8 @@ module Adjutant
       saved_cur_block_yield = @current_block_yield
       saved_cur_block_yield_outer = @current_block_yield_outer
       saved_pending_kwargs = @pending_kwargs
+      saved_outer_frame_count = @outer_frame_count
+      enter_nested_run!
       begin
         f = current_frame # before replacing @frames
         inherited_self = self_val || f.self_val
@@ -341,6 +347,7 @@ module Adjutant
         @current_block_yield = saved_cur_block_yield
         @current_block_yield_outer = saved_cur_block_yield_outer
         @pending_kwargs = saved_pending_kwargs
+        @outer_frame_count = saved_outer_frame_count
       end
       result
     end
@@ -519,7 +526,7 @@ module Adjutant
                            block_outer_locals : OuterChain? = nil, argc : Int32 = 0,
                            block_yield : ScriptProc? = nil, own_yield : ScriptProc? = nil,
                            block_yield_outer : OuterChain? = nil, own_yield_outer : OuterChain? = nil) : Frame
-      if @limits.call_depth_limit > 0 && @frames.size >= @limits.call_depth_limit
+      if @limits.call_depth_limit > 0 && @outer_frame_count + @frames.size >= @limits.call_depth_limit
         raise script_diagnostic("L002", {"limit" => @limits.call_depth_limit.to_s}, current_frame)
       end
       frame = Frame.new(proc, proc.chunk, stack_base, filename, block, outer, self_val, lexical_scope, block_outer_locals, argc,
@@ -534,6 +541,19 @@ module Adjutant
 
     private def current_frame : Frame
       @frames.last
+    end
+
+    # Sets the current frames aside for a nested run from native code,
+    # counting them toward `call_depth_limit`, so recursion through
+    # native code (a block run by `each`, each element's `inspect`)
+    # meets the limit as direct recursion does. The caller restores
+    # `@outer_frame_count` when the run ends.
+    private def enter_nested_run! : Nil
+      depth = @outer_frame_count + @frames.size
+      if @limits.call_depth_limit > 0 && depth >= @limits.call_depth_limit
+        raise script_diagnostic("L002", {"limit" => @limits.call_depth_limit.to_s}, current_frame)
+      end
+      @outer_frame_count = depth
     end
 
     # `self` in the current frame, which for a native function is the
@@ -1169,6 +1189,8 @@ module Adjutant
       saved_cur_block_yield = @current_block_yield
       saved_cur_block_yield_outer = @current_block_yield_outer
       saved_pending_kwargs = @pending_kwargs
+      saved_outer_frame_count = @outer_frame_count
+      enter_nested_run!
       # A sentinel frame gives `current_frame` a filename and line for
       # diagnostics if nothing resolves; its empty chunk ends
       # `execute`'s loop.
@@ -1192,6 +1214,7 @@ module Adjutant
         @current_block_yield = saved_cur_block_yield
         @current_block_yield_outer = saved_cur_block_yield_outer
         @pending_kwargs = saved_pending_kwargs
+        @outer_frame_count = saved_outer_frame_count
       end
     end
 
