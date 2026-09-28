@@ -77,13 +77,6 @@ acceptable, since it restores the subset.
   `[k, v]` Array and letting `spread_block_args` (vm.cr) spread it for
   `|k, v|`, which is how Ruby does it.
 
-- **An Array or Hash used as a Hash key is looked up by identity.**
-  `{[1, 2] => "a"}[[1, 2]]` returns nil; Ruby returns `"a"`. A
-  container key hashes and compares as the `LabeledArray` or
-  `LabeledHash` reference, not by contents. The fix is hashing and
-  comparing containers by contents, recursively, alongside the
-  numeric-key fix above.
-
 - **A leading-zero integer literal is decimal.** `0644` parses as 644;
   Ruby reads it as octal 420. `s.mode == 0644` compares against the
   wrong number without error. `0o`, `0x` and `0b` prefixes are also
