@@ -50,8 +50,8 @@ module Adjutant
             posix_patterns = patterns.map { |raw_pattern| ::Path.new(raw_pattern).to_posix.to_s }
 
             # One authorization per distinct fixed-prefix directory,
-            # not per pattern or per file. Every match is labelled with
-            # the result, whatever the matched file's own sensitivity.
+            # not per pattern or per file. Each match also carries its
+            # file's own sensitivity, below.
             prefixes = posix_patterns.map { |posix_pattern| Helpers.fixed_prefix(posix_pattern) }.uniq!
             prefixes.each do |prefix|
               label = RiskFlowLabel.join(label, broker.authorize_read(prefix, ncc, allow_missing: true))
@@ -63,6 +63,7 @@ module Adjutant
             in_bounds = matched_files.select { |candidate| broker.grants.check_root(candidate, broker.grants.read_roots).allowed? }
 
             matches = [] of Value
+            result_label = label
 
             in_bounds.each do |file|
               # The wall clock is checked per file. Exceeding it raises
@@ -73,11 +74,19 @@ module Adjutant
               next unless File.file?(file) # a glob can match a directory; nothing to grep there
               next if looks_binary?(file)
 
-              lines = read_lines(file, broker, ncc, too_large)
               # `Dir.glob` returns `\` separators on Windows, and
               # Legate::Path splits on `/` only, so the path is
               # converted first.
-              path_val = Legate::Path.from_string(interp, path_cls, ::Path.new(file).to_posix.to_s, label)
+              posix_file = ::Path.new(file).to_posix.to_s
+              # The file's own sensitivity, asked or rejected before
+              # it is read, as `Legate.read` of it would be.
+              file_label = RiskFlowLabel.join(label, broker.label_matched_file(posix_file, "grep", ncc))
+              # The result carries every searched file's label, matched
+              # or not: finding nothing in a file is also a fact about
+              # it.
+              result_label = RiskFlowLabel.join(result_label, file_label)
+              lines = read_lines(file, broker, ncc, too_large)
+              path_val = Legate::Path.from_string(interp, path_cls, posix_file, file_label)
 
               lines.each_with_index do |line, idx|
                 next unless matches_pattern?(pattern, line)
@@ -90,11 +99,11 @@ module Adjutant
 
                 before = context > 0 ? lines[[0, idx - context].max...idx] : [] of String
                 after = context > 0 ? lines[(idx + 1)...[lines.size, idx + 1 + context].min] : [] of String
-                matches << Legate::Match.build(interp, match_cls, path_val, (idx + 1).to_i64, line, before, after, label)
+                matches << Legate::Match.build(interp, match_cls, path_val, (idx + 1).to_i64, line, before, after, file_label)
               end
             end
 
-            Value.new(LabeledArray.new(matches, label), label)
+            Value.new(LabeledArray.new(matches, result_label), result_label)
           end
         end
 

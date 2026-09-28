@@ -21,19 +21,6 @@ after 1.0. Ordered for working through: security and policy defects
 first, then the Ruby divergences, then design work on policy and
 configuration.
 
-- **`Legate.grep` and `Legate.list` label results by the pattern's
-  prefix, not by each file.** Predicted by reading the
-  verbs. Both consult the policy once, for the glob's fixed leading
-  directory (`Helpers.fixed_prefix`), and put that one label on every
-  result. With `/work/secrets/**` High and nothing else under `/work`,
-  `Legate.read("/work/secrets/key")` is labelled High, but
-  `Legate.grep(/./, "/work/**/*")` returns the same lines labelled as
-  `/work`, which is unlabelled, and they reach a network sink with no
-  Ask or Reject. `list` has the same shape for names, sizes and
-  mtimes. The fix is looking up each matched file's sensitivity
-  (`RiskFlowPolicy#sensitivity_for`) and labelling, and asking or
-  rejecting, per file, while keeping one audit record per call.
-
 **The Ruby divergences follow**, Must Fix whatever their frequency.
 Where an entry lists two remedies, rejecting the construct is always
 acceptable, since it restores the subset.

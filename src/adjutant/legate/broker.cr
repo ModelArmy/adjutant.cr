@@ -157,6 +157,14 @@ module Adjutant
         end
       end
 
+      # The label for one file a `grep` or `list` matched under a
+      # directory `authorize_read` allowed, from the file's own
+      # sensitivity, asking or rejecting as reading it would. `path` is
+      # in the `/` form the script sees.
+      def label_matched_file(path : String, operation : String, ncc : NativeCallContext) : RiskFlowLabel?
+        @core.label_within(Authority::Read, operation, path, ProvenanceKind::File, ncc)
+      end
+
       # The `write` grant (§4.3). Pass `allow_missing` for a target
       # that may not exist yet, the normal case for a write.
       def authorize_write(path : String, ncc : NativeCallContext, allow_missing : Bool = false) : RiskFlowLabel?

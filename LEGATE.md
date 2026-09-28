@@ -398,13 +398,13 @@ Returns `nil` for a non-existent path (§2.3). One call replaces `exist?`, `file
 ```ruby
 Legate.list(pattern, limit: 100_000)  -> Array<Legate::Entry>
 ```
-Glob. `Legate.list("src/*")` is `ls`; `Legate.list("**/*.rb")` is `find`. Results sorted lexically for determinism. Symlinks reported, not followed. An empty match is an empty Array, not an error.
+Glob. `Legate.list("src/*")` is `ls`; `Legate.list("**/*.rb")` is `find`. Results sorted lexically for determinism. Symlinks reported, not followed. An empty match is an empty Array, not an error. The pattern's fixed leading directory is authorized once per call; each entry is then labelled by its own path's sensitivity, and asked or rejected as a `stat` of it would be.
 **Raises** `TooMany`.
 
 ```ruby
 Legate.grep(pattern, paths, context: 0, limit: 10_000)  -> Array<Legate::Match>
 ```
-Content search. `pattern` is a `Regexp` or `String`; `paths` is a glob string or an Array. Binary files skipped. Each file is read whole, so each is held to `read_limit`, as `Legate.read` holds it; a larger one raises `TooLarge` naming the file, and `Legate.lines` streams it instead. This verb exists so that scripts do not need to shell out to `rg`.
+Content search. `pattern` is a `Regexp` or `String`; `paths` is a glob string or an Array. Binary files skipped. Each file is labelled, asked or rejected by its own path's sensitivity, as `Legate.read` of it would be, and the result carries the label of every file searched. Each file is read whole, so each is held to `read_limit`, as `Legate.read` holds it; a larger one raises `TooLarge` naming the file, and `Legate.lines` streams it instead. This verb exists so that scripts do not need to shell out to `rg`.
 **Raises** `TooMany`, `TooLarge`, `Timeout`.
 
 ### 4.2 Streaming reads — grant `read`
