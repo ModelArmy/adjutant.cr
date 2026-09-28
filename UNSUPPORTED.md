@@ -303,6 +303,12 @@ rescuing `NameError` still catches it; the code is what says it will never
 resolve. Verified via `classes_and_modules/vm_spec.cr`, including the
 own-method case.
 
+`method_missing` is the exception to the own-method rule, with
+`respond_to_missing?`: Ruby calls both itself, so a script's own
+definition would run in Ruby and never here. Defining either is to be
+rejected at compile time, as U015's hooks are; SCOPE.md's Must Fix
+tracks it.
+
 The enforced set is deliberately narrow — `send`, `public_send`,
 `__send__`, `method_missing`, `define_method`. Names like `class_eval`,
 `instance_exec`, `methods`, and `instance_variable_get` pose the same
@@ -566,36 +572,31 @@ defining several class methods together, not new expressiveness.
 today (`<<` after `class` isn't a recognized construct), with a
 generic syntax error rather than one naming this construct.
 
-### U015 — `undef`, `method_added`/`singleton_method_added` hooks
+### U015 — `undef` and callback hooks
 
-Real Ruby's `undef method_name` (permanently removing a method from a
-class) and the `method_added`/`singleton_method_added` callback hooks
-(invoked automatically whenever a method is defined/added).
+`undef method_name`, and the hooks Ruby calls on its own when something
+happens to a class or module: `inherited` (a class is subclassed),
+`included` and `extended` (a module is mixed in), `method_added` and
+`singleton_method_added` (a method is defined), and `const_missing` (a
+constant fails to resolve). `method_missing` and `respond_to_missing?`
+are hooks of the same kind; their exclusion is U005's.
 
-**Why:** decided 2026-08-05, triaging the mruby full-repo sweep
-(`test/t/methods.rb`). `undef` has near-zero use in short,
-agent-authored scripts — removing a method after the fact isn't a
-pattern this use case calls for. The two hooks are reflection-adjacent
-metaprogramming, the same family U005–U007 already exclude for the
-same reason (letting a script observe/react to its own method-table
-changes has little pragmatic value here and cuts against static
-resolvability) — grouped with those rather than treated as a new
-decision. Distinct from `Class#inherited` (tracked separately in
-[SCOPE.md](./SCOPE.md) as `Will Fix`): that hook has a genuine
-pragmatic use (registry/discovery patterns) with no equivalent
-already-supported spelling, which these two don't.
+**Why:** a hook runs code the script never calls, at a moment its text
+doesn't mark, which the third standing principle rules out: what a
+class does should be readable from its declaration. `undef` has no use
+in short scripts.
 
-**Instead:** for `undef`, simply don't call the method (or don't define
-it in the first place). For the hooks, there's no equivalent — a script
-needing to know what methods exist should track that explicitly itself
-(e.g., appending to an array at each definition site) rather than
-relying on an automatic callback.
+**Instead:** do it explicitly. A registry is an Array each class
+appends itself to in its own body (`REGISTRY << self`); a list of
+methods is kept by hand. For `undef`, don't define or call the method.
 
-**Enforcement — not yet enforced.** `undef` fails to parse today (no
-`undef` keyword token); the two hooks are ordinary undefined-method
-errors if a script tries to define `self.method_added` expecting it to
-be called automatically — nothing currently invokes it either way, so
-defining it silently does nothing rather than erroring.
+**Enforcement — not yet enforced.** `undef` fails to parse, since there
+is no `undef` keyword token, so the error doesn't name the construct. A
+hook can be defined and is never called, so defining one silently does
+nothing; SCOPE.md's Must Fix tracks rejecting the definition. That
+check belongs at compile time, on the definition, unlike U005's check
+after resolution fails: Ruby calls a hook whenever one is defined, so
+no Ruby script defines one and expects it to stay silent.
 
 ### U016 — `begin...end while cond` / `begin...end until cond` (do-while)
 

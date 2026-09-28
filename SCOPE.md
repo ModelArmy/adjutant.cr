@@ -197,12 +197,21 @@ acceptable, since it restores the subset.
   .lstrip(':')...)`) without `decode_string_escapes`, which string
   literals use.
 
-- **A class's `self.inherited` is never called.** A script can define
-  `def self.inherited(subclass)`, and Ruby calls it when the class is
-  subclassed, before the subclass body runs; Adjutant never does, so
-  a registry built on it stays empty without error. Either call it
-  where `class Foo < Bar` links the superclass (`compiler.cr` and the
-  VM's MakeClass), or reject its definition with a U-code.
+- **Callback hooks can be defined and are never called.** A script
+  can define `self.inherited`, `self.included`, `self.extended`,
+  `self.method_added`, `self.singleton_method_added` or
+  `self.const_missing` in a class or module body, and
+  `method_missing`, `respond_to_missing?` or `singleton_method_added`
+  as instance methods. Ruby calls each when its event happens;
+  Adjutant never does, so a registry built on `inherited` stays empty
+  and a `method_missing` fallback never runs, without error. They are
+  excluded (U015; U005 for `method_missing` and
+  `respond_to_missing?`). The fix is rejecting each definition at
+  compile time with its U-code, not after resolution fails as U005's
+  calls are: Ruby calls a hook whenever one is defined, so no Ruby
+  script defines one and expects it to stay silent.
+  `spec/scripts/mruby/class.rb` has commented-out `inherited` and
+  `extended` tests that can become rejection cases.
 
 - **A second heredoc opener on a line is lexed as `<<`.** `foo(<<~A,
   <<~B)` is valid Ruby. Only the first opener's body is skipped, so
@@ -240,8 +249,10 @@ acceptable, since it restores the subset.
   internal cast error (`Cast from Adjutant::RubyObject to
   Adjutant::TimeObject failed`). Fix: a virtual copy method on
   `RubyObject`, overridden by each subclass, called before
-  `initialize_copy`. A Stream needs its own decision, since the copy
-  and the original would share one open source.
+  `initialize_copy`. `Legate::Stream` is Legate's class, not Ruby's,
+  so its copy semantics are Adjutant's to define: `dup` and `clone`
+  raise TypeError for it, since a copy sharing one open source with
+  its original would read unpredictably.
 
 - **Array and Hash `==` compare Ranges and objects with `<=>` inside
   them by identity.** Predicted by reading `value_ops.cr` and
@@ -531,8 +542,10 @@ because nothing had ever run it.
   and `EXCLUDED_METHODS` (`system`, `exec`, ...), which are consulted
   only after resolution fails. U008, U009 and U021 are
   lookup-after-resolution-fails checks, the mechanism U005–U007 use
-  (`dispatch_call` and constant resolution, `vm.cr`); U012–U015 fail
-  in the parser today, so each needs its own enforcement point.
+  (`dispatch_call` and constant resolution, `vm.cr`); U012–U014 and
+  U015's `undef` fail in the parser today, so each needs its own
+  enforcement point. U015's hooks are in Must Fix, since defining one
+  silently does nothing.
   Backticks and `%x{}` have no case in the lexer at all, so theirs is
   there.
 

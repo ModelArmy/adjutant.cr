@@ -198,7 +198,7 @@ U011|`$globals`                                      |`name`
 U012|Numbered block parameters (`_1`, `_2`)          |—                
 U013|Endless method definitions                      |—                
 U014|`class << self` singleton-class syntax          |—                
-U015|`undef` / method-added hooks                    |`construct`      
+U015|`undef` / callback hooks                        |`construct`      
 U016|`begin...end while`/`until` (do-while)          |—                
 U017|Operator-method overloading (`def ==`, ...)     |`operator`       
 U018|`extend`/`include` via an explicit receiver     |`construct`      
