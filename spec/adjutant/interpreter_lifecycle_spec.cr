@@ -137,6 +137,40 @@ module Adjutant
         diag.data["limit"].should eq("5")
       end
 
+      # A block run by a native method, and a script method a native
+      # one calls, run in a nested loop; their instructions count
+      # toward the same limit as the rest of the script.
+      it "counts the instructions of blocks a native method runs" do
+        limits = ExecutionLimits.new(instruction_limit: 10_000_u64)
+        interp, _ = make_interp(limits)
+        error = expect_raises(RuntimeError) do
+          interp.eval("x = 0\n100_000.times { x += 1 }")
+        end
+        error.diagnostic.not_nil!.code.should eq("L004")
+      end
+
+      it "counts the instructions of script methods a native method calls" do
+        limits = ExecutionLimits.new(instruction_limit: 50_000_u64)
+        interp, _ = make_interp(limits)
+        error = expect_raises(RuntimeError) do
+          interp.eval(<<-RUBY)
+            class Busy
+              def inspect
+                i = 0
+                while i < 100
+                  i += 1
+                end
+                "busy"
+              end
+            end
+            items = []
+            1_000.times { items.push(Busy.new) }
+            items.inspect
+          RUBY
+        end
+        error.diagnostic.not_nil!.code.should eq("L004")
+      end
+
       it "stores the call depth limit" do
         limits = ExecutionLimits.new(call_depth_limit: 3)
         interp, _ = make_interp(limits)

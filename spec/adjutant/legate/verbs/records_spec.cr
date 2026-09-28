@@ -120,6 +120,26 @@ module Adjutant
           eval.as_string.should eq "caught"
         end
       end
+
+      # An unterminated quoted field would otherwise be held in memory
+      # until the file or the read budget ran out.
+      it "raises Legate::TooLarge for a row over the row limit, without reading the rest" do
+        with_tmpdir do |dir|
+          file = File.join(dir, "f.csv")
+          File.write(file, "a\n\"" + "x" * 3_000_000)
+          interp, _ = make_interp(grants: Legate::Grants.new(read_roots: [dir]))
+          eval = interp.eval(<<-RUBY)
+          begin
+            Legate.records(#{(file).inspect}, format: :csv, headers: false).to_a
+            "no error"
+          rescue Legate::TooLarge => e
+            e.message
+          end
+          RUBY
+          eval.as_string.should contain "has a CSV row over 1048576 bytes"
+          interp.broker.budget.total_read.should be < 2_000_000
+        end
+      end
     end
 
     it "raises an ArgumentError for an unknown format:" do

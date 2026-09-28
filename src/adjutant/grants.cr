@@ -56,8 +56,9 @@ module Adjutant
     # existing ancestor is resolved and the missing components are
     # appended as written; containment is checked on that prospective
     # path, so a path outside every root is denied whether or not it
-    # exists. A missing component that is later created as a symlink
-    # is not caught, the same race §8.1 accepts.
+    # exists. A dangling symlink counts as its target. A missing
+    # component that is later created as a symlink is not caught, the
+    # same race §8.1 accepts.
     def check_root_maybe_missing(path : String, roots : Array(String)) : Decision
       return Decision.deny("no roots granted for this operation") if roots.empty?
 
@@ -79,16 +80,23 @@ module Adjutant
       nil
     end
 
-    # Whether the resolved `real_path` is `root` or inside it, by
-    # path algebra (`Path#relative_to`), so Windows separators and
-    # drives are handled by Crystal.
+    # Whether `path` is `root` or inside it, by path algebra, so
+    # Windows separators and drives are handled by Crystal. Both should
+    # be resolved. A path with a different anchor, such as another
+    # drive or a UNC share, is outside.
+    def self.contains?(root : ::Path, path : ::Path) : Bool
+      rel = path.relative_to?(root)
+      return false unless rel
+      return true if rel.to_s == "."
+      rel.parts.first? != ".."
+    end
+
+    # Whether the resolved `real_path` is `root` or inside it.
     private def under?(real_path : String, root : String) : Bool
       real_root = resolve(root)
       return false unless real_root
 
-      rel = ::Path.new(real_path).relative_to(::Path.new(real_root))
-      return true if rel.to_s == "."
-      rel.parts.first? != ".."
+      Grants.contains?(::Path.new(real_root), ::Path.new(real_path))
     end
 
     # `under?` for a root that may not exist yet either, as when a
@@ -105,20 +113,36 @@ module Adjutant
         effective_root = root_trailing.empty? ? real_root_ancestor : File.join(real_root_ancestor, File.join(root_trailing))
       end
 
-      rel = ::Path.new(prospective_path).relative_to(::Path.new(effective_root))
-      return true if rel.to_s == "."
-      rel.parts.first? != ".."
+      Grants.contains?(::Path.new(effective_root), ::Path.new(prospective_path))
     end
 
+    # Dangling links followed while resolving one path before it is
+    # denied, as the kernel's own limit denies a loop.
+    MAX_LINK_HOPS = 40
+
     # The realpath of `path`'s deepest existing ancestor, with the
-    # missing components below it in order. Nil if no ancestor
-    # resolves.
-    private def deepest_existing_ancestor(path : String) : {String, Array(String)}?
+    # missing components below it in order. A dangling symlink on the
+    # way up is replaced by its target, resolved the same way, since
+    # anything created through the link lands there. Nil if no
+    # ancestor resolves, or after `MAX_LINK_HOPS` dangling links.
+    private def deepest_existing_ancestor(path : String, hops : Int32 = 0) : {String, Array(String)}?
       trailing = [] of String
       current = path
       loop do
         if real = resolve(current)
           return {real, trailing}
+        end
+        if File.symlink?(current)
+          return if hops >= MAX_LINK_HOPS
+          # Joined, not normalized: a `..` in the target is left for
+          # `File.realpath` to apply after following links, as the
+          # kernel does.
+          return unless link = File.readlink?(current)
+          target = ::Path.new(link).absolute? ? link : File.join(File.dirname(current), link)
+          ancestor = deepest_existing_ancestor(target, hops + 1)
+          return unless ancestor
+          real_target, target_trailing = ancestor
+          return {real_target, target_trailing + trailing}
         end
         parent = File.dirname(current)
         return if parent == current

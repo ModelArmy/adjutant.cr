@@ -81,6 +81,9 @@ module Adjutant
     )
       @symbols = SymbolTable.new
       @modules = ModuleRegistry.new
+      # VFS files `require` has run, so each runs once per Interpreter,
+      # as a registered module loads once.
+      @required_files = Set(String).new
       @globals = {} of Int32 => Value
       @risk_flow_log = RiskFlowLog.new(enabled: risk_flow_tracking)
       # One broker per run, shared by every provider.
@@ -141,11 +144,18 @@ module Adjutant
     # assessed runs, with no second parse. Pass the filename given to
     # `parse`; a Body doesn't record it, and a different name loses the
     # source snippets.
+    #
+    # Each call is one run: per-run budgets start afresh, and open
+    # streams and `Legate.scratch` are cleaned up when it ends. The
+    # audit log keeps building up across runs. A file a script
+    # `require`s runs inside the current run and VM instead
+    # (`require_module`), so it can't reset the budgets or clean up
+    # underneath the script.
     def eval(body : Body, filename : String) : Value
+      @effect_broker.budget.start_run!
       chunk, local_count = Compiler.compile(body, @symbols)
-      vm = make_vm
       begin
-        vm.run(chunk, filename, local_count)
+        make_vm.run(chunk, filename, local_count)
       ensure
         # Closes every stream source still open, after a normal return
         # or an exception, so the next script on this Interpreter starts
@@ -183,14 +193,32 @@ module Adjutant
       DiagnosticRenderer.new(sources, report_url).render(diag, format, filename)
     end
 
-    # Resolves `require "path"`: a registered module first, then a
-    # source file through the EffectHandler.
-    def require_module(path : String, filename : String) : Value
-      return Value.bool(true) if @modules.require(path, self)
+    # Resolves `require "path"` for the script running in `vm`: a
+    # registered module first, then a source file through the
+    # EffectHandler. Either loads once per Interpreter; as in Ruby, the
+    # first `require` returns true and later ones false. A source file
+    # runs in `vm` itself (`VM#run_required`), so its instructions and
+    # frames count toward the requiring script's limits.
+    def require_module(path : String, filename : String, vm : VM) : Value
+      if @modules.registered?(path)
+        first = !@modules.loaded?(path)
+        @modules.require(path, self)
+        return Value.bool(first)
+      end
 
       if ef = @effect
         if src = ef.vfs_read(path)
-          eval(IO::Memory.new(src), path)
+          # Recorded before running, so a file that requires itself
+          # returns false rather than recursing; forgotten if it fails,
+          # so a later `require` tries again, as Ruby's does.
+          return Value.bool(false) unless @required_files.add?(path)
+          begin
+            chunk, local_count = Compiler.compile(parse(IO::Memory.new(src), path), @symbols)
+            vm.run_required(chunk, path, local_count)
+          rescue ex
+            @required_files.delete(path)
+            raise ex
+          end
           return Value.bool(true)
         end
       end

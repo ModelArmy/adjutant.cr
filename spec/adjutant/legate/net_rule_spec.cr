@@ -140,7 +140,7 @@ module Adjutant
       end
 
       it "rejects a non-integer port" do
-        expect_raises(ArgumentError, /is not an integer/) do
+        expect_raises(ArgumentError, /must list whole numbers/) do
           Legate::NetRule.from_yaml_node(host_node(<<-YAML))
           hosts:
             - host: api.example.com

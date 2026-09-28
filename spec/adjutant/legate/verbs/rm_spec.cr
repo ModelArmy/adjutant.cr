@@ -345,7 +345,7 @@ module Adjutant
         File.write(file, "x")
 
         policy = RiskFlowPolicy.new(
-          risk_flow_rules: [RiskFlowRule.new(Authority::Delete, Sensitivity::Elevated, RiskFlowAction::Reject)],
+          risk_flow_rules: allow_unlisted([RiskFlowRule.new(Authority::Delete, Sensitivity::Elevated, RiskFlowAction::Reject)]),
         )
         interp, _ = make_interp(risk_flow_policy: policy, grants: Legate::Grants.new(delete_roots: [dir]))
         interp.define_native("tainted_path") do |args|

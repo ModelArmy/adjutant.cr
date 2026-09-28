@@ -205,6 +205,10 @@ module Adjutant
   class VM
     MAX_STACK = 4096
 
+    # Instructions between checks of the run's wall clock, a power of
+    # two so the test is a mask.
+    WALL_CLOCK_INTERVAL = 1024_u64
+
     # An empty chunk for the sentinel frame `call_method` runs under,
     # which carries a filename and line but no code. Never mutated, so
     # one instance is shared.
@@ -249,6 +253,10 @@ module Adjutant
       # Containers being rendered, for `guard_rendering`. VM-wide,
       # since a recursive `inspect` re-enters the VM at each level.
       @rendering_ids = Set(UInt64).new
+      # Frames set aside by the nested runs in progress
+      # (`invoke_internal`, `call_method`), which still count toward
+      # `call_depth_limit`.
+      @outer_frame_count = 0
     end
 
     # Runs a compiled top-level chunk and returns its value.
@@ -265,6 +273,45 @@ module Adjutant
       self_val = @interpreter.try { |i| Value.robject(i.main) } || Value.nil_value
       push_frame(main_proc, filename, self_val: self_val)
       execute
+    end
+
+    # Runs a file `require` loaded as a top-level script inside this
+    # VM, with its own frames and stack as in `invoke_internal`, so its
+    # instructions and frames count toward the requiring script's
+    # limits.
+    protected def run_required(chunk : Chunk, filename : String, local_count : Int32) : Value
+      saved_frames = @frames
+      saved_stack = @stack
+      saved_cur_block = @current_block
+      saved_cur_block_locals = @current_block_locals
+      saved_cur_block_yield = @current_block_yield
+      saved_cur_block_yield_outer = @current_block_yield_outer
+      saved_pending_kwargs = @pending_kwargs
+      saved_outer_frame_count = @outer_frame_count
+      enter_nested_run!
+      begin
+        @frames = [] of Frame
+        @stack = Array(Value).new(256)
+        @current_block = nil
+        @current_block_locals = nil
+        @current_block_yield = nil
+        @current_block_yield_outer = nil
+        @pending_kwargs = nil
+        main_proc = ScriptProc.new(chunk, "<main>", local_count: local_count)
+        self_val = @interpreter.try { |i| Value.robject(i.main) } || Value.nil_value
+        push_frame(main_proc, filename, self_val: self_val)
+        result = execute
+      ensure
+        @frames = saved_frames
+        @stack = saved_stack
+        @current_block = saved_cur_block
+        @current_block_locals = saved_cur_block_locals
+        @current_block_yield = saved_cur_block_yield
+        @current_block_yield_outer = saved_cur_block_yield_outer
+        @pending_kwargs = saved_pending_kwargs
+        @outer_frame_count = saved_outer_frame_count
+      end
+      result
     end
 
     # Runs a block passed to a native function (its `blk`), closing
@@ -302,17 +349,19 @@ module Adjutant
 
     # Runs `proc` in an isolated frame and value stack and returns its
     # result. `outer_locals` is the closure to run it with, or nil for
-    # the current frame and the scopes it closes over.
+    # the current frame and the scopes it closes over. Its instructions
+    # and frames count toward the same limits as the caller's.
     private def invoke_internal(proc : ScriptProc, args : Array(Value), self_val : Value? = nil,
                                 outer_locals : OuterChain? = nil, kwargs : Hash(String, Value)? = nil) : Value
       saved_frames = @frames
       saved_stack = @stack
-      saved_ins_count = @instruction_count
       saved_cur_block = @current_block
       saved_cur_block_locals = @current_block_locals
       saved_cur_block_yield = @current_block_yield
       saved_cur_block_yield_outer = @current_block_yield_outer
       saved_pending_kwargs = @pending_kwargs
+      saved_outer_frame_count = @outer_frame_count
+      enter_nested_run!
       begin
         f = current_frame # before replacing @frames
         inherited_self = self_val || f.self_val
@@ -335,12 +384,12 @@ module Adjutant
       ensure
         @frames = saved_frames
         @stack = saved_stack
-        @instruction_count = saved_ins_count
         @current_block = saved_cur_block
         @current_block_locals = saved_cur_block_locals
         @current_block_yield = saved_cur_block_yield
         @current_block_yield_outer = saved_cur_block_yield_outer
         @pending_kwargs = saved_pending_kwargs
+        @outer_frame_count = saved_outer_frame_count
       end
       result
     end
@@ -519,7 +568,7 @@ module Adjutant
                            block_outer_locals : OuterChain? = nil, argc : Int32 = 0,
                            block_yield : ScriptProc? = nil, own_yield : ScriptProc? = nil,
                            block_yield_outer : OuterChain? = nil, own_yield_outer : OuterChain? = nil) : Frame
-      if @limits.call_depth_limit > 0 && @frames.size >= @limits.call_depth_limit
+      if @limits.call_depth_limit > 0 && @outer_frame_count + @frames.size >= @limits.call_depth_limit
         raise script_diagnostic("L002", {"limit" => @limits.call_depth_limit.to_s}, current_frame)
       end
       frame = Frame.new(proc, proc.chunk, stack_base, filename, block, outer, self_val, lexical_scope, block_outer_locals, argc,
@@ -534,6 +583,19 @@ module Adjutant
 
     private def current_frame : Frame
       @frames.last
+    end
+
+    # Sets the current frames aside for a nested run from native code,
+    # counting them toward `call_depth_limit`, so recursion through
+    # native code (a block run by `each`, each element's `inspect`)
+    # meets the limit as direct recursion does. The caller restores
+    # `@outer_frame_count` when the run ends.
+    private def enter_nested_run! : Nil
+      depth = @outer_frame_count + @frames.size
+      if @limits.call_depth_limit > 0 && depth >= @limits.call_depth_limit
+        raise script_diagnostic("L002", {"limit" => @limits.call_depth_limit.to_s}, current_frame)
+      end
+      @outer_frame_count = depth
     end
 
     # `self` in the current frame, which for a native function is the
@@ -565,6 +627,11 @@ module Adjutant
       @instruction_count += 1
       if @limits.instruction_limit > 0 && @instruction_count > @limits.instruction_limit
         raise script_diagnostic("L004", {"limit" => @limits.instruction_limit.to_s}, current_frame)
+      end
+      # A loop with no effects never reaches `Broker#authorize`, the
+      # other place the wall clock is checked.
+      if (@instruction_count & (WALL_CLOCK_INTERVAL - 1)) == 0
+        @interpreter.try(&.effect_broker.budget.check_wall_clock!)
       end
     end
 
@@ -1158,17 +1225,19 @@ module Adjutant
     # Calls `recv.name(*args)` from native code and returns the
     # result, as `x.name(...)` in a script would. A script method runs
     # to completion in isolated frames and stack, as in
-    # `invoke_internal`; a native one returns directly.
+    # `invoke_internal`, and counts toward the same limits; a native
+    # one returns directly.
     protected def call_method(recv : Value, name : String, args : Array(Value),
                               filename : String = "<native>", line : Int32 = 0) : Value
       saved_frames = @frames
       saved_stack = @stack
-      saved_ins_count = @instruction_count
       saved_cur_block = @current_block
       saved_cur_block_locals = @current_block_locals
       saved_cur_block_yield = @current_block_yield
       saved_cur_block_yield_outer = @current_block_yield_outer
       saved_pending_kwargs = @pending_kwargs
+      saved_outer_frame_count = @outer_frame_count
+      enter_nested_run!
       # A sentinel frame gives `current_frame` a filename and line for
       # diagnostics if nothing resolves; its empty chunk ends
       # `execute`'s loop.
@@ -1186,12 +1255,12 @@ module Adjutant
       ensure
         @frames = saved_frames
         @stack = saved_stack
-        @instruction_count = saved_ins_count
         @current_block = saved_cur_block
         @current_block_locals = saved_cur_block_locals
         @current_block_yield = saved_cur_block_yield
         @current_block_yield_outer = saved_cur_block_yield_outer
         @pending_kwargs = saved_pending_kwargs
+        @outer_frame_count = saved_outer_frame_count
       end
     end
 
@@ -1970,7 +2039,7 @@ module Adjutant
       when "require"
         path = args.first? ? args.first.as_string : ""
         if interp = @interpreter
-          interp.require_module(path, filename)
+          interp.require_module(path, filename, self)
         else
           # A VM without an Interpreter can't `require`: a host
           # wiring fault (H006), not the script's.

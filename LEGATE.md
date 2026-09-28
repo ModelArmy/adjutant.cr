@@ -386,7 +386,7 @@ Signatures use Ruby keyword-argument syntax. `->` names the return type. **Raise
 ```ruby
 Legate.read(path, limit: policy.read_limit, scrub: true, missing: :raise)  -> String
 ```
-Whole-file read. MUST check size before allocating. Raises `Legate::TooLarge` whose message names `Legate.lines` and `Legate.bytes`. Default limit 8 MiB.
+Whole-file read. MUST check size before allocating, and MUST bound the read itself, since a file may grow after its size is checked and a pseudo-file may report 0. Raises `Legate::TooLarge` whose message names `Legate.lines` and `Legate.bytes`. Default limit 8 MiB.
 **Raises** `NotFound`, `TooLarge`, `Malformed` (encoding, when `scrub: false`). **Suppressible** `NotFound`, via `missing:`.
 
 ```ruby
@@ -398,14 +398,14 @@ Returns `nil` for a non-existent path (§2.3). One call replaces `exist?`, `file
 ```ruby
 Legate.list(pattern, limit: 100_000)  -> Array<Legate::Entry>
 ```
-Glob. `Legate.list("src/*")` is `ls`; `Legate.list("**/*.rb")` is `find`. Results sorted lexically for determinism. Symlinks reported, not followed. An empty match is an empty Array, not an error.
+Glob. `Legate.list("src/*")` is `ls`; `Legate.list("**/*.rb")` is `find`. Results sorted lexically for determinism. Symlinks reported, not followed. An empty match is an empty Array, not an error. The pattern's fixed leading directory is authorized once per call; each entry is then labelled by its own path's sensitivity, and asked or rejected as a `stat` of it would be.
 **Raises** `TooMany`.
 
 ```ruby
 Legate.grep(pattern, paths, context: 0, limit: 10_000)  -> Array<Legate::Match>
 ```
-Content search. `pattern` is a `Regexp` or `String`; `paths` is a glob string or an Array. Binary files skipped. This verb exists so that scripts do not need to shell out to `rg`.
-**Raises** `TooMany`, `Timeout`.
+Content search. `pattern` is a `Regexp` or `String`; `paths` is a glob string or an Array. Binary files skipped. Each file is labelled, asked or rejected by its own path's sensitivity, as `Legate.read` of it would be, and the result carries the label of every file searched. Each file is read whole, so each is held to `read_limit`, as `Legate.read` holds it; a larger one raises `TooLarge` naming the file, and `Legate.lines` streams it instead. This verb exists so that scripts do not need to shell out to `rg`.
+**Raises** `TooMany`, `TooLarge`, `Timeout`.
 
 ### 4.2 Streaming reads — grant `read`
 
@@ -414,7 +414,7 @@ Legate.lines(path, max_line: 1_048_576, scrub: true)  -> Legate::Lines
 Legate.bytes(path, chunk: 65_536)                     -> Legate::Bytes
 Legate.records(path, format:, headers: true)          -> Legate::Records
 ```
-`format:` is `:jsonl` or `:csv`. Streams are lazy, single-pass, constant-memory (§6).
+`format:` is `:jsonl` or `:csv`. Streams are lazy, single-pass, constant-memory (§6). A `records` row, JSONL line or CSV row, is capped at 1 MiB, as `lines`' default `max_line` caps a line; a longer one raises `TooLarge`.
 
 Note the timing: these verbs raise `NotFound` and `Denied` **eagerly**, at construction, not on first iteration. A lazy failure that surfaces three method calls later is unreadable in a stack trace and confusing to a model. Parse and cap failures necessarily raise during iteration.
 **Raises** at construction `NotFound`; during iteration `Malformed`, `TooLarge` (a line exceeding `max_line`), `Timeout`.
@@ -435,6 +435,7 @@ Legate.cp(from, to, recursive: false)    -> Legate::Path
 Legate.cp!(from, to, recursive: false)   -> Legate::Path
 ```
 `mkdir` is always recursive and always idempotent — it succeeds on an existing directory, removing the `unless exist?` dance from every script.
+A recursive `cp` never follows a symlink inside the tree: it recreates the link, with the same target, at the destination, so nothing outside the tree is read. Each file it copies is authorized as a `read` of its own, so it is labelled, audited and budgeted as `Legate.read` would be. A FIFO, socket or device in the tree raises `Conflict`.
 **Raises** `NotFound` (`cp` source), `Conflict`.
 
 #### Replacement is opt-in: the bang convention
@@ -474,7 +475,7 @@ nothing           |`false`             |`false`              |`0`
 
 `rm` returns a Bool rather than a count: a files-only verb can only ever remove one thing, and `if Legate.rm(p) > 0` is a clumsy spelling of a yes/no. The count survives on `rmdir!`, where "how many" is worth knowing. All three are idempotent on a missing path (§2.3).
 
-**Symlinks are never followed by any of the three** — they remove the LINK, never what it points at. For `rmdir!` this extends to the walk: it does not descend into a symlinked directory inside the tree. That last point is the load-bearing one, because the perimeter authorizes the tree's root, not every entry the walk reaches.
+**Symlinks are never followed by any of the three** — they remove the LINK, never what it points at. The perimeter still resolves a link named directly, so removing one whose target lies outside every `delete` root is denied, dangling or not. For `rmdir!` this extends to the walk: it does not descend into a symlinked directory inside the tree. That last point is the load-bearing one, because the perimeter authorizes the tree's root, not every entry the walk reaches.
 
 `mv` requires **both** `delete` on the source and `write` on the destination, because a move both destroys and creates. A script holding `write` but not `delete` can achieve a move only as `cp` followed by `rm`, which it cannot do; a script holding `delete` but not `write` is equally refused, since otherwise it could place content at any path it can name while holding no write grant at all. The grants exist precisely to be separable, and that cuts both ways.
 
@@ -522,7 +523,7 @@ Legate.log(message, fields = {}) -> nil       # structured, routed through the e
 Legate.fail(message)          -> no return    # raises Legate::Aborted (fatal)
 ```
 
-`Legate.scratch` is pre-granted precisely so that a script needing working space does not have to ask for a broader `write` grant. It is emptied at the end of the current run — one `Interpreter#eval` call, not necessarily the whole session an embedder's Interpreter may span; a script that needs its working files to survive into a LATER `eval` on the same Interpreter needs a real `write:` root, not `scratch`.
+`Legate.scratch` is pre-granted precisely so that a script needing working space does not have to ask for a broader `write` grant. It is emptied at the end of the current run — one `Interpreter#eval` call, not necessarily the whole session an embedder's Interpreter may span; a script that needs its working files to survive into a LATER `eval` on the same Interpreter needs a real `write:` root, not `scratch`. It is created fresh under the system temp directory with a name carrying 128 random bits, readable only by its owner on POSIX (mode 0700), and never reuses a path that already exists, so another local user can neither read it nor plant it in advance.
 
 `Legate.env` returns `nil` for an unset-but-allowlisted name and raises `Legate::Denied` for a name outside the allowlist — the distinction between "no value" and "not your business". It is the one ambient verb that goes through the broker's authorization sequence (§8.1): the allowlist is a real grant, so every call gets exactly one §8.7 audit record — `:allowed`, `:denied`, or `:rejected` — naming the variable, never its value. Sensitivity for the name is resolved and checked whether or not the variable is set, so a rejected sensitive name fails the same way either way and its existence is not revealed.
 
@@ -669,6 +670,7 @@ grants:
     roots: ["/work/output/tmp"]     # narrower than write, deliberately
   net:
     methods: [get, post]           # ceiling for every rule below
+    redirect_headers: [X-Api-Version] # added to those always sent past a cross-origin redirect
     hosts:
       - api.example.com            # https, port 443, exact host
       - "https://files.example.com:8443"
@@ -692,6 +694,8 @@ limits:
   total_write: 1GiB        # per run  — fatal
 ```
 
+The policy is read strictly, so a mistake fails when it is loaded rather than granting more, or enforcing less, than written. An unknown key at any level, a value of the wrong type, an empty `methods:` or `ports:` list in a `net.hosts` mapping, and a zero or negative limit each raise `ArgumentError` naming where. A key with no value counts as absent. Sizes may be written as literals (`8MiB`) or plain byte counts (`1048576`), and `wall_clock` as `300s` or `300`.
+
 A `net.hosts` entry is either a plain string or a mapping. Every default fails closed, and each field narrows rather than widens: a host is not a service, so an entry grants one scheme on one set of ports for one set of methods. There is no wildcard syntax — `subdomains: true` is the only widening lever, and it admits only names for which the rule's own host is a dot-boundary suffix (`x.y.com` admits `a.x.y.com`, never `a.y.com`).
 
 `local: true` opts a rule into loopback and private address space, for a local model server or a service on the LAN. See §8.2 for what it does and does not cover.
@@ -704,6 +708,8 @@ A `net.hosts` entry is either a plain string or a mapping. Every default fails c
 
 It is the one limit that is **per run and recoverable**, and deliberately so: it caps simultaneous holdings rather than cumulative consumption, so a script that hits it and then finishes walking one stream has genuinely freed the resource and may legitimately open another. That is unlike `total_read`, where catching and retrying past the budget would reinstate the exhaustion the budget exists to prevent.
 
+Every limit has a default, and the values above are those defaults, so a policy that names no limit still bounds a run. A run is one `Interpreter#eval`: the per-run budgets start afresh with each, as `Legate.scratch` does. `wall_clock` is checked before every effectful call and, every 1,024 instructions, by the VM itself, so a loop that makes no calls meets it too. `memory` is not enforced by Adjutant; its value is advice to whatever enforces memory at the OS tier (cgroups, rlimit).
+
 Absent grants are denied. **Per-call limits are recoverable; per-run budgets are fatal.** Hitting the 8 MiB read limit is advice — the script should switch to `Legate.lines`. Hitting the 4 GiB total-read budget is exhaustion, and permitting a script to catch and retry past it reinstates exactly the denial-of-service the budget existed to prevent.
 
 ---
@@ -715,7 +721,7 @@ These are the obligations that make the specification above true rather than dec
 ### 8.1 Path resolution and TOCTOU
 
 1. Convert every path argument to `Legate::Path` at the verb boundary.
-2. Resolve symlinks fully (`realpath`) and confirm the result is under a granted root.
+2. Resolve symlinks fully (`realpath`) and confirm the result is under a granted root. A dangling link resolves to its target, since whatever is created through it lands there; a path that doesn't exist yet resolves through its deepest existing ancestor.
 3. Re-verify immediately before use: `File.info(resolved_path, follow_symlinks: false)` and confirm the result is still the plain file/directory `realpath` reported, then open by the resolved (not the original) path.
 
 Steps 2–3 are check-then-open, not atomic — a real, accepted gap, not an oversight. The textbook fix is `openat(root_fd, name, O_NOFOLLOW)` against a directory descriptor held open since startup, which closes the race by construction; Crystal's stdlib exposes no way to do this (`File.open` has no `O_NOFOLLOW`, and there is no `openat`-relative-to-an-open-descriptor binding — confirmed against crystal-lang/crystal#7857, open as of this writing) and getting it would mean a `LibC` FFI binding for a handful of raw syscalls. Deliberately not done: Legate's threat model is a script running under a fixed, narrow grant set in an already-sandboxed environment, not a multi-tenant host defending against a concurrent adversary racing filesystem operations against the same paths — the residual exposure (something with independent write access swapping a path component inside the microseconds between steps 2 and 3) is real but assessed as small enough to accept, given that setting, rather than take on raw syscall bindings this codebase has no way to compile-test. Revisit if Legate is ever deployed somewhere that threat model no longer holds.
@@ -724,8 +730,11 @@ Steps 2–3 are check-then-open, not atomic — a real, accepted gap, not an ove
 
 - Resolve the hostname, check **every** resulting address, then pin the chosen address for the connection — so the name is never resolved a second time by the TCP stack, which would reopen the window to DNS rebinding.
 - Link-local, metadata, multicast, broadcast and reserved ranges are refused unconditionally; no policy can permit them. `169.254.169.254` is the highest-value SSRF target there is, and nothing legitimate listens on an address a host self-assigned because DHCP failed.
+- Metadata endpoints outside link-local space are named individually and refused the same way: AWS's `fd00:ec2::254` (inside unique-local space) and Alibaba Cloud's `100.100.100.200` (inside carrier-grade NAT).
+- An IPv6 address that carries an IPv4 one is judged as that IPv4 address, since that is where the packets go: IPv4-mapped (`::ffff:0:0/96`), IPv4-compatible (`::/96`) and NAT64 (`64:ff9b::/96`). Under the local-use NAT64 prefix `64:ff9b:1::/48` the operator chooses where the IPv4 address sits, so every layout RFC 6052 allows is checked, and the range is at least local.
 - Loopback and private ranges are refused **unless the matching rule sets `local: true`** (§7). The confused-deputy problem is a script reaching an internal address it never named; a policy that names `localhost` itself is not confused. The opt-in belongs to the rule, so it grants nothing to other hosts in the same policy and nothing to a redirect target.
 - Re-run the full check at every redirect hop. A permitted host that 302s to `169.254.169.254` is the standard SSRF.
+- Once a redirect leaves the first hop's origin (scheme, host and port), send only `Accept`, `Accept-Language`, `Content-Type` and `User-Agent`, plus any request headers `net.redirect_headers` names, for the rest of the call, even to a host the policy allows. Every other header the script set is dropped. Clients usually strip a fixed set (`Authorization`, `Cookie`, `Proxy-Authorization`), but a credential often travels in a header no fixed set names, such as `X-Api-Key`; listing what may pass fails closed where listing what may not fails open.
 - Enforce `limit` on the response as bytes arrive, not after.
 - TLS verification is mandatory and not configurable.
 
@@ -774,7 +783,7 @@ Every verb call appends one structured record: timestamp, verb, arguments (paths
 
 Every read/write/delete/net verb, and `Legate.log`, checks its own arguments against `RiskFlowPolicy` twice, for two genuinely different questions. The verb's own `authorize_*` call (§8.1–§8.2, `Broker#authorize`) asks whether the SUBJECT itself — the path, host, or env name a call names — is configured as sensitive; a script reading `/etc/shadow` gets asked or refused because that path is sensitive, independent of anything else in the script. Separately, and automatically, every native call whose declared `authorities` intersect a labeled argument's own provenance is checked again: a value carrying a `RiskFlowLabel` from an earlier `Legate.read`/`Legate.fetch`/`Legate.env` call — regardless of what it's now named or which variable holds it — is checked against policy at every SINK it subsequently reaches, not only at its original source. This is what actually prevents a script from reading something sensitive under one name and handing it to another verb under a different one; the first check alone cannot, since by the time the data reaches a second call it may be sitting in an ordinary-looking local variable with no textual trace of where it came from.
 
-The read family (`read`/`stat`/`list`/`grep`) declares `Authority::Read`; the write family (`write`/`write!`/`append`/`mkdir`/`cp`/`cp!`) declares `Authority::Write`; the delete family (`rm`/`rmdir`/`rmdir!`) declares `Authority::Delete`; `mv`/`mv!` declare both, matching their own two `authorize_*` calls exactly; `fetch` declares `Authority::Net`; `Legate.log` declares `Authority::Log` (§4.7), the one Authority with no matching `authorize_*` call at all — ambient verbs bypass that whole sequence, so this is the only enforcement `Legate.log` has. `scratch`/`fail`/`env`/`now`/`random` declare no sink authority: none sends data anywhere. `env` does go through `Broker#authorize`, against `Authority::Ambient`, but that names where sensitivity comes from, not where data goes.
+The read family (`read`/`lines`/`bytes`/`records`/`stat`/`list`/`grep`) declares `Authority::Read`; the write family (`write`/`write!`/`append`/`mkdir`/`cp`/`cp!`) declares `Authority::Write`; the delete family (`rm`/`rmdir`/`rmdir!`) declares `Authority::Delete`; `mv`/`mv!` declare both, matching their own two `authorize_*` calls exactly; `fetch` declares `Authority::Net`; `Legate.log` declares `Authority::Log` (§4.7), the one Authority with no matching `authorize_*` call at all — ambient verbs bypass that whole sequence, so this is the only enforcement `Legate.log` has. `scratch`/`fail`/`env`/`now`/`random` declare no sink authority: none sends data anywhere. `env` does go through `Broker#authorize`, against `Authority::Ambient`, but that names where sensitivity comes from, not where data goes.
 
 ---
 

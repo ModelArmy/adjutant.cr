@@ -21,214 +21,6 @@ after 1.0. Ordered for working through: security and policy defects
 first, then the Ruby divergences, then design work on policy and
 configuration.
 
-- **A recursive copy follows symlinks out of the read grant.**
-  Predicted by reading `verbs/cp.cr`, `verbs/mv.cr` and
-  Crystal's `file_utils.cr`. `Legate.cp(from, to, recursive: true)`
-  authorizes `from` once and hands the tree to `FileUtils.cp_r`,
-  which recurses with `Dir.exists?` and copies with `File.copy`, both
-  following symlinks. A link inside the tree is copied as its
-  target's content, wherever the target is: a repository carrying
-  `docs/keys -> /home/user/.ssh` puts the keys in the write area,
-  outside every read grant, unlabelled, under one audit record naming
-  the repository. A link to an ancestor loops until the disk fills,
-  since the write budget for a directory copy is recorded after the
-  copy (`directory_size`), and the read budget not at all. `mv`'s
-  cross-device fallback (`copy_tree`) checks type without following,
-  then `File.open`s a symlink, copying its target and deleting the
-  link. `rm` is unaffected: `FileUtils.rm_r` doesn't recurse into a
-  symlink. The fix is walking the tree in Legate, without following
-  links: recreate each link as a link, or refuse the copy; check
-  containment per entry; label per file; record both budgets as each
-  file is copied.
-
-- **`Legate.append` writes through a dangling symlink.** Predicted by
-  reading `verbs/append.cr`. A dangling link resolves, in
-  `check_root_maybe_missing`, to a prospective path inside the root, so
-  `authorize_write` allows it; `File.open(raw, "a")` then follows the
-  link and creates its target. With `out/log -> /etc/cron.d/job` in a
-  write root and no file at the target, `Legate.append("out/log", ...)`
-  creates a file outside every write root. `write` refuses an occupied
-  destination and `write!` and `cp` rename over the link, so neither is
-  affected. The fix is checking the destination without following
-  symlinks and refusing a link, or resolving it and authorizing the
-  resolved target.
-
-- **`Legate.fetch` forwards credentials on redirect and misses
-  IPv6-embedded metadata addresses.** Predicted by reading
-  `verbs/fetch.cr`.
-  1. Every hop reuses the call's `Options`, headers included, so an
-     `Authorization`, `Cookie` or `Proxy-Authorization` header set
-     for host A is sent to wherever A redirects, even another host the
-     policy allows. curl and browsers drop credentials when a
-     redirect changes origin; the fix is doing the same (scheme, host
-     and port).
-  2. `check_addresses!` decodes only `::ffff:`-mapped IPv6. NAT64
-     (`64:ff9b::/96`, `64:ff9b:1::/48`) and IPv4-compatible (`::/96`)
-     addresses carry an IPv4 address too; on a NAT64 network
-     `64:ff9b::a9fe:a9fe` reaches 169.254.169.254, which §8.2 refuses
-     unconditionally. The embedded address should be checked as IPv4.
-  3. AWS's IPv6 metadata endpoint, `fd00:ec2::254`, falls in
-     `fc00::/7`, so it is "local" and allowed under `local: true`
-     rather than always refused, as §8.2 requires of metadata.
-     Alibaba's `100.100.100.200` falls in carrier-grade NAT the same
-     way. Named metadata addresses belong in `always_blocked?`.
-
-- **Comparing self-containing containers overflows the host's
-  stack.** Predicted by reading `value_ops.cr`.
-  `ValueOps.equal?` compares Arrays and Hashes element by element,
-  recursing on the Crystal stack with no cycle check, so
-  `a = []; a << a; a == a.dup` recurses until the stack overflows,
-  which ends the host process rather than the script. `inspect` guards
-  the same shape (`guard_rendering`); Ruby's `==` detects the
-  recursion and answers. `Array#include?`, `Hash#==` and anything else
-  reaching `equal?` share it. The fix is a guard on the pair being
-  compared, as `guard_rendering` does for one container.
-
-- **A path on another Windows drive passes root containment.**
-  Predicted by reading `grants.cr`; no spec has hit it.
-  `Grants#under?` and `#under_maybe_missing?` call
-  `Path#relative_to`, which returns the target path unchanged when
-  its anchor differs from the root's (Crystal's `relative_to?` returns
-  nil). The check then sees a first component that isn't `..` and
-  counts the path as inside, so with a root of `C:\work`, a path on
-  `D:\` is allowed. POSIX is unaffected, since every resolved path
-  shares the anchor `/`. The fix is `relative_to?`, with nil counting
-  as outside; a spec needs two drives, or a UNC path against a drive
-  root.
-
-- **A risk-flow policy with no rule for an authority allows sensitive
-  data through it.** `RiskFlowPolicy#action_for` returns Allow when
-  no rule matches, so a policy that marks `/etc/passwd` High and has
-  rules for `Net` and `Delete` but not `Write` (as
-  `samples/run_script.cr`'s does) lets a script copy the file into a
-  granted output directory without a prompt. The perimeter passes it,
-  since the directory is granted; nothing flags the missing row.
-  Decided: reject an incomplete policy when it is built,
-  not at run time, so the mistake reaches the policy's author rather
-  than an unattended run.
-  1. A policy (other than `reject_all`) must have a rule for every
-     pair of a sink authority (`Read`, `Write`, `Delete`, `Net`,
-     `Log`; not `Ambient`, which is grant-only) and a sensitivity
-     above None (`Elevated`, `High`).
-  2. Checked in the constructor, so `from_json` and code-built
-     policies both get it. A host configuration error: a Crystal
-     exception like AmbiguousRiskFlowPolicyError, not script-visible
-     and not in the error catalog; its message lists every missing
-     pair.
-  3. With complete tables, the no-rule Allow default in
-     `action_for` becomes unreachable and can be removed.
-  4. About 45 construction sites in `src/`, `spec/` and `samples/`
-     build partial policies and need full tables. Worth deciding
-     whether a helper that fills unlisted pairs with one explicit
-     action (for example `default: Ask`) is allowed; it keeps specs
-     short but reintroduces a default, just a stated one.
-
-- **`sub` and `gsub` drop the replacement's label.** Their result's
-  label joins the receiver's and the pattern's only, so
-  `"x".sub("x", secret)` returns `secret`'s text unlabelled, and so
-  does `s.gsub(/./) { secret }`: a script can strip a label by
-  substitution and pass the data to a sink the policy would have
-  stopped. `string_sub_or_gsub` builds the result with one
-  `String.build`; the fix is joining the replacement's label, or every
-  block result's, into the result's, which over-labels but never
-  under-labels.
-
-- **`Legate.lines`, `bytes` and `records` skip the argument risk-flow
-  check.** Predicted by reading the verb files. `read`, `stat`, `list`
-  and `grep` declare `authorities: Set{Authority::Read}`, so
-  `VM#check_risk_flow` checks a labelled path argument against the
-  policy's `Read` rules. The three streaming reads declare no
-  authorities, so the same path reaches them unchecked, and a policy
-  that forbids it is bypassed by switching verbs. `lines.cr` and
-  `bytes.cr` point to `stat.cr`'s comment, which describes both checks
-  as applying. Fix: declare `Authority::Read` on all three, with a spec
-  reaching each from a labelled source, as `read_spec.cr` does.
-
-- **The grants loader silently ignores what it can't read.**
-  Predicted by reading `legate/grants.cr` and
-  `net_rule.cr`; no spec covers it. The same decision as the
-  risk-flow policy entry above applies: a malformed policy should
-  fail when loaded, not surface at run time. Fail-open cases first:
-  1. A `net.hosts` mapping whose `methods:` is a scalar (`methods:
-     GET`) or misspelt (`method: [GET]`) reads as empty, and empty
-     means "inherit `net.methods`", so a rule meant to narrow to GET
-     allows every grant-wide method, POST included.
-  2. A per-run budget written as a YAML integer (`total_read:
-     1048576`, `wall_clock: 300`) is read with `as_s?`, gets nil, and
-     is not enforced. `SizeLiteral` accepts a bare byte count only as
-     a string.
-  3. A misspelt key anywhere (`total_raed:`, `limts:`) is ignored,
-     so its budget or grant is simply absent.
-  Fail-closed but silent: a malformed category reads as nothing
-  granted (`string_array`); a non-numeric, zero or negative
-  `max_open_streams` falls back to the default; a scalar `ports:`
-  gives the default port; a non-boolean `subdomains:` or `local:`
-  gives false. The fix is a strict loader: unknown keys, wrong types
-  and invalid values raise ArgumentError, as a malformed size literal
-  or net rule already does.
-
-- **The scratch directory is readable by other local users.**
-  Predicted by reading `legate/broker.cr`.
-  `Broker#scratch_dir` names it with `File.tempname` under the shared
-  temp directory and creates it with `FileUtils.mkdir_p`, whose mode
-  is 0o777; under a typical umask of 022 that is 0o755, so on a
-  multi-user POSIX host anyone can list and read what a script writes
-  there. `mkdir_p` also succeeds on a path that already exists, so a
-  directory (or symlink) planted at that name would be used as is;
-  the name's random part is 32 bits from the default PRNG, beside the
-  date and pid. The fix is `Dir.mkdir(dir, 0o700)`, which fails if
-  the path exists, retrying with a new name on that failure.
-
-- **Per-run budgets default to unenforced, and `wall_clock` misses
-  pure computation.** Decided: every per-run budget
-  gets a default, as the per-call limits have.
-  1. `wall_clock`, `total_read` and `total_write` are nil when a
-     policy omits them, which means not enforced (`Legate::Limits`,
-     `ResourceLimits`). LEGATE.md §7's example values (300s, 4GiB,
-     1GiB) are candidate defaults; the section should state whichever
-     are chosen.
-  2. `memory` is carried but enforced by nothing in Adjutant:
-     `budget.cr` leaves it to the OS tier (cgroups, rlimit). Its
-     default is advice to the host, and §7 should say so.
-  3. `wall_clock` is checked only in `Adjutant::Broker#authorize`,
-     before an effectful call, and in `Legate.grep`'s loop. A loop with
-     no effects never reaches either, so `loop { x += 1 }` runs past
-     any `wall_clock`. The VM's own `ExecutionLimits#instruction_limit`
-     defaults to 0, unlimited. The fix is checking the wall clock from
-     the VM's dispatch loop, every N instructions, alongside
-     `instruction_limit`.
-
-- **`Legate.read` and `Legate.grep` read files whole without a
-  bounded read.** Predicted by reading the verbs.
-  1. `Legate.read` checks `limit` against `File.info`'s size, then
-     `read_content` allocates `file.size` as reported at open. A file
-     that grows in between, such as an active log, is read whole past
-     `limit`, and `record_read` counts the earlier size. A pseudo-file
-     reporting size 0 (`/proc/...`) reads as "" without error.
-  2. `Legate.grep` reads each file whole into memory (`read_lines`)
-     with no size cap; its `limit:` counts matches. The byte budget is
-     recorded after the allocation, so a large file is held before
-     `total_read` can refuse it, and memory is enforced only by the OS.
-  The fix is reading at most `limit + 1` bytes from the opened handle
-  and deciding on what was read, counting those bytes; `grep` needs
-  `read_limit` per file, or a streaming match with a bounded window
-  for `context:`. `Legate.records(format: :csv)` has the same gap per
-  row: `CSV::Parser` has no row or field cap, so an unterminated
-  quoted field grows until `total_read` stops it, if one is set.
-
-- **`Legate.grep` and `Legate.list` label results by the pattern's
-  prefix, not by each file.** Predicted by reading the
-  verbs. Both consult the policy once, for the glob's fixed leading
-  directory (`Helpers.fixed_prefix`), and put that one label on every
-  result. With `/work/secrets/**` High and nothing else under `/work`,
-  `Legate.read("/work/secrets/key")` is labelled High, but
-  `Legate.grep(/./, "/work/**/*")` returns the same lines labelled as
-  `/work`, which is unlabelled, and they reach a network sink with no
-  Ask or Reject. `list` has the same shape for names, sizes and
-  mtimes. The fix is looking up each matched file's sensitivity
-  (`RiskFlowPolicy#sensitivity_for`) and labelling, and asking or
-  rejecting, per file, while keeping one audit record per call.
-
 **The Ruby divergences follow**, Must Fix whatever their frequency.
 Where an entry lists two remedies, rejecting the construct is always
 acceptable, since it restores the subset.
@@ -284,13 +76,6 @@ acceptable, since it restores the subset.
   `k` and `v` as two arguments. The likely fix is passing one
   `[k, v]` Array and letting `spread_block_args` (vm.cr) spread it for
   `|k, v|`, which is how Ruby does it.
-
-- **An Array or Hash used as a Hash key is looked up by identity.**
-  `{[1, 2] => "a"}[[1, 2]]` returns nil; Ruby returns `"a"`. A
-  container key hashes and compares as the `LabeledArray` or
-  `LabeledHash` reference, not by contents. The fix is hashing and
-  comparing containers by contents, recursively, alongside the
-  numeric-key fix above.
 
 - **A leading-zero integer literal is decimal.** `0644` parses as 644;
   Ruby reads it as octal 420. `s.mode == 0644` compares against the
@@ -458,6 +243,14 @@ acceptable, since it restores the subset.
   `initialize_copy`. A Stream needs its own decision, since the copy
   and the original would share one open source.
 
+- **Array and Hash `==` compare Ranges and objects with `<=>` inside
+  them by identity.** Predicted by reading `value_ops.cr` and
+  `VM#values_equal?`. `1..2 == 1..2` is true, since the VM compares
+  Ranges by bounds and derives `==` from a script's `<=>`, but
+  `ValueOps.equal?` recurses into itself rather than back into the VM,
+  so `[1..2] == [1..2]` is false. Ruby says true. Fix: have
+  `equal?` take the element comparison from its caller.
+
 - **A risk-flow rule can't name the sink's subject.** `RiskFlowRule`
   (`risk_flow_policy.cr`) is keyed on `(Authority, Sensitivity)`, so a
   policy can say "High data must not reach `Net`" but not "this API
@@ -532,6 +325,13 @@ still roughly ordered by how cheap/independent the fix is.
 
 Small, mechanical, independent of each other — good candidates for quick
 wins.
+
+- **`require` parses only as a statement.** `parse_statement`
+  dispatches `KwRequire` to `parse_require`, but `parse_primary`
+  doesn't accept it, so `loaded = require "x"` and `require("x") if
+  ok` raise P002. Found writing the require specs. The call already
+  returns true or false, which a script can't yet capture. Fix: parse
+  `require` (and `load`) as a primary expression.
 
 - **`defined?` and `Module#const_defined?` don't exist.** Found in the
   mruby sweep (`test/t/syntax.rb`, `spec/scripts/mruby/float.rb`).
@@ -1104,6 +904,15 @@ individually.
   entry).
 
 ### Legate
+
+- **A script can't take over a body-less redirect.** With
+  `redirects: 0`, a redirect raises `Legate::Transport`; only a
+  request with a body gets `Legate::Redirect`, which carries `status`
+  and `location`. Since a cross-origin hop drops every header but four
+  defaults and those `net.redirect_headers` names, a script whose
+  target needs another has no way to re-issue the request itself. Fix: raise
+  `Legate::Redirect` whenever the redirect budget is spent at 0. Wait
+  for a live case before building it.
 
 - **`Legate::Path#under?` doesn't resolve `..`.** It compares
   components lexically, so `Legate::Path.new("/work/../etc")` is

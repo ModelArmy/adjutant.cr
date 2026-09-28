@@ -19,6 +19,36 @@ end
 
 module Adjutant
   describe Legate::Grants do
+    # Pure path algebra, so Windows paths are checked on every
+    # platform; resolving them needs a real second drive.
+    describe ".contains?" do
+      it "is true for the root itself and for paths inside it" do
+        root = ::Path.windows("C:\\work")
+        Grants.contains?(root, ::Path.windows("C:\\work")).should be_true
+        Grants.contains?(root, ::Path.windows("C:\\work\\out\\a.txt")).should be_true
+      end
+
+      it "is false for a sibling and for a path that climbs out" do
+        root = ::Path.windows("C:\\work")
+        Grants.contains?(root, ::Path.windows("C:\\workshop")).should be_false
+        Grants.contains?(root, ::Path.windows("C:\\work\\..\\etc")).should be_false
+      end
+
+      it "is false for a path on another drive" do
+        Grants.contains?(::Path.windows("C:\\work"), ::Path.windows("D:\\work\\a.txt")).should be_false
+      end
+
+      it "is false for a UNC path against a drive root" do
+        Grants.contains?(::Path.windows("C:\\"), ::Path.windows("\\\\server\\share\\a.txt")).should be_false
+      end
+
+      it "holds for POSIX paths" do
+        root = ::Path.posix("/work")
+        Grants.contains?(root, ::Path.posix("/work/a.txt")).should be_true
+        Grants.contains?(root, ::Path.posix("/etc/passwd")).should be_false
+      end
+    end
+
     describe "#check_root" do
       it "denies when no roots are granted" do
         grants = Legate::Grants.deny_all
@@ -140,6 +170,53 @@ module Adjutant
           Legate::Grants.new.check_root_maybe_missing(sibling, [root]).allowed?.should be_false
         end
       end
+
+      # A dangling link doesn't resolve, but it exists: whatever is
+      # created through it lands at its target, so the target is what
+      # must be inside a root. The Windows runner can't create
+      # symlinks; see the pending test above.
+      {% if flag?(:windows) %}
+        pending "resolves dangling symlinks to their targets (needs symlinks)" { }
+      {% else %}
+        it "denies a dangling symlink whose target is outside every root" do
+          with_tmpdir do |dir|
+            with_tmpdir do |outside|
+              link = File.join(dir, "log")
+              File.symlink(File.join(outside, "job"), link)
+              Legate::Grants.new.check_root_maybe_missing(link, [dir]).allowed?.should be_false
+            end
+          end
+        end
+
+        it "denies a path beneath a dangling directory link whose target is outside every root" do
+          with_tmpdir do |dir|
+            with_tmpdir do |outside|
+              link = File.join(dir, "out")
+              File.symlink(File.join(outside, "not-yet"), link)
+              target = File.join(link, "file.txt")
+              Legate::Grants.new.check_root_maybe_missing(target, [dir]).allowed?.should be_false
+            end
+          end
+        end
+
+        it "allows a dangling symlink whose target is a missing path inside a root" do
+          with_tmpdir do |dir|
+            link = File.join(dir, "log")
+            File.symlink("real.log", link)
+            Legate::Grants.new.check_root_maybe_missing(link, [dir]).allowed?.should be_true
+          end
+        end
+
+        it "denies a symlink loop" do
+          with_tmpdir do |dir|
+            a = File.join(dir, "a")
+            b = File.join(dir, "b")
+            File.symlink(b, a)
+            File.symlink(a, b)
+            Legate::Grants.new.check_root_maybe_missing(a, [dir]).allowed?.should be_false
+          end
+        end
+      {% end %}
 
       it "denies when no roots are granted" do
         decision = Legate::Grants.deny_all.check_root_maybe_missing(__FILE__, [] of String)

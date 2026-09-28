@@ -78,13 +78,29 @@ module Adjutant
         @core = core || ::Adjutant::Broker.new(grants.limits, budget, audit_log)
       end
 
+      # Fresh names tried before `scratch_dir` gives up.
+      SCRATCH_ATTEMPTS = 16
+
       # Creates the scratch directory on first call, under the system
-      # temp directory.
+      # temp directory, readable only by this user (0o700 on POSIX).
+      # The name carries 128 random bits, and `Dir.mkdir` fails on an
+      # existing path, so a directory or symlink planted at the name is
+      # never used; a collision retries with a new name.
       def scratch_dir : String
-        @scratch_dir ||= begin
-          dir = File.tempname("adjutant-legate-scratch", nil)
-          FileUtils.mkdir_p(dir)
-          dir
+        @scratch_dir ||= create_scratch_dir
+      end
+
+      private def create_scratch_dir : String
+        attempts = 0
+        loop do
+          dir = File.join(Dir.tempdir, "adjutant-legate-scratch-#{::Random::Secure.hex(16)}")
+          begin
+            Dir.mkdir(dir, 0o700)
+            return dir
+          rescue ex : File::AlreadyExistsError
+            attempts += 1
+            raise ex if attempts >= SCRATCH_ATTEMPTS
+          end
         end
       end
 
@@ -139,6 +155,14 @@ module Adjutant
         @core.authorize(self, Authority::Read, "read", path, ProvenanceKind::File, ncc) do
           allow_missing ? @grants.check_root_maybe_missing(path, roots) : @grants.check_root(path, roots)
         end
+      end
+
+      # The label for one file a `grep` or `list` matched under a
+      # directory `authorize_read` allowed, from the file's own
+      # sensitivity, asking or rejecting as reading it would. `path` is
+      # in the `/` form the script sees.
+      def label_matched_file(path : String, operation : String, ncc : NativeCallContext) : RiskFlowLabel?
+        @core.label_within(Authority::Read, operation, path, ProvenanceKind::File, ncc)
       end
 
       # The `write` grant (§4.3). Pass `allow_missing` for a target

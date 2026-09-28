@@ -34,7 +34,7 @@ module Adjutant
       sensitivity_patterns: [
         SensitivityPattern.new(ProvenanceKind::File, sensitive_path, priority, Sensitivity::High),
       ],
-      risk_flow_rules: [RiskFlowRule.new(Authority::Read, Sensitivity::High, action)],
+      risk_flow_rules: allow_unlisted([RiskFlowRule.new(Authority::Read, Sensitivity::High, action)]),
     )
   end
 
@@ -92,6 +92,56 @@ module Adjutant
         result = interp.eval(%(Legate.list(#{File.join(dir, "*.txt").inspect})))
         result.label.should_not be_nil
         result.label.not_nil!.sensitivity.should eq Sensitivity::High
+      end
+    end
+
+    # A pattern for one file under an unlabelled directory: a glob over
+    # the directory must label that file's results as reading it would,
+    # and leave its neighbours unlabelled.
+    it "Legate.list: labels an entry by its own path, not only the pattern's directory" do
+      with_tmpdir do |dir|
+        secret = File.join(dir, "secret.txt")
+        File.write(secret, "shh")
+        File.write(File.join(dir, "plain.txt"), "hi")
+        policy = policy_for(::Path.new(secret).to_posix.to_s, RiskFlowAction::Allow)
+        interp, _ = make_interp(grants: Legate::Grants.new(read_roots: [dir]), risk_flow_policy: policy)
+
+        result = interp.eval(%(Legate.list(#{File.join(dir, "*.txt").inspect})))
+        result.label.not_nil!.sensitivity.should eq Sensitivity::High
+        entries = result.as_array.to_a
+        entries[0].label.should be_nil # plain.txt, sorted first
+        entries[1].label.not_nil!.sensitivity.should eq Sensitivity::High
+      end
+    end
+
+    it "Legate.grep: labels a match by its file's own path" do
+      with_tmpdir do |dir|
+        secret = File.join(dir, "secret.txt")
+        File.write(secret, "token=abc\n")
+        File.write(File.join(dir, "plain.txt"), "token=public\n")
+        policy = policy_for(::Path.new(secret).to_posix.to_s, RiskFlowAction::Allow)
+        interp, _ = make_interp(grants: Legate::Grants.new(read_roots: [dir]), risk_flow_policy: policy)
+
+        result = interp.eval(%(Legate.grep("token", #{File.join(dir, "*.txt").inspect})))
+        result.label.not_nil!.sensitivity.should eq Sensitivity::High
+        matches = result.as_array.to_a
+        matches.size.should eq 2
+        matches.map { |m| m.label.try(&.sensitivity) }.to_set.should eq Set{nil, Sensitivity::High}
+      end
+    end
+
+    it "Legate.grep: rejects a sensitive file inside the pattern as reading it would" do
+      with_tmpdir do |dir|
+        secret = File.join(dir, "secret.txt")
+        File.write(secret, "token=abc\n")
+        policy = policy_for(::Path.new(secret).to_posix.to_s, RiskFlowAction::Reject)
+        interp, _ = make_interp(grants: Legate::Grants.new(read_roots: [dir]), risk_flow_policy: policy)
+
+        expect_raises(RuntimeError, /risk flow policy rejected/) do
+          interp.eval(%(Legate.grep("token", #{File.join(dir, "*.txt").inspect})))
+        end
+        records = interp.broker.audit_log.records.select { |r| r.verb == "grep" }
+        records.map(&.decision).should eq [:rejected]
       end
     end
 

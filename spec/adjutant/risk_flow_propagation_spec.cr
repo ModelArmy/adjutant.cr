@@ -636,6 +636,40 @@ module Adjutant
         result.label.not_nil!.sensitivity.should eq Sensitivity::High
       end
 
+      # Otherwise substitution strips a label: the secret's text comes
+      # back in an unlabelled String a sink would accept.
+      it "String#sub/#gsub results carry a labelled replacement's label" do
+        interp, _ = make_tainted_interp
+        sub = interp.eval(%("x".sub("x", tainted_str("/secret"))))
+        gsub = interp.eval(%("xx".gsub("x", tainted_str("/secret"))))
+        sub.label.not_nil!.sensitivity.should eq Sensitivity::High
+        gsub.label.not_nil!.sensitivity.should eq Sensitivity::High
+      end
+
+      it "String#gsub's result carries each block result's label" do
+        interp, _ = make_tainted_interp
+        result = interp.eval(%q("ab".gsub(/./) { tainted_str("/secret") }))
+        result.as_string.should eq "xx"
+        result.label.not_nil!.sensitivity.should eq Sensitivity::High
+      end
+
+      it "String#sub's block receives the matched text with the receiver's label" do
+        interp, _ = make_tainted_interp
+        result = interp.eval(<<-RUBY)
+          seen = nil
+          tainted_str("/etc/passwd").sub(/x/) { |m| seen = m; "y" }
+          seen
+        RUBY
+        result.label.not_nil!.sensitivity.should eq Sensitivity::High
+      end
+
+      it "String#sub's result has no replacement label when nothing matched" do
+        interp, _ = make_tainted_interp
+        result = interp.eval(%("a".sub("x", tainted_str("/secret"))))
+        result.as_string.should eq "a"
+        result.label.should be_nil
+      end
+
       it "String#split's array AND its elements carry the receiver's label" do
         interp, _ = make_tainted_interp
         arr = interp.eval(%(tainted_str("/etc/passwd").split(",")))

@@ -26,6 +26,7 @@ module Adjutant
 
         def self.bootstrap(interp : Interpreter, legate : RubyClass, broker : Broker) : Nil
           too_many = Helpers.fetch(legate, interp, "TooMany")
+          too_large = Helpers.fetch(legate, interp, "TooLarge")
           match_cls = Helpers.fetch(legate, interp, "Match")
           path_cls = Helpers.fetch(legate, interp, "Path")
 
@@ -49,8 +50,8 @@ module Adjutant
             posix_patterns = patterns.map { |raw_pattern| ::Path.new(raw_pattern).to_posix.to_s }
 
             # One authorization per distinct fixed-prefix directory,
-            # not per pattern or per file. Every match is labelled with
-            # the result, whatever the matched file's own sensitivity.
+            # not per pattern or per file. Each match also carries its
+            # file's own sensitivity, below.
             prefixes = posix_patterns.map { |posix_pattern| Helpers.fixed_prefix(posix_pattern) }.uniq!
             prefixes.each do |prefix|
               label = RiskFlowLabel.join(label, broker.authorize_read(prefix, ncc, allow_missing: true))
@@ -62,6 +63,7 @@ module Adjutant
             in_bounds = matched_files.select { |candidate| broker.grants.check_root(candidate, broker.grants.read_roots).allowed? }
 
             matches = [] of Value
+            result_label = label
 
             in_bounds.each do |file|
               # The wall clock is checked per file. Exceeding it raises
@@ -72,11 +74,19 @@ module Adjutant
               next unless File.file?(file) # a glob can match a directory; nothing to grep there
               next if looks_binary?(file)
 
-              lines = read_lines(file, broker)
               # `Dir.glob` returns `\` separators on Windows, and
               # Legate::Path splits on `/` only, so the path is
               # converted first.
-              path_val = Legate::Path.from_string(interp, path_cls, ::Path.new(file).to_posix.to_s, label)
+              posix_file = ::Path.new(file).to_posix.to_s
+              # The file's own sensitivity, asked or rejected before
+              # it is read, as `Legate.read` of it would be.
+              file_label = RiskFlowLabel.join(label, broker.label_matched_file(posix_file, "grep", ncc))
+              # The result carries every searched file's label, matched
+              # or not: finding nothing in a file is also a fact about
+              # it.
+              result_label = RiskFlowLabel.join(result_label, file_label)
+              lines = read_lines(file, broker, ncc, too_large)
+              path_val = Legate::Path.from_string(interp, path_cls, posix_file, file_label)
 
               lines.each_with_index do |line, idx|
                 next unless matches_pattern?(pattern, line)
@@ -89,11 +99,11 @@ module Adjutant
 
                 before = context > 0 ? lines[[0, idx - context].max...idx] : [] of String
                 after = context > 0 ? lines[(idx + 1)...[lines.size, idx + 1 + context].min] : [] of String
-                matches << Legate::Match.build(interp, match_cls, path_val, (idx + 1).to_i64, line, before, after, label)
+                matches << Legate::Match.build(interp, match_cls, path_val, (idx + 1).to_i64, line, before, after, file_label)
               end
             end
 
-            Value.new(LabeledArray.new(matches, label), label)
+            Value.new(LabeledArray.new(matches, result_label), result_label)
           end
         end
 
@@ -148,15 +158,20 @@ module Adjutant
         end
 
         # The file's lines, read whole (`context:` needs random access)
-        # and recorded against the read budget after reading. Invalid
-        # UTF-8 is always scrubbed; grep has no `scrub:`.
-        private def self.read_lines(path : String, broker : Broker) : Array(String)
-          raw_bytes = File.open(path, "rb") do |file|
-            slice = ::Bytes.new(file.size)
-            file.read_fully(slice)
-            slice
+        # but no larger than the policy's `read_limit`, as `Legate.read`
+        # would take it: a larger file raises `too_large`, naming the
+        # file and `Legate.lines`, which streams it. Invalid UTF-8 is
+        # always scrubbed; grep has no `scrub:`.
+        private def self.read_lines(path : String, broker : Broker, ncc : NativeCallContext,
+                                    too_large : RubyClass) : Array(String)
+          limit = broker.grants.limits.read_limit
+          raw_bytes = Helpers.read_bounded(path, limit, broker.budget)
+          unless raw_bytes
+            ncc.raise_error_class(
+              "#{path} is over the #{Helpers.humanize_bytes(limit)} read limit — use Legate.lines(path).select { |line| ... } to search it as a stream.",
+              too_large,
+            )
           end
-          broker.budget.record_read(raw_bytes.size.to_i64)
           raw_str = String.new(raw_bytes)
           scrubbed = raw_str.valid_encoding? ? raw_str : raw_str.scrub
           lines = scrubbed.split('\n')

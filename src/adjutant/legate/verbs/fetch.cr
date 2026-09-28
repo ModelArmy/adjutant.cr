@@ -23,7 +23,9 @@ module Adjutant
       # Each hop is authorized, resolved to every address, checked
       # against the blocked ranges, and connected to one pinned address
       # (§8.2; see http_client_pinning.cr). Every hop reuses the call's
-      # headers.
+      # headers until a redirect leaves the first hop's origin; from
+      # then on only `REDIRECT_HEADERS` and those the grants'
+      # `net_redirect_headers` names are sent.
       #
       # `stream: true` returns a `Legate::Bytes` whose iterator owns the
       # connection for the walk. `HTTP::Client#exec` either buffers the
@@ -37,6 +39,11 @@ module Adjutant
         DEFAULT_METHOD    = "get"
         DEFAULT_TIMEOUT   = 30
         DEFAULT_REDIRECTS =  5
+
+        # Request headers always sent past a redirect to another
+        # origin, lowercase: content negotiation and identification,
+        # never credentials. Grants add to them.
+        REDIRECT_HEADERS = Set{"accept", "accept-language", "content-type", "user-agent"}
 
         # Bodies are read in pieces, so `limit` is enforced as bytes
         # arrive (§8.2) rather than after a full buffer exists.
@@ -86,12 +93,22 @@ module Adjutant
 
             current_url = raw_url
             hops = 0
+            redirect_headers = REDIRECT_HEADERS + broker.grants.net_redirect_headers.to_set
+            origin = parse_uri(raw_url, ncc, transport)
 
             loop do
               target = parse_uri(current_url, ncc, transport)
               scheme = target.scheme
               host = target.host
               port = target.port
+
+              # The script's headers go only to the first hop's origin: a
+              # redirect elsewhere, even to a host the policy allows,
+              # drops all but `redirect_headers`, for the rest of the
+              # call. Credentials often travel in headers nobody could
+              # list in advance (`X-Api-Key`), so what may pass is listed
+              # instead of what may not.
+              opts = opts.for_hop(target, origin, redirect_headers)
 
               # Every hop is authorized afresh (§8.2), so a redirect to
               # a host outside the allowlist is a fatal denial.
@@ -186,6 +203,14 @@ module Adjutant
           def initialize(@method, @headers, @body, @timeout, @limit, @redirects, @stream)
           end
 
+          # `self` for a hop to `origin`; for a hop anywhere else, a copy
+          # keeping only the headers `keep` names, lowercase.
+          def for_hop(target : Target, origin : Target, keep : Set(String)) : Options
+            return self if target.same_origin?(origin)
+            kept = @headers.select { |name, _| keep.includes?(name.downcase) }
+            Options.new(@method, kept, @body, @timeout, @limit, @redirects, @stream)
+          end
+
           # Whether the request carries a body, which decides the
           # redirect rule. An empty String counts as none.
           def payload? : Bool
@@ -272,6 +297,12 @@ module Adjutant
 
           def initialize(@uri, @scheme, @host, @port)
           end
+
+          # Same scheme, host and port. The scheme is already
+          # downcased; host names are case-insensitive.
+          def same_origin?(other : Target) : Bool
+            @scheme == other.scheme && @host.downcase == other.host.downcase && @port == other.port
+          end
         end
 
         private def self.parse_uri(url : String, ncc : NativeCallContext, transport : RubyClass) : Target
@@ -319,13 +350,20 @@ module Adjutant
           ncc.raise_error_class("Legate.fetch — could not resolve #{host}: #{ex.message}", transport)
         end
 
+        # How §8.2 treats an address, ordered so the most restrictive
+        # of several answers is the `max`.
+        enum Reach
+          Public  # allowed
+          Local   # refused unless the matched rule sets `local: true`
+          Blocked # refused regardless of any rule
+        end
+
         # Refuses the hop unless every address passes (§8.2). Metadata,
         # link-local, multicast, broadcast and reserved ranges are
         # always refused; loopback and private space only when the
         # matched rule lacks `local: true`. The ranges are written out
         # rather than taken from `Socket::IPAddress`'s predicates,
-        # whose exact coverage varies. Only `::ffff:`-mapped IPv6 is
-        # decoded to IPv4.
+        # whose exact coverage varies.
         private def self.check_addresses!(addresses : Array(Socket::IPAddress), host : String,
                                           allow_local : Bool, ncc : NativeCallContext,
                                           transport : RubyClass) : Nil
@@ -334,53 +372,35 @@ module Adjutant
           end
 
           addresses.each do |address|
-            if always_blocked?(address)
+            case reach(address.address)
+            in .blocked?
               ncc.raise_error_class(
                 "Legate.fetch — #{host} resolves to #{address.address}, which is in a link-local, metadata, multicast or reserved range",
                 transport,
               )
+            in .local?
+              next if allow_local
+              # Names the remedy: `local: true` is the one refusal a
+              # policy may overturn.
+              ncc.raise_error_class(
+                "Legate.fetch — #{host} resolves to #{address.address}, which is loopback or private space; the matching net rule needs local: true",
+                transport,
+              )
+            in .public?
+              next
             end
-
-            next unless local_range?(address)
-            next if allow_local
-
-            # Names the remedy: `local: true` is the one refusal a
-            # policy may overturn.
-            ncc.raise_error_class(
-              "Legate.fetch — #{host} resolves to #{address.address}, which is loopback or private space; the matching net rule needs local: true",
-              transport,
-            )
           end
         end
 
-        # Refused regardless of any rule.
-        private def self.always_blocked?(address : Socket::IPAddress) : Bool
-          text = address.address.downcase
-          if octets = ipv4_octets(text)
-            return always_blocked_ipv4?(octets)
+        # An address's `Reach`, from its text. Text that parses as
+        # neither IPv4 nor IPv6 is `Blocked`.
+        private def self.reach(text : String) : Reach
+          if octets = dotted_quad(text)
+            return reach_ipv4(octets)
           end
-          always_blocked_ipv6?(text)
-        end
-
-        # Refused unless the matched rule sets `local: true`.
-        private def self.local_range?(address : Socket::IPAddress) : Bool
-          text = address.address.downcase
-          if octets = ipv4_octets(text)
-            return local_ipv4?(octets)
-          end
-          local_ipv6?(text)
-        end
-
-        # The four octets of an IPv4 address, dotted or `::ffff:`-mapped
-        # in either spelling (`::ffff:127.0.0.1`, or `::ffff:7f00:1` as
-        # `Socket::IPAddress#address` may render it).
-        private def self.ipv4_octets(text : String) : Array(Int32)?
-          if text.starts_with?("::ffff:")
-            mapped = text.lchop("::ffff:")
-            return dotted_quad(mapped) if mapped.includes?('.')
-            return hex_pair_octets(mapped)
-          end
-          dotted_quad(text)
+          fields = Socket::IPAddress.parse_v6_fields?(text)
+          return Reach::Blocked unless fields
+          reach_ipv6(fields.to_a.map(&.to_i32))
         end
 
         private def self.dotted_quad(text : String) : Array(Int32)?
@@ -397,53 +417,90 @@ module Adjutant
           octets
         end
 
-        # `7f00:1` -> [127, 0, 0, 1]. The two groups are 16 bits each,
-        # high group first, and either may be written short.
-        private def self.hex_pair_octets(text : String) : Array(Int32)?
-          groups = text.split(':')
-          return unless groups.size == 2
-          high = groups[0].to_i32?(16)
-          low = groups[1].to_i32?(16)
-          return unless high && low
-          return if high < 0 || high > 0xFFFF || low < 0 || low > 0xFFFF
-          [(high >> 8) & 0xFF, high & 0xFF, (low >> 8) & 0xFF, low & 0xFF]
-        end
+        # IPv4 ranges that aren't `Public`, as network, prefix length
+        # and reach. Where ranges overlap, the most restrictive wins.
+        IPV4_RANGES = [
+          {[0, 0, 0, 0], 8, Reach::Blocked},          # "this network"
+          {[169, 254, 0, 0], 16, Reach::Blocked},     # link-local, incl. the 169.254.169.254 metadata endpoint
+          {[100, 100, 100, 200], 32, Reach::Blocked}, # Alibaba Cloud metadata, inside carrier-grade NAT
+          {[192, 0, 0, 0], 24, Reach::Blocked},       # IETF protocol assignments
+          {[198, 18, 0, 0], 15, Reach::Blocked},      # benchmarking
+          {[224, 0, 0, 0], 3, Reach::Blocked},        # multicast, reserved, broadcast
+          {[127, 0, 0, 0], 8, Reach::Local},          # loopback
+          {[10, 0, 0, 0], 8, Reach::Local},           # private
+          {[172, 16, 0, 0], 12, Reach::Local},        # private
+          {[192, 168, 0, 0], 16, Reach::Local},       # private
+          {[100, 64, 0, 0], 10, Reach::Local},        # carrier-grade NAT
+        ]
 
-        private def self.always_blocked_ipv4?(o : Array(Int32)) : Bool
-          case
-          when o[0] == 0                                 then true # 0.0.0.0/8 — "this network"
-          when o[0] == 169 && o[1] == 254                then true # link-local, incl. the 169.254.169.254 metadata endpoint
-          when o[0] == 192 && o[1] == 0 && o[2] == 0     then true # IETF protocol assignments
-          when o[0] == 198 && (o[1] == 18 || o[1] == 19) then true # benchmarking
-          when o[0] >= 224                               then true # multicast, reserved, broadcast
-          else                                                false
+        private def self.reach_ipv4(o : Array(Int32)) : Reach
+          address = ipv4_value(o)
+          matches = IPV4_RANGES.select do |network, bits, _|
+            mask = ~0_u32 << (32 - bits)
+            (address & mask) == (ipv4_value(network) & mask)
           end
+          matches.max_of?(&.[2]) || Reach::Public
         end
 
-        private def self.local_ipv4?(o : Array(Int32)) : Bool
-          case
-          when o[0] == 127                              then true # loopback
-          when o[0] == 10                               then true # private
-          when o[0] == 172 && o[1] >= 16 && o[1] <= 31  then true # private
-          when o[0] == 192 && o[1] == 168               then true # private
-          when o[0] == 100 && o[1] >= 64 && o[1] <= 127 then true # carrier-grade NAT
-          else                                               false
+        # The four octets as one 32-bit value, first octet highest.
+        private def self.ipv4_value(o : Array(Int32)) : UInt32
+          o.reduce(0_u32) { |acc, octet| (acc << 8) | octet.to_u32 }
+        end
+
+        IPV6_UNSPECIFIED = [0, 0, 0, 0, 0, 0, 0, 0]
+        IPV6_LOOPBACK    = [0, 0, 0, 0, 0, 0, 0, 1]
+        # AWS's IPv6 metadata endpoint, `fd00:ec2::254`.
+        AWS_METADATA_IPV6 = [0xfd00, 0xec2, 0, 0, 0, 0, 0, 0x254]
+
+        # IPv6 prefixes that aren't `Public`, as the first field's
+        # value, its mask and the reach.
+        IPV6_PREFIXES = [
+          {0xFE80, 0xFFC0, Reach::Blocked}, # fe80::/10, link-local
+          {0xFF00, 0xFF00, Reach::Blocked}, # ff00::/8, multicast
+          {0xFC00, 0xFE00, Reach::Local},   # fc00::/7, unique-local
+        ]
+
+        # Where the IPv4 address sits, as byte indexes, for each prefix
+        # length RFC 6052 allows under `64:ff9b:1::/48`. Byte 8 is
+        # reserved and never holds address bits.
+        LOCAL_NAT64_LAYOUTS = [
+          [6, 7, 9, 10],    # /48
+          [7, 9, 10, 11],   # /56
+          [9, 10, 11, 12],  # /64
+          [12, 13, 14, 15], # /96
+        ]
+
+        # `f` is the eight 16-bit fields.
+        private def self.reach_ipv6(f : Array(Int32)) : Reach
+          return Reach::Blocked if f == IPV6_UNSPECIFIED || f == AWS_METADATA_IPV6
+          return Reach::Local if f == IPV6_LOOPBACK
+          if reach = embedded_reach(f)
+            return reach
           end
+          matches = IPV6_PREFIXES.select { |prefix, mask, _| (f[0] & mask) == prefix }
+          matches.max_of?(&.[2]) || Reach::Public
         end
 
-        private def self.always_blocked_ipv6?(text : String) : Bool
-          stripped = text.split('%').first # scope id, e.g. fe80::1%eth0
-          return true if stripped == "::"
-          return true if stripped.starts_with?("fe8") || stripped.starts_with?("fe9") ||
-                         stripped.starts_with?("fea") || stripped.starts_with?("feb") # fe80::/10 link-local
-          return true if stripped.starts_with?("ff")                                  # ff00::/8 multicast
-          false
-        end
+        # An IPv6 address that carries an IPv4 one (mapped, compatible
+        # or NAT64) is judged as that IPv4 address, since that is where
+        # the packets go; nil for any other. Check `::` and `::1` first,
+        # which are in the compatible range.
+        private def self.embedded_reach(f : Array(Int32)) : Reach?
+          bytes = f.flat_map { |field| [field >> 8, field & 0xFF] }
+          last_four = bytes[12, 4]
 
-        private def self.local_ipv6?(text : String) : Bool
-          stripped = text.split('%').first
-          return true if stripped == "::1"                           # loopback
-          stripped.starts_with?("fc") || stripped.starts_with?("fd") # fc00::/7 unique-local
+          # ::ffff:0:0/96 (mapped) and ::/96 (compatible).
+          return reach_ipv4(last_four) if f[0, 5].all?(&.zero?) && (f[5] == 0xFFFF || f[5] == 0)
+
+          return unless f[0] == 0x64 && f[1] == 0xFF9B
+          # 64:ff9b::/96, the well-known NAT64 prefix.
+          return reach_ipv4(last_four) if f[2, 4].all?(&.zero?)
+          return unless f[2] == 1
+          # 64:ff9b:1::/48, for local use: the operator picks the prefix
+          # length, so every layout is judged, and the range itself is
+          # local.
+          candidates = LOCAL_NAT64_LAYOUTS.map { |layout| reach_ipv4(layout.map { |i| bytes[i] }) }
+          (candidates << Reach::Local).max
         end
 
         # One buffered request through `HTTP::Client#exec`, the seam the

@@ -71,6 +71,19 @@ module Adjutant
       label
     end
 
+    # The sensitivity check alone, for a subject inside one `authorize`
+    # already allowed, such as each file a glob matched: labels it, and
+    # asks or rejects as the policy says. A rejection is recorded in
+    # the audit log; an allowed subject adds no record, so a large
+    # listing still makes one per call.
+    def label_within(authority : Authority, operation : String, subject : String,
+                     provenance_kind : ProvenanceKind, ncc : NativeCallContext) : RiskFlowLabel?
+      ncc.declare_sensitivity(authority, provenance_kind, subject)
+    rescue ex : RuntimeError
+      @audit_log.append(AuditRecord.new(operation, subject, authority, :rejected, REJECTED_CLASS_NAME))
+      raise ex
+    end
+
     # The class a policy rejection reports under, the same for every
     # provider, since the refusal is Adjutant's. A denial reports under
     # the provider's `denied_class_name`.

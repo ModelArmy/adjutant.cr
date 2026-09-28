@@ -41,15 +41,16 @@ module Adjutant
         Legate::Limits.new.max_open_streams.should eq ResourceLimits.new.max_open_streams
       end
 
-      # The per-run budgets are unenforced-when-absent, not zero —
-      # the posture ResourceLimits' own comment records. A default of
-      # 0 would silently mean "no bytes may be read at all".
-      it "leaves every per-run budget nil by default" do
+      # A policy that names no budget still bounds the run, with
+      # LEGATE.md §7's values. Nil, passed from code, still means not
+      # enforced.
+      it "gives every per-run budget a default" do
         limits = ResourceLimits.new
-        limits.wall_clock.should be_nil
-        limits.total_read.should be_nil
-        limits.total_write.should be_nil
-        limits.memory.should be_nil
+        limits.wall_clock.should eq 300
+        limits.total_read.should eq 4_294_967_296_i64
+        limits.total_write.should eq 1_073_741_824_i64
+        limits.memory.should eq 536_870_912_i64
+        ResourceLimits.new(wall_clock: nil).wall_clock.should be_nil
       end
 
       # Legate's own per-call caps still arrive through the subclass —

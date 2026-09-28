@@ -34,8 +34,9 @@ module Adjutant
             broker.authorize_write(raw, ncc, allow_missing: true)
 
             # A directory at the path raises `Legate::Conflict`. This
-            # follows symlinks, and so does the open below, so a
-            # dangling link at the path is written through.
+            # follows symlinks, and so does the open below: a dangling
+            # link at the path is written through to its target, which
+            # the perimeter has already checked.
             if File.directory?(raw)
               ncc.raise_error_class("#{raw} is a directory; Legate.append can't write file content to it", conflict)
             end

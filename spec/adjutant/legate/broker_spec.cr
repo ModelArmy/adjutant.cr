@@ -150,7 +150,7 @@ module Adjutant
             # consulted — proving the FatalSignal below comes from the
             # Grants gate, not from this (irrelevant, permissive)
             # dynamic policy.
-            interp = interp_with_read_trigger(grants, RiskFlowPolicy.new)
+            interp = interp_with_read_trigger(grants, RiskFlowPolicy.new(risk_flow_rules: allow_unlisted))
             expect_raises(Legate::FatalSignal, /denied/) do
               interp.eval(%(legate_read_trigger(#{(file).inspect})))
             end

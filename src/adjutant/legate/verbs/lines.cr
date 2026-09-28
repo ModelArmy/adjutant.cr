@@ -32,8 +32,12 @@ module Adjutant
 
           legate.define_native_singleton_method(
             interp.symbols.intern("lines").value,
-            RiskProfile.new(effects: Set{Effect::ReadsFiles}), # complements declare_sensitivity — see stat.cr's own comment
+            RiskProfile.new(effects: Set{Effect::ReadsFiles}),
             KWARG_NAMES,
+            # A Read sink, as `Legate.read` is, so `VM#check_risk_flow`
+            # checks labelled arguments; `declare_sensitivity` labels
+            # the path itself.
+            authorities: Set{Authority::Read},
           ) do |args, _blk, ncc|
             # Keywords are validated before authorizing.
             max_line = max_line_of(ncc)

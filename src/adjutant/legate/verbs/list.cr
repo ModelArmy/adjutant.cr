@@ -41,8 +41,6 @@ module Adjutant
             # The pattern is converted to `/` separators first, which
             # `Dir.glob` requires on every platform.
             posix_pattern = ::Path.new(pattern).to_posix.to_s
-            # The prefix's sensitivity labels the whole listing; no
-            # entry is looked up on its own.
             label = RiskFlowLabel.join(label, broker.authorize_read(Helpers.fixed_prefix(posix_pattern), ncc, allow_missing: true))
 
             matches = Dir.glob(posix_pattern).sort
@@ -58,8 +56,17 @@ module Adjutant
               )
             end
 
-            entries = in_bounds.compact_map { |match| build_entry(interp, entry_cls, path_cls, match, label) }
-            Value.new(LabeledArray.new(entries, label), label)
+            # Each entry also carries its own path's sensitivity, asked
+            # or rejected as a `stat` of it would be, and the listing
+            # carries every entry's.
+            list_label = label
+            entries = in_bounds.compact_map do |match|
+              posix_match = ::Path.new(match).to_posix.to_s
+              entry_label = RiskFlowLabel.join(label, broker.label_matched_file(posix_match, "list", ncc))
+              list_label = RiskFlowLabel.join(list_label, entry_label)
+              build_entry(interp, entry_cls, path_cls, match, entry_label)
+            end
+            Value.new(LabeledArray.new(entries, list_label), list_label)
           end
         end
 

@@ -289,7 +289,7 @@ This closes the gap for both a bare literal and a misleadingly-named variable ho
 
 ### Writing a policy
 
-A `RiskFlowPolicy` has two tables: `sensitivity_patterns` (origin → sensitivity, by `exact` match or `regex`, highest explicit `priority` wins) and `risk_flow_rules` (`Authority` × `Sensitivity` → `Allow`/`Ask`/`Reject`). `Sensitivity::None` always allows, regardless of the rule table. Load one from JSON — the same way you'd load it from a config file in a real deployment:
+A `RiskFlowPolicy` has two tables: `sensitivity_patterns` (origin → sensitivity, by `exact` match or `regex`, highest explicit `priority` wins) and `risk_flow_rules` (`Authority` × `Sensitivity` → `Allow`/`Ask`/`Reject`). `Sensitivity::None` always allows, regardless of the rule table. Every other pair — six authorities (`Read`, `Write`, `Delete`, `Net`, `Ambient`, `Log`) by `Elevated` and `High` — needs an action: a rule for each, or a `"default"` of `Ask` or `Reject` for the pairs no rule names. A policy that leaves a pair uncovered, or sets `"default": "allow"`, is refused when it is built with `InvalidRiskFlowPolicyError`, naming every missing pair, so a gap never lets data through, even one a later version opens by adding an authority. Load one from JSON — the same way you'd load it from a config file in a real deployment:
 
 ```crystal
 policy = Adjutant::RiskFlowPolicy.from_json(<<-JSON
@@ -299,9 +299,11 @@ policy = Adjutant::RiskFlowPolicy.from_json(<<-JSON
       { "kind": "File", "pattern_type": "regex", "pattern": "^/etc/", "priority": 0, "sensitivity": "Elevated" }
     ],
     "risk_flow_rules": [
-      { "authority": "Delete", "sensitivity": "Elevated", "action": "Ask" },
+      { "authority": "Read", "sensitivity": "Elevated", "action": "Allow" },
+      { "authority": "Read", "sensitivity": "High", "action": "Allow" },
       { "authority": "Delete", "sensitivity": "High", "action": "Reject" }
-    ]
+    ],
+    "default": "ask"
   }
   JSON
 )

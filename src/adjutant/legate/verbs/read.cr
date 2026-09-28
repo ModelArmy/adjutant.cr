@@ -42,17 +42,17 @@ module Adjutant
             label = RiskFlowLabel.join(label, broker.authorize_read(raw, ncc, allow_missing: true))
 
             # Follows symlinks, since `read` returns the target's
-            # content; `Legate.stat` doesn't. The size is checked before
-            # opening, and the file read at its size when opened.
+            # content; `Legate.stat` doesn't. A reported size over the
+            # limit fails before opening; the read itself is bounded
+            # too, since the reported size may be stale or 0.
             info = File.info?(raw, follow_symlinks: true)
             next missing_result(ncc, not_found, raw) unless info
 
             if info.size > limit
-              ncc.raise_error_class(too_large_message(size: info.size, limit: limit), too_large)
+              ncc.raise_error_class(too_large_message(info.size, limit), too_large)
             end
 
-            content = read_content(raw, scrub, malformed, ncc)
-            broker.budget.record_read(info.size)
+            content = read_content(raw, limit, scrub, malformed, too_large, ncc, broker)
             Value.string(content, label)
           end
         end
@@ -80,14 +80,14 @@ module Adjutant
           given.nil? ? true : given
         end
 
-        # Reads the whole file as a String. Invalid UTF-8 is scrubbed to
-        # U+FFFD, or raises `malformed` with `scrub: false`.
-        private def self.read_content(path : String, scrub : Bool, malformed : RubyClass, ncc : NativeCallContext) : String
-          raw_bytes = File.open(path, "rb") do |file|
-            slice = ::Bytes.new(file.size)
-            file.read_fully(slice)
-            slice
-          end
+        # The file as a String, read with `Helpers.read_bounded`, so
+        # one that grew past `limit` since it was checked raises
+        # `too_large` without being read whole. Invalid UTF-8 is
+        # scrubbed to U+FFFD, or raises `malformed` with `scrub: false`.
+        private def self.read_content(path : String, limit : Int64, scrub : Bool, malformed : RubyClass,
+                                      too_large : RubyClass, ncc : NativeCallContext, broker : Broker) : String
+          raw_bytes = Helpers.read_bounded(path, limit, broker.budget)
+          ncc.raise_error_class(too_large_message(nil, limit), too_large) unless raw_bytes
           raw_str = String.new(raw_bytes)
           return raw_str if raw_str.valid_encoding?
 
@@ -98,21 +98,11 @@ module Adjutant
           end
         end
 
-        # §9.1's TooLarge wording, in binary units for both sizes.
-        private def self.too_large_message(size : Int64, limit : Int64) : String
-          "path is #{humanize_bytes(size)}, over the #{humanize_bytes(limit)} read limit — use Legate.lines(path) or Legate.bytes(path) to stream."
-        end
-
-        private def self.humanize_bytes(n : Int64) : String
-          if n >= 1024_i64 ** 3
-            "#{(n / (1024.0 ** 3)).round(1)} GiB"
-          elsif n >= 1024_i64 ** 2
-            "#{(n / (1024.0 ** 2)).round(1)} MiB"
-          elsif n >= 1024_i64
-            "#{(n / 1024.0).round(1)} KiB"
-          else
-            "#{n} B"
-          end
+        # §9.1's TooLarge wording, in binary units. `size` is nil for a
+        # file found over the limit only while reading it.
+        private def self.too_large_message(size : Int64?, limit : Int64) : String
+          what = size ? "path is #{Helpers.humanize_bytes(size)}, over" : "path is over"
+          "#{what} the #{Helpers.humanize_bytes(limit)} read limit — use Legate.lines(path) or Legate.bytes(path) to stream."
         end
       end
     end

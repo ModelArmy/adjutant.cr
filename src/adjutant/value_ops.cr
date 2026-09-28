@@ -163,9 +163,17 @@ module Adjutant
       end
     end
 
-    # Never fails: an unrecognised pair is false.
-    # ameba:disable Metrics/CyclomaticComplexity
+    # Ruby's `==` on builtin values. Never fails: an unrecognised pair
+    # is false. Arrays and Hashes compare structurally through
+    # `ContainerWalk`, so nesting depth and self-containing containers
+    # can't exhaust the native stack.
     def self.equal?(a : Value, b : Value) : Bool
+      ContainerWalk.equal?(a, b) { |x, y| leaf_equal?(x, y) }
+    end
+
+    # `equal?` for everything but a pair of Arrays or of Hashes.
+    # ameba:disable Metrics/CyclomaticComplexity
+    private def self.leaf_equal?(a : Value, b : Value) : Bool
       case
       when a.null? && b.null?     then true
       when a.bool? && b.bool?     then a.as_bool == b.as_bool
@@ -182,15 +190,6 @@ module Adjutant
         # Identity. An object with `<=>` gets `==` from it in
         # `VM#values_equal?`, which never reaches here for one.
         a.as_robject == b.as_robject
-      when a.array? && b.array?
-        # Same length and each element equal by these rules,
-        # recursively, with no guard against a self-containing array.
-        aa, ba = a.as_array, b.as_array
-        aa.size == ba.size && aa.zip(ba) { |x, y| equal?(x, y) }
-      when a.hash? && b.hash?
-        # Same keys and each value equal by these rules.
-        ah, bh = a.as_hash, b.as_hash
-        ah.size == bh.size && ah.all? { |k, v| bv = bh[k]?; bv ? equal?(v, bv) : false }
       else false
       end
     end

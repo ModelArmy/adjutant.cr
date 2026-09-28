@@ -34,39 +34,55 @@ module Adjutant
         @ports = ports || [DEFAULT_PORTS[@scheme]? || 443]
       end
 
+      MAPPING_KEYS = {"host", "scheme", "ports", "methods", "subdomains", "local"}
+
       # Parses a scalar (`api.example.com`, `api.example.com:8443`,
       # `https://api.example.com:8443`) or a mapping (`host`, `scheme`,
       # `ports`, `methods`, `subdomains`, `local`). Raises ArgumentError
-      # for anything malformed, so a bad policy fails when loaded.
+      # for anything malformed, including an unknown key or a value of
+      # the wrong type, so a bad policy fails when loaded.
       def self.from_yaml_node(node : YAML::Any) : NetRule
         if scalar = node.as_s?
           return parse(scalar)
         end
-
-        hash = node.as_h?
-        raise ArgumentError.new("Legate::Grants — a net.hosts entry must be a string or a mapping, got #{node.raw.class}") unless hash
-
-        raw_host = hash[YAML::Any.new("host")]?.try(&.as_s?)
-        raise ArgumentError.new("Legate::Grants — a net.hosts mapping entry needs a `host:` key") unless raw_host
-
-        scheme = hash[YAML::Any.new("scheme")]?.try(&.as_s?).try(&.downcase) || "https"
-        validate_scheme!(scheme)
-
-        ports = hash[YAML::Any.new("ports")]?.try(&.as_a?).try do |list|
-          list.map do |entry|
-            port = entry.as_i? || entry.as_s?.try(&.to_i32?)
-            raise ArgumentError.new("Legate::Grants — net.hosts port #{entry.raw.inspect} is not an integer") unless port
-            validate_port!(port)
-            port
-          end
+        unless node.as_h?
+          raise YamlPolicy.invalid("grants.net.hosts", "entries must be strings or mappings, got #{node.raw.inspect}")
         end
 
-        methods = hash[YAML::Any.new("methods")]?.try(&.as_a?).try(&.map(&.as_s.downcase)) || [] of String
-        subdomains = hash[YAML::Any.new("subdomains")]?.try(&.as_bool?) || false
-        local = hash[YAML::Any.new("local")]?.try(&.as_bool?) || false
+        hash = YamlPolicy.mapping(node, "a grants.net.hosts mapping", MAPPING_KEYS)
+        raw_host = YamlPolicy.string(hash, "host", "grants.net.hosts host")
+        raise YamlPolicy.invalid("a grants.net.hosts mapping", "needs a `host:` key") unless raw_host
+
+        scheme = YamlPolicy.string(hash, "scheme", "grants.net.hosts scheme").try(&.downcase) || "https"
+        validate_scheme!(scheme)
+
+        ports = ports_of(hash)
+        methods = YamlPolicy.strings(hash, "methods", "grants.net.hosts methods").map(&.downcase)
+        # Absent inherits `net.methods`; an empty list would too, which
+        # is the opposite of what it seems to say.
+        if YamlPolicy.value(hash, "methods") && methods.empty?
+          raise YamlPolicy.invalid("grants.net.hosts methods", "is empty; list at least one method, or leave it out to inherit net.methods")
+        end
+        subdomains = YamlPolicy.bool(hash, "subdomains", "grants.net.hosts subdomains", false)
+        local = YamlPolicy.bool(hash, "local", "grants.net.hosts local", false)
 
         new(host: normalize_host(raw_host), scheme: scheme, ports: ports,
           methods: methods, subdomains: subdomains, local: local)
+      end
+
+      # The `ports:` list, or nil for the scheme's default port. An
+      # empty list is refused, as it would grant no port while reading
+      # as the default.
+      private def self.ports_of(hash : YamlPolicy::Mapping) : Array(Int32)?
+        return unless YamlPolicy.value(hash, "ports")
+        entries = YamlPolicy.list(hash, "ports", "grants.net.hosts ports")
+        raise YamlPolicy.invalid("grants.net.hosts ports", "is empty; list at least one port, or leave it out for the scheme's default") if entries.empty?
+        entries.map do |entry|
+          port = entry.as_i64?
+          raise YamlPolicy.invalid("grants.net.hosts ports", "must list whole numbers, got #{entry.raw.inspect}") unless port
+          raise ArgumentError.new("Legate::Grants — net.hosts port #{port} is out of range") unless port > 0 && port <= 65_535
+          port.to_i32
+        end
       end
 
       # The scalar form, split by inspection: `URI.parse` reads a bare

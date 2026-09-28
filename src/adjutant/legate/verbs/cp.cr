@@ -1,6 +1,7 @@
 require "file_utils"
 require "../broker"
 require "../path"
+require "../tree_copy"
 require "../exceptions"
 require "../helpers"
 require "../../native_call_context"
@@ -22,8 +23,8 @@ module Adjutant
       #   - A file copy is atomic, as `write` is: a temp file in `to`'s
       #     directory, fsync, rename.
       #
-      # A recursive copy follows symlinks inside the tree (see
-      # `copy_directory`).
+      # A recursive copy never follows a symlink inside the tree; it
+      # recreates the link (see `TreeCopy`).
       module Cp
         # Copy chunk size, as bytes.cr's; both budgets are checked
         # after each chunk.
@@ -90,7 +91,7 @@ module Adjutant
             end
 
             if from_info.directory?
-              copy_directory(raw_from, raw_to, recursive, broker, ncc, conflict, name, clobber)
+              label = RiskFlowLabel.join(label, copy_directory(raw_from, raw_to, recursive, broker, ncc, conflict, name, clobber))
             else
               copy_file(raw_from, raw_to, broker, ncc, conflict, name, clobber)
             end
@@ -121,13 +122,14 @@ module Adjutant
         end
 
         # A directory source needs `recursive: true`, so a whole tree is
-        # never copied by accident. The tree is copied by
-        # `FileUtils.cp_r`, which follows symlinks both when recursing
-        # and when copying, so only the top of the tree is checked
-        # against the read grant.
+        # never copied by accident. The tree is built in a temp directory
+        # beside `to`, then renamed into place. Each file is authorized
+        # as a read of its own as the walk reaches it, so it is checked,
+        # labelled and audited as `Legate.read` would be; returns the
+        # files' labels joined.
         private def self.copy_directory(raw_from : String, raw_to : String, recursive : Bool,
                                         broker : Broker, ncc : NativeCallContext, conflict : RubyClass,
-                                        name : String, clobber : Bool) : Nil
+                                        name : String, clobber : Bool) : RiskFlowLabel?
           unless recursive
             ncc.raise_error_class("#{raw_from} is a directory; Legate.#{name} needs recursive: true to copy it", conflict)
           end
@@ -145,12 +147,14 @@ module Adjutant
           # `::Random::Secure`, since this namespace's `Random` verb
           # module hides the stdlib's.
           temp_dir = File.join(dest_parent, ".legate-cp-#{::Random::Secure.hex(8)}.tmp")
+          label : RiskFlowLabel? = nil
+          copier = TreeCopy.new(broker.budget) do |file|
+            label = RiskFlowLabel.join(label, broker.authorize_read(file, ncc))
+            nil
+          end
           begin
-            FileUtils.cp_r(raw_from, temp_dir)
-            # The write budget is recorded once, after the whole tree is
-            # copied into the temp directory, so a directory copy can't
-            # exhaust it partway; the read budget isn't recorded.
-            broker.budget.record_write(directory_size(temp_dir))
+            Dir.mkdir(temp_dir)
+            copier.copy_children(raw_from, temp_dir)
             # Renaming a directory is atomic on one filesystem, which is
             # why the temp directory sits in `to`'s parent. An existing
             # tree at `to` is removed first: `cp!` replaces, never
@@ -159,21 +163,12 @@ module Adjutant
             File.rename(temp_dir, raw_to)
           rescue ex
             FileUtils.rm_rf(temp_dir) if File.exists?(temp_dir)
+            if ex.is_a?(TreeCopy::SpecialFile)
+              ncc.raise_error_class("#{ex.message}; Legate.#{name} can't copy it", conflict)
+            end
             raise ex
           end
-        end
-
-        # The total size of the files under `path`, for the write
-        # budget. The glob pattern is converted to `/` separators,
-        # which `Dir.glob` requires on every platform.
-        private def self.directory_size(path : String) : Int64
-          pattern = "#{::Path.new(path).to_posix}/**/*"
-          total = 0_i64
-          Dir.glob(pattern).each do |entry|
-            info = File.info?(entry, follow_symlinks: false)
-            total += info.size if info && info.file?
-          end
-          total
+          label
         end
 
         # Copies one file atomically (temp file, fsync, rename) in

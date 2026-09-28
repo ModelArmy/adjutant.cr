@@ -129,6 +129,17 @@ module Adjutant
         end
       end
 
+      # A size is only what the file reported when checked; the read
+      # itself stops at the limit whatever the file turns out to hold.
+      {% if flag?(:linux) %}
+        it "reads a pseudo-file that reports its size as 0" do
+          interp, _ = make_interp(grants: Legate::Grants.new(read_roots: ["/proc"]))
+          eval = interp.eval(%(Legate.read("/proc/self/status")))
+          eval.as_string.should contain "Name:"
+          interp.broker.budget.total_read.should eq eval.as_string.bytesize
+        end
+      {% end %}
+
       it "a script-given limit: cannot exceed the policy's own read_limit" do
         with_tmpdir do |dir|
           file = File.join(dir, "f.txt")
@@ -175,9 +186,9 @@ module Adjutant
         File.write(file, "0123456789") # 10 bytes
         limits = Legate::Limits.new(total_read: 15_i64)
         interp, _ = make_interp(grants: Legate::Grants.new(read_roots: [dir], limits: limits))
-        interp.eval(%(Legate.read(#{(file).inspect}))) # 10, ok
+        # Both reads in one run: each `eval` gets the whole budget.
         expect_raises(Legate::FatalSignal, /total_read budget exceeded/) do
-          interp.eval(%(Legate.read(#{(file).inspect}))) # 20 > 15
+          interp.eval(%(Legate.read(#{(file).inspect})\nLegate.read(#{(file).inspect}))) # 10, then 20 > 15
         end
       end
     end
@@ -278,7 +289,7 @@ module Adjutant
         File.write(file, "hi")
 
         policy = RiskFlowPolicy.new(
-          risk_flow_rules: [RiskFlowRule.new(Authority::Read, Sensitivity::Elevated, RiskFlowAction::Reject)],
+          risk_flow_rules: allow_unlisted([RiskFlowRule.new(Authority::Read, Sensitivity::Elevated, RiskFlowAction::Reject)]),
         )
         interp, _ = make_interp(risk_flow_policy: policy, grants: Legate::Grants.new(read_roots: [dir]))
         interp.define_native("tainted_path") do |args|
@@ -287,6 +298,29 @@ module Adjutant
 
         expect_raises(RuntimeError, /risk flow policy rejected/) do
           interp.eval(%(Legate.read(tainted_path(#{file.inspect}))))
+        end
+      end
+    end
+
+    # The streaming reads are the same sink; without the check, a policy
+    # that forbids the read above is bypassed by switching verbs.
+    {"lines", "bytes", "records"}.each do |verb|
+      it "rejects a tainted target path for Legate.#{verb} as for Legate.read" do
+        with_tmpdir do |dir|
+          file = File.join(dir, "f.txt")
+          File.write(file, "hi")
+
+          policy = RiskFlowPolicy.new(
+            risk_flow_rules: allow_unlisted([RiskFlowRule.new(Authority::Read, Sensitivity::Elevated, RiskFlowAction::Reject)]),
+          )
+          interp, _ = make_interp(risk_flow_policy: policy, grants: Legate::Grants.new(read_roots: [dir]))
+          interp.define_native("tainted_path") do |args|
+            Value.string(args.first.as_string, RiskFlowLabel.of(ProvenanceKind::UserInput, "cli-arg", Sensitivity::Elevated))
+          end
+
+          expect_raises(RuntimeError, /risk flow policy rejected/) do
+            interp.eval(%(Legate.#{verb}(tainted_path(#{file.inspect}))))
+          end
         end
       end
     end
