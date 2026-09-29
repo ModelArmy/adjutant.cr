@@ -150,6 +150,10 @@ module Adjutant
       Value.nil_value
     end
 
+    def invoke_method(method : ScriptProc, args : Array(Value), self_val : Value) : Value
+      Value.nil_value
+    end
+
     def invoke_proc(proc_obj : RubyObject, args : Array(Value)) : Value
       Value.nil_value
     end

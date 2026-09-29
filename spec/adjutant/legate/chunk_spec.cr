@@ -25,6 +25,11 @@ module Adjutant
   end
 
   describe "Legate::Chunk" do
+    it "copies its bytes with dup and clone" do
+      interp = interp_with_chunk_trigger
+      interp.eval(%(c = make_chunk("hello")\n[c.dup.size, c.clone[1]])).as_array.map(&.as_int).should eq [5_i64, 101_i64]
+    end
+
     it "reports the right size" do
       interp = interp_with_chunk_trigger
       interp.eval(%(make_chunk("hello").size)).as_int.should eq 5

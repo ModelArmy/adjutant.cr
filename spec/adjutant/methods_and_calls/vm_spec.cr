@@ -629,9 +629,8 @@ module Adjutant
 
       it "x += 1 with no prior x reads x as nil, as in Ruby" do
         # Ruby declares x when it parses the assignment, so the read
-        # half finds nil and `nil + 1` raises. Ruby raises NoMethodError
-        # there; Adjutant's TypeError is tracked in SCOPE.md.
-        expect_raises(Adjutant::RuntimeError, /cannot add/) do
+        # half finds nil and `nil + 1` raises NoMethodError.
+        expect_raises(Adjutant::RuntimeError, /undefined method `\+` for nil/) do
           eval("x += 1")
         end
       end

@@ -316,9 +316,8 @@ module Adjutant
       # coverage stays here, unaffected in behavior, just now running
       # through the shared opcode instead of a `Regexp`-specific
       # native method.
-      it "dot-call now raises undefined-method, same as .==(x) always has" do
-        error = expect_raises(RuntimeError) { eval(%(/^b/.===("bar"))) }
-        error.diagnostic.not_nil!.code.should eq("R008")
+      it "works as a dot-call, as in Ruby" do
+        eval(%(/^b/.===("bar"))).as_bool.should be_true
       end
 
       it "drives a case/when statement" do

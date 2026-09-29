@@ -230,9 +230,10 @@ module Adjutant
         eval("7 === 3 + 4").as_bool.should be_true
       end
 
-      it "dot-call raises undefined-method, same as a.==(b) always has" do
-        error = expect_raises(RuntimeError) { eval("Integer.===(5)") }
-        error.diagnostic.not_nil!.code.should eq("R008")
+      it "works as a dot-call, as a.==(b) does, as in Ruby" do
+        eval("Integer.===(5)").as_bool.should be_true
+        eval("5.==(5)").as_bool.should be_true
+        eval("5.!=(5)").as_bool.should be_false
       end
     end
 
@@ -309,7 +310,7 @@ module Adjutant
         error = expect_raises(RuntimeError) do
           eval("class Bare; end\nBare.new < Bare.new")
         end
-        error.diagnostic.not_nil!.code.should eq("R008")
+        error.diagnostic.not_nil!.code.should eq("R047")
       end
 
       it "raises R013 when <=> returns something other than an Integer" do
@@ -484,9 +485,9 @@ module Adjutant
         diag.data["right"].should eq("String")
       end
 
-      it "raises R044 for two Arrays, which order only through <=>" do
+      it "raises NoMethodError (R047) for two Arrays, which have `<=>` but no `<` in Ruby" do
         error = expect_raises(RuntimeError) { eval("[1] < [2]") }
-        error.diagnostic.not_nil!.code.should eq("R044")
+        error.diagnostic.not_nil!.code.should eq("R047")
       end
 
       it "still answers false for NaN, which is a number" do
