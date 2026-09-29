@@ -105,7 +105,7 @@ module Adjutant
           return call_native(native, [target] + args, filename, line, nil, "#{obj.rclass.name}#[]", has_receiver: true)
         end
       end
-      raise undefined_index_method("[]", target, filename, line)
+      raise undefined_method_error("[]", target, filename, line)
     end
 
     # `target[idx] = val`, or `target[idx, length] = val` with `length`.
@@ -156,7 +156,7 @@ module Adjutant
         call_native(native, args, filename, line, nil, "#{obj.rclass.name}#[]=", has_receiver: true)
         return
       end
-      raise undefined_index_method("[]=", target, filename, line)
+      raise undefined_method_error("[]=", target, filename, line)
     end
 
     # The start and count a Range, or an index and `length`, selects
@@ -240,14 +240,13 @@ module Adjutant
       index_diagnostic("R049", {"index" => index.to_s, "minimum" => (-size).to_s}, "IndexError", filename, line)
     end
 
-    # R047 (NoMethodError) for a receiver without `[]` or `[]=`,
-    # described as Ruby does: `nil`, `true`, `class Foo`, or `an
-    # instance of Foo`.
-    private def undefined_index_method(method : String, target : Value, filename : String, line : Int32) : RuntimeError
+    # R047 (NoMethodError) for a receiver without `method`, described
+    # as Ruby does: `nil`, `true`, `class Foo`, or `an instance of Foo`.
+    private def undefined_method_error(method : String, target : Value, filename : String, line : Int32) : RuntimeError
       description = case
                     when target.null?   then "nil"
                     when target.bool?   then target.as_bool.to_s
-                    when target.rclass? then "class #{target.as_rclass.name}"
+                    when target.rclass? then "#{target.as_rclass.is_module? ? "module" : "class"} #{target.as_rclass.name}"
                     else                     "an instance of #{Builtins.builtin_type_name(target)}"
                     end
       index_diagnostic("R047", {"method" => method, "target" => description}, "NoMethodError", filename, line)

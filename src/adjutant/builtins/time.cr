@@ -13,6 +13,10 @@ module Adjutant
     def initialize(rclass : RubyClass, @time : ::Time)
       super(rclass)
     end
+
+    def shallow_copy : RubyObject?
+      copy_ivars_to(TimeObject.new(rclass, @time))
+    end
   end
 
   module Builtins

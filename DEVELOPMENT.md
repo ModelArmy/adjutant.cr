@@ -162,7 +162,7 @@ A block's scope has a `parent` chain mirroring the lexical nesting, ending at a 
 
 **Closures and blocks.** `SetBlock` captures the current frame and its `outer_locals` where the block literal is written; the call hands them to the callee as `block_outer_locals`, and `yield` runs the block with them, so it closes over where it was written. A block run by a native method (`invoke`) closes over the current frame, which is its defining frame while the call is live. A stored `Proc` is run by `invoke_proc` with its own captured closure. Yield targets that a native call would otherwise lose are carried on the frame (`block_yield`, `own_yield`).
 
-**`self` and implicit calls.** `self` lives on the frame and is never nil: at top level it is `Interpreter#main`, an Object. `DefMethod` defines on self's class, so a top-level `def` is a private method of Object, callable bare or as `self.foo` from anywhere. A receiverless call resolves against self: an object's class, or for a class or module body its singleton tables and then its class's instance methods up to Object, which is how `puts` and native functions resolve there. Then builtins, then NameError.
+**`self` and implicit calls.** `self` lives on the frame and is never nil: at top level it is `Interpreter#main`, an Object. `DefMethod` defines on self's class, so a top-level `def` is a private method of Object, callable bare or as `self.foo` from anywhere. A receiverless call resolves against self: an object's class, or for a class or module body its singleton tables and then its class's instance methods up to Object, which is how `puts` and native functions resolve there. Then builtins. If nothing resolves, a call with a receiver, arguments or a block raises NoMethodError (R047), and a bare name NameError (R008), as in Ruby.
 
 **Constants** are assign-once: reassigning raises R001, and reopening a class or module raises U003, stricter than Ruby's warning so the risk walker can trust a constant.
 
@@ -272,7 +272,7 @@ flowchart LR
     B -->|no| S[self's class: find_method, find_native_method]
     B -->|yes, RubyObject or builtin value| D[its class: find_method, find_native_method]
     B -->|yes, RubyClass| F[its singleton tables]
-    S -->|not found| C[builtins, else NameError]
+    S -->|not found| C[builtins, else NoMethodError or NameError]
     D -->|found| E[call_script_proc or call_native]
     F -->|found| E
     S -->|found| E
@@ -332,7 +332,7 @@ flowchart TD
 
 **Ivars and cvars.** `@x` reads self's ivars: an object's own, or a class's class-level ivars in its body and class methods, which are separate slots. `@@x` belongs to self's class and is found up the superclass chain.
 
-**Universal methods** (`class`, `superclass`, `is_a?`, `respond_to?`, `equal?`, `dup`, `clone`, and the fallbacks for `to_s`, `inspect` and `==`) are VM builtins in `exec_builtin`, not methods on Object, so `respond_to?` doesn't see them. `dup` and `clone` copy an object's ivars shallowly and run `initialize_copy` if defined. `is_a?` checks the superclass chain and direct includes only. Several of these differ from Ruby in edge cases, logged in SCOPE.md.
+**Universal methods** (`class`, `superclass`, `is_a?`, `respond_to?`, `equal?`, `dup`, `clone`, and the fallbacks for `to_s`, `inspect` and `==`) are VM builtins in `exec_builtin`, not methods on Object. `respond_to?` reports them from `UNIVERSAL_METHODS`, and operators from the per-type tables `operator_defined?` also uses to choose NoMethodError for `nil + 1` over the receiver's own TypeError for `"a" + 1`. `equal?` is identity: the same Crystal reference for a String, container or object, equal content for an immediate. `dup` and `clone` copy through `RubyObject#shallow_copy`, which Time, Regexp, MatchData and Chunk override to copy their native state and Stream to refuse (R054), then run `initialize_copy` if defined; Arrays and Hashes copy shallowly, and immediates and Strings return themselves. `is_a?` searches `ancestors`, and a class's extended modules. A script `initialize` on an Exception subclass runs from the native `new` and from `raise Cls, arg`; `super(message)` reaches the native `Exception#initialize`.
 
 ### `to_s` and `inspect`
 
@@ -564,7 +564,7 @@ ERRORS.md is for whoever hits an error; this is the maintainer's half. `error_ca
 
 - **P001 has no `why` or `help`.** It covers every expected-token failure; span labels carry the specifics. P003 exists because a missing `end` has something general to say.
 - **R001 and U003 share one guard**, the assign-once constant rule, told apart by whether both values are classes.
-- **The rescuable class is set apart from the code.** R008 raises NameError, and F001 RiskFlowRejectedError, because the subset rule outranks tidiness.
+- **The rescuable class is set apart from the code.** R008 raises NameError, R047 NoMethodError, and F001 RiskFlowRejectedError, because the subset rule outranks tidiness.
 - **H codes share no exception class.** H001, H002 and H004 are `HostArgumentError < ArgumentError`, being bad arguments; H003 stays `AmbiguousRiskFlowPolicyError`, being configuration state. H004 is reachable only from a native function, so it surfaces as N001 carrying H004's text.
 - **I codes ride on the accurate class**: CompileError, RuntimeError, or `InternalError` for I007, raised by `RiskAggregator.summarize`, which is neither.
 - **L help text must not promise a setting that doesn't exist.** L002 and L004 name `ExecutionLimits` settings; L001 and L003 guard fixed constants, and a spec asserts L003's help mentions no setting. L003 has no trigger test: the call-depth limit and parser recursion come first.

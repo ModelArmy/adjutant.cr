@@ -468,11 +468,11 @@ module Adjutant
       "R047" => Entry.new(
         code: "R047",
         summary: "undefined method `{method}` for {target}",
-        why: "{target} has no `{method}` method. Indexing (`x[i]`) and " \
-             "index assignment (`x[i] = v`) call `[]` and `[]=`, which " \
-             "Arrays, Hashes and Strings have, and nil doesn't.",
-        help: "Check the receiver isn't nil before indexing it, or call " \
-              "a method it has."
+        why: "{target} has no `{method}` method. Operators and indexing " \
+             "are method calls too: `x + 1` calls `+`, and `x[i]` calls " \
+             "`[]`, which nil doesn't have.",
+        help: "Check the receiver isn't nil first, check the method's " \
+              "spelling, or call a method it has."
       ),
       "R048" => Entry.new(
         code: "R048",
@@ -519,6 +519,22 @@ module Adjutant
              "module, and this was neither.",
         help: "Pass the class itself, e.g. `rescue ArgumentError`, or a " \
               "variable holding one."
+      ),
+      "R054" => Entry.new(
+        code: "R054",
+        summary: "can't {method} {class}",
+        why: "A {class} can't be copied: a copy would share its open " \
+             "source with the original, so reading one would move both.",
+        help: "Keep one reference and read from it, or collect what you " \
+              "need with `to_a` and copy that Array."
+      ),
+      "R055" => Entry.new(
+        code: "R055",
+        summary: "wrong argument type {type} (expected Module)",
+        why: "`include` and `extend` mix in a module's methods; a class " \
+             "or any other value can't be mixed in.",
+        help: "Declare the shared methods in a `module`, or inherit from " \
+              "the class instead (`class Child < Parent`)."
       ),
 
       # --- L: limits reached ----------------------------------------

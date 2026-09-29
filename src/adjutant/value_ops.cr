@@ -97,7 +97,10 @@ module Adjutant
     # Integer shift, or Array append. Separate from `int_op`, so `&`,
     # `|`, `^` and `>>` stay Integer-only.
     def self.shl(a : Value, b : Value, on_error : OnError) : Value
-      if a.array?
+      if a.string?
+        # Strings are frozen, as under `# frozen_string_literal: true`.
+        on_error.call("can't modify frozen String: #{a.as_string.inspect}", "FrozenError")
+      elsif a.array?
         # Appends to `a` in place and returns it, so `arr << 1 << 2`
         # chains; the VM's relabel then joins `b`'s label into the
         # array's.

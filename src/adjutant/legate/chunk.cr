@@ -24,6 +24,10 @@ module Adjutant
         def initialize(rclass : RubyClass, @bytes : Bytes)
           super(rclass)
         end
+
+        def shallow_copy : RubyObject?
+          copy_ivars_to(ChunkObject.new(rclass, @bytes.dup))
+        end
       end
 
       def self.bootstrap(interp : Interpreter, legate : RubyClass) : Nil

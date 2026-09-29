@@ -412,15 +412,10 @@ module Adjutant
                   recv.as_rclass?.try(&.rclass) ||
                   @interpreter.try(&.builtin_class_for(recv))
       return false unless start_cls && target
-      cls = start_cls.as(RubyClass?)
-      while cls
-        return true if cls == target
-        # Direct includes only; a module included by an included
-        # module is missed.
-        return true if cls.included_modules.includes?(target)
-        cls = cls.superclass
-      end
-      false
+      return true if start_cls.ancestors.includes?(target)
+      # A class that extends a module is an instance of it, as its
+      # singleton class includes it in Ruby.
+      !!recv.as_rclass?.try(&.singleton_ancestors.any? { |(cls, singleton)| !singleton && cls == target })
     end
 
     # Whether `v` is a Range instance, by class, not by its ivars.
@@ -477,20 +472,93 @@ module Adjutant
 
     # Whether `recv` has `method_name`, in the order `dispatch_call`
     # resolves it, without calling it.
+    # Operations `exec_builtin` performs for any receiver, which
+    # `respond_to?` reports.
+    UNIVERSAL_METHODS = Set{"nil?", "is_a?", "kind_of?", "class", "respond_to?", "equal?",
+                            "dup", "clone", "to_s", "inspect", "==", "!=", "===", "!"}
+
+    # `respond_to?`: a method dispatch finds, an operation every object
+    # has, an operator the receiver's type has, or `superclass` on a
+    # class.
+    private def value_responds_to?(recv : Value, method_name : String) : Bool
+      script_responds_to?(recv, method_name) || UNIVERSAL_METHODS.includes?(method_name) ||
+        operator_defined?(recv, method_name) ||
+        (method_name == "superclass" && !!recv.as_rclass?.try { |cls| !cls.is_module? })
+    end
+
+    # A script `initialize` that `cls` or a superclass defines, if any.
+    private def script_initialize(cls : RubyClass) : ScriptProc?
+      @symbols.lookup("initialize").try { |sym| cls.find_method(sym.value) }
+    end
+
+    # Ruby's `equal?`: the same object for a String, container, object
+    # or class; equal content for an immediate.
+    private def identical?(a : Value, b : Value) : Bool
+      ra = a.raw
+      rb = b.raw
+      if ra.is_a?(Reference) && rb.is_a?(Reference)
+        ra.same?(rb)
+      else
+        a == b
+      end
+    end
+
+    # `dup` and `clone`, which are the same here as nothing is frozen
+    # but Strings. An object gets `RubyObject#shallow_copy`, then its
+    # `initialize_copy(original)` if defined; one that can't be copied
+    # raises R054 (TypeError). An Array or Hash is copied shallowly.
+    # An immediate or String is returned as is, as for Ruby's frozen
+    # values. A class or Proc has no copy here, so dispatch raises
+    # NoMethodError.
+    private def copy_value(recv : Value, method : String, filename : String, line : Int32) : Value?
+      if obj = recv.as_robject?
+        return nil if obj.rclass == builtin_class_by_name("Proc")
+        copy = obj.shallow_copy
+        unless copy
+          raise runtime_diagnostic(
+            Diagnostic.new(code: "R054", primary: Span.new(line: line, filename: filename),
+              data: {"method" => method, "class" => obj.rclass.name}),
+            current_frame, error_class: "TypeError")
+        end
+        copy_val = Value.robject(copy)
+        if (sym_id = @symbols.lookup("initialize_copy").try(&.value)) && (method_proc = obj.rclass.find_method(sym_id))
+          invoke(method_proc, [recv], self_val: copy_val)
+        end
+        copy_val
+      elsif recv.array?
+        arr = recv.as_array
+        Value.new(LabeledArray.new(arr.dup_items, arr.label), recv.label)
+      elsif recv.hash?
+        h = recv.as_hash
+        Value.new(LabeledHash.new(h.dup_entries, h.label), recv.label)
+      elsif recv.rclass? || recv.proc?
+        nil
+      else
+        recv
+      end
+    end
+
     private def script_responds_to?(recv : Value, method_name : String) : Bool
       sym = @symbols.lookup(method_name)
       return false unless sym
       sym_id = sym.value
       if obj = recv.as_robject?
-        cls = obj.rclass
-        !!(cls.find_method(sym_id) || cls.find_native_method(sym_id))
+        public_instance_method?(obj.rclass, sym_id)
       elsif cls = recv.as_rclass?
         !!(cls.find_singleton_method(sym_id) || cls.find_native_singleton_method(sym_id))
-      elsif interp = @interpreter
-        !!(interp.builtin_class_for(recv).try(&.find_native_method(sym_id)))
+      elsif cls = @interpreter.try(&.builtin_class_for(recv))
+        public_instance_method?(cls, sym_id)
       else
         false
       end
+    end
+
+    # Whether `cls` has a public script or native instance method
+    # `sym_id`; a private one (a top-level `def`, `lambda`) can't be
+    # called with a receiver, so it doesn't count, as in Ruby.
+    private def public_instance_method?(cls : RubyClass, sym_id : Int32) : Bool
+      (!!cls.find_method(sym_id) && !cls.find_method_private?(sym_id)) ||
+        (!!cls.find_native_method(sym_id) && !cls.find_native_method_private?(sym_id))
     end
 
     # The class whose cvars `f` reads: self's class for an instance,
@@ -1570,7 +1638,12 @@ module Adjutant
         raise excluded_construct(code, name, filename, line)
       end
 
-      # NameError, as Ruby raises for an undefined name.
+      # With a receiver, arguments or a block it can only be a method,
+      # so NoMethodError (R047); a bare name could be a variable, so
+      # NameError (R008), as in Ruby.
+      if has_receiver || !args.empty? || blk
+        raise undefined_method_error(name, has_receiver ? args.first : (self_val || current_frame.self_val), filename, line)
+      end
       raise runtime_diagnostic(
         Diagnostic.new(
           code: "R008",
@@ -2014,6 +2087,7 @@ module Adjutant
       "nil?" => Arity.from(0), "is_a?" => Arity.from(1), "kind_of?" => Arity.from(1),
       "class" => Arity.from(0), "superclass" => Arity.from(0), "respond_to?" => Arity.new(1, 2),
       "equal?" => Arity.from(1), "dup" => Arity.from(0), "clone" => Arity.from(0),
+      "==" => Arity.from(1), "!=" => Arity.from(1), "===" => Arity.from(1),
       "to_s" => Arity.from(0), "inspect" => Arity.from(0), "to_i" => Arity.from(0),
       "to_f" => Arity.from(0), "length" => Arity.from(0), "size" => Arity.from(0),
       "+" => Arity.from(1), "-" => Arity.from(1), "*" => Arity.from(1),
@@ -2074,6 +2148,15 @@ module Adjutant
         msg = if args.empty?
                 cls = builtin_class_by_name("RuntimeError")
                 "unhandled exception"
+              elsif (script_cls = args.first.as_rclass?) && script_cls.ancestors.any? { |c| c.name == "Exception" } &&
+                    (init = script_initialize(script_cls))
+                # `raise Oops, arg` for a class with a script
+                # `initialize`: built with `new(arg)`, as Ruby's
+                # `Oops.exception(arg)` is, so the `initialize` runs.
+                inst = RubyObject.new(script_cls)
+                invoke(init, args[1..], self_val: Value.robject(inst))
+                error_obj = inst
+                error_message(Value.robject(inst))
               elsif args.first.rclass?
                 # `raise NameError, "boo"`: a class and a message.
                 cls = args.first.as_rclass
@@ -2140,46 +2223,45 @@ module Adjutant
               recv.as_rclass?.try(&.rclass) ||
               @interpreter.try(&.builtin_class_for(recv))
         cls ? Value.rclass(cls) : Value.nil_value
+      when "==", "!=", "==="
+        # The dot-call forms of the operators, `a.==(b)`. Without a
+        # receiver, a bare `==` isn't a call.
+        return nil unless has_receiver
+        recv = args.first
+        other = args[1]
+        result = case name
+                 when "==" then values_equal?(recv, other)
+                 when "!=" then !values_equal?(recv, other)
+                 else           triple_eq_matches?(recv, other)
+                 end
+        Value.bool(result)
       when "superclass"
-        # A class's superclass; nil for Object. For any other
-        # receiver it returns nil, where Ruby raises NoMethodError.
-        recv = args.first? || Value.nil_value
-        sup = recv.as_rclass?.try(&.superclass)
-        sup ? Value.rclass(sup) : Value.nil_value
-      when "respond_to?"
-        # Whether dispatch would find the method, checking what
-        # `dispatch_call` checks. A String name works as well as a
-        # Symbol. Operations that exist only here (`to_s`, `class`,
-        # `is_a?`, ...) are not seen, so answer false.
-        recv = args.first? || Value.nil_value
-        method_arg = args[1]? || Value.nil_value
-        method_name = method_arg.as_sym?.try(&.name) || method_arg.as_string?
-        Value.bool(method_name ? script_responds_to?(recv, method_name) : false)
-      when "equal?"
-        # Identity. Values with equal content are identical here, as
-        # Ruby's immediates are; two equal Strings are too, unlike
-        # Ruby.
-        recv = args.first? || Value.nil_value
-        other = args[1]? || Value.nil_value
-        Value.bool(recv == other)
-      when "dup", "clone"
-        # An object's shallow copy: a new object of the same class
-        # with the ivars copied, then its `initialize_copy(original)`
-        # if defined. `initialize` doesn't run. There is no frozen
-        # state, so `dup` and `clone` are the same. Other receivers get
-        # nil here, which dispatch reports as NoMethodError.
-        recv = args.first? || Value.nil_value
-        if obj = recv.as_robject?
-          copy = RubyObject.new(obj.rclass)
-          copy.ivars.merge!(obj.ivars)
-          copy_val = Value.robject(copy)
-          if sym_id = @symbols.lookup("initialize_copy").try(&.value)
-            if method = obj.rclass.find_method(sym_id)
-              invoke(method, [recv], self_val: copy_val)
-            end
-          end
-          copy_val
+        # A class's superclass; nil for Object. Anything else, a module
+        # included, has no `superclass`, so dispatch raises
+        # NoMethodError.
+        recv = has_receiver ? args.first : current_frame.self_val
+        if (cls = recv.as_rclass?) && !cls.is_module?
+          sup = cls.superclass
+          sup ? Value.rclass(sup) : Value.nil_value
         end
+      when "respond_to?"
+        # Whether a call would work: a method dispatch finds, an
+        # operation every object has here, or an operator the
+        # receiver's type has. Private Kernel functions (`puts`) answer
+        # false, as in Ruby. A String name works as well as a Symbol.
+        recv = has_receiver ? args.first : current_frame.self_val
+        method_arg = args[has_receiver ? 1 : 0]? || Value.nil_value
+        method_name = method_arg.as_sym?.try(&.name) || method_arg.as_string?
+        Value.bool(method_name ? value_responds_to?(recv, method_name) : false)
+      when "equal?"
+        # Identity: the same object for a String, container or object,
+        # and equal content for an immediate, as in Ruby.
+        recv = has_receiver ? args.first : current_frame.self_val
+        other = args[has_receiver ? 1 : 0]? || Value.nil_value
+        Value.bool(identical?(recv, other))
+      when "dup", "clone"
+        recv = has_receiver ? args.first : current_frame.self_val
+        copy_value(recv, name, filename, line)
       when "to_s"
         recv = args.first? || Value.nil_value
         Value.string(recv.to_s)
@@ -2414,9 +2496,51 @@ module Adjutant
 
     # --- Index helpers ------------------------------------------------------
 
+    # The method each binary-operator opcode stands for.
+    OPERATOR_NAMES = {
+      Op::Add => "+", Op::Sub => "-", Op::Mul => "*", Op::Div => "/", Op::Mod => "%",
+      Op::BitAnd => "&", Op::BitOr => "|", Op::Xor => "^", Op::Shl => "<<", Op::Shr => ">>",
+      Op::Lt => "<", Op::Lte => "<=", Op::Gt => ">", Op::Gte => ">=",
+    }
+
+    COMPARISONS = {"<", "<=", ">", ">=", "<=>"}
+
+    # The operators each builtin type has as methods in Ruby.
+    INTEGER_OPERATORS = Set{"+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>", "<", "<=", ">", ">=", "<=>"}
+    FLOAT_OPERATORS   = Set{"+", "-", "*", "/", "%", "<", "<=", ">", ">=", "<=>"}
+    STRING_OPERATORS  = Set{"+", "*", "%", "<<", "<", "<=", ">", ">=", "<=>"}
+    ARRAY_OPERATORS   = Set{"+", "-", "*", "&", "|", "<<", "<=>"}
+    HASH_OPERATORS    = Set{"<", "<=", ">", ">="}
+    SYMBOL_OPERATORS  = Set{"<", "<=", ">", ">=", "<=>"}
+    LOGIC_OPERATORS   = Set{"&", "|", "^"}
+
+    # Whether `v` has the operator `name` as a method, as Ruby decides
+    # between NoMethodError (`nil + 1`) and the receiver's own error
+    # (`"a" + 1`). An object has it if its class defines it, or for a
+    # comparison, `<=>`; a class is left to the operation itself.
+    private def operator_defined?(v : Value, name : String) : Bool
+      case
+      when v.robject?
+        script_responds_to?(v, name) || (COMPARISONS.includes?(name) && script_responds_to?(v, "<=>"))
+      when v.rclass?          then true
+      when v.int?             then INTEGER_OPERATORS.includes?(name)
+      when v.float?           then FLOAT_OPERATORS.includes?(name)
+      when v.string?          then STRING_OPERATORS.includes?(name)
+      when v.array?           then ARRAY_OPERATORS.includes?(name)
+      when v.hash?            then HASH_OPERATORS.includes?(name)
+      when v.symbol?          then SYMBOL_OPERATORS.includes?(name)
+      when v.null? || v.bool? then LOGIC_OPERATORS.includes?(name)
+      else                         false
+      end
+    end
+
     private def exec_binary(inst : Instruction, &block : Value, Value -> Value) : Nil
       b = pop
       a = pop
+      if name = OPERATOR_NAMES[inst.op]?
+        f = current_frame
+        raise undefined_method_error(name, a, f.filename, f.line) unless operator_defined?(a, name)
+      end
       result = block.call(a, b).with_label(RiskFlowLabel.join(a.label, b.label))
       @risk_flow_log.record(inst.op.to_s, [a.label, b.label], result.label, current_frame.line)
       push(result)

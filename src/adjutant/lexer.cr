@@ -638,8 +638,21 @@ module Adjutant
         advance unless at_end? # closing quote
         return make_token(TokenKind::Symbol, lexeme_from(start), line, col)
       end
+      # An operator Symbol (`:+`, `:<=>`, `:[]`) where an expression can
+      # start, so `a ? 1 :-1` still reads as a ternary.
+      unless EXPR_END_KINDS.includes?(@prev_kind)
+        if op = OPERATOR_SYMBOLS.find { |candidate| @source[@pos, candidate.size]? == candidate }
+          op.size.times { advance }
+          return make_token(TokenKind::Symbol, lexeme_from(start), line, col)
+        end
+      end
       make_token(TokenKind::Colon, ":", line, col)
     end
+
+    # Operator method names a Symbol can hold, longest first so `:<=>`
+    # isn't read as `:<`.
+    OPERATOR_SYMBOLS = {"[]=", "<=>", "===", "[]", "==", "=~", "!=", "!~", "<=", ">=", "<<", ">>",
+                        "**", "+@", "-@", "+", "-", "*", "/", "%", "<", ">", "!", "&", "|", "^", "~"}
 
     private def scan_dot(start : Int32, line : Int32, col : Int32) : Token
       if current_char == '.'

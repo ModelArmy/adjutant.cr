@@ -13,6 +13,10 @@ module Adjutant
     def initialize(rclass : RubyClass, @regex : ::Regex)
       super(rclass)
     end
+
+    def shallow_copy : RubyObject?
+      copy_ivars_to(RegexpObject.new(rclass, @regex))
+    end
   end
 
   # A MatchData's state: Crystal's `::Regex::MatchData` and the
@@ -24,6 +28,10 @@ module Adjutant
 
     def initialize(rclass : RubyClass, @md : ::Regex::MatchData, @subject : String, @regexp_value : Value)
       super(rclass)
+    end
+
+    def shallow_copy : RubyObject?
+      copy_ivars_to(MatchDataObject.new(rclass, @md, @subject, @regexp_value))
     end
   end
 

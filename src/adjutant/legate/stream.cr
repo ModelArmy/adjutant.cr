@@ -48,6 +48,12 @@ module Adjutant
                    @state : StreamConsumption = StreamConsumption.new)
       super(rclass)
     end
+
+    # None: a copy would share the open source with the original, so
+    # reading either would move both. `dup` and `clone` raise TypeError.
+    def shallow_copy : RubyObject?
+      nil
+    end
   end
 
   module Legate

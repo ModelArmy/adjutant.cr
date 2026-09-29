@@ -33,43 +33,10 @@ acceptable, since it restores the subset.
   `[k, v]` Array and letting `spread_block_args` (vm.cr) spread it for
   `|k, v|`, which is how Ruby does it.
 
-- **An undefined method called on a receiver raises NameError, not
-  NoMethodError.** Found while giving indexing its NoMethodError.
-  `dispatch_call` ends in R008 (NameError) whether or not the call had
-  a receiver, so `5.nope` raises NameError and `rescue NoMethodError`
-  misses it. Ruby raises NameError only for a bare name that could be
-  a variable; with a receiver, or with arguments, it raises
-  NoMethodError. R047 already words Ruby's message; the fix is using
-  it for a call with a receiver or arguments.
-
-- **An operator on nil, or on an object without it, raises TypeError,
-  not NoMethodError.** Found by the `x += 1` spec. `ValueOps.add` and
-  its siblings fall back to TypeError ("cannot add  and 1") for any
-  pair they don't handle, so `nil + 1` raises TypeError where Ruby
-  raises NoMethodError (undefined method '+' for nil), and `rescue
-  NoMethodError` misses it. Ruby's TypeError is right only when the
-  receiver has the operator and rejects the argument (`"a" + 1`,
-  `1 + "a"`). The fix is choosing the class by whether the receiver's
-  class has the operator, alongside the NameError/NoMethodError entry
-  above.
-
-- **`is_a?` misses a module included by an included module.**
-  `VM#is_a_target?` checks each class's direct `included_modules`
-  only, so with `module A; end; module B; include A; end; class C;
-  include B; end`, `C.new.is_a?(A)` is false and `when A` doesn't
-  match (`Class#===` uses the same check). Ruby says true. Searching
-  `RubyClass#ancestors` would fix both.
-
 - **Float `%` by zero raises ZeroDivisionError.** `ValueOps.mod`
   raises for a zero divisor of either type; Ruby raises only for
   Integer `%` and returns NaN for `5.0 % 0` and `5 % 0.0`. Float `/`
   by zero already returns Infinity, as in Ruby.
-
-- **`equal?` is true for equal Strings, and `superclass` is nil on a
-  non-class.** `exec_builtin`'s `equal?` compares values, so
-  `"a".equal?("a")` is true; Ruby compares identity and says false for
-  two String objects. Its `superclass` returns nil for any receiver
-  that isn't a class, where Ruby raises NoMethodError (`5.superclass`).
 
 - **Blockless iterators return a value instead of an Enumerator.**
   `Array#each` without a block returns the receiver, and `map`,
@@ -116,13 +83,6 @@ acceptable, since it restores the subset.
   whitelist check in `spec/skill/TODO.md` §3 lists every registered
   method, which is where to compare each class against Ruby's.
 
-- **`include` and `extend` accept a class.** `mixins.cr` takes the
-  argument's RubyClass without checking `is_module?`, so
-  `include SomeClass` mixes a class's methods in, where Ruby raises
-  TypeError ("wrong argument type Class (expected Module)"). A
-  non-class argument fails in `as_rclass` as an internal error. Both
-  should raise TypeError.
-
 - **`Array#inject`/`reduce` with a Symbol and no block returns `nil`.**
   Found by reading `builtins/array.cr`. `[1, 2, 3].inject(:+)` treats
   `:+` as the initial value and, finding no block, returns `nil`. Real
@@ -131,44 +91,6 @@ acceptable, since it restores the subset.
   plausible `nil`.
   The two-argument form, `inject(0, :+)`, raises ArgumentError (R046)
   until then, since `reduce` is declared with the arity it implements.
-
-- **`respond_to?` is false for operations only `exec_builtin`
-  handles.** `script_responds_to?` (`vm.cr`) checks the script and
-  native method tables, as `dispatch_call` does, but not the operations
-  `exec_builtin` implements itself. So `x.respond_to?(:to_s)` is false
-  while `x.to_s` works; the case's own comment says so. No spec pins
-  it. Fix: also accept `exec_builtin`'s public names (`to_s`, `inspect`,
-  `class`, `is_a?`, `dup`, ...) from one list both use. Its Kernel
-  names (`puts`, `print`, `p`, `raise`, `require`) must stay false, as
-  they are private in Ruby.
-
-- **`dup` and `clone` of a Time, Regexp, MatchData, Stream or Chunk
-  return an object without its state.** Found porting mruby's
-  `Time#initialize_copy` test (`spec/scripts/mruby/time.rb`). The
-  `"dup", "clone"` case in `exec_builtin` (`vm.cr`) allocates
-  `RubyObject.new(obj.rclass)` and copies `ivars`. That is right for a
-  script's own class, but `TimeObject`, `RegexpObject`,
-  `MatchDataObject`, `Legate::StreamObject` and `Legate::ChunkObject`
-  keep their state in typed fields. The copy has the right class and
-  none of the state, and the first method that reads it fails with an
-  internal cast error (`Cast from Adjutant::RubyObject to
-  Adjutant::TimeObject failed`). Fix: a virtual copy method on
-  `RubyObject`, overridden by each subclass, called before
-  `initialize_copy`. `Legate::Stream` is Legate's class, not Ruby's,
-  so its copy semantics are Adjutant's to define: `dup` and `clone`
-  raise TypeError for it, since a copy sharing one open source with
-  its original would read unpredictably.
-
-- **A subclass of Exception never runs its own `initialize`.** Found
-  while declaring native arity. `Exception.new` is a native singleton
-  method, and `VM#construct` prefers a native `new` found anywhere up
-  the chain, so `class Oops < StandardError; def initialize(n);
-  super("got #{n}"); end; end` builds an Oops whose `initialize` never
-  ran: `Oops.new(1).message` is `"1"`, not `"got 1"`. The fix is
-  running a script `initialize` below the native `new`'s class after
-  the native allocates. Until then `Exception.new` and `NameError.new`
-  accept any number of arguments, so a script `initialize` taking two
-  isn't met with a misleading arity error.
 
 - **Array and Hash `==` compare Ranges and objects with `<=>` inside
   them by identity.** Predicted by reading `value_ops.cr` and

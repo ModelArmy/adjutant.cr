@@ -27,6 +27,27 @@ module Adjutant::Builtins
   end
 
   # A new error object of `cls`, with the message if given.
+  # Runs a script `initialize` defined below the native `new`, as
+  # Ruby's `new` does, on a fresh instance of `cls`, and returns the
+  # instance; nil when no script class in the chain defines one.
+  private def self.initialize_by_script(interp : Interpreter, cls : RubyClass, args : Array(Value),
+                                        ncc : NativeCallContext) : Value?
+    sym = interp.symbols.lookup("initialize")
+    method = sym.try { |s| cls.find_method(s.value) }
+    return unless method
+    inst = Value.robject(RubyObject.new(cls))
+    ncc.invoke_method(method, args[1..], inst)
+    inst
+  end
+
+  # Raises R046 unless `args` (the class, then the arguments) has at
+  # most `max` arguments after the class.
+  private def self.check_new_arity(cls : RubyClass, args : Array(Value), max : Int32, ncc : NativeCallContext) : Nil
+    given = args.size - 1
+    return if given <= max
+    ncc.raise_error("R046", {"given" => given.to_s, "expected" => "0..#{max}", "method" => "#{cls.name}.new"}, "ArgumentError")
+  end
+
   private def self.new_exception(interp : Interpreter, cls : RubyClass, args : Array(Value)) : RubyObject
     inst = RubyObject.new(cls)
     # `args[0]` is the class.
@@ -43,9 +64,26 @@ module Adjutant::Builtins
     cls = RubyClass.new("Exception")
 
     # Allocates the receiver's class, so `TypeError.new("msg")` is a
-    # TypeError.
-    define_singleton(cls, interp, "new", arity: Arity.any) do |args|
-      Value.robject(new_exception(interp, args.first.as_rclass, args))
+    # TypeError. A script subclass's own `initialize` runs instead of
+    # taking the message, and checks its own arity; without one, `new`
+    # takes at most a message.
+    define_singleton(cls, interp, "new", arity: Arity.any) do |args, _blk, ncc|
+      target = args.first.as_rclass
+      if inst = initialize_by_script(interp, target, args, ncc)
+        next inst
+      end
+      check_new_arity(target, args, 1, ncc)
+      Value.robject(new_exception(interp, target, args))
+    end
+
+    # Sets the message, for `super(message)` from a script subclass's
+    # `initialize`. With no message, `message` is the class name.
+    define(cls, interp, "initialize", arity: 0..1, is_private: true) do |args|
+      if msg = args[1]?
+        msg = Value.string(msg.to_s, msg.label) unless msg.string?
+        args.first.as_robject.ivars[interp.symbols.intern("message").value] = msg
+      end
+      Value.nil_value
     end
 
     define(cls, interp, "to_s", arity: 0) do |args|
@@ -73,8 +111,13 @@ module Adjutant::Builtins
 
     # Allocates the receiver's class, as Exception's `new` does, so
     # `NoMethodError.new` is a NoMethodError.
-    define_singleton(cls, interp, "new", arity: Arity.any) do |args|
-      inst = new_exception(interp, args.first.as_rclass, args)
+    define_singleton(cls, interp, "new", arity: Arity.any) do |args, _blk, ncc|
+      target = args.first.as_rclass
+      if script_inst = initialize_by_script(interp, target, args, ncc)
+        next script_inst
+      end
+      check_new_arity(target, args, 2, ncc)
+      inst = new_exception(interp, target, args)
 
       # The name is the second argument, after the message.
       if name = args[2]?

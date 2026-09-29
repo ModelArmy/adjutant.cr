@@ -381,6 +381,20 @@ module Adjutant
       @ivars = {} of Int32 => Value
     end
 
+    # A new object of the same class with the same ivars and, in a
+    # subclass, the same native state, for `dup` and `clone`; nil for
+    # an object that can't be copied.
+    def shallow_copy : RubyObject?
+      copy_ivars_to(RubyObject.new(@rclass))
+    end
+
+    # Gives `copy` this object's ivars and closure, and returns it.
+    protected def copy_ivars_to(copy : RubyObject) : RubyObject
+      copy.ivars.merge!(@ivars)
+      copy.outer_locals = @outer_locals
+      copy
+    end
+
     # Whether this object's class or one of its superclasses is named
     # `class_name`. Included modules are not checked.
     def instance_of?(class_name : String)
