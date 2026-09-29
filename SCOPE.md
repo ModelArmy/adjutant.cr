@@ -25,41 +25,6 @@ configuration.
 Where an entry lists two remedies, rejecting the construct is always
 acceptable, since it restores the subset.
 
-- **A new name assigned inside a block becomes a global, not a
-  block-local.** Predicted by reading `compiler.cr`; no
-  spec or model has hit it. `Compiler#emit_store_name` emits
-  `SetGlobal` when a block (or lambda, or `for` body, which compiles
-  as a block) assigns a name no enclosing scope defines, so
-  `xs.each { |x| t = x * 2 }` writes `t` into the interpreter's
-  `@globals`. Unlike Ruby: `t` is still readable after the block
-  (Ruby raises NameError); recursive calls whose blocks use the same
-  name share one variable, so the script can run and answer wrongly;
-  and `@globals` is shared across `Interpreter#eval` calls, so the
-  name carries into later scripts in the session. Conversely, a
-  `for` loop's variable is unreadable after the loop, where Ruby
-  keeps it. DEVELOPMENT.md's Parser section describes the block rule
-  as Ruby's, which it isn't. The likely fix is a block-local slot for
-  a block or lambda, and a slot in the enclosing scope for a `for`
-  loop's variable and body.
-
-- **`and` and `or` bind tighter than assignment.** Predicted by reading
-  `parser.cr`. `maybe_assignment` parses the right-hand side with
-  `parse_expression(0)`, and `KwAnd`/`KwOr` have precedence 3 and 2, so
-  `x = false or true` sets `x` to `true`. Ruby parses `(x = false) or
-  true` and sets `false`: `and` and `or` sit below assignment. The idiom
-  `x = fetch or raise "..."` is unaffected, but `ok = check and log` is
-  not. The fix is stopping an assignment's right-hand side at
-  `and`/`or`.
-
-- **`rescue e` is accepted as `rescue => e`.** `parse_rescue_clause`
-  treats a bare identifier after `rescue` as the binding, and the
-  clause catches StandardError. Ruby evaluates `e` as the class to
-  match, which raises TypeError at match time unless `e` holds a
-  class. About twenty specs use the form (`control_flow.rb`,
-  `exceptions_spec.cr`, `risk_flow_enforcement_spec.cr`, ...), so the
-  fix is rejecting it with a diagnostic that names `rescue => e`, then
-  rewriting those specs.
-
 - **`Hash#each` with one block parameter binds the key alone.**
   Predicted by reading `hash.cr`; no spec or model has hit
   it. `h.each { |pair| }` gives `pair` the key, where Ruby gives
@@ -67,12 +32,6 @@ acceptable, since it restores the subset.
   `k` and `v` as two arguments. The likely fix is passing one
   `[k, v]` Array and letting `spread_block_args` (vm.cr) spread it for
   `|k, v|`, which is how Ruby does it.
-
-- **A leading-zero integer literal is decimal.** `0644` parses as 644;
-  Ruby reads it as octal 420. `s.mode == 0644` compares against the
-  wrong number without error. `0o`, `0x` and `0b` prefixes are also
-  unsupported, which is only a gap. Scanning is in
-  `Lexer#scan_number`.
 
 - **An undefined method called on a receiver raises NameError, not
   NoMethodError.** Found while giving indexing its NoMethodError.
@@ -83,12 +42,16 @@ acceptable, since it restores the subset.
   NoMethodError. R047 already words Ruby's message; the fix is using
   it for a call with a receiver or arguments.
 
-- **`break` outside any loop or block is ignored.** A `break` with no
-  loop compiles to BlockBreak; in a method body with no block frame,
-  `Op::BlockBreak` pushes the value and carries on. Ruby rejects it
-  (SyntaxError, "Invalid break"). The compiler knows when no loop
-  encloses a `break`, but not whether it is in a block, so the
-  rejection may belong in the compiler's scope tracking.
+- **An operator on nil, or on an object without it, raises TypeError,
+  not NoMethodError.** Found by the `x += 1` spec. `ValueOps.add` and
+  its siblings fall back to TypeError ("cannot add  and 1") for any
+  pair they don't handle, so `nil + 1` raises TypeError where Ruby
+  raises NoMethodError (undefined method '+' for nil), and `rescue
+  NoMethodError` misses it. Ruby's TypeError is right only when the
+  receiver has the operator and rejects the argument (`"a" + 1`,
+  `1 + "a"`). The fix is choosing the class by whether the receiver's
+  class has the operator, alongside the NameError/NoMethodError entry
+  above.
 
 - **`is_a?` misses a module included by an included module.**
   `VM#is_a_target?` checks each class's direct `included_modules`
@@ -159,35 +122,6 @@ acceptable, since it restores the subset.
   TypeError ("wrong argument type Class (expected Module)"). A
   non-class argument fails in `as_rclass` as an internal error. Both
   should raise TypeError.
-
-- **Quoted Symbol literals don't decode escapes.** `:"a\nb"` keeps a
-  literal backslash and `n`. The Symbol is built in `parser.cr` by
-  stripping quotes from the lexeme (`SymbolLiteral.new(tok.lexeme
-  .lstrip(':')...)`) without `decode_string_escapes`, which string
-  literals use.
-
-- **Callback hooks can be defined and are never called.** A script
-  can define `self.inherited`, `self.included`, `self.extended`,
-  `self.method_added`, `self.singleton_method_added` or
-  `self.const_missing` in a class or module body, and
-  `method_missing`, `respond_to_missing?` or `singleton_method_added`
-  as instance methods. Ruby calls each when its event happens;
-  Adjutant never does, so a registry built on `inherited` stays empty
-  and a `method_missing` fallback never runs, without error. They are
-  excluded (U015; U005 for `method_missing` and
-  `respond_to_missing?`). The fix is rejecting each definition at
-  compile time with its U-code, not after resolution fails as U005's
-  calls are: Ruby calls a hook whenever one is defined, so no Ruby
-  script defines one and expects it to stay silent.
-  `spec/scripts/mruby/class.rb` has commented-out `inherited` and
-  `extended` tests that can become rejection cases.
-
-- **A second heredoc opener on a line is lexed as `<<`.** `foo(<<~A,
-  <<~B)` is valid Ruby. Only the first opener's body is skipped, so
-  the second body's lines are lexed as code. The lexer resolves one
-  opener per line (`Lexer#scan_heredoc_opener`). At minimum a second
-  opener must be a parse error; full support means queueing the
-  openers and reading their bodies in order.
 
 - **`Array#inject`/`reduce` with a Symbol and no block returns `nil`.**
   Found by reading `builtins/array.cr`. `[1, 2, 3].inject(:+)` treats
@@ -526,8 +460,7 @@ because nothing had ever run it.
   lookup-after-resolution-fails checks, the mechanism U005–U007 use
   (`dispatch_call` and constant resolution, `vm.cr`); U012–U014 and
   U015's `undef` fail in the parser today, so each needs its own
-  enforcement point. U015's hooks are in Must Fix, since defining one
-  silently does nothing.
+  enforcement point. U015's hooks are enforced at compile time.
   Backticks and `%x{}` have no case in the lexer at all, so theirs is
   there.
 

@@ -356,12 +356,12 @@ module Adjutant
            TokenKind::SlashEq, TokenKind::PercentEq
         op = advance.kind
         base_op = compound_base_op(op)
-        rhs = parse_expression(0)
+        rhs = parse_expression(PREC_AND_OR)
         register_local_if_identifier(lhs)
         OpAssign.new(base_op, lhs, rhs, l, c)
       when TokenKind::OrAssign, TokenKind::AndAssign
         op = advance.kind
-        rhs = parse_expression(0)
+        rhs = parse_expression(PREC_AND_OR)
         register_local_if_identifier(lhs)
         CondAssign.new(op, lhs, rhs, l, c)
       else
@@ -400,12 +400,12 @@ module Adjutant
 
     # Parse a comma-separated rhs; wraps in MultiAssign if needed.
     private def parse_multi_rhs : Node
-      first = parse_expression(0)
+      first = parse_expression(PREC_AND_OR)
       return first unless at_kind?(TokenKind::Comma)
       values = [first] of Node
       while match(TokenKind::Comma)
         skip_newlines
-        values << parse_expression(0)
+        values << parse_expression(PREC_AND_OR)
       end
       # Wrap as an array literal used as multi-rhs
       ArrayLiteral.new(values, first.line, first.column)
@@ -414,36 +414,49 @@ module Adjutant
     # --- Pratt expression parser --------------------------------------------
 
     # Binding power of each binary operator; higher binds tighter.
-    # Ruby puts `<=>` on the same tier as `==`, `=~` and `!~`; here it
-    # sits one tier above.
+    # Ruby's order, lowest first: `and`/`or`, then assignment (resolved
+    # by `maybe_assignment`), `? :`, ranges, `||`, `&&`, equality,
+    # comparison, `|` and `^`, `&`, shifts, `+`/`-`, `*`/`/`/`%`.
+    # `not` sits between `and`/`or` and assignment.
     PRECEDENCE = {
-      TokenKind::Question  => 1,
-      TokenKind::KwOr      => 2,
-      TokenKind::OrOr      => 2,
-      TokenKind::KwAnd     => 3,
-      TokenKind::AndAnd    => 3,
-      TokenKind::EqEq      => 4,
-      TokenKind::NEq       => 4,
-      TokenKind::EqTilde   => 4,
-      TokenKind::BangTilde => 4,
-      TokenKind::TripleEq  => 4,
-      TokenKind::Lt        => 5,
-      TokenKind::LtE       => 5,
-      TokenKind::Gt        => 5,
-      TokenKind::GtE       => 5,
-      TokenKind::Spaceship => 5,
-      TokenKind::RangeIncl => 6,
-      TokenKind::RangeExcl => 6,
-      TokenKind::Pipe      => 7,
-      TokenKind::Caret     => 7,
-      TokenKind::Amp       => 7,
-      TokenKind::Shl       => 8,
-      TokenKind::Shr       => 8,
-      TokenKind::Plus      => 9,
-      TokenKind::Minus     => 9,
-      TokenKind::Star      => 10,
-      TokenKind::Slash     => 10,
-      TokenKind::Percent   => 10,
+      TokenKind::KwOr      => 1,
+      TokenKind::KwAnd     => 1,
+      TokenKind::Question  => 2,
+      TokenKind::RangeIncl => 3,
+      TokenKind::RangeExcl => 3,
+      TokenKind::OrOr      => 4,
+      TokenKind::AndAnd    => 5,
+      TokenKind::EqEq      => 6,
+      TokenKind::NEq       => 6,
+      TokenKind::EqTilde   => 6,
+      TokenKind::BangTilde => 6,
+      TokenKind::TripleEq  => 6,
+      TokenKind::Spaceship => 6,
+      TokenKind::Lt        => 7,
+      TokenKind::LtE       => 7,
+      TokenKind::Gt        => 7,
+      TokenKind::GtE       => 7,
+      TokenKind::Pipe      => 8,
+      TokenKind::Caret     => 8,
+      TokenKind::Amp       => 9,
+      TokenKind::Shl       => 10,
+      TokenKind::Shr       => 10,
+      TokenKind::Plus      => 11,
+      TokenKind::Minus     => 11,
+      TokenKind::Star      => 12,
+      TokenKind::Slash     => 12,
+      TokenKind::Percent   => 12,
+    }
+
+    # The precedence of `and` and `or`. An assignment's right-hand
+    # side, a ternary's branches and `not`'s operand stop before it.
+    PREC_AND_OR = 1
+
+    # Operators Ruby doesn't associate: a second at the same level
+    # straight after the first is P008.
+    NON_ASSOCIATIVE = {
+      TokenKind::EqEq, TokenKind::NEq, TokenKind::EqTilde, TokenKind::BangTilde,
+      TokenKind::TripleEq, TokenKind::Spaceship, TokenKind::RangeIncl, TokenKind::RangeExcl,
     }
 
     private def token_precedence(kind : TokenKind) : Int32
@@ -467,18 +480,23 @@ module Adjutant
       # and `a + b = 1` is `a + (b = 1)`. `resolve_assignment: false`
       # is for a multiple assignment's targets.
       left = maybe_assignment(left) if resolve_assignment && assignment_token?(current_kind)
+      # The precedence of the non-associative operator that built
+      # `left`, if one did.
+      non_assoc_prec = nil
       loop do
         # A `|` closing a block parameter list; see `@no_pipe`.
         break if @no_pipe && current_kind == TokenKind::Pipe
         prec = token_precedence(current_kind)
         break if prec <= min_prec
         op_tok = @current
+        raise chained_operator_error(op_tok) if prec == non_assoc_prec
+        non_assoc_prec = NON_ASSOCIATIVE.includes?(op_tok.kind) ? prec : nil
 
         if op_tok.kind == TokenKind::Question
           advance
-          then_expr = parse_expression(0)
+          then_expr = parse_expression(PREC_AND_OR)
           expect(TokenKind::Colon)
-          else_expr = parse_expression(0)
+          else_expr = parse_expression(PREC_AND_OR)
           left = Ternary.new(left, then_expr, else_expr, op_tok.line, op_tok.column)
           next
         end
@@ -496,6 +514,11 @@ module Adjutant
         left = Binary.new(op_tok.kind, left, right, op_tok.line, op_tok.column)
       end
       left
+    end
+
+    private def chained_operator_error(op_tok : Token) : ParseError
+      span = Span.new(line: op_tok.line, column: op_tok.column, length: op_tok.lexeme.size, label: "chained")
+      ParseError.new(Diagnostic.new(code: "P008", primary: span, data: {"operator" => op_tok.lexeme}))
     end
 
     # Whether the range's end is omitted (`1..`): the next token is a
@@ -548,8 +571,10 @@ module Adjutant
         advance
         Unary.new(TokenKind::Bang, Unary.new(TokenKind::Tilde, parse_unary, l, c), l, c)
       when TokenKind::KwNot
+        # `not` takes everything up to `and`/`or`: `not a == b` is
+        # `!(a == b)`.
         advance
-        Unary.new(TokenKind::Bang, parse_unary, l, c)
+        Unary.new(TokenKind::Bang, parse_expression(PREC_AND_OR), l, c)
       else
         parse_postfix(parse_primary)
       end
@@ -658,8 +683,7 @@ module Adjutant
       when TokenKind::RegexPart
         parse_regex_literal(l, c)
       when TokenKind::Symbol
-        tok = advance
-        SymbolLiteral.new(tok.lexeme.lstrip(':').strip('"').strip('\''), l, c)
+        parse_symbol_literal(advance, l, c)
       when TokenKind::PercentWords
         tok = advance
         ArrayLiteral.new(split_percent_literal(tok.lexeme).map { |word| StringLiteral.new(word, tok.line, tok.column).as(Node) }, l, c)
@@ -1529,23 +1553,18 @@ module Adjutant
       expect(TokenKind::KwRescue)
       classes = [] of Node
       rescue_var = nil
-      if at_kind?(TokenKind::Constant)
-        # Parsed as an expression so `rescue Foo::Bar` works.
+      # Classes to match are expressions, as in Ruby: `rescue Foo::Bar`,
+      # or `rescue k` for a variable holding a class. They are
+      # evaluated when an error arrives, so an undefined name raises
+      # NameError then.
+      if !at_kind?(TokenKind::HashRocket) && (arg_follows_no_paren? || at_kind?(TokenKind::ColonColon))
         classes << parse_expression(0)
         while match(TokenKind::Comma)
           skip_newlines
           classes << parse_expression(0)
         end
-        if match(TokenKind::HashRocket)
-          rescue_var = @current.lexeme
-          advance
-        end
-      elsif match(TokenKind::HashRocket)
-        rescue_var = @current.lexeme
-        advance
-      elsif at_kind?(TokenKind::Identifier)
-        # `rescue e` is accepted as `rescue => e`. Ruby would treat
-        # `e` as the class to match.
+      end
+      if match(TokenKind::HashRocket)
         rescue_var = @current.lexeme
         advance
       end
@@ -1715,6 +1734,21 @@ module Adjutant
       end
       words << current.to_s if has_content
       words
+    end
+
+    # A Symbol literal. A quoted one decodes escapes as a String of the
+    # same quotes does, and a double-quoted one with `#{}` builds its
+    # name at runtime, as `"...".to_sym`.
+    private def parse_symbol_literal(tok : Token, l : Int32, c : Int32) : Node
+      lexeme = tok.lexeme
+      quote = lexeme[1]?
+      return SymbolLiteral.new(lexeme.lchop(':'), l, c) unless quote == '"' || quote == '\''
+      inner = lexeme[2...-1]
+      if quote == '"' && inner.includes?("\#{")
+        string = Parser.new("\"#{inner}\"", @lexer.filename).parse.stmts.first
+        return Call.new(string, "to_sym", [] of Node, nil, false, l, c)
+      end
+      SymbolLiteral.new(decode_string_escapes(inner, quote == '"'), l, c)
     end
 
     # Decodes backslash escapes in a string literal's raw text. With

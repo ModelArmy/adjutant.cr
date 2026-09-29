@@ -27,7 +27,7 @@ def attempt(n)
     attempt = attempt + 1
     begin
       return yield
-    rescue e
+    rescue => e
       raise e if attempt >= n
     end
   end

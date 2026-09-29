@@ -70,6 +70,7 @@ P004|`else` without `rescue` is useless             |—
 P005|A `begin` block can have only one `else` clause|—                               
 P006|Parameters out of Ruby's order                 |`name`                          
 P007|Two parameters with the same name              |`name`                          
+P008|A non-associative operator chained             |`operator`                      
 
 P003 points at two places: where the parser ran out of input, and the
 `def`, `class`, `if`, or other construct that was never closed. The second
@@ -89,6 +90,7 @@ Code|Meaning                                |Placeholders
 ----|---------------------------------------|------------
 C001|Left-hand side of `=` can't be assigned|`target`    
 C002|`redo` used outside any loop           |—           
+C003|`break`/`next` outside loop or block   |`keyword`   
 
 ## R — Runtime
 
@@ -148,6 +150,7 @@ R049|An Array index assigned to before the first element                |`index`
 R050|A negative length in `a[start, length] = value`                    |`length`                                   
 R051|A Range assigned to that starts before the first element           |`range`, `size`                            
 R052|A String changed in place                                          |`value`                                    
+R053|`is_a?` or `rescue` given a non-class                              |—                                          
 
 Scripts can `rescue` these. R008 raises a `NameError`, matching Ruby;
 R011, R012, R015, and R018 raise `ArgumentError`, also matching Ruby;
@@ -159,8 +162,9 @@ raises a `RegexpError`, also matching Ruby; R026, R027, R028, R029, and
 R030 raise a `RangeError`, also matching Ruby; R032, R034, R035, R040,
 R041, R042, R043, R044, R045, and R046 raise an `ArgumentError`, also
 matching Ruby; R047 raises a `NoMethodError`, R048 a `TypeError`, R049
-and R050 an `IndexError`, R051 a `RangeError`, and R052 a `FrozenError`,
-all matching Ruby; the rest raise `RuntimeError`.
+and R050 an `IndexError`, R051 a `RangeError`, R052 a `FrozenError`,
+and R053 a `TypeError`, all matching Ruby; the rest raise
+`RuntimeError`.
 
 Adjutant's constants are assign-once, which Ruby only warns about. R001 is
 that rule firing on an ordinary constant; reopening a class or module is
@@ -234,7 +238,7 @@ U010 was investigated and found not to be a real gap — see
 retired, not reassigned: codes are never reused for a different
 problem once allocated (see "Reading a code" above).
 
-**U008, U009, U012–U015 and U021 status: decided, not yet enforced.** Using one
+**U008, U009, U012–U014, U015's `undef` and U021 status: decided, not yet enforced.** Using one
 of these constructs today falls through to an ordinary undefined-name
 or generic parse error rather than naming the construct specifically —
 expect a less-specific error than the table above until enforcement

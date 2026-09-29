@@ -49,6 +49,14 @@ module Adjutant
         help: "Move the `redo` inside a `while`, `until`, `loop`, or `for` " \
               "body, or remove it."
       ),
+      "C003" => Entry.new(
+        code: "C003",
+        summary: "`{keyword}` outside a loop or block",
+        why: "`{keyword}` leaves a loop or a block, so where there is " \
+             "neither it has nothing to leave. Ruby rejects it too.",
+        help: "Use `return` to leave a method, or move the `{keyword}` " \
+              "into a loop or block."
+      ),
 
       # --- R: runtime faults ----------------------------------------
       "R002" => Entry.new(
@@ -504,6 +512,14 @@ module Adjutant
              "not reach other references to the same String.",
         help: "Build a new String instead, e.g. `s = \"x\" + s[1..]`."
       ),
+      "R053" => Entry.new(
+        code: "R053",
+        summary: "class or module required",
+        why: "`is_a?`, `kind_of?` and `rescue` test against a class or " \
+             "module, and this was neither.",
+        help: "Pass the class itself, e.g. `rescue ArgumentError`, or a " \
+              "variable holding one."
+      ),
 
       # --- L: limits reached ----------------------------------------
       #
@@ -820,6 +836,15 @@ module Adjutant
         help: "Merge the two `else` bodies into one, or remove the " \
               "second `else` entirely."
       ),
+      "P008" => Entry.new(
+        code: "P008",
+        summary: "`{operator}` can't be chained",
+        why: "`==`, `!=`, `===`, `=~`, `!~`, `<=>` and ranges don't " \
+             "associate in Ruby, so a second one straight after the " \
+             "first has no meaning.",
+        help: "Add parentheses, or join two comparisons with `&&`: " \
+              "`a == b && b == c`."
+      ),
       "P006" => Entry.new(
         code: "P006",
         summary: "unexpected parameter order",
@@ -896,6 +921,16 @@ module Adjutant
              "without running the script first.",
         help: "Define `{name}` once, with all of its methods in that one " \
               "body."
+      ),
+      "U015" => Entry.new(
+        code: "U015",
+        summary: "`{construct}` is not supported",
+        why: "Ruby calls this hook itself, when a class is subclassed, a " \
+             "module is mixed in, a method is defined or a constant is " \
+             "missing. Adjutant never calls it, and a hook runs code the " \
+             "script's text never calls.",
+        help: "Do it explicitly where it happens: for a registry, append " \
+              "each class to an Array in its own body."
       ),
       "U016" => Entry.new(
         code: "U016",

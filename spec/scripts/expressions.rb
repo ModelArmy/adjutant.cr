@@ -228,13 +228,15 @@ assert "lambdas in module" do
   module M2
     dbl = ->(n) { n + n }
     assert_not_nil dbl
+    assert_equal dbl.call(3), 6
 
-    def self.x; end
+    def self.x; :x; end
 
     assert_not_nil(x)
   end
 
-  assert_equal dbl.call(3), 6
+  # A module body's locals stay in the module body, as in Ruby.
+  assert_raise(NameError) { dbl }
   true
 end
 

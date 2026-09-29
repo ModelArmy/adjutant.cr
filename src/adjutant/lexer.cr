@@ -38,8 +38,9 @@ module Adjutant
       # holds the rest of that token sequence. The body sits on the
       # following lines, so when the newline at `@pending_heredoc_skip_at`
       # is reached, scanning jumps past the body to
-      # `@pending_heredoc_skip_to_pos`. One heredoc per line is
-      # supported, so one set of these suffices.
+      # `@pending_heredoc_skip_to_pos`. With several openers on a line,
+      # each body starts where the previous one ended, and these hold
+      # the last one's end.
       @pending_tokens = [] of Token
       @pending_heredoc_skip_at = nil.as(Int32?)
       @pending_heredoc_skip_to_pos = 0
@@ -421,14 +422,20 @@ module Adjutant
       end
     end
 
+    # The base each Integer prefix after `0` gives, as in Ruby.
+    RADIX_PREFIXES = {'x' => 16, 'b' => 2, 'o' => 8, 'd' => 10}
+
     # ameba:disable Metrics/CyclomaticComplexity
     private def scan_number(start : Int32, line : Int32, col : Int32) : Token
-      if @source[start] == '0' && (current_char == 'x' || current_char == 'X')
-        advance
-        while !at_end? && (current_char.ascii_number? || ('a'..'f').includes?(current_char.downcase))
-          advance
+      if @source[start] == '0'
+        if base = RADIX_PREFIXES[current_char.downcase]?
+          advance # the prefix letter
+          return scan_integer_digits(base, @pos, start, line, col)
         end
-        return make_token(TokenKind::Integer, lexeme_from(start), line, col)
+        # A leading zero before more digits is octal: `0644`, `0_7`.
+        if current_char.ascii_number? || (current_char == '_' && peek_next.ascii_number?)
+          return scan_integer_digits(8, @pos, start, line, col)
+        end
       end
 
       scan_digit_run
@@ -455,6 +462,21 @@ module Adjutant
       end
 
       make_token(is_float ? TokenKind::Float : TokenKind::Integer, lexeme_from(start), line, col)
+    end
+
+    # Scans an Integer's digits in `base` from `digits_start`, after its
+    # prefix, and returns the Integer token, or an Error token when a
+    # digit is outside the base or an `_` isn't between two digits.
+    private def scan_integer_digits(base : Int32, digits_start : Int32, start : Int32, line : Int32, col : Int32) : Token
+      while !at_end? && (current_char.alphanumeric? || current_char == '_')
+        advance
+      end
+      digits = @source[digits_start, @pos - digits_start].lchop('_')
+      stripped = digits.delete('_')
+      valid = !stripped.empty? && !digits.ends_with?('_') && !digits.includes?("__") &&
+              stripped.each_char.all?(&.to_i?(base))
+      return make_token(TokenKind::Error, "invalid digit in #{lexeme_from(start)}", line, col) unless valid
+      make_token(TokenKind::Integer, lexeme_from(start), line, col)
     end
 
     private def scan_string(quote : Char, start : Int32, line : Int32, col : Int32) : Token
@@ -748,8 +770,7 @@ module Adjutant
     # Whether `<<` opens a heredoc rather than shifting. The
     # identifier must be uppercase or quoted, so `x << y` is never
     # misread. `<<~ID` and `<<-ID` qualify anywhere; bare `<<ID` only
-    # after a token that can't end an expression, as for `/`. Only one
-    # heredoc per line is supported; a second opener scans as `<<`.
+    # after a token that can't end an expression, as for `/`.
     private def heredoc_starts_here? : Bool
       return false unless current_char == '<'
       third = peek_at(1)
@@ -767,7 +788,8 @@ module Adjutant
     # Scans a heredoc opener (`<<~ID`, `<<-ID` or `<<ID`, the ID
     # optionally quoted) and tokenizes the whole heredoc from the
     # following lines, without moving the cursor. Scanning resumes on
-    # the opener's line; the body is skipped when reached.
+    # the opener's line; the body is skipped when reached. Several
+    # openers on one line read their bodies in turn.
     # ameba:disable Metrics/CyclomaticComplexity
     private def scan_heredoc_opener(start : Int32, line : Int32, col : Int32) : Token
       advance # second '<'
@@ -796,7 +818,14 @@ module Adjutant
 
       header_line = @line
       line_end = @source.index('\n', @pos) || @source.size
-      body_start = line_end + 1 > @source.size ? @source.size : line_end + 1
+      # A second opener on the line reads its body after the first's.
+      chained = @pending_heredoc_skip_at == line_end
+      body_start = if chained
+                     @pending_heredoc_skip_to_pos
+                   else
+                     line_end + 1 > @source.size ? @source.size : line_end + 1
+                   end
+      body_first_line = chained ? @pending_heredoc_skip_to_line : header_line + 1
 
       cursor = body_start
       terminator_at = nil.as(Int32?)
@@ -826,10 +855,10 @@ module Adjutant
 
       @pending_heredoc_skip_at = line_end
       @pending_heredoc_skip_to_pos = body_end_pos
-      @pending_heredoc_skip_to_line = header_line + 1 + body_raw.each_char.count { |char| char == '\n' } + 1
+      @pending_heredoc_skip_to_line = body_first_line + body_raw.each_char.count { |char| char == '\n' } + 1
 
       if interpolate
-        tokens = Lexer.new(body, @filename).heredoc_body_tokens(header_line + 1)
+        tokens = Lexer.new(body, @filename).heredoc_body_tokens(body_first_line)
         first = tokens[0]
         fixed_first = Token.new(first.kind, first.lexeme, line, col, @space_before, first.regex_flags)
         @pending_tokens.concat(tokens[1..])

@@ -305,9 +305,8 @@ own-method case.
 
 `method_missing` is the exception to the own-method rule, with
 `respond_to_missing?`: Ruby calls both itself, so a script's own
-definition would run in Ruby and never here. Defining either is to be
-rejected at compile time, as U015's hooks are; SCOPE.md's Must Fix
-tracks it.
+definition would run in Ruby and never here. Defining either raises
+U005 at compile time, as U015's hooks do.
 
 The enforced set is deliberately narrow — `send`, `public_send`,
 `__send__`, `method_missing`, `define_method`. Names like `class_eval`,
@@ -590,13 +589,17 @@ in short scripts.
 appends itself to in its own body (`REGISTRY << self`); a list of
 methods is kept by hand. For `undef`, don't define or call the method.
 
-**Enforcement — not yet enforced.** `undef` fails to parse, since there
-is no `undef` keyword token, so the error doesn't name the construct. A
-hook can be defined and is never called, so defining one silently does
-nothing; SCOPE.md's Must Fix tracks rejecting the definition. That
-check belongs at compile time, on the definition, unlike U005's check
-after resolution fails: Ruby calls a hook whenever one is defined, so
-no Ruby script defines one and expects it to stay silent.
+**Enforcement — hooks enforced; `undef` not yet.** Defining a hook
+raises U015 at compile time (`Compiler#callback_hook_code`): as a
+singleton method (`def self.inherited`, `def Name.inherited`) for the
+class and module hooks, or as an instance method for
+`singleton_method_added`. The check is on the definition, unlike
+U005's check after resolution fails: Ruby calls a hook whenever one is
+defined, so no Ruby script defines one and expects it to stay silent.
+An instance method that only shares a class hook's name (`def
+inherited`) is an ordinary method and compiles. `undef` fails to
+parse, since there is no `undef` keyword token, so the error doesn't
+name the construct.
 
 ### U016 — `begin...end while cond` / `begin...end until cond` (do-while)
 

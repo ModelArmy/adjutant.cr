@@ -2121,8 +2121,16 @@ module Adjutant
         Value.bool(recv.null?)
       when "is_a?", "kind_of?"
         # Aliases, as in Ruby.
-        recv = args.first? || Value.nil_value
-        target = args[1]?.try(&.as_rclass?)
+        # A target that isn't a class or module raises R053
+        # (TypeError), as it does for `rescue`, which calls `is_a?`.
+        # Without a receiver, `is_a?(Foo)` asks about self.
+        recv = has_receiver ? args.first : current_frame.self_val
+        target = args[has_receiver ? 1 : 0]?.try(&.as_rclass?)
+        unless target
+          raise runtime_diagnostic(
+            Diagnostic.new(code: "R053", primary: Span.new(line: line, filename: filename)),
+            current_frame, error_class: "TypeError")
+        end
         Value.bool(is_a_target?(recv, target))
       when "class"
         # An object's class, a class's class (usually Class), or a
