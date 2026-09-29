@@ -225,7 +225,7 @@ Two simpler designs don't work. Closing when a walk halts breaks sibling streams
 
 Every runtime value is a `Value` struct: a `raw` union (`Nil`, `Bool`, `Int64`, `Float64`, `String`, `Sym`, `ScriptProc`, `LabeledArray`, `LabeledHash`, `RubyClass`, `RubyObject`) and an optional risk-flow label. A struct, so scalars need no heap allocation; Crystal's union carries its own discriminant. A container's label lives on the `LabeledArray` or `LabeledHash` itself, shared by every Value holding it.
 
-`Value#==` and `#hash` use `raw` alone, ignoring labels, so a labelled key matches an unlabelled lookup. Containers compare and hash by reference in a Crystal Hash, and an Integer and an equal Float are the same key; both differ from Ruby and are Must Fix (SCOPE.md).
+`Value#==` and `#hash` are Ruby's `eql?` and `hash`, which Hash keys use: `raw` alone, ignoring labels, so a labelled key matches an unlabelled lookup; an Integer never equals a Float, so `5` and `5.0` are two keys; and Arrays and Hashes compare their elements the same way, structurally. Ruby's `==` is `ValueOps.equal?`, where `5 == 5.0`; its `Hash#==` matches keys with `Value#==` and compares values with `==`.
 
 Symbols are `Sym`s: an id and the interned name. One `SymbolTable` per Interpreter, so symbol comparison is an integer compare.
 

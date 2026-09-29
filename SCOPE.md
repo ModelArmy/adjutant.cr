@@ -60,15 +60,6 @@ acceptable, since it restores the subset.
   fix is rejecting it with a diagnostic that names `rescue => e`, then
   rewriting those specs.
 
-- **An Integer and an equal Float are the same Hash key.**
-  `{5 => "a"}[5.0]` returns `"a"`; Ruby returns nil, since Hash keys
-  compare with `eql?` and `5.eql?(5.0)` is false. `Value#==` and
-  `Value#hash` delegate to the raw Crystal value, where `5 == 5.0`
-  and the hashes agree. `hash_spec.cr`'s "cross-type numeric key
-  lookup" asserts the current behaviour and must change with the
-  fix. Hash keys need an `eql?`-style comparison: same type and
-  value.
-
 - **`Hash#each` with one block parameter binds the key alone.**
   Predicted by reading `hash.cr`; no spec or model has hit
   it. `h.each { |pair| }` gives `pair` the key, where Ruby gives

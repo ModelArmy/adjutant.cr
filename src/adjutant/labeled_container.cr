@@ -90,8 +90,9 @@ module Adjutant
       @items.dup
     end
 
-    # Structural, by `ContainerWalk.equal?` with `Value#==` for
-    # everything else. `Hash(Value, Value)` matches keys with it.
+    # Ruby's `eql?`: structural, by `ContainerWalk.equal?`, with
+    # `Value#==` for everything else. `Hash(Value, Value)` matches keys
+    # with it.
     def ==(other : LabeledArray) : Bool
       ContainerWalk.equal?(Value.new(self, nil), Value.new(other, nil)) { |x, y| x == y }
     end
@@ -167,7 +168,8 @@ module Adjutant
       @entries.dup
     end
 
-    # Structural, as `LabeledArray#==`.
+    # Ruby's `eql?`, as `LabeledArray#==`: keys and values both by
+    # `Value#==`.
     def ==(other : LabeledHash) : Bool
       ContainerWalk.equal?(Value.new(self, nil), Value.new(other, nil)) { |x, y| x == y }
     end

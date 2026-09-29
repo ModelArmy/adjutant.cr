@@ -166,7 +166,8 @@ module Adjutant
     # Ruby's `==` on builtin values. Never fails: an unrecognised pair
     # is false. Arrays and Hashes compare structurally through
     # `ContainerWalk`, so nesting depth and self-containing containers
-    # can't exhaust the native stack.
+    # can't exhaust the native stack. Hash keys match by `Value#==`,
+    # Ruby's `eql?`, and values by `==`, as in Ruby's `Hash#==`.
     def self.equal?(a : Value, b : Value) : Bool
       ContainerWalk.equal?(a, b) { |x, y| leaf_equal?(x, y) }
     end

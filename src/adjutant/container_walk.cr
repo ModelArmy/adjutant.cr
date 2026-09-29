@@ -30,7 +30,8 @@ module Adjutant
     end
 
     # Whether `a` and `b` are equal: Arrays by length and elements,
-    # Hashes by keys and values, anything else by the block. A pair of
+    # Hashes by keys (matched with `Value#==`, Ruby's `eql?`) and
+    # values, anything else by the block. A pair of
     # containers met a second time counts as equal, as Ruby's `==`
     # treats a pair it meets while still comparing it, so a
     # self-containing container compares without looping.
