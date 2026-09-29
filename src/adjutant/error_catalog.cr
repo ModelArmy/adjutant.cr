@@ -446,6 +446,17 @@ module Adjutant
              "to do.",
         help: "Pass a block: `{method} { |x| ... }`."
       ),
+      "R046" => Entry.new(
+        code: "R046",
+        summary: "wrong number of arguments (given {given}, expected {expected})",
+        why: "`{method}` takes {expected} positional arguments, and this " \
+             "call passed {given}. Methods and lambdas check the count; " \
+             "only blocks drop extra arguments or fill missing ones with " \
+             "nil.",
+        help: "Pass the arguments `{method}` declares, or give a parameter " \
+              "a default (`name = value`) or a splat (`*rest`) if it should " \
+              "accept fewer or more."
+      ),
 
       # --- L: limits reached ----------------------------------------
       #
@@ -761,6 +772,23 @@ module Adjutant
              "has nothing left to mean.",
         help: "Merge the two `else` bodies into one, or remove the " \
               "second `else` entirely."
+      ),
+      "P006" => Entry.new(
+        code: "P006",
+        summary: "unexpected parameter order",
+        why: "Ruby takes parameters in a fixed order: required, optional " \
+             "(`name = value`), one splat (`*rest`), more required, " \
+             "keywords, then the block. `{name}` is out of that order.",
+        help: "Reorder the parameters, e.g. `def f(a, b = 1, *rest, c, " \
+              "key:)`."
+      ),
+      "P007" => Entry.new(
+        code: "P007",
+        summary: "duplicated argument name",
+        why: "Two parameters are both named `{name}`, so the second would " \
+             "hide the first. Only names starting with `_` may repeat, " \
+             "for arguments the method ignores.",
+        help: "Rename one of them, or name both `_` if neither is used."
       ),
       "U001" => Entry.new(
         code: "U001",

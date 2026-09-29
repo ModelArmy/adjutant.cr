@@ -83,14 +83,6 @@ acceptable, since it restores the subset.
   unsupported, which is only a gap. Scanning is in
   `Lexer#scan_number`.
 
-- **Methods and lambdas don't check positional arity.**
-  `VM#bind_args` leaves a missing positional argument nil and ignores
-  extras, so `def f(a, b); end; f(1)` runs with `b` nil, where Ruby
-  raises ArgumentError. The comment there claimed Ruby is lenient
-  too; only blocks are. Lambdas must be strict as well: UNSUPPORTED.md's
-  U019 entry describes `lambda`'s arity as strict, which it isn't
-  yet. Keyword arguments are already checked (R011, R012).
-
 - **Indexing shapes the VM doesn't handle return nil or do nothing.**
   `VM#exec_get_index` handles Array, Hash and String receivers and an
   object's native `[]`; everything else falls to nil. So `arr[1..2]`
@@ -128,16 +120,6 @@ acceptable, since it restores the subset.
   `"a".equal?("a")` is true; Ruby compares identity and says false for
   two String objects. Its `superclass` returns nil for any receiver
   that isn't a class, where Ruby raises NoMethodError (`5.superclass`).
-
-- **Native methods don't check positional arity either.** A native
-  method reads `args` directly, so extra arguments are ignored and a
-  missing one takes whatever the method's own fallback is:
-  `[1].include?` is false and `[1, 2].first(1, 2)` is `[1]`, where
-  Ruby raises ArgumentError for both. Keywords are checked
-  (`kwarg_names`, R012). The fix is declaring each native method's
-  positional arity, required and optional counts, in its
-  NativeCallable and checking it in `VM#call_native`, alongside the
-  script-method fix above.
 
 - **Blockless iterators return a value instead of an Enumerator.**
   `Array#each` without a block returns the receiver, and `map`,
@@ -226,6 +208,8 @@ acceptable, since it restores the subset.
   Ruby returns `6`. Supporting the Symbol form means dispatching the
   named method; until then it should raise rather than return a
   plausible `nil`.
+  The two-argument form, `inject(0, :+)`, raises ArgumentError (R046)
+  until then, since `reduce` is declared with the arity it implements.
 
 - **`respond_to?` is false for operations only `exec_builtin`
   handles.** `script_responds_to?` (`vm.cr`) checks the script and
@@ -253,6 +237,17 @@ acceptable, since it restores the subset.
   so its copy semantics are Adjutant's to define: `dup` and `clone`
   raise TypeError for it, since a copy sharing one open source with
   its original would read unpredictably.
+
+- **A subclass of Exception never runs its own `initialize`.** Found
+  while declaring native arity. `Exception.new` is a native singleton
+  method, and `VM#construct` prefers a native `new` found anywhere up
+  the chain, so `class Oops < StandardError; def initialize(n);
+  super("got #{n}"); end; end` builds an Oops whose `initialize` never
+  ran: `Oops.new(1).message` is `"1"`, not `"got 1"`. The fix is
+  running a script `initialize` below the native `new`'s class after
+  the native allocates. Until then `Exception.new` and `NameError.new`
+  accept any number of arguments, so a script `initialize` taking two
+  isn't met with a misleading arity error.
 
 - **Array and Hash `==` compare Ranges and objects with `<=>` inside
   them by identity.** Predicted by reading `value_ops.cr` and
@@ -822,6 +817,21 @@ individually.
   new opcodes — natural fit for the core-API-library work rather than
   a standalone language-layer item. Filed here rather than under a
   language-gap group for that reason.
+
+- **Optional arguments Adjutant doesn't implement raise ArgumentError.**
+  Each builtin method declares the arity it implements, so an argument
+  Ruby accepts and Adjutant would ignore raises R046 instead of
+  producing a different answer: `Array#pop(n)`, `#min(n)`, `#max(n)`,
+  `#any?(pattern)`, `#all?(pattern)`, `#reduce(init, sym)`;
+  `Range#min(n)`, `#max(n)`, `#last(n)`; `String#to_i(base)`,
+  `#upcase`/`#downcase`/`#capitalize` options, several prefixes to
+  `#start_with?`/`#end_with?`, `#match(str, pos)`; `Regexp#match` and
+  `#match?` with a position; `MatchData#[](start, length)`;
+  `Time.at`'s unit; `Time.utc`/`local`'s ten-argument form;
+  `Time#localtime(offset)`, `#getlocal(offset)`; `include` and
+  `extend` with several modules. Each is supported by
+  implementing the argument and widening the declared arity.
+
 ### Streamed fetch on Windows
 
 - **A script that raises inside a streamed `Legate.fetch` walk
@@ -917,6 +927,13 @@ individually.
   entry).
 
 ### Legate
+
+- **Legate verbs don't check positional arity.** Verbs are registered
+  with `define_native_singleton_method`, whose arity defaults to any
+  count, so `Legate.read(path, extra)` ignores `extra`. Missing
+  arguments already raise each verb's own code (R035, R040, R041,
+  R043). Declaring each verb's arity would make extras raise R046 like
+  the Legate classes' methods, which do declare theirs.
 
 - **A script can't take over a body-less redirect.** With
   `redirects: 0`, a redirect raises `Legate::Transport`; only a

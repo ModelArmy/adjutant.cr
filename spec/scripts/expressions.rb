@@ -289,8 +289,8 @@ assert "signed no-paren parameter to method" do
   eq (6/3), 2
   eq(-1, -1)
   eq 1, -1
-  eq 1, -1, -3
-  eq 1, -1, -3, 4
+  assert_raise(ArgumentError) { eq 1, -1, -3 }
+  assert_raise(ArgumentError) { eq 1, -1, -3, 4 }
   eq(5, 5)
   eq 5, 5
 end

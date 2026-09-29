@@ -18,12 +18,12 @@ module Adjutant
         mtime_sym = interp.symbols.intern("__mtime").value
         mode_sym = interp.symbols.intern("__mode").value
 
-        Builtins.define(cls, interp, "type") { |args| args.first.as_robject.ivars[type_sym] }
-        Builtins.define(cls, interp, "size") { |args| args.first.as_robject.ivars[size_sym] }
-        Builtins.define(cls, interp, "mtime") { |args| args.first.as_robject.ivars[mtime_sym] }
-        Builtins.define(cls, interp, "mode") { |args| args.first.as_robject.ivars[mode_sym] }
-        Builtins.define(cls, interp, "file?") { |args| Value.bool(args.first.as_robject.ivars[type_sym].as_sym.name == "file") }
-        Builtins.define(cls, interp, "dir?") { |args| Value.bool(args.first.as_robject.ivars[type_sym].as_sym.name == "dir") }
+        Builtins.define(cls, interp, "type", arity: 0) { |args| args.first.as_robject.ivars[type_sym] }
+        Builtins.define(cls, interp, "size", arity: 0) { |args| args.first.as_robject.ivars[size_sym] }
+        Builtins.define(cls, interp, "mtime", arity: 0) { |args| args.first.as_robject.ivars[mtime_sym] }
+        Builtins.define(cls, interp, "mode", arity: 0) { |args| args.first.as_robject.ivars[mode_sym] }
+        Builtins.define(cls, interp, "file?", arity: 0) { |args| Value.bool(args.first.as_robject.ivars[type_sym].as_sym.name == "file") }
+        Builtins.define(cls, interp, "dir?", arity: 0) { |args| Value.bool(args.first.as_robject.ivars[type_sym].as_sym.name == "dir") }
       end
 
       # `type` is one of `:file`, `:dir`, `:symlink` or `:other`;

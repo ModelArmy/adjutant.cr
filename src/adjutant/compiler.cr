@@ -194,24 +194,27 @@ module Adjutant
     # default can use earlier parameters: `def add(a, b = a + 1)`. Per
     # parameter with a default:
     #
-    #   [HasKwarg name | GetArgc; Const(slot+1); Gte]; JumpIfTrue skip
+    #   [HasKwarg name | GetArgc; Const(threshold); Gte]; JumpIfTrue skip
     #   compile(default); SetLocal slot; Pop
     #   skip:
     #
-    # A keyword is tested by name, a positional parameter by argument
-    # count. `VM#bind_args` handles splats and missing required keywords
-    # (R011); an omitted required positional parameter stays nil.
+    # A keyword is tested by name. A positional parameter was supplied
+    # when the argument count covers every required parameter and each
+    # optional one up to and including it, since `VM#bind_args` fills
+    # required parameters first and optional ones left to right.
     protected def emit_default_prologue(params : Array(Param), slots : Array(Int32)) : Nil
+      required = params.count { |param| !param.splat? && !param.kwarg? && !param.block_param? && param.default.nil? }
+      optional_seen = 0
       params.each_with_index do |param, i|
         next unless default = param.default
         slot = slots[i]
         line = param.line
-        # Supplied or not: by name for a keyword, by count otherwise.
         if param.kwarg?
           @chunk.emit(Op::HasKwarg, line, c: intern(param.name))
         else
+          optional_seen += 1
           @chunk.emit(Op::GetArgc, line)
-          count_idx = @chunk.add_const(Value.int(i + 1))
+          count_idx = @chunk.add_const(Value.int(required + optional_seen))
           @chunk.emit(Op::Const, line, c: count_idx)
           @chunk.emit(Op::Gte, line)
         end

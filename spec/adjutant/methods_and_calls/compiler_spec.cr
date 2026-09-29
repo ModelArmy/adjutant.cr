@@ -282,13 +282,18 @@ module Adjutant
         code[idx + 1].op.should eq Op::Pop
       end
 
-      it "compares argc against slot+1 (1-based count vs 0-based slot), not the bare slot index" do
-        # b is slot 1; supplied exactly when argc >= 2, not >= 1 — off
-        # by one here would make `add(5, 10)` (2 args) incorrectly
-        # skip a default it shouldn't need, or `add(5)` (1 arg)
-        # incorrectly apply one it should.
+      it "compares argc against the required count plus the optional parameter's position" do
+        # b is supplied exactly when argc >= 2: a is required, and b is
+        # the first optional parameter.
         chunk = def_proc_chunk("def add(a, b = 10)\na + b\nend")
         const_idx = chunk.code[1].c # the Const right after GetArgc
+        chunk.consts[const_idx].as_int.should eq 2_i64
+      end
+
+      it "counts a required parameter after an optional one toward the threshold" do
+        # Ruby fills b before a, so a is supplied only when argc >= 2.
+        chunk = def_proc_chunk("def f(a = 1, b)\n[a, b]\nend")
+        const_idx = chunk.code[1].c
         chunk.consts[const_idx].as_int.should eq 2_i64
       end
 
@@ -300,7 +305,7 @@ module Adjutant
         # b defaulted).
         o.count(Op::GetArgc).should eq 2
         o.count(Op::JumpIfTrue).should eq 2
-        # First guard's Const is 1 (slot 0 + 1), second is 2 (slot 1 + 1).
+        # First guard's Const is 1, second is 2: no required parameters.
         first_const_idx = chunk.code[1].c
         chunk.consts[first_const_idx].as_int.should eq 1_i64
       end

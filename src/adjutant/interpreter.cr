@@ -240,13 +240,15 @@ module Adjutant
     # NativeCallContext. `risk` defaults to none; pass a profile for any
     # function with external effects. `kwarg_names` lists the keywords
     # it accepts, read through `ncc.kwargs`. `is_private` makes it
-    # callable only without a receiver.
+    # callable only without a receiver. `arity` is how many positional
+    # arguments it accepts, as `0`, `0..1` or `(1..)`; any other count
+    # raises ArgumentError (R046). It defaults to any count.
     def define_native(name : String, risk : RiskProfile = RiskProfile.none, kwarg_names : Set(String) = Set(String).new, is_private : Bool = false,
-                      authorities : Set(Authority) = Set(Authority).new,
+                      authorities : Set(Authority) = Set(Authority).new, arity : ArityLike = Arity.any,
                       &block : Array(Value), ScriptProc?, NativeCallContext -> Value) : Nil
       sym = @symbols.intern(name)
       object_class.define_native_method(sym.value, risk, kwarg_names, is_private: is_private,
-        authorities: authorities, &block)
+        authorities: authorities, arity: arity, &block)
     end
 
     # The native function registered under `sym_id`, from Object's

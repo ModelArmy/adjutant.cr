@@ -103,7 +103,7 @@ module Adjutant
       # `Regexp.new(pattern, options = 0)`, or `Regexp.new(regexp)` to
       # copy one. Allocates the receiver's class, so a subclass gets
       # instances of itself.
-      define_singleton(cls, interp, "new") do |args, _blk, ncc|
+      define_singleton(cls, interp, "new", arity: 1..2) do |args, _blk, ncc|
         first = args[1]? || Value.nil_value
         pattern, flags =
           if (robj = first.as_robject?) && robj.is_a?(RegexpObject)
@@ -120,15 +120,15 @@ module Adjutant
         Value.robject(obj, first.label)
       end
 
-      define(cls, interp, "source") do |args|
+      define(cls, interp, "source", arity: 0) do |args|
         args.first.as_robject.ivars[source_sym]
       end
 
-      define(cls, interp, "options") do |args|
+      define(cls, interp, "options", arity: 0) do |args|
         args.first.as_robject.ivars[options_sym]
       end
 
-      define(cls, interp, "casefold?") do |args|
+      define(cls, interp, "casefold?", arity: 0) do |args|
         flags = args.first.as_robject.ivars[options_sym].as_int.to_i32
         Value.bool(flags & IGNORECASE != 0)
       end
@@ -137,7 +137,7 @@ module Adjutant
       # "(?i-mx:a)", with `-disabled` omitted when every flag is set.
       # `inspect` is `/pattern/flags`, escaping `/`:
       # `Regexp.new("a/b").inspect` is `/a\/b/`.
-      define(cls, interp, "to_s") do |args|
+      define(cls, interp, "to_s", arity: 0) do |args|
         obj = args.first.as_robject
         pattern = obj.ivars[source_sym].as_string
         flags = obj.ivars[options_sym].as_int.to_i32
@@ -146,7 +146,7 @@ module Adjutant
         Value.string("(?#{enabled}#{suffix}:#{pattern})")
       end
 
-      define(cls, interp, "inspect") do |args|
+      define(cls, interp, "inspect", arity: 0) do |args|
         obj = args.first.as_robject
         pattern = escape_slashes(obj.ivars[source_sym].as_string)
         flags = obj.ivars[options_sym].as_int.to_i32
@@ -158,7 +158,7 @@ module Adjutant
       # anything else, including nil, raises R022. With a block, the
       # MatchData is yielded on a match and the block's result
       # returned.
-      define(cls, interp, "match") do |args, blk, ncc|
+      define(cls, interp, "match", arity: 1) do |args, blk, ncc|
         robj = args.first.as_robject.as(RegexpObject)
         str = args[1]?.try(&.as_string?)
         ncc.raise_error("R022", {"method" => "match"}, "ArgumentError") unless str
@@ -174,7 +174,7 @@ module Adjutant
       end
 
       # Whether it matches, without building a MatchData.
-      define(cls, interp, "match?") do |args, _blk, ncc|
+      define(cls, interp, "match?", arity: 1) do |args, _blk, ncc|
         robj = args.first.as_robject.as(RegexpObject)
         str = args[1]?.try(&.as_string?)
         ncc.raise_error("R022", {"method" => "match?"}, "ArgumentError") unless str
@@ -183,7 +183,7 @@ module Adjutant
 
       # The index of the first match, or nil. The argument must be a
       # String (R022). Sets no `$~` or `$1` (U011).
-      define(cls, interp, "=~") do |args, _blk, ncc|
+      define(cls, interp, "=~", arity: 1) do |args, _blk, ncc|
         robj = args.first.as_robject.as(RegexpObject)
         str = args[1]?.try(&.as_string?)
         ncc.raise_error("R022", {"method" => "=~"}, "ArgumentError") unless str
@@ -210,7 +210,6 @@ module Adjutant
       Value.robject(MatchDataObject.new(cls, md, subject, regexp_value), label)
     end
 
-    # ameba:disable Metrics/CyclomaticComplexity - one `define` call per native method, each a flat independent case; count comes from many methods, not tangled branching
     def self.bootstrap_match_data(interp : Interpreter) : RubyClass
       cls = RubyClass.new("MatchData")
 
@@ -221,7 +220,7 @@ module Adjutant
       # `[]`: an Integer (0 the whole match) or a group name. Nil for
       # an index out of range, a group that didn't participate, or an
       # unknown name, where Ruby raises IndexError.
-      define(cls, interp, "[]") do |args, _blk, _ncc|
+      define(cls, interp, "[]", arity: 1) do |args, _blk, _ncc|
         obj = args.first.as_robject.as(MatchDataObject)
         key = args[1]?
         next Value.nil_value unless key
@@ -235,51 +234,51 @@ module Adjutant
         result ? Value.string(result, args.first.label) : Value.nil_value
       end
 
-      define(cls, interp, "to_s") do |args|
+      define(cls, interp, "to_s", arity: 0) do |args|
         obj = args.first.as_robject.as(MatchDataObject)
         Value.string(obj.md[0], args.first.label)
       end
 
-      define(cls, interp, "pre_match") do |args|
+      define(cls, interp, "pre_match", arity: 0) do |args|
         obj = args.first.as_robject.as(MatchDataObject)
         Value.string(obj.md.pre_match, args.first.label)
       end
 
-      define(cls, interp, "post_match") do |args|
+      define(cls, interp, "post_match", arity: 0) do |args|
         obj = args.first.as_robject.as(MatchDataObject)
         Value.string(obj.md.post_match, args.first.label)
       end
 
-      define(cls, interp, "string") do |args|
+      define(cls, interp, "string", arity: 0) do |args|
         obj = args.first.as_robject.as(MatchDataObject)
         Value.string(obj.subject, args.first.label)
       end
 
-      define(cls, interp, "begin") do |args|
+      define(cls, interp, "begin", arity: 1) do |args|
         obj = args.first.as_robject.as(MatchDataObject)
-        n = args[1]?.try(&.as_int.to_i) || 0
+        n = args[1].as_int.to_i
         pos = obj.md.begin(n)
         pos ? Value.int(pos.to_i64) : Value.nil_value
       end
 
       # The offset just past a group's match.
-      define(cls, interp, "end") do |args|
+      define(cls, interp, "end", arity: 1) do |args|
         obj = args.first.as_robject.as(MatchDataObject)
-        n = args[1]?.try(&.as_int.to_i) || 0
+        n = args[1].as_int.to_i
         pos = obj.md.end(n)
         pos ? Value.int(pos.to_i64) : Value.nil_value
       end
 
       # Every numbered group's text, without the whole match; nil for
       # a group that didn't participate.
-      define(cls, interp, "captures") do |args|
+      define(cls, interp, "captures", arity: 0) do |args|
         obj = args.first.as_robject.as(MatchDataObject)
         caps = (1...obj.md.size).map { |i| (c = obj.md[i]?) ? Value.string(c, args.first.label) : Value.nil_value }
         Value.new(LabeledArray.new(caps, args.first.label), nil)
       end
 
       # The Regexp that produced the match.
-      define(cls, interp, "regexp") do |args|
+      define(cls, interp, "regexp", arity: 0) do |args|
         args.first.as_robject.as(MatchDataObject).regexp_value
       end
 
@@ -287,7 +286,7 @@ module Adjutant
       # group by name if it has one, else by number, `nil` unquoted
       # for a group that didn't participate. Each text is its String
       # `inspect`.
-      define(cls, interp, "inspect") do |args, _blk, ncc|
+      define(cls, interp, "inspect", arity: 0) do |args, _blk, ncc|
         obj = args.first.as_robject.as(MatchDataObject)
         regexp_obj = obj.regexp_value.as_robject.as(RegexpObject)
         names = regexp_obj.regex.name_table

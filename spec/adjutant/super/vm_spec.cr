@@ -198,17 +198,12 @@ module Adjutant
       end
 
       it "explicit `super()` does NOT forward args, even though bare `super` would" do
-        # Calling with explicitly zero args leaves A#add's required
-        # params unbound (nil) — bind_args is silently permissive
-        # about missing required positional args, same as an
-        # ordinary direct call with too few arguments would be. The
-        # point under test is that x/y are nil here, NOT what they'd
-        # be forwarded as — i.e. that `super()` genuinely passed
-        # nothing, unlike bare `super` in the tests above.
-        eval(<<-RUBY).as_bool.should eq true
+        # With nothing forwarded, A#add gets zero of its two required
+        # arguments and raises, as in Ruby.
+        eval(<<-RUBY).as_string.should eq "wrong number of arguments (given 0, expected 2)"
         class A
           def add(x, y)
-            x.nil? && y.nil?
+            x + y
           end
         end
         class B < A
@@ -216,7 +211,11 @@ module Adjutant
             super()
           end
         end
-        B.new.add(1, 2)
+        begin
+          B.new.add(1, 2)
+        rescue ArgumentError => e
+          e.message
+        end
         RUBY
       end
 

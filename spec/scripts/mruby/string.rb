@@ -517,11 +517,6 @@ end
 #   assert_false 'abc'.eql?('cba')
 # end
 
-# --- Dropped one line: `assert_raise(ArgumentError) { "".gsub("", "", "") }`
-# (too many positional arguments) — this implementation doesn't do an
-# arity check for extra arguments, only for a genuinely MISSING
-# pattern; a minor, deliberately out-of-scope edge case, not central
-# to what gsub itself does.
 assert('String#gsub', '15.2.10.5.18') do
   assert_equal('aBcaBc', 'abcabc'.gsub('b', 'B'), 'gsub without block')
   assert_equal('aBcaBc', 'abcabc'.gsub('b'){|w| w.capitalize }, 'gsub with block')
@@ -533,6 +528,7 @@ assert('String#gsub', '15.2.10.5.18') do
   assert_equal('A',      'a'.gsub('a'){|w| w.capitalize })
   assert_equal("<a><><>", 'a'.gsub('a', '<\0><\1><\2>'))
   assert_equal(".h.e.l.l.o.", "hello".gsub("", "."))
+  assert_raise(ArgumentError) { "".gsub("", "", "") }
   a = []
   assert_equal(".h.e.l.l.o.", "hello".gsub("") { |i| a << i; "." })
   assert_equal(["", "", "", "", "", ""], a)

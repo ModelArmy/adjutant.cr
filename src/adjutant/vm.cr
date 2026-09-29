@@ -336,7 +336,7 @@ module Adjutant
         )
       end
       sproc = proc_obj.ivars[@symbols.intern("__sproc").value].as_proc
-      invoke_internal(sproc, args, self_val, outer_locals: proc_obj.outer_locals)
+      invoke_internal(sproc, args, self_val, outer_locals: proc_obj.outer_locals, lambda_call: true)
     end
 
     # Returns a live block as a Proc object closing over the current
@@ -349,10 +349,13 @@ module Adjutant
 
     # Runs `proc` in an isolated frame and value stack and returns its
     # result. `outer_locals` is the closure to run it with, or nil for
-    # the current frame and the scopes it closes over. Its instructions
-    # and frames count toward the same limits as the caller's.
+    # the current frame and the scopes it closes over. `lambda_call`
+    # checks arity strictly for a block-compiled proc, as a lambda
+    # needs. Its instructions and frames count toward the same limits
+    # as the caller's.
     private def invoke_internal(proc : ScriptProc, args : Array(Value), self_val : Value? = nil,
-                                outer_locals : OuterChain? = nil, kwargs : Hash(String, Value)? = nil) : Value
+                                outer_locals : OuterChain? = nil, kwargs : Hash(String, Value)? = nil,
+                                lambda_call : Bool = false) : Value
       saved_frames = @frames
       saved_stack = @stack
       saved_cur_block = @current_block
@@ -379,7 +382,7 @@ module Adjutant
         # frame would, since that frame's call is still in progress.
         call_script_proc(proc, args, f.filename, nil, effective_outer, self_val: inherited_self,
           lexical_scope: inherited_lexical, lexical_override: true, kwargs: kwargs,
-          own_yield: f.yield_target, own_yield_outer: f.yield_outer)
+          own_yield: f.yield_target, own_yield_outer: f.yield_outer, lambda_call: lambda_call)
         result = execute
       ensure
         @frames = saved_frames
@@ -1358,7 +1361,8 @@ module Adjutant
     private def call_super_native(native : NativeCallable, call_args : Array(Value), call_kwargs : Hash(String, Value)?,
                                   f : Frame, filename : String, line : Int32, candidate : RubyClass, name : String) : Value
       # Native methods take the receiver as `args.first`.
-      call_native(native, [f.self_val] + call_args, filename, line, f.block, "#{candidate.name}##{name}", kwargs: call_kwargs)
+      call_native(native, [f.self_val] + call_args, filename, line, f.block, "#{candidate.name}##{name}",
+        has_receiver: true, kwargs: call_kwargs)
     end
 
     # The arguments bare `super` forwards: each parameter's current
@@ -1494,7 +1498,7 @@ module Adjutant
             end
             if native = cls.find_native_method(sym_id)
               raise_if_private_call(cls, sym_id, name, recv, self_val, filename, line, native: true)
-              return call_native(native, args, filename, line, blk, "#{cls.name}##{name}", kwargs: kwargs)
+              return call_native(native, args, filename, line, blk, "#{cls.name}##{name}", has_receiver: true, kwargs: kwargs)
             end
           end
         elsif recv.rclass?
@@ -1506,7 +1510,7 @@ module Adjutant
               return call_script_proc(method, args[1..], filename, blk, nil, self_val: recv, block_outer: blk_outer, kwargs: kwargs, block_yield: blk_yield, block_yield_outer: blk_yield_outer)
             end
             if native = cls.find_native_singleton_method(sym_id)
-              return call_native(native, args, filename, line, blk, "#{cls.name}.#{name}", kwargs: kwargs)
+              return call_native(native, args, filename, line, blk, "#{cls.name}.#{name}", has_receiver: true, kwargs: kwargs)
             end
           end
         elsif interp = @interpreter
@@ -1514,7 +1518,7 @@ module Adjutant
           # class.
           if (cls = interp.builtin_class_for(recv)) && (sym_id = @symbols.lookup(name).try(&.value))
             if native = cls.find_native_method(sym_id)
-              return call_native(native, args, filename, line, blk, "#{cls.name}##{name}", kwargs: kwargs)
+              return call_native(native, args, filename, line, blk, "#{cls.name}##{name}", has_receiver: true, kwargs: kwargs)
             end
           end
         end
@@ -1542,7 +1546,7 @@ module Adjutant
               return call_script_proc(method, args, filename, blk, nil, self_val: self_val, block_outer: blk_outer, kwargs: kwargs, block_yield: blk_yield, block_yield_outer: blk_yield_outer)
             end
             if native = cls.find_native_method(sym_id)
-              return call_native(native, args, filename, line, blk, display_name_for_implicit_self(name), kwargs: kwargs)
+              return call_native(native, args, filename, line, blk, display_name_for_implicit_self(name), has_receiver: false, kwargs: kwargs)
             end
           elsif self_rclass = self_val.as_rclass?
             # self is a class or module (in its body). First its own
@@ -1555,14 +1559,14 @@ module Adjutant
               return call_script_proc(singleton, args, filename, blk, nil, self_val: self_val, block_outer: blk_outer, kwargs: kwargs, block_yield: blk_yield, block_yield_outer: blk_yield_outer)
             end
             if native_singleton = self_rclass.find_native_singleton_method(sym_id)
-              return call_native(native_singleton, args, filename, line, blk, display_name_for_implicit_self(name), kwargs: kwargs)
+              return call_native(native_singleton, args, filename, line, blk, display_name_for_implicit_self(name), has_receiver: false, kwargs: kwargs)
             end
             if meta = self_rclass.rclass
               if method = meta.find_method(sym_id)
                 return call_script_proc(method, args, filename, blk, nil, self_val: self_val, block_outer: blk_outer, kwargs: kwargs, block_yield: blk_yield, block_yield_outer: blk_yield_outer)
               end
               if native = meta.find_native_method(sym_id)
-                return call_native(native, args, filename, line, blk, display_name_for_implicit_self(name), kwargs: kwargs)
+                return call_native(native, args, filename, line, blk, display_name_for_implicit_self(name), has_receiver: false, kwargs: kwargs)
               end
             end
           end
@@ -1581,7 +1585,7 @@ module Adjutant
       end
 
       # 5. Builtin operations.
-      if result = exec_builtin(name, args, filename, line, blk, kwargs: kwargs)
+      if result = exec_builtin(name, args, filename, line, blk, has_receiver, kwargs: kwargs)
         return result
       end
 
@@ -1605,12 +1609,17 @@ module Adjutant
     end
 
     # Calls a native function or method, turning any Crystal exception
-    # into N001. First runs the risk-flow check, which raises
+    # into N001. `has_receiver` says whether `args` starts with the
+    # receiver, which the arity check doesn't count. Raises R046 for a
+    # positional count outside the native's arity and R012 for an
+    # undeclared keyword. Then runs the risk-flow check, which raises
     # RiskFlowRejectedError when policy rejects a labelled argument, or
     # an Ask is answered with Reject.
     private def call_native(native : NativeCallable, args : Array(Value),
                             filename : String, line : Int32, blk : ScriptProc?, name : String,
-                            kwargs : Hash(String, Value)? = nil) : Value
+                            has_receiver : Bool, kwargs : Hash(String, Value)? = nil) : Value
+      given = has_receiver ? args.size - 1 : args.size
+      raise_arity_error(given, native.arity.to_s, name, filename, line) unless native.arity.accepts?(given)
       check_unknown_native_keywords!(kwargs, native.kwarg_names, name, filename, line)
       check_risk_flow(native, args, kwargs, name, filename, line)
       NativeFunctionCall.new(self, native, filename, line, name, kwargs).call(args, blk)
@@ -1755,7 +1764,7 @@ module Adjutant
         if native_new = cls.find_native_singleton_method(sym_id)
           # A native `new` accepts the keywords in its `kwarg_names`,
           # like any native call.
-          return call_native(native_new, [Value.rclass(cls)] + args, filename, line, blk, "#{cls.name}.new", kwargs: kwargs)
+          return call_native(native_new, [Value.rclass(cls)] + args, filename, line, blk, "#{cls.name}.new", has_receiver: true, kwargs: kwargs)
         end
       end
       construct_object(cls, args, filename, line, kwargs)
@@ -1773,7 +1782,9 @@ module Adjutant
           return obj_val
         end
       end
-      # Without an `initialize`, any keyword is unknown (R012).
+      # Without an `initialize`, as Ruby's BasicObject#initialize, any
+      # argument raises R046 and any keyword R012.
+      raise_arity_error(args.size, "0", "#{cls.name}.new", filename, line) unless args.empty?
       reject_kwargs!(kwargs, "#{cls.name}.new", filename, line)
       obj_val
     end
@@ -1785,7 +1796,8 @@ module Adjutant
     # `self_val` defaults to the caller's self, as a block needs.
     # `lexical_override` replaces the proc's lexical scope, for
     # `invoke`. `blk` is the block passed to `proc`, and `block_outer`
-    # the scopes it closes over, for `yield` inside `proc`.
+    # the scopes it closes over, for `yield` inside `proc`. Arity is
+    # checked for a method, or with `lambda_call`, and not for a block.
     private def call_script_proc(proc : ScriptProc,
                                  args : Array(Value),
                                  filename : String,
@@ -1799,7 +1811,8 @@ module Adjutant
                                  block_yield : ScriptProc? = nil,
                                  own_yield : ScriptProc? = nil,
                                  block_yield_outer : OuterChain? = nil,
-                                 own_yield_outer : OuterChain? = nil) : Value
+                                 own_yield_outer : OuterChain? = nil,
+                                 lambda_call : Bool = false) : Value
       base = @stack.size
       inherited_self = self_val || (@frames.empty? ? Value.nil_value : current_frame.self_val)
       effective_lexical = if lexical_override
@@ -1814,7 +1827,7 @@ module Adjutant
         block_yield: block_yield, own_yield: own_yield,
         block_yield_outer: block_yield_outer, own_yield_outer: own_yield_outer)
       frame.kwarg_names = kwargs.keys.to_set if kwargs
-      bind_args(frame, proc, args, caller_line, kwargs)
+      bind_args(frame, proc, args, caller_line, kwargs, strict: lambda_call || !proc.is_block?)
       Value.nil_value # sentinel; Op::Ret will push the real return value
     end
 
@@ -1824,7 +1837,8 @@ module Adjutant
     # `|a, *rest|` takes the first element and the rest. A block with one
     # parameter, or only a splat, keeps the Array whole. Lambdas never
     # spread; they are called through `invoke_proc`, which does not come
-    # here. Elements keep their own labels, as `Array#first` returns them.
+    # here, so `->(a, b) {}.call([1, 2])` raises R046. Elements keep
+    # their own labels, as `Array#first` returns them.
     private def spread_block_args(proc : ScriptProc, args : Array(Value),
                                   kwargs : Hash(String, Value)? = nil) : Array(Value)
       return args unless proc.is_block? && args.size == 1 && (kwargs.nil? || kwargs.empty?)
@@ -1836,44 +1850,105 @@ module Adjutant
       spreads ? arr.to_a : args
     end
 
-    # Binds a call's arguments into `frame.locals` in declared order:
+    # Binds a call's arguments into `frame.locals`, as Ruby does:
     #
-    #   1. A plain parameter takes the next positional argument, or
-    #      stays nil if there is none.
-    #   2. A parameter with a default and no argument stays nil; the
-    #      compiled prologue then evaluates the default.
-    #   3. A splat takes the remaining positional arguments as an
-    #      Array.
+    #   1. With `strict` (a method, or a lambda), a positional count
+    #      outside the proc's arity raises R046. A block instead leaves
+    #      missing arguments nil and drops extras.
+    #   2. Required parameters take arguments first, from both ends of
+    #      the list; optional parameters take what is left, left to
+    #      right; a splat takes the rest as an Array. With
+    #      `def f(a = 1, b)`, `f(5)` binds `b` and leaves `a`.
+    #   3. An optional parameter with no argument stays nil; the
+    #      compiled prologue then evaluates its default.
     #   4. A keyword parameter is bound by name: from `kwargs`, else
-    #      left for its default, else R011.
+    #      left for its default, else R011. Unknown keywords raise R012.
     #
-    # Extra positional arguments are ignored, and unknown keywords
-    # raise R012. Positional arity is not checked, unlike Ruby. A proc
-    # with no `ast_params` binds by position.
+    # A proc with no `ast_params` binds by position.
     private def bind_args(frame : Frame, proc : ScriptProc, args : Array(Value), caller_line : Int32,
-                          kwargs : Hash(String, Value)? = nil) : Nil
+                          kwargs : Hash(String, Value)? = nil, strict : Bool = false) : Nil
       ast_params = proc.ast_params
       unless ast_params
         args.each_with_index { |arg, i| frame.locals[i] = arg if i < frame.locals.size }
         return
       end
-      pos = 0 # index into `args` — advances only for non-splat, non-kwarg params
+      check_script_arity!(ast_params, args.size, proc, frame, caller_line) if strict
+      bind_positional(frame, ast_params, args, caller_line)
       declared_kwargs = Set(String).new
       ast_params.each_with_index do |param, slot|
-        next if slot >= frame.locals.size
-        if param.splat?
-          frame.locals[slot] = collect_splat(args, pos, caller_line)
-          pos = args.size
-        elsif param.kwarg?
-          declared_kwargs << param.name
-          bind_kwarg_param(frame, proc, param, slot, kwargs, caller_line)
-        elsif pos < args.size
-          frame.locals[slot] = args[pos]
-          pos += 1
-        end
-        # Otherwise left nil: no argument, or a default to come.
+        next unless param.kwarg? && slot < frame.locals.size
+        declared_kwargs << param.name
+        bind_kwarg_param(frame, proc, param, slot, kwargs, caller_line)
       end
       check_unknown_keywords!(kwargs, declared_kwargs, proc, frame, caller_line)
+    end
+
+    # Binds the positional parameters, steps 2 and 3 of `bind_args`:
+    # each parameter takes the next argument in declared order, except
+    # that an optional parameter takes one only while there are more
+    # arguments than required parameters, and a splat takes those
+    # left over after the optional ones.
+    private def bind_positional(frame : Frame, ast_params : Array(Param), args : Array(Value), caller_line : Int32) : Nil
+      required, optional, has_splat = positional_counts(ast_params)
+      spare = args.size - required
+      optional_filled = spare.clamp(0, optional)
+      splat_size = has_splat ? Math.max(spare - optional, 0) : 0
+      pos = 0 # index into `args`
+      optional_seen = 0
+      ast_params.each_with_index do |param, slot|
+        next if slot >= frame.locals.size || param.kwarg? || param.block_param?
+        if param.splat?
+          frame.locals[slot] = collect_splat(args, pos, splat_size, caller_line)
+          pos += splat_size
+        elsif param.default
+          if optional_seen < optional_filled
+            frame.locals[slot] = args[pos]
+            pos += 1
+          end
+          optional_seen += 1
+        else
+          frame.locals[slot] = args[pos] if pos < args.size
+          pos += 1
+        end
+      end
+    end
+
+    # The required and optional positional parameter counts, and
+    # whether there is a splat. A block parameter (U001) counts as none.
+    private def positional_counts(ast_params : Array(Param)) : {Int32, Int32, Bool}
+      positional = ast_params.reject { |param| param.splat? || param.kwarg? || param.block_param? }
+      required = positional.count(&.default.nil?)
+      {required, positional.size - required, ast_params.any?(&.splat?)}
+    end
+
+    # Raises R046 unless `given` positional arguments fit the proc's
+    # arity. As in Ruby, the message names any required keywords.
+    private def check_script_arity!(ast_params : Array(Param), given : Int32, proc : ScriptProc,
+                                    frame : Frame, caller_line : Int32) : Nil
+      required, optional, has_splat = positional_counts(ast_params)
+      arity = Arity.new(required, has_splat ? nil : required + optional)
+      return if arity.accepts?(given)
+      expected = arity.to_s
+      required_kwargs = ast_params.select { |param| param.kwarg? && param.default.nil? }.map(&.name)
+      unless required_kwargs.empty?
+        noun = required_kwargs.size == 1 ? "keyword" : "keywords"
+        expected += "; required #{noun}: #{required_kwargs.join(", ")}"
+      end
+      raise_arity_error(given, expected, proc.name, frame.filename, caller_line)
+    end
+
+    # Raises R046, Ruby's ArgumentError for a wrong positional count.
+    private def raise_arity_error(given : Int32, expected : String, method : String,
+                                  filename : String, line : Int32) : NoReturn
+      raise runtime_diagnostic(
+        Diagnostic.new(
+          code: "R046",
+          primary: Span.new(line: line, filename: filename),
+          data: {"given" => given.to_s, "expected" => expected, "method" => method}
+        ),
+        current_frame,
+        error_class: "ArgumentError"
+      )
     end
 
     # Binds one keyword parameter: the supplied value, else nil for
@@ -1948,23 +2023,44 @@ module Adjutant
       )
     end
 
-    # for a splat parameter, labelled and logged as MakeArray labels
-    # an array literal, at the call site's `line`.
-    private def collect_splat(args : Array(Value), from : Int32, line : Int32) : Value
-      elements = from < args.size ? args[from..] : [] of Value
+    # The Array for a splat parameter: up to `count` arguments from
+    # `from`, labelled and logged as MakeArray labels an array literal,
+    # at the call site's `line`.
+    private def collect_splat(args : Array(Value), from : Int32, count : Int32, line : Int32) : Value
+      elements = from < args.size ? args[from, count] : [] of Value
       joined_label = elements.reduce(nil.as(RiskFlowLabel?)) { |acc, value| RiskFlowLabel.join(acc, value.label) }
       @risk_flow_log.record("MakeArray", elements.map(&.label), joined_label, line)
       Value.new(LabeledArray.new(elements, joined_label), joined_label)
     end
 
+    # Ruby's arity for each operation `exec_builtin` handles.
+    BUILTIN_ARITIES = {
+      "puts" => Arity.any, "print" => Arity.any, "p" => Arity.any,
+      "raise" => Arity.new(0, 3), "require" => Arity.from(1), "<=>" => Arity.from(1),
+      "nil?" => Arity.from(0), "is_a?" => Arity.from(1), "kind_of?" => Arity.from(1),
+      "class" => Arity.from(0), "superclass" => Arity.from(0), "respond_to?" => Arity.new(1, 2),
+      "equal?" => Arity.from(1), "dup" => Arity.from(0), "clone" => Arity.from(0),
+      "to_s" => Arity.from(0), "inspect" => Arity.from(0), "to_i" => Arity.from(0),
+      "to_f" => Arity.from(0), "length" => Arity.from(0), "size" => Arity.from(0),
+      "+" => Arity.from(1), "-" => Arity.from(1), "*" => Arity.from(1),
+      "/" => Arity.from(1), "%" => Arity.from(1),
+    }
+
     # Operations that resolve when nothing else does: output, `raise`,
     # reflection and the like. Returns nil when `name` isn't one.
+    # `has_receiver` says whether `args` starts with the receiver.
+    # Raises R046 for a positional count outside `BUILTIN_ARITIES`.
     # ameba:disable Metrics/CyclomaticComplexity
     private def exec_builtin(name : String,
                              args : Array(Value),
                              filename : String, line : Int32,
                              blk : ScriptProc? = nil,
+                             has_receiver : Bool = false,
                              kwargs : Hash(String, Value)? = nil) : Value?
+      if arity = BUILTIN_ARITIES[name]?
+        given = has_receiver ? args.size - 1 : args.size
+        raise_arity_error(given, arity.to_s, name, filename, line) unless arity.accepts?(given)
+      end
       reject_kwargs!(kwargs, name, filename, line)
       case name
       when "puts"
@@ -2372,7 +2468,7 @@ module Adjutant
       return Value.nil_value unless sym_id
       native = obj.rclass.find_native_method(sym_id)
       return Value.nil_value unless native
-      call_native(native, [target, idx], filename, line, nil, "#{obj.rclass.name}#[]")
+      call_native(native, [target, idx], filename, line, nil, "#{obj.rclass.name}#[]", has_receiver: true)
     end
 
     private def exec_set_index(target : Value, idx : Value, val : Value) : Nil

@@ -9,13 +9,13 @@ module Adjutant::Builtins
   # `inspect` is `#<Foo @x=1, @y="hi">`: Ruby's format without the
   # memory address, each ivar rendered by its own `inspect`.
   def self.bootstrap_object_methods(interp : Adjutant::Interpreter, cls : Adjutant::RubyClass) : Nil
-    define(cls, interp, "to_s") do |args|
+    define(cls, interp, "to_s", arity: 0) do |args|
       Adjutant::Value.string(args.first.to_s)
     end
 
     # A receiver that isn't an object (a builtin value whose class has
     # no `inspect` of its own) renders with `Value#inspect`.
-    define(cls, interp, "inspect") do |args, _blk, ncc|
+    define(cls, interp, "inspect", arity: 0) do |args, _blk, ncc|
       recv = args.first
       obj = recv.as_robject?
       if obj.nil?

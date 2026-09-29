@@ -566,7 +566,7 @@ module Adjutant
           advance
           method_tok = @current
           advance
-          args, kwargs, blk = parse_call_args_and_block
+          args, kwargs, blk = receiver_call_takes_bare_args? ? parse_bare_args_and_block : parse_call_args_and_block
           node = Call.new(node, method_tok.lexeme, args, blk, safe, l, c, kwargs: kwargs)
         when TokenKind::ColonColon
           advance
@@ -775,6 +775,13 @@ module Adjutant
     # Parses a bare call's comma-separated arguments and optional
     # block.
     private def parse_bare_call_args(name : String, l : Int32, c : Int32) : Call
+      args, kwargs, blk = parse_bare_args_and_block
+      Call.new(nil, name, args, blk, false, l, c, kwargs: kwargs)
+    end
+
+    # Parses comma-separated arguments without parentheses, then an
+    # optional block.
+    private def parse_bare_args_and_block : {Array(Node), Array({String, Node}), BlockNode?}
       args = [] of Node
       kwargs = [] of {String, Node}
       parse_call_arg(args, kwargs)
@@ -783,7 +790,17 @@ module Adjutant
         parse_call_arg(args, kwargs)
       end
       blk = parse_block if block_follows_no_paren?
-      Call.new(nil, name, args, blk, false, l, c, kwargs: kwargs)
+      {args, kwargs, blk}
+    end
+
+    # Whether a call with a receiver takes arguments without
+    # parentheses, as in `x.is_a? Foo` or `list.push 1, 2`: a space
+    # after the method name, then what starts a bare call's argument.
+    # A `(` keeps its argument-list meaning, spaced or not.
+    private def receiver_call_takes_bare_args? : Bool
+      return false unless @current.space_before?
+      return false if at_kind?(TokenKind::LParen)
+      signed_literal_starts_bare_call? || arg_follows_no_paren?
     end
 
     private def block_follows_no_paren? : Bool
@@ -900,6 +917,7 @@ module Adjutant
         skip_newlines
       end
       expect(TokenKind::Pipe)
+      validate_params(params)
       params
     end
 
@@ -1058,7 +1076,56 @@ module Adjutant
         break unless match(TokenKind::Comma)
         skip_newlines
       end
+      validate_params(params)
       params
+    end
+
+    # The stages of a parameter list, in the order Ruby requires.
+    PARAM_STAGE_LEADING  = 1
+    PARAM_STAGE_OPTIONAL = 2
+    PARAM_STAGE_SPLAT    = 3
+    PARAM_STAGE_TRAILING = 4
+    PARAM_STAGE_KEYWORD  = 5
+    PARAM_STAGE_BLOCK    = 6
+
+    # Raises P006 for a parameter out of Ruby's order (required,
+    # optional, one splat, required, keywords, block) and P007 for a
+    # name declared twice. Names starting with `_` may repeat, as in
+    # Ruby.
+    #
+    # Each parameter is assigned the stage it belongs to; a stage lower
+    # than the previous parameter's, or a second splat or block, is
+    # out of order. A required parameter is in the leading stage until
+    # an optional parameter or splat has been seen, and in the
+    # trailing one after.
+    private def validate_params(params : Array(Param)) : Nil
+      stage = 0
+      seen = Set(String).new
+      params.each do |param|
+        param_stage = if param.block_param?
+                        PARAM_STAGE_BLOCK
+                      elsif param.kwarg?
+                        PARAM_STAGE_KEYWORD
+                      elsif param.splat?
+                        PARAM_STAGE_SPLAT
+                      elsif param.default
+                        PARAM_STAGE_OPTIONAL
+                      elsif stage <= PARAM_STAGE_LEADING
+                        PARAM_STAGE_LEADING
+                      else
+                        PARAM_STAGE_TRAILING
+                      end
+        repeated = param_stage == stage && (param_stage == PARAM_STAGE_SPLAT || param_stage == PARAM_STAGE_BLOCK)
+        raise parameter_error("P006", param, "unexpected parameter order") if param_stage < stage || repeated
+        stage = param_stage
+        next if param.name.starts_with?('_')
+        raise parameter_error("P007", param, "duplicated argument name") unless seen.add?(param.name)
+      end
+    end
+
+    private def parameter_error(code : String, param : Param, label : String) : ParseError
+      span = Span.new(line: param.line, column: param.column, length: Math.max(param.name.size, 1), label: label)
+      ParseError.new(Diagnostic.new(code: code, primary: span, data: {"name" => param.name}))
     end
 
     private def parse_param : Param

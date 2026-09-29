@@ -21,7 +21,7 @@ module Adjutant::Builtins
     # format). Every Symbol key uses the `key:` form, quoted when it
     # isn't a simple name. A cycle renders as `{...}`. `to_s` is the
     # same.
-    define(cls, interp, "inspect") do |args, _blk, ncc|
+    define(cls, interp, "inspect", arity: 0) do |args, _blk, ncc|
       h = args.first.as_hash
       str = ncc.guard_rendering(h.object_id, "{...}") do
         pairs = h.keys.zip(h.values).map do |k, v|
@@ -40,41 +40,41 @@ module Adjutant::Builtins
       Adjutant::Value.string(str)
     end
 
-    define(cls, interp, "to_s") do |args, _blk, ncc|
+    define(cls, interp, "to_s", arity: 0) do |args, _blk, ncc|
       ncc.call_method(args.first, "inspect", [] of Adjutant::Value)
     end
 
-    define(cls, interp, "length") do |args|
+    define(cls, interp, "length", arity: 0) do |args|
       Adjutant::Value.int(args.first.as_hash.size.to_i64)
     end
 
-    define(cls, interp, "size") do |args|
+    define(cls, interp, "size", arity: 0) do |args|
       Adjutant::Value.int(args.first.as_hash.size.to_i64)
     end
 
-    define(cls, interp, "empty?") do |args|
+    define(cls, interp, "empty?", arity: 0) do |args|
       Adjutant::Value.bool(args.first.as_hash.empty?)
     end
 
-    define(cls, interp, "keys") do |args|
+    define(cls, interp, "keys", arity: 0) do |args|
       h = args.first.as_hash
       Adjutant::Value.new(Adjutant::LabeledArray.new(h.keys, h.label), nil)
     end
 
-    define(cls, interp, "values") do |args|
+    define(cls, interp, "values", arity: 0) do |args|
       h = args.first.as_hash
       Adjutant::Value.new(Adjutant::LabeledArray.new(h.values, h.label), nil)
     end
 
     # Three names for one check, as in Ruby.
     {"key?", "include?", "has_key?"}.each do |name|
-      define(cls, interp, name) do |args|
+      define(cls, interp, name, arity: 1) do |args|
         key = args[1]? || Adjutant::Value.nil_value
         Adjutant::Value.bool(args.first.as_hash.has_key?(key))
       end
     end
 
-    define(cls, interp, "each") do |args, blk, ncc|
+    define(cls, interp, "each", arity: 0) do |args, blk, ncc|
       recv = args.first
       if blk
         recv.as_hash.each { |k, v| ncc.invoke(blk, [k, v]) }
@@ -84,7 +84,7 @@ module Adjutant::Builtins
 
     # Removes `key` and returns its value; if absent, the block's
     # result, or nil. The receiver's label is unchanged.
-    define(cls, interp, "delete") do |args, blk, ncc|
+    define(cls, interp, "delete", arity: 1) do |args, blk, ncc|
       h = args.first.as_hash
       key = args[1]? || Adjutant::Value.nil_value
       if val = h.delete(key)
@@ -99,7 +99,7 @@ module Adjutant::Builtins
     # An Array of `[key, value]` pairs. Each pair's label joins its
     # key's and value's; the result's joins the pairs' and the
     # receiver's.
-    define(cls, interp, "to_a") do |args|
+    define(cls, interp, "to_a", arity: 0) do |args|
       h = args.first.as_hash
       pairs = [] of Adjutant::Value
       h.each do |k, v|
@@ -113,7 +113,7 @@ module Adjutant::Builtins
     # or the block's result for a key in more than one:
     # `h1.merge(h2) { |key, old, new| }`. The label joins every hash's
     # and entry's.
-    define(cls, interp, "merge") do |args, blk, ncc|
+    define(cls, interp, "merge", arity: (0..)) do |args, blk, ncc|
       recv_hash = args.first.as_hash
       others = args[1..]
       others.each do |other|

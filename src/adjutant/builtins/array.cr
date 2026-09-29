@@ -14,7 +14,7 @@ module Adjutant::Builtins
     # Each element's own `inspect`, so an object's override applies.
     # A self-containing array renders as `[[...]]`. `to_s` is the
     # same.
-    define(cls, interp, "inspect") do |args, _blk, ncc|
+    define(cls, interp, "inspect", arity: 0) do |args, _blk, ncc|
       arr = args.first.as_array
       str = ncc.guard_rendering(arr.object_id, "[...]") do
         rendered = arr.to_a.map { |elem| ncc.call_method(elem, "inspect", [] of Adjutant::Value).as_string }
@@ -23,23 +23,23 @@ module Adjutant::Builtins
       Adjutant::Value.string(str)
     end
 
-    define(cls, interp, "to_s") do |args, _blk, ncc|
+    define(cls, interp, "to_s", arity: 0) do |args, _blk, ncc|
       ncc.call_method(args.first, "inspect", [] of Adjutant::Value)
     end
 
-    define(cls, interp, "length") do |args|
+    define(cls, interp, "length", arity: 0) do |args|
       Adjutant::Value.int(args.first.as_array.size.to_i64)
     end
 
-    define(cls, interp, "size") do |args|
+    define(cls, interp, "size", arity: 0) do |args|
       Adjutant::Value.int(args.first.as_array.size.to_i64)
     end
 
-    define(cls, interp, "empty?") do |args|
+    define(cls, interp, "empty?", arity: 0) do |args|
       Adjutant::Value.bool(args.first.as_array.empty?)
     end
 
-    define(cls, interp, "push") do |args|
+    define(cls, interp, "push", arity: (0..)) do |args|
       # Appends every argument and returns self. Each value's label
       # joins the array's, as for `<<` and `[]=`.
       arr = args.first.as_array
@@ -50,23 +50,23 @@ module Adjutant::Builtins
       args.first
     end
 
-    define(cls, interp, "pop") do |args|
+    define(cls, interp, "pop", arity: 0) do |args|
       arr = args.first.as_array
       arr.empty? ? Adjutant::Value.nil_value : arr.pop
     end
 
-    define(cls, interp, "include?") do |args, _blk, ncc|
+    define(cls, interp, "include?", arity: 1) do |args, _blk, ncc|
       needle = args[1]?
       found = needle ? args.first.as_array.any? { |elem| ncc.values_equal?(elem, needle) } : false
       Adjutant::Value.bool(found)
     end
 
-    define(cls, interp, "join") do |args|
+    define(cls, interp, "join", arity: 0..1) do |args|
       sep = args[1]?.try(&.as_string?) || ""
       Adjutant::Value.string(args.first.as_array.map(&.to_s).join(sep))
     end
 
-    define(cls, interp, "each") do |args, blk, ncc|
+    define(cls, interp, "each", arity: 0) do |args, blk, ncc|
       recv = args.first
       if blk
         recv.as_array.each { |elem| ncc.invoke(blk, [elem]) }
@@ -74,7 +74,7 @@ module Adjutant::Builtins
       recv
     end
 
-    define(cls, interp, "map") do |args, blk, ncc|
+    define(cls, interp, "map", arity: 0) do |args, blk, ncc|
       recv = args.first
       if blk
         mapped = recv.as_array.map { |elem| ncc.invoke(blk, [elem]) }
@@ -89,7 +89,7 @@ module Adjutant::Builtins
     # With no argument, the first element or nil. With `n`, an Array
     # of the first `n` elements; a negative `n` raises R031
     # (`ArgumentError`), as Ruby does.
-    define(cls, interp, "first") do |args, _blk, ncc|
+    define(cls, interp, "first", arity: 0..1) do |args, _blk, ncc|
       recv = args.first
       arr = recv.as_array
       if n_val = args[1]?
@@ -102,7 +102,7 @@ module Adjutant::Builtins
       end
     end
 
-    define(cls, interp, "last") do |args, _blk, ncc|
+    define(cls, interp, "last", arity: 0..1) do |args, _blk, ncc|
       recv = args.first
       arr = recv.as_array
       if n_val = args[1]?
@@ -115,7 +115,7 @@ module Adjutant::Builtins
       end
     end
 
-    define(cls, interp, "select") do |args, blk, ncc|
+    define(cls, interp, "select", arity: 0) do |args, blk, ncc|
       recv = args.first
       if blk
         kept = recv.as_array.to_a.select { |elem| ncc.invoke(blk, [elem]).truthy? }
@@ -125,7 +125,7 @@ module Adjutant::Builtins
       end
     end
 
-    define(cls, interp, "reject") do |args, blk, ncc|
+    define(cls, interp, "reject", arity: 0) do |args, blk, ncc|
       recv = args.first
       if blk
         kept = recv.as_array.to_a.reject { |elem| ncc.invoke(blk, [elem]).truthy? }
@@ -139,7 +139,7 @@ module Adjutant::Builtins
     # the first element is the initial value and an empty receiver
     # gives nil. The Symbol form, `reduce(:+)`, is not implemented and
     # returns nil.
-    define(cls, interp, "reduce") do |args, blk, ncc|
+    define(cls, interp, "reduce", arity: 0..1) do |args, blk, ncc|
       items = args.first.as_array.to_a
       initial = args[1]?
       next Adjutant::Value.nil_value unless blk
@@ -153,7 +153,7 @@ module Adjutant::Builtins
       end
     end
 
-    define(cls, interp, "inject") do |args, blk, ncc|
+    define(cls, interp, "inject", arity: 0..1) do |args, blk, ncc|
       items = args.first.as_array.to_a
       initial = args[1]?
       next Adjutant::Value.nil_value unless blk
@@ -177,7 +177,7 @@ module Adjutant::Builtins
     # The result's label joins every element's and the receiver's, plus,
     # with a block, every comparator result's: the order itself carries
     # whatever the block consulted.
-    define(cls, interp, "sort") do |args, blk, ncc|
+    define(cls, interp, "sort", arity: 0) do |args, blk, ncc|
       recv = args.first
       items = recv.as_array.to_a
       order_label = nil.as(Adjutant::RiskFlowLabel?)
@@ -201,7 +201,7 @@ module Adjutant::Builtins
     #
     # The result's label joins every element's, every key's and the
     # receiver's, since the keys decide the order.
-    define(cls, interp, "sort_by") do |args, blk, ncc|
+    define(cls, interp, "sort_by", arity: 0) do |args, blk, ncc|
       ncc.raise_error("R045", {"method" => "sort_by"}, "ArgumentError") unless blk
       recv = args.first
       keyed = recv.as_array.to_a.map { |elem| {ncc.invoke(blk, [elem]), elem} }
@@ -211,7 +211,7 @@ module Adjutant::Builtins
       Adjutant::Value.new(Adjutant::LabeledArray.new(sorted, label), nil)
     end
 
-    define(cls, interp, "reverse") do |args|
+    define(cls, interp, "reverse", arity: 0) do |args|
       recv = args.first
       items = recv.as_array.to_a.reverse
       Adjutant::Value.new(Adjutant::LabeledArray.new(items, joined_label(items, recv.as_array.label)), nil)
@@ -219,25 +219,25 @@ module Adjutant::Builtins
 
     # Nil for an empty receiver, as in Ruby. Ordered as `sort` orders:
     # a pair with no order raises R044 (`ArgumentError`).
-    define(cls, interp, "min") do |args, _blk, ncc|
+    define(cls, interp, "min", arity: 0) do |args, _blk, ncc|
       items = args.first.as_array.to_a
       items.empty? ? Adjutant::Value.nil_value : items.reduce { |acc, elem| ncc.order(elem, acc) < 0 ? elem : acc }
     end
 
-    define(cls, interp, "max") do |args, _blk, ncc|
+    define(cls, interp, "max", arity: 0) do |args, _blk, ncc|
       items = args.first.as_array.to_a
       items.empty? ? Adjutant::Value.nil_value : items.reduce { |acc, elem| ncc.order(elem, acc) > 0 ? elem : acc }
     end
 
     # Without a block, each element's truthiness; with one, the
     # block's result.
-    define(cls, interp, "any?") do |args, blk, ncc|
+    define(cls, interp, "any?", arity: 0) do |args, blk, ncc|
       items = args.first.as_array
       found = blk ? items.any? { |elem| ncc.invoke(blk, [elem]).truthy? } : items.any?(&.truthy?)
       Adjutant::Value.bool(found)
     end
 
-    define(cls, interp, "all?") do |args, blk, ncc|
+    define(cls, interp, "all?", arity: 0) do |args, blk, ncc|
       items = args.first.as_array.to_a
       result = blk ? items.all? { |elem| ncc.invoke(blk, [elem]).truthy? } : items.all?(&.truthy?)
       Adjutant::Value.bool(result)

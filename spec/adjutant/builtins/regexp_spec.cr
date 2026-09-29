@@ -202,10 +202,10 @@ module Adjutant
         eval(%(/xyz/.match?("abc"))).as_bool.should be_false
       end
 
-      it "raises R022 (ArgumentError) when no string argument is given" do
+      it "raises R046 (ArgumentError) when no string argument is given" do
         interp, _ = make_interp
         error = expect_raises(RuntimeError) { interp.eval("/abc/.match") }
-        error.diagnostic.not_nil!.code.should eq("R022")
+        error.diagnostic.not_nil!.code.should eq("R046")
       end
 
       it "the ArgumentError is rescuable from script" do
@@ -264,9 +264,9 @@ module Adjutant
         eval(%(/abc/ =~ "abcdef")).as_int.should eq 0
       end
 
-      it "raises R022 (ArgumentError) when no string argument is given" do
+      it "raises R046 (ArgumentError) when no string argument is given" do
         error = expect_raises(RuntimeError) { eval("/abc/.=~") }
-        error.diagnostic.not_nil!.code.should eq("R022")
+        error.diagnostic.not_nil!.code.should eq("R046")
       end
 
       it "raises R022 for a non-String right-hand side" do
@@ -423,8 +423,8 @@ module Adjutant
       result.truthy?.should be_true
     end
 
-    it "begin returns the match's start offset" do
-      eval(%(/b./.match("xxbcyy").begin)).as_int.should eq 2
+    it "begin(0) returns the match's start offset" do
+      eval(%(/b./.match("xxbcyy").begin(0))).as_int.should eq 2
     end
 
     it "begin(n) returns a capture group's start offset" do

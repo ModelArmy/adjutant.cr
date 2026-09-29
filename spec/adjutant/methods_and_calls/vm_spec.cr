@@ -460,9 +460,11 @@ module Adjutant
         eval(src).as_array.map(&.as_int).should eq [2_i64, 3_i64]
       end
 
-      it "does not spread for a lambda" do
-        eval("f = ->(a, b) { a }\nf.call([1, 2])").as_array.map(&.as_int).should eq [1_i64, 2_i64]
-        eval("f = lambda { |a, b| a }\nf.call([1, 2])").as_array.map(&.as_int).should eq [1_i64, 2_i64]
+      it "does not spread for a lambda, which then raises for the missing argument" do
+        {"f = ->(a, b) { a }\nf.call([1, 2])", "f = lambda { |a, b| a }\nf.call([1, 2])"}.each do |src|
+          error = expect_raises(RuntimeError) { eval(src) }
+          error.diagnostic.not_nil!.code.should eq "R046"
+        end
       end
     end
 

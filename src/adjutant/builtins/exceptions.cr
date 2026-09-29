@@ -43,11 +43,11 @@ module Adjutant::Builtins
 
     # Allocates the receiver's class, so `TypeError.new("msg")` is a
     # TypeError.
-    define_singleton(cls, interp, "new") do |args|
+    define_singleton(cls, interp, "new", arity: Arity.any) do |args|
       Value.robject(new_exception(interp, args.first.as_rclass, args))
     end
 
-    define(cls, interp, "to_s") do |args|
+    define(cls, interp, "to_s", arity: 0) do |args|
       obj = args.first.as_robject
       msg_sym = interp.symbols.intern("message")
       obj.ivars[msg_sym.value]? || Value.string(obj.rclass.name)
@@ -55,7 +55,7 @@ module Adjutant::Builtins
 
     # `#<ClassName: message>`, using the object's own `to_s`, so an
     # override applies; `#<ClassName: ClassName>` with no message.
-    define(cls, interp, "inspect") do |args, _blk, ncc|
+    define(cls, interp, "inspect", arity: 0) do |args, _blk, ncc|
       obj = args.first.as_robject
       message = ncc.call_method(args.first, "to_s", [] of Value).as_string
       Value.string("#<#{obj.rclass.name}: #{message}>")
@@ -72,7 +72,7 @@ module Adjutant::Builtins
 
     # Allocates the receiver's class, as Exception's `new` does, so
     # `NoMethodError.new` is a NoMethodError.
-    define_singleton(cls, interp, "new") do |args|
+    define_singleton(cls, interp, "new", arity: Arity.any) do |args|
       inst = new_exception(interp, args.first.as_rclass, args)
 
       # The name is the second argument, after the message.

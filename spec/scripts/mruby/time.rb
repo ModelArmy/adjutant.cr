@@ -86,14 +86,7 @@ assert('Time.mktime', '15.2.19.6.4') do
   assert_equal(6, t.hour)
   assert_equal(15, t.min)
   assert_equal(58, t.sec)
-  # NOTE: mruby's Time.mktime/.local take usec as a 7th positional
-  # arg; Adjutant's .local/.mktime only read 6 (year..sec) — the 3485
-  # above is silently unread (SCOPE.md's "no positional-arg defaults
-  # or arity binding" Will Fix item), so usec is always 0 here rather
-  # than 3485. Left as an active assertion against Adjutant's real
-  # behavior rather than commented out, since it's not a crash — just
-  # a documented divergence worth a reader noticing.
-  assert_equal(0, t.usec)
+  assert_equal(3485, t.usec)
 end
 
 assert('Time.now', '15.2.19.6.5') do

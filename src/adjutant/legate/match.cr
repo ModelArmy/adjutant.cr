@@ -18,11 +18,11 @@ module Adjutant
         before_sym = interp.symbols.intern("__before").value
         after_sym = interp.symbols.intern("__after").value
 
-        Builtins.define(cls, interp, "path") { |args| args.first.as_robject.ivars[path_sym] }
-        Builtins.define(cls, interp, "line_no") { |args| args.first.as_robject.ivars[line_no_sym] }
-        Builtins.define(cls, interp, "text") { |args| args.first.as_robject.ivars[text_sym] }
-        Builtins.define(cls, interp, "before") { |args| args.first.as_robject.ivars[before_sym] }
-        Builtins.define(cls, interp, "after") { |args| args.first.as_robject.ivars[after_sym] }
+        Builtins.define(cls, interp, "path", arity: 0) { |args| args.first.as_robject.ivars[path_sym] }
+        Builtins.define(cls, interp, "line_no", arity: 0) { |args| args.first.as_robject.ivars[line_no_sym] }
+        Builtins.define(cls, interp, "text", arity: 0) { |args| args.first.as_robject.ivars[text_sym] }
+        Builtins.define(cls, interp, "before", arity: 0) { |args| args.first.as_robject.ivars[before_sym] }
+        Builtins.define(cls, interp, "after", arity: 0) { |args| args.first.as_robject.ivars[after_sym] }
       end
 
       # `before` and `after` are empty unless `context:` was given

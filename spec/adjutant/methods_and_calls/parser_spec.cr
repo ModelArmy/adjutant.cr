@@ -167,6 +167,21 @@ module Adjutant
         node.as(Call).receiver.should be_a(Call)
       end
 
+      it "parses a receiver call's arguments without parentheses" do
+        c = parse_expr("x.is_a? Foo").as(Call)
+        c.method.should eq "is_a?"
+        c.args.size.should eq 1
+        c = parse_expr("list.push 1, -2").as(Call)
+        c.args.size.should eq 2
+        parse_expr("a.b [1]").as(Call).args.size.should eq 1
+      end
+
+      it "keeps a receiver call without a space before what follows as it was" do
+        parse_expr("a.b[1]").should be_a(Index)
+        parse_expr("a.b - 1").should be_a(Binary)
+        parse_expr("a.empty? ? 1 : 2").should be_a(Ternary)
+      end
+
       it "parses indexing" do
         # `arr` must be established as a known local first — bare
         # `identifier [expr]` with no prior assignment parses as a

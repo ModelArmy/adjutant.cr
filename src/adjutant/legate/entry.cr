@@ -18,10 +18,10 @@ module Adjutant
         size_sym = interp.symbols.intern("__size").value
         mtime_sym = interp.symbols.intern("__mtime").value
 
-        Builtins.define(cls, interp, "path") { |args| args.first.as_robject.ivars[path_sym] }
-        Builtins.define(cls, interp, "type") { |args| args.first.as_robject.ivars[type_sym] }
-        Builtins.define(cls, interp, "size") { |args| args.first.as_robject.ivars[size_sym] }
-        Builtins.define(cls, interp, "mtime") { |args| args.first.as_robject.ivars[mtime_sym] }
+        Builtins.define(cls, interp, "path", arity: 0) { |args| args.first.as_robject.ivars[path_sym] }
+        Builtins.define(cls, interp, "type", arity: 0) { |args| args.first.as_robject.ivars[type_sym] }
+        Builtins.define(cls, interp, "size", arity: 0) { |args| args.first.as_robject.ivars[size_sym] }
+        Builtins.define(cls, interp, "mtime", arity: 0) { |args| args.first.as_robject.ivars[mtime_sym] }
       end
 
       # `path` is a Legate::Path, `type` one of `:file`, `:dir`,
