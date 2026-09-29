@@ -74,18 +74,14 @@ acceptable, since it restores the subset.
   unsupported, which is only a gap. Scanning is in
   `Lexer#scan_number`.
 
-- **Indexing shapes the VM doesn't handle return nil or do nothing.**
-  `VM#exec_get_index` handles Array, Hash and String receivers and an
-  object's native `[]`; everything else falls to nil. So `arr[1..2]`
-  is nil, where Ruby slices (the skill tells models Arrays don't
-  slice, but the runtime doesn't say so); `s[1..]` and `s[..2]` are
-  nil, since a String range needs two Integer bounds; `nil[0]` and
-  `5[0]` are nil, where Ruby raises NoMethodError or returns a bit.
-  On the write side, `exec_set_index` ignores `arr[5] = x` past the
-  end (Ruby pads with nil) and `arr[-9] = x` before the start (Ruby
-  raises IndexError), and ignores every receiver but Array and Hash,
-  so `s[0] = "x"` does nothing. Each shape needs Ruby's result or an
-  error.
+- **An undefined method called on a receiver raises NameError, not
+  NoMethodError.** Found while giving indexing its NoMethodError.
+  `dispatch_call` ends in R008 (NameError) whether or not the call had
+  a receiver, so `5.nope` raises NameError and `rescue NoMethodError`
+  misses it. Ruby raises NameError only for a bare name that could be
+  a variable; with a receiver, or with arguments, it raises
+  NoMethodError. R047 already words Ruby's message; the fix is using
+  it for a call with a receiver or arguments.
 
 - **`break` outside any loop or block is ignored.** A `break` with no
   loop compiles to BlockBreak; in a method body with no block frame,
@@ -808,6 +804,10 @@ individually.
   new opcodes — natural fit for the core-API-library work rather than
   a standalone language-layer item. Filed here rather than under a
   language-gap group for that reason.
+
+- **`Integer#[]` takes only a bit index.** `n[i, len]` and `n[i..j]`
+  (Ruby 2.7) raise ArgumentError and TypeError (R046, R048) rather
+  than returning the bits.
 
 - **Optional arguments Adjutant doesn't implement raise ArgumentError.**
   Each builtin method declares the arity it implements, so an argument

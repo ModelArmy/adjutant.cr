@@ -142,6 +142,12 @@ R043|`Legate.env` called with no `name` argument                        |—
 R044|Two values with no order between them were compared or sorted      |`left`, `right`                            
 R045|A block-taking method called with no block                         |`method`                                   
 R046|A method or lambda called with the wrong number of arguments       |`given`, `expected`, `method`              
+R047|A receiver without `[]` or `[]=` was indexed                       |`method`, `target`                         
+R048|An index or length that isn't an Integer, Float or Range           |`conversion`                               
+R049|An Array index assigned to before the first element                |`index`, `minimum`                         
+R050|A negative length in `a[start, length] = value`                    |`length`                                   
+R051|A Range assigned to that starts before the first element           |`range`, `size`                            
+R052|A String changed in place                                          |`value`                                    
 
 Scripts can `rescue` these. R008 raises a `NameError`, matching Ruby;
 R011, R012, R015, and R018 raise `ArgumentError`, also matching Ruby;
@@ -152,7 +158,9 @@ R025, and R031 raise an `ArgumentError`, also matching Ruby; R021
 raises a `RegexpError`, also matching Ruby; R026, R027, R028, R029, and
 R030 raise a `RangeError`, also matching Ruby; R032, R034, R035, R040,
 R041, R042, R043, R044, R045, and R046 raise an `ArgumentError`, also
-matching Ruby; the rest raise `RuntimeError`.
+matching Ruby; R047 raises a `NoMethodError`, R048 a `TypeError`, R049
+and R050 an `IndexError`, R051 a `RangeError`, and R052 a `FrozenError`,
+all matching Ruby; the rest raise `RuntimeError`.
 
 Adjutant's constants are assign-once, which Ruby only warns about. R001 is
 that rule firing on an ordinary constant; reopening a class or module is

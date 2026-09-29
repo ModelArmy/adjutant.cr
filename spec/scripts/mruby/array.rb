@@ -61,12 +61,23 @@ end
 #   assert_equal([1, 1], [1].<<(1))
 # end
 
-# --- BLOCKED: `[]` is opcode-only (Op::GetIndex), so the dot-call
-# form (`.[](...)`) used throughout this test isn't reachable via
-# method dispatch. Separately, even the bracket syntax only supports a
-# single Integer index — no two-arg (start, length) slicing, no Range
-# indexing (`a[1..-2]`, `a[1..]`, `a[..2]`), no Float index coercion —
-# see exec_get_index (vm.cr).
+# The bracket-syntax half of the ISO test below. The dot-call form
+# (`.[](...)`) stays commented out: `[]` is opcode-only (Op::GetIndex),
+# so it isn't reachable through method dispatch.
+assert('Array#[] (bracket syntax)', '15.2.12.5.4') do
+  assert_equal(2, [1,2,3][1])
+  assert_equal(nil, [1,2,3][4])
+  assert_equal(3, [1,2,3][-1])
+  assert_equal(nil, [1,2,3][-4])
+
+  a = [ "a", "b", "c", "d", "e" ]
+  assert_equal(["b", "c"], a[1,2])
+  assert_equal(["b", "c", "d"], a[1..-2])
+  assert_equal(["b", "c", "d", "e"], a[1..])
+  assert_equal(["a", "b", "c"], a[..2])
+  assert_equal("b", a[1.1])
+end
+
 # assert('Array#[]', '15.2.12.5.4') do
 #   a = Array.new
 #   assert_raise(ArgumentError) do

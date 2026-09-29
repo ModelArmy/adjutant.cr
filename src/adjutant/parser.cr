@@ -578,16 +578,18 @@ module Adjutant
             node = Call.new(node, name_tok.lexeme, [] of Node, nil, false, l, c)
           end
         when TokenKind::LBracket
+          # `[index]` or `[index, length]`.
           advance
           idx = parse_expression(0)
+          length = match(TokenKind::Comma) ? parse_expression(0) : nil
           expect(TokenKind::RBracket)
           safe = false
           if at_kind?(TokenKind::Eq)
             advance
             val = parse_expression(0)
-            node = IndexAssign.new(node, idx, val, l, c)
+            node = IndexAssign.new(node, idx, val, l, c, length)
           else
-            node = Index.new(node, idx, safe, l, c)
+            node = Index.new(node, idx, safe, l, c, length)
           end
         else
           break

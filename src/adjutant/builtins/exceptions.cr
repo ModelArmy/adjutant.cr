@@ -8,7 +8,8 @@ module Adjutant::Builtins
   def self.bootstrap_exception_and_subclasses(interp : Interpreter, & : -> RubyClass) : Nil
     yield exception = define_exception_class(interp)
     yield standard_error = RubyClass.new("StandardError", exception)
-    yield RubyClass.new("RuntimeError", standard_error)
+    yield runtime_error = RubyClass.new("RuntimeError", standard_error)
+    yield RubyClass.new("FrozenError", runtime_error)
     yield RubyClass.new("TypeError", standard_error)
     yield RubyClass.new("ArgumentError", standard_error)
     yield RubyClass.new("ZeroDivisionError", standard_error)

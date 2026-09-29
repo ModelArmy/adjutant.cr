@@ -714,7 +714,8 @@ module Adjutant
         # this order.
         compile_node(target.target)
         compile_node(target.index)
-        @chunk.emit(Op::SetIndexFromValue, line)
+        target.length.try { |length| compile_node(length) }
+        @chunk.emit(Op::SetIndexFromValue, line, a: index_arg_count(target.length))
       else
         raise CompileError.new(
           Diagnostic.new(
@@ -806,15 +807,23 @@ module Adjutant
     private def compile_index(node : Index) : Nil
       compile_node(node.target)
       compile_node(node.index)
+      node.length.try { |length| compile_node(length) }
       op = node.safe? ? Op::SafeIndex : Op::GetIndex
-      @chunk.emit(op, node.line)
+      @chunk.emit(op, node.line, a: index_arg_count(node.length))
     end
 
     private def compile_index_assign(node : IndexAssign) : Nil
       compile_node(node.target)
       compile_node(node.index)
+      node.length.try { |length| compile_node(length) }
       compile_node(node.value)
-      @chunk.emit(Op::SetIndex, node.line)
+      @chunk.emit(Op::SetIndex, node.line, a: index_arg_count(node.length))
+    end
+
+    # An index instruction's `a`: how many index arguments were
+    # pushed, 2 for `[index, length]`, else 1.
+    private def index_arg_count(length : Node?) : UInt8
+      length ? 2_u8 : 1_u8
     end
 
     # `recv.attr = value` calls the setter `attr=`. The receiver is

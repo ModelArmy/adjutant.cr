@@ -457,6 +457,53 @@ module Adjutant
               "a default (`name = value`) or a splat (`*rest`) if it should " \
               "accept fewer or more."
       ),
+      "R047" => Entry.new(
+        code: "R047",
+        summary: "undefined method `{method}` for {target}",
+        why: "{target} has no `{method}` method. Indexing (`x[i]`) and " \
+             "index assignment (`x[i] = v`) call `[]` and `[]=`, which " \
+             "Arrays, Hashes and Strings have, and nil doesn't.",
+        help: "Check the receiver isn't nil before indexing it, or call " \
+              "a method it has."
+      ),
+      "R048" => Entry.new(
+        code: "R048",
+        summary: "no implicit conversion {conversion}",
+        why: "An Array or String index must be an Integer (a Float is " \
+             "truncated) or a Range, and a length an Integer.",
+        help: "Convert the index first, e.g. `a[i.to_i]`, or look the " \
+              "value up in a Hash instead."
+      ),
+      "R049" => Entry.new(
+        code: "R049",
+        summary: "index {index} too small for array; minimum: {minimum}",
+        why: "A negative index counts from the end, and this one reaches " \
+             "before the first element, so there is nothing to assign to.",
+        help: "Use an index from {minimum} upwards, or `unshift` to add " \
+              "at the front."
+      ),
+      "R050" => Entry.new(
+        code: "R050",
+        summary: "negative length ({length})",
+        why: "`a[start, length] = value` replaces `length` elements, and " \
+             "a count can't be negative.",
+        help: "Pass a length of 0 or more; 0 inserts without replacing."
+      ),
+      "R051" => Entry.new(
+        code: "R051",
+        summary: "{range} out of range",
+        why: "`a[range] = value` replaces the elements the Range covers, " \
+             "and this Range starts before the first element.",
+        help: "Start the Range at an index from -{size} upwards."
+      ),
+      "R052" => Entry.new(
+        code: "R052",
+        summary: "can't modify frozen String: {value}",
+        why: "Adjutant's Strings are frozen, as Ruby's are under " \
+             "`# frozen_string_literal: true`: a change in place would " \
+             "not reach other references to the same String.",
+        help: "Build a new String instead, e.g. `s = \"x\" + s[1..]`."
+      ),
 
       # --- L: limits reached ----------------------------------------
       #

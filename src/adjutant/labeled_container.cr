@@ -90,6 +90,15 @@ module Adjutant
       @items.dup
     end
 
+    # Replaces `count` items from `start` with `replacement`, first
+    # padding with nil up to `start`, as Ruby's `a[start, count] = x`.
+    def splice(start : Int32, count : Int32, replacement : Array(Value)) : Nil
+      while @items.size < start
+        @items << Value.nil_value
+      end
+      @items[start, count] = replacement
+    end
+
     # Ruby's `eql?`: structural, by `ContainerWalk.equal?`, with
     # `Value#==` for everything else. `Hash(Value, Value)` matches keys
     # with it.

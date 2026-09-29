@@ -475,31 +475,6 @@ module Adjutant
       end
     end
 
-    # `String#[range]`, by Ruby's rules for Integer bounds: negative
-    # bounds count from the end, a start past the end gives nil, a
-    # start at the end gives "", and a late end is clamped. Returns nil
-    # for any other bound, including a missing one (`s[1..]`).
-    private def exec_get_index_string_range(target : Value, range : Value) : Value
-      obj = range.as_robject
-      lo_val = obj.ivars[@symbols.intern("__min").value]
-      hi_val = obj.ivars[@symbols.intern("__max").value]
-      exclusive = obj.ivars[@symbols.intern("__exclusive").value].as_bool
-      return Value.nil_value unless lo_val.int? && hi_val.int?
-
-      s = target.as_string
-      lo = lo_val.as_int.to_i
-      hi = hi_val.as_int.to_i
-      lo += s.size if lo < 0
-      return Value.nil_value if lo < 0 || lo > s.size
-
-      hi += s.size if hi < 0
-      hi -= 1 if exclusive
-      hi = s.size - 1 if hi >= s.size
-      return Value.string("", target.label) if hi < lo
-
-      Value.string(s[lo..hi], target.label)
-    end
-
     # Whether `recv` has `method_name`, in the order `dispatch_call`
     # resolves it, without calling it.
     private def script_responds_to?(recv : Value, method_name : String) : Bool
@@ -765,28 +740,27 @@ module Adjutant
             push(val)
 
             # --- Stack ops ------------------------------------------------------
-          when Op::GetIndex
+          when Op::GetIndex, Op::SafeIndex
+            length = inst.a == 2 ? pop : nil
             idx = pop
             target = pop
-            push(exec_get_index(target, idx, safe: false, filename: f.filename, line: inst.line))
-          when Op::SafeIndex
-            idx = pop
-            target = pop
-            push(exec_get_index(target, idx, safe: true, filename: f.filename, line: inst.line))
+            push(exec_get_index(target, idx, length, safe: inst.op.safe_index?, filename: f.filename, line: inst.line))
           when Op::SetIndex
             val = pop
+            length = inst.a == 2 ? pop : nil
             idx = pop
             target = pop
-            exec_set_index(target, idx, val)
+            exec_set_index(target, idx, length, val, f.filename, inst.line)
             @risk_flow_log.record("SetIndex", [target.label, val.label], target.label, f.line)
             push(val)
           when Op::SetIndexFromValue
-            # The stack is `[value, target, index]`: the value was
-            # pushed first, the reverse of SetIndex.
+            # The stack is `[value, target, index(, length)]`: the
+            # value was pushed first, the reverse of SetIndex.
+            length = inst.a == 2 ? pop : nil
             idx = pop
             target = pop
             val = pop
-            exec_set_index(target, idx, val)
+            exec_set_index(target, idx, length, val, f.filename, inst.line)
             @risk_flow_log.record("SetIndexFromValue", [target.label, val.label], target.label, f.line)
             push(val)
           when Op::SetAttr
@@ -2432,62 +2406,6 @@ module Adjutant
 
     # --- Index helpers ------------------------------------------------------
 
-    # ameba:disable Metrics/CyclomaticComplexity
-    private def exec_get_index(target : Value, idx : Value, safe : Bool,
-                               filename : String, line : Int32) : Value
-      return Value.nil_value if safe && target.null?
-      case
-      when target.array? && idx.int?
-        i = idx.as_int
-        arr = target.as_array
-        i = arr.size + i if i < 0
-        (i >= 0 && i < arr.size) ? arr[i] : Value.nil_value
-      when target.hash?
-        target.as_hash[idx]? || Value.nil_value
-      when target.string? && idx.int?
-        i = idx.as_int.to_i
-        s = target.as_string
-        i = s.size + i if i < 0
-        (i >= 0 && i < s.size) ? Value.string(s[i].to_s, target.label) : Value.nil_value
-      when target.string? && range_receiver?(idx)
-        exec_get_index_string_range(target, idx)
-      else
-        exec_get_index_fallback(target, idx, filename, line)
-      end
-    end
-
-    # Indexing anything but an Array, Hash or String: an object's
-    # native `[]` is called. Anything else, including an object
-    # without a native `[]`, gives nil. A script-defined `[]` would
-    # push a frame this synchronous path can't wait for; U017 makes
-    # one impossible to write.
-    private def exec_get_index_fallback(target : Value, idx : Value,
-                                        filename : String, line : Int32) : Value
-      return Value.nil_value unless obj = target.as_robject?
-      sym_id = @symbols.lookup("[]").try(&.value)
-      return Value.nil_value unless sym_id
-      native = obj.rclass.find_native_method(sym_id)
-      return Value.nil_value unless native
-      call_native(native, [target, idx], filename, line, nil, "#{obj.rclass.name}#[]", has_receiver: true)
-    end
-
-    private def exec_set_index(target : Value, idx : Value, val : Value) : Nil
-      case
-      when target.array? && idx.int?
-        i = idx.as_int.to_i
-        arr = target.as_array
-        i = arr.size + i if i < 0
-        if i >= 0 && i < arr.size
-          arr[i] = val
-          arr.label = RiskFlowLabel.join(arr.label, val.label)
-        end
-      when target.hash?
-        h = target.as_hash
-        h[idx] = val
-        h.label = RiskFlowLabel.join(h.label, val.label)
-      end
-    end
-
     private def exec_binary(inst : Instruction, &block : Value, Value -> Value) : Nil
       b = pop
       a = pop
@@ -2770,3 +2688,5 @@ module Adjutant
     end
   end
 end
+
+require "./vm_indexing"

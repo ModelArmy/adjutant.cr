@@ -29,10 +29,10 @@ module Adjutant
     GetGlobalConstant # push globals[constants[c].as_sym.name] directly, no lexical walk — leading `::X`; raises if not found
 
     # Indexing
-    GetIndex          # pop index, pop target → push target[index]
+    GetIndex          # a=2: pop length; pop index, pop target → push target[index(, length)]
     SafeIndex         # like GetIndex but nil-safe
-    SetIndex          # pop value, pop index, pop target → target[index] = value
-    SetIndexFromValue # pop index, pop target, pop value → target[index] = value (OpAssign/CondAssign/MultiAssign's Index-target path; see emit_store's own comment for why this needs a different pop order from SetIndex)
+    SetIndex          # pop value; a=2: pop length; pop index, pop target → target[index(, length)] = value
+    SetIndexFromValue # a=2: pop length; pop index, pop target, pop value → target[index(, length)] = value (OpAssign/CondAssign/MultiAssign's Index-target path; see emit_store's own comment for why this needs a different pop order from SetIndex)
     SetAttr           # pop value, pop receiver → receiver.name=(value) (real method call); push value
 
     # Calls
