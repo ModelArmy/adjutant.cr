@@ -19,6 +19,10 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
+      - name: Force apt update (Linux only)
+        if: ${{ runner.os == 'Linux' }}
+        run: sudo -n apt-get update
+
       - name: Checkout code
         uses: actions/checkout@v6
 
