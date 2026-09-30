@@ -29,6 +29,7 @@ What is different, in order of importance:
 - `` `grep ...` ``, `system` → `Legate.grep(pattern, paths)`; nothing runs processes
 - `rand`, `Time.now` → `Legate.random`, `Legate.now`
 - `arr.each_with_index { |x, i| }` → `arr.each { |x| ...; i += 1 }` with `i = 0` before
+- `arr.each_slice(2).to_a`, `arr.map.with_index`, any iterator called without a block → Pass the block; there is no Enumerator
 - `arr.sum` → `arr.inject(0) { |acc, x| acc + x }`
 - `arr.inject(:+)` → `arr.inject(0) { |acc, x| acc + x }`; `inject` needs a block
 - `arr.max_by { ... }`, `min_by` → `arr.sort_by { ... }.last`, `.first`
