@@ -18,9 +18,11 @@ module Adjutant
     # The full source text, kept for diagnostic rendering.
     getter source : String
 
-    # Reads `io` into memory, since scanning needs random access.
+    # Reads `io` into memory, since scanning needs random access. A
+    # CRLF line ending reads as LF, as Ruby reads source, so a script
+    # saved on Windows has the same strings and heredocs.
     def initialize(io : IO, filename : String = "<input>")
-      @source = io.gets_to_end
+      @source = io.gets_to_end.gsub("\r\n", "\n")
       @filename = filename
       @pos = 0
       @line = 1
