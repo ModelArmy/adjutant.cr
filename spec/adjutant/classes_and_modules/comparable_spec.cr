@@ -1,12 +1,12 @@
 require "../../spec_helper"
 
 module Adjutant
-  # A class `V` holding `n` and comparing by it; with `comparable`, it
-  # includes Comparable.
-  private def self.comparable_class(comparable : Bool) : String
+  # A class `V` holding `n` and comparing by it, with `mixin` as the
+  # first line of its body (`include Comparable`, or nothing).
+  private def self.comparable_class(mixin : String) : String
     <<-RUBY
       class V
-        #{comparable ? "include Comparable" : ""}
+        #{mixin}
         attr_reader :n
         def initialize(n)
           @n = n
@@ -34,8 +34,7 @@ module Adjutant
   end
 
   describe "Comparable" do
-    with_it = comparable_class(true)
-    without_it = comparable_class(false)
+    with_it = comparable_class("include Comparable")
 
     it "derives == and the ordering operators from <=> for a class that includes it" do
       comparable_outcome(with_it, "V.new(1) == V.new(1)").should eq "true"
@@ -54,7 +53,7 @@ module Adjutant
     end
 
     it "compares through a module that includes it" do
-      setup = "module Ordered\n  include Comparable\nend\n" + comparable_class(false).sub("class V\n", "class V\n  include Ordered\n")
+      setup = "module Ordered\n  include Comparable\nend\n" + comparable_class("include Ordered")
       comparable_outcome(setup, "V.new(1) < V.new(2)").should eq "true"
     end
 
@@ -70,7 +69,7 @@ module Adjutant
   end
 
   describe "a class with <=> that doesn't include Comparable" do
-    without_it = comparable_class(false)
+    without_it = comparable_class("")
 
     it "has identity ==, as every object does" do
       comparable_outcome(without_it, "V.new(1) == V.new(1)").should eq "false"

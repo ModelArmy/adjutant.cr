@@ -40,6 +40,13 @@ module Adjutant
     end
   end
 
+  describe "CRLF line endings" do
+    it "read as LF, as Ruby reads source" do
+      eval("x = \"a\r\nb\"\r\nx").as_string.should eq "a\nb"
+      eval("s = <<~A\r\n  x\r\nA\r\ns").as_string.should eq "x\n"
+    end
+  end
+
   describe "heredocs" do
     it "reads two openers on one line, bodies in order" do
       eval(<<-'RUBY').as_string.should eq "x\ny2\n"
