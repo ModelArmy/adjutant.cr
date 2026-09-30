@@ -25,6 +25,15 @@ configuration.
 Where an entry lists two remedies, rejecting the construct is always
 acceptable, since it restores the subset.
 
+- **A paren-less call takes `and` and `or` into its last argument.**
+  Found in the Will Fix review. `parse_call_arg` parses each argument
+  with `parse_expression(0)`, so `save x or raise "failed"` is
+  `save(x or raise "failed")`, where Ruby reads `(save x) or raise
+  "failed"`: the raise then never runs when `x` is truthy, whatever
+  `save` returns. The fix is `PREC_AND_OR` there, as assignment's
+  right-hand side already uses; inside parentheses that makes
+  `f(a or b)` a parse error, which is Ruby's answer too.
+
 - **A risk-flow rule can't name the sink's subject.** `RiskFlowRule`
   (`risk_flow_policy.cr`) is keyed on `(Authority, Sensitivity)`, so a
   policy can say "High data must not reach `Net`" but not "this API
@@ -224,6 +233,12 @@ wins.
   `(*args, **kwargs, &blk)`, not a separate mechanism; worth
   implementing together or `...` shortly after, not as an independent
   design question.
+- **An operator Symbol right after `:` in a ternary lexes as a Symbol.**
+  The lexer reads `:+`, `:<=>` and the other operator Symbols wherever
+  an expression can start, so `x ? a :-1` lexes `:-` as a Symbol and
+  fails to parse. Ruby reads it as a ternary. Spacing it as
+  `x ? a : -1` works. The fix is tracking an open `?` in the lexer.
+
 - **`raise`/`super` don't get the same space-before-`(` fix
   `parse_identifier_or_call` got.** Flagged 2026-07-26 while fixing
   `eq (6/3), 2` (see `DEVELOPMENT.md`'s Parser section) — `parse_raise`
@@ -241,12 +256,6 @@ wins.
   identifier immediately before a construct's own `do`) was flagged as
   likely present in `parse_until`/anywhere else accepting an optional
   trailing `do` — not verified beyond `while`/`for`.
-
-Symbol-shorthand hash literal syntax (`{k: v}`) — same underlying gap
-as originally filed here — was promoted to `Must Fix` 2026-08-05 and
-shipped 2026-08-08 (`Parser#parse_hash_key`/`#label_follows?`,
-parser.cr). See DEVELOPMENT.md's hash-literal note for the final
-shape.
 
 ### Verified only up to compile time, never actually run
 
@@ -294,7 +303,8 @@ because nothing had ever run it.
   drop their nil handling. `InternalError.new(message)` is still used
   and stays.
 
-- **U008, U009, U012–U015 and U021 are decided but not enforced.**
+- **U008, U009, U012–U014, U015's `undef` and U021 are decided but
+  not enforced.**
   See `UNSUPPORTED.md` for each. Using one falls through to a generic
   undefined-name, undefined-method or parse error that doesn't name
   the construct, the failure shape `UNSUPPORTED.md`'s second principle
@@ -359,57 +369,22 @@ Quality-of-diagnostic gaps in the `Diagnostic`/`ErrorCatalog` system
 
 ### Object model
 
-- **Bracket indexing (`obj[i]`) on a custom/native-backed `RubyObject`
-  now calls a NATIVE `[]` method for real — fixed 2026-08-14 — but a
-  SCRIPT-DEFINED `[]` still can't be reached via `obj[i]` bracket
-  syntax at all.** Found while wiring up `MatchData#[]`
-  (`builtins/regexp.cr`): `exec_get_index`/`Op::GetIndex` was a fixed
-  case statement covering only Array/Hash/String, with everything
-  else falling straight to a silent `Value.nil_value` — a real
-  silent-wrong-answer bug (the exact category worth staying alert
-  for), not a raised error: `MatchData#[]` was registered correctly
-  and simply never reached, no matter what it returned. Fixed via
-  `exec_get_index_fallback` (`vm.cr`), which now calls a receiver's
-  own native `[]` method via `call_native`, the same synchronous path
-  `dispatch_call`'s ordinary receiver branch already uses for `.foo`
-  calls.
-  **Deliberately still open:** a SCRIPT-defined `[]` (`find_method`,
-  not `find_native_method`) still isn't handled — `call_script_proc`
-  pushes a new VM frame and relies on the normal `Op::Call`/`Op::Ret`
-  dispatch loop to resume and deliver the result later, which
-  `exec_get_index_fallback` (called synchronously from inside a
-  single opcode's handler) has no mechanism to wait for. Low practical
-  urgency today: `def [](i)` can't even be WRITTEN in script yet
-  either way (see `UNSUPPORTED.md`'s U017 note — no combined `[]`
-  lexer token, so `parse_def` trips on the stray `]` first) — so only
-  native `[]` methods exist to reach at all right now, and this fix
-  already covers every one of those. Worth a real fix (likely
-  restructuring `Op::GetIndex` to push a frame and let the normal
-  dispatch loop resume it, same shape as any other deferred script
-  call) once/if `[]` becomes script-definable.
-  `Op::SetIndex`/`exec_set_index` (the `obj[i] = v` write side) has
-  the exact same shape of gap and was NOT touched by this fix — flagged
-  here rather than silently assumed fixed alongside the read side.
+- **Indexing can't reach a script-defined `[]` or `[]=`.**
+  `vm_indexing.cr` calls an object's native `[]` and `[]=`, and a
+  Proc's `call`, synchronously from inside the index opcodes. A script
+  method would need a frame pushed and the dispatch loop to resume it,
+  which those opcodes can't do. Nothing needs it today: a script can't
+  define `[]` or `[]=` at all (U017). If that changes, the index
+  opcodes need to dispatch through the ordinary call path.
 
-- **`Op::Mul` (and `%`) still doesn't dispatch to a `RubyObject`'s
-  own `*` — only `+`/`-`/`/` do now.** Added 2026-08-23 alongside a
-  real `Time` builtin (`builtins/time.cr`) that needed `t + 60`/
-  `t - 60` to work via ordinary infix syntax: `VM#exec_add`/`#exec_sub`
-  (`vm.cr`) check whether the LEFT operand is a `RubyObject` with its
-  own `+`/`-` (native or script) before falling through to
-  `ValueOps`'s base-type handling — the same "left receiver's method
-  wins when it has one" shape `<=>`-derived `<`/`<=`/`>`/`>=`/`==`
-  already established. Widened same-day to `/` too (`VM#exec_div`) —
-  `Legate::Path#/` (`legate/path.cr`, LEGATE.md §5.1) needed real
-  infix `/` to work the moment Path's own spec was implemented, not
-  just theoretically anticipated the way `*`/`%` still are.
-  DEVELOPMENT.md's own "Some operators are overloaded across base
-  types" section originally anticipated this whole gap for `-`/`*`/
-  `/` and explicitly said to close each "if [something] does" need
-  it; `Time` was that something for `+`/`-`, `Legate::Path` for `/`.
-  `*`/`%` remain untouched — nothing needs them yet either — so this
-  stays Will Fix rather than Must Fix; promote if a future type needs
-  one.
+- **`*`, `%` and the bitwise operators don't dispatch to an object's
+  own method.** `exec_add`, `exec_sub` and `exec_div` (`vm.cr`) call a
+  left-hand object's own `+`, `-` or `/` (Time uses the first two,
+  `Legate::Path` the third); `Op::Mul`, `Op::Mod`, `Op::BitAnd` and
+  the rest go straight to `ValueOps`. No builtin or Legate class
+  defines one of those, and a script can't (U017), so today an object
+  gets NoMethodError from `operator_defined?`. A native class that
+  defines one would get a TypeError instead of its method.
 
 - **No `Numeric` ancestor class in the `RubyClass` hierarchy, so
   `5.is_a?(Numeric)` fails rather than returning `true`.** Long-
@@ -498,13 +473,12 @@ section).
   alias, since an LLM reaching for `#count` is at least as likely to
   want the filtered form.
 
-- **A TypeError from a binary operator renders nil as nothing at
-  all.** Found in the same round: a model's `counts[word] + 1` on a
-  missing key reported `cannot add  and 1`, because `ValueOps` builds
-  the message with `#{a}` and `Value#to_s` of nil is the empty string.
-  The gap in the message is where the answer is. `#{a.inspect}` gives
-  `cannot add nil and 1`; R013's data already uses `inspect` for
-  exactly this reason.
+- **A TypeError from a binary operator renders a nil right-hand side as
+  nothing.** `ValueOps` builds its messages with `#{a}` and `#{b}`, and
+  `Value#to_s` of nil is the empty string, so `1 + nil` reports
+  `cannot add 1 and `. The gap is where the answer is. `inspect` gives
+  `cannot add 1 and nil`. (A nil left-hand side now raises
+  NoMethodError before `ValueOps` runs.)
 
 - **`Integer`/`Float` are both missing `#divmod`.** Found 2026-08-13
   triaging `spec/scripts/mruby/float.rb`'s commented-out `Float#divmod`
@@ -538,31 +512,6 @@ section).
   so this is narrowly about `*` specifically. Noticed while bootstrapping
   the `String` builtin class (Phase 4a of base types); out of scope there
   since that work only wires up native METHODS, not opcodes.
-
-- **`dup`/`clone` on a builtin-kind receiver** (Integer, String, Array,
-  Hash, Symbol, true/false/nil, ...) raise `NoMethodError` rather than
-  copying. Found 2026-08-08 landing `dup`/`clone` for RubyObject
-  receivers (`exec_builtin`'s new `"dup", "clone"` case, vm.cr) — a
-  RubyObject copy is a clean shallow-`ivars`-copy question, but a
-  builtin receiver isn't: real Ruby returns the receiver itself for a
-  true immediate (Integer, Symbol, true/false/nil) but an independent
-  copy for String/Array/Hash, and Adjutant's `Value` model can't yet
-  tell two separately-boxed instances of the same collection apart at
-  all — the exact identity gap the entry above and `equal?`'s own
-  comment (vm.cr's `exec_builtin`) already document. Matching only the
-  immediate half of that split would be actively wrong for the other
-  half, so both were left raising rather than half-implemented.
-  Depends on (or at least belongs right alongside) resolving that
-  underlying content-vs-reference identity question, not a fix of its
-  own.
-
-
-
-
-Carried forward from the original 2026-07-14 handoff — the oldest items,
-undesigned rather than merely unimplemented, more product-shaped than
-bug-shaped. Worth a dedicated design pass rather than picking off
-individually.
 
 - **No structured audit-trail export beyond `RiskFlowLog` itself.**
   Nothing turns a `RiskFlowLog` into a saved/replayable session record.
@@ -897,28 +846,6 @@ individually.
   verb signatures) rather than hand-authoring a parallel prose doc, so
   the two can't silently drift apart.
 
-- **`Legate::Exit` — DECIDED 2026-09-10: removed entirely.** Found
-  2026-09-05, while removing `Legate.run`'s scaffolding (§4 step 1),
-  as an open question between two options: retire the whole type
-  alongside `run` (no producer, and won't be while exec stays out of
-  scope), or leave it as a plain, producer-less record shape against
-  the chance a future non-process source wants the same
-  `code`/`out`/`err`/`duration` shape. Settled on the former — if
-  something ever needs that shape again, it can be rebuilt with full
-  context for whatever it's actually serving, rather than kept alive
-  now on the chance it might be useful later. `raise!` had already
-  been removed (its only exception class, `Legate::NonZeroExit`, was
-  scaffolding for `run`); the rest
-  (`code`/`ok?`/`out`/`err`/`truncated?`/`duration`) is now gone too
-  — `legate/exit.cr` deleted, its bootstrap call and `require`
-  removed from `interpreter.cr`/`legate.cr`, LEGATE.md's §5.6, its
-  §3 type-index row and diagram node, and its §11 counts (value
-  types 6→5, methods ~47→~41) all updated to match. The Exit-specific
-  IFC-labeling test in `risk_flow_propagation_spec.cr` was removed
-  rather than adapted — Entry/Match/Response already exercise the
-  identical selective-labeling pattern, so no real coverage was lost,
-  just a redundant fourth instance of it.
-
 - **`Legate.log` is `Legate.log(message, fields = {})`, not the
   spec'd `Legate.log(message, **fields)`.** Built 2026-09-08 (§4 step
   2). Adjutant's native-call dispatch has no wildcard-kwarg mechanism
@@ -992,74 +919,10 @@ individually.
   this file doesn't own, and the call-time lookup sidesteps the
   problem entirely for a fraction of the risk. Also: `Legate.now`'s
   "frozen" is aspirational, same as `Legate::Response`'s own
-  documented "frozen" claim (`legate/response.cr`) — Adjutant has no
-  real `freeze`/`frozen?` mechanism at all (`vm.cr`'s `dup`/`clone`
-  comment says the same); a script can still mutate the returned
-  value via `#utc`/`#gmtime`/`#localtime`. Not specific to this verb,
+  documented "frozen" claim (`legate/response.cr`) — Adjutant freezes
+  only Strings, and has no `freeze`/`frozen?`; a script can still
+  mutate the returned value via `#utc`/`#gmtime`/`#localtime`. Not specific to this verb,
   just newly relevant to it.
-
-- **`Legate::Broker`'s default `log:` printed to STDOUT for every
-  `Legate.log` call, in direct contradiction of what shipped
-  documenting it.** Found 2026-09-10, via a real `ops test` run —
-  not a code review, an actual observed symptom (`ambient_basics.rb`/
-  `ambient_edge_cases.rb`'s own `Legate.log` calls printing during
-  the test run). The broker's default was `::Log.for("adjutant.
-  legate")`, and every comment/spec-text describing it (`broker.cr`,
-  LEGATE.md §4.7) confidently asserted this was a silent no-op,
-  "matching Crystal's own 'unconfigured sources emit nothing'
-  default." That default doesn't exist — checked properly this time:
-  Crystal's stdlib docs state plainly, and have since at least
-  0.35.1, that "by default entries from all sources with Info and
-  above severity will be logged to STDOUT using the Log::IOBackend."
-  `::Log.for(name)` binds to `Log.builder`, the process's ONE shared
-  global builder, so ANY unrelated code anywhere in the same process
-  calling (or not calling) `Log.setup` affects every Adjutant
-  embedding's `Legate.log` output too — the opposite of the isolation
-  the whole design was supposed to provide. Fixed by binding the
-  default to `Legate::Broker::DEFAULT_LOG`, a private `Log::Builder`
-  with no bindings at all, genuinely independent of the rest of the
-  process. Regression spec added (`broker_spec.cr`, `"#log
-  default"`) checking the builder identity directly, since capturing
-  real STDOUT output reliably in a spec is its own source of
-  flakiness this fix doesn't need to take on.
-
-  **Addendum, same day: the first fix was itself incomplete.** The
-  new regression spec caught it immediately — `Interpreter.new` with
-  no `log:` failed to match `DEFAULT_LOG`. `Legate::Broker#initialize`
-  was fixed, but `Interpreter#initialize` and `spec_helper.cr`'s
-  `make_interp` each carried their OWN independent copy of the same
-  `log : ::Log = ::Log.for("adjutant.legate")` default expression,
-  written separately when `log:` was first threaded through each
-  layer (step 2, `scratch`/`log`/`fail`). Since both always pass
-  `log:` through EXPLICITLY to the layer below, their own stale
-  default silently overrode the fix for any caller that doesn't pass
-  `log:` itself — which includes `test_runner.cr`, meaning the actual
-  script-test suites (`ambient_basics.rb`/`ambient_edge_cases.rb`)
-  were probably STILL printing to STDOUT even after the first "fix"
-  shipped. Both now reference `Legate::Broker::DEFAULT_LOG` directly
-  rather than re-deriving their own copy — the actual lesson here
-  isn't "remember every call site," it's that a default value worth
-  getting right belongs in exactly ONE place, referenced everywhere
-  else, precisely so a fix like this one can't fail to propagate.
-
-  Worth being blunt about: this is the same failure mode as the
-  `retry` entry above (a confident, specific, wrong claim about
-  runtime behavior, shipped and repeated across multiple files) and
-  the `SCOPE.md` citation error in that same entry — except this one
-  was caught by the person running the tests, not by re-reading the
-  code. All three came from the same root cause: asserting how a
-  Crystal stdlib API behaves from confident recollection rather than
-  checking, in a codebase whose own stated practice — see this file's
-  own repeated "not independently verified against a live toolchain"
-  flags elsewhere — exists specifically to catch this. The `Log`
-  module in particular has now produced three separate mistakes this
-  session (the `Hash` vs `NamedTuple`/Symbol-key question in
-  `log.cr`'s `emit` call, this default, and almost a fourth just now
-  in scoping this very regression spec) — worth treating any future
-  claim about `Log`'s behavior as unverified until checked against
-  the actual docs or a real run, not just this one.
-
-### Tooling
 
 - **`Compiler::OVERLOADABLE_OPERATOR_NAMES` names the opposite of
   what it holds.** It lists the operator method names a script may
@@ -1073,30 +936,6 @@ individually.
   28 references in `src/` and `spec/` still use them. For the
   code-cleanup phase: rename the references to the core names and
   delete the three files.
-
-- **Eleven ameba rule classes were excluded per-file rather than
-  fixed.** Added 2026-09-01, when the `Effect` rename forced an ameba
-  bump from 1.6.4 to 1.7.0 and the new version reported warnings
-  across a large part of `src/`. Deferred until after the `add-legate`
-  merge so the warnings would not have to be fixed twice, over two
-  partly-overlapping sets of files.
-
-  **Cleared 2026-09-02.** `.ameba.yml` now carries no exclusions at
-  all. Of the eighteen warnings that survived `--fix`: eight
-  `Lint/ElseNil` and six stale `Lint/UnneededDisableDirective` were
-  mechanical; `Lint/UselessAssign` and `Lint/VoidOutsideLib` were one
-  each; and three `Metrics/CyclomaticComplexity` were real. Two of
-  those three were split into genuinely separate methods
-  (`NetRule.parse` into its two accepted spellings,
-  `RiskWalker#walk_super_target` into its singleton and instance
-  branches) rather than silenced. The third, `bootstrap_regexp`, took
-  an inline `ameba:disable` with a stated reason, matching the
-  convention `range.cr` and `helpers.cr` already use: its branch count
-  comes from how many methods `Regexp` has, not from tangled logic.
-
-  Keep the file empty. A per-file exclusion turns a rule off for code
-  nobody has looked at yet, including code written later — which is
-  how the 1.7.0 warnings reached eighteen files in the first place.
 
 ## Deliberate non-goals
 
