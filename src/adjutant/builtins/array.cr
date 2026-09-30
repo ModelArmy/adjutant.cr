@@ -4,10 +4,6 @@ require "../risk_profile"
 require "./helpers"
 
 module Adjutant::Builtins
-  # Builds the `Array` class and its native methods. `+`, `<<`, `==`,
-  # `[]` and `[]=` are opcodes (ValueOps, `values_equal?`, GetIndex and
-  # SetIndex), not methods.
-  # ameba:disable Metrics/CyclomaticComplexity - one `define` call per native method, each a flat independent case; count comes from many methods, not tangled branching
   # `reduce` and `inject`, as Ruby's: with a block, a fold from the
   # initial value or else the first element; with a Symbol instead of
   # a block, a fold that calls that method (`reduce(:+)`,
@@ -56,6 +52,10 @@ module Adjutant::Builtins
     seen.delete(arr.object_id)
   end
 
+  # Builds the `Array` class and its native methods. `+`, `<<`, `==`,
+  # `[]` and `[]=` are opcodes (ValueOps, `values_equal?`, GetIndex and
+  # SetIndex), not methods.
+  # ameba:disable Metrics/CyclomaticComplexity - one `define` call per native method, each a flat independent case; count comes from many methods, not tangled branching
   def self.bootstrap_array(interp : Adjutant::Interpreter) : Adjutant::RubyClass
     cls = Adjutant::RubyClass.new("Array")
 

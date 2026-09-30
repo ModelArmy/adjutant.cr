@@ -33,7 +33,7 @@ module Adjutant::Builtins
   private def self.initialize_by_script(interp : Interpreter, cls : RubyClass, args : Array(Value),
                                         ncc : NativeCallContext) : Value?
     sym = interp.symbols.lookup("initialize")
-    method = sym.try { |s| cls.find_method(s.value) }
+    method = sym.try { |initialize_sym| cls.find_method(initialize_sym.value) }
     return unless method
     inst = Value.robject(RubyObject.new(cls))
     ncc.invoke_method(method, args[1..], inst)

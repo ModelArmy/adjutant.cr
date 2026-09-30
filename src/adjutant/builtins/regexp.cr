@@ -110,20 +110,20 @@ module Adjutant
       String.build do |io|
         escaped = false
         in_class = false
-        pattern.each_char_with_index do |c, i|
+        pattern.each_char_with_index do |char, index|
           if escaped
             escaped = false
-          elsif c == '\\'
+          elsif char == '\\'
             escaped = true
-          elsif c == '['
+          elsif char == '['
             in_class = true
-          elsif c == ']'
+          elsif char == ']'
             in_class = false
-          elsif c == '(' && !in_class && pattern[i + 1]? != '?' && pattern[i + 1]? != '*'
+          elsif char == '(' && !in_class && pattern[index + 1]? != '?' && pattern[index + 1]? != '*'
             io << "(?:"
             next
           end
-          io << c
+          io << char
         end
       end
     end

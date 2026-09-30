@@ -512,7 +512,7 @@ module Adjutant
     # NoMethodError.
     private def copy_value(recv : Value, method : String, filename : String, line : Int32) : Value?
       if obj = recv.as_robject?
-        return nil if obj.rclass == builtin_class_by_name("Proc")
+        return if obj.rclass == builtin_class_by_name("Proc")
         copy = obj.shallow_copy
         unless copy
           raise runtime_diagnostic(
@@ -2148,7 +2148,7 @@ module Adjutant
         msg = if args.empty?
                 cls = builtin_class_by_name("RuntimeError")
                 "unhandled exception"
-              elsif (script_cls = args.first.as_rclass?) && script_cls.ancestors.any? { |c| c.name == "Exception" } &&
+              elsif (script_cls = args.first.as_rclass?) && script_cls.ancestors.any? { |ancestor| ancestor.name == "Exception" } &&
                     (init = script_initialize(script_cls))
                 # `raise Oops, arg` for a class with a script
                 # `initialize`: built with `new(arg)`, as Ruby's
@@ -2226,7 +2226,7 @@ module Adjutant
       when "==", "!=", "==="
         # The dot-call forms of the operators, `a.==(b)`. Without a
         # receiver, a bare `==` isn't a call.
-        return nil unless has_receiver
+        return unless has_receiver
         recv = args.first
         other = args[1]
         result = case name
@@ -2510,32 +2510,32 @@ module Adjutant
 
     COMPARISONS = {"<", "<=", ">", ">=", "<=>"}
 
-    # The operators each builtin type has as methods in Ruby.
-    INTEGER_OPERATORS = Set{"+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>", "<", "<=", ">", ">=", "<=>"}
-    FLOAT_OPERATORS   = Set{"+", "-", "*", "/", "%", "<", "<=", ">", ">=", "<=>"}
-    STRING_OPERATORS  = Set{"+", "*", "%", "<<", "<", "<=", ">", ">=", "<=>"}
-    ARRAY_OPERATORS   = Set{"+", "-", "*", "&", "|", "<<", "<=>"}
-    HASH_OPERATORS    = Set{"<", "<=", ">", ">="}
-    SYMBOL_OPERATORS  = Set{"<", "<=", ">", ">=", "<=>"}
+    # The operators each builtin type has as methods in Ruby, by its
+    # class name (`Builtins.builtin_type_name`).
     LOGIC_OPERATORS   = Set{"&", "|", "^"}
+    BUILTIN_OPERATORS = {
+      "Integer"    => Set{"+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>", "<", "<=", ">", ">=", "<=>"},
+      "Float"      => Set{"+", "-", "*", "/", "%", "<", "<=", ">", ">=", "<=>"},
+      "String"     => Set{"+", "*", "%", "<<", "<", "<=", ">", ">=", "<=>"},
+      "Array"      => Set{"+", "-", "*", "&", "|", "<<", "<=>"},
+      "Hash"       => Set{"<", "<=", ">", ">="},
+      "Symbol"     => Set{"<", "<=", ">", ">=", "<=>"},
+      "NilClass"   => LOGIC_OPERATORS,
+      "TrueClass"  => LOGIC_OPERATORS,
+      "FalseClass" => LOGIC_OPERATORS,
+    }
 
     # Whether `v` has the operator `name` as a method, as Ruby decides
     # between NoMethodError (`nil + 1`) and the receiver's own error
     # (`"a" + 1`). An object has it if its class defines it, or for a
     # comparison, `<=>`; a class is left to the operation itself.
     private def operator_defined?(v : Value, name : String) : Bool
-      case
-      when v.robject?
+      if v.robject?
         script_responds_to?(v, name) || (COMPARISONS.includes?(name) && script_responds_to?(v, "<=>"))
-      when v.rclass?          then true
-      when v.int?             then INTEGER_OPERATORS.includes?(name)
-      when v.float?           then FLOAT_OPERATORS.includes?(name)
-      when v.string?          then STRING_OPERATORS.includes?(name)
-      when v.array?           then ARRAY_OPERATORS.includes?(name)
-      when v.hash?            then HASH_OPERATORS.includes?(name)
-      when v.symbol?          then SYMBOL_OPERATORS.includes?(name)
-      when v.null? || v.bool? then LOGIC_OPERATORS.includes?(name)
-      else                         false
+      elsif v.rclass?
+        true
+      else
+        !!BUILTIN_OPERATORS[Builtins.builtin_type_name(v)]?.try(&.includes?(name))
       end
     end
 

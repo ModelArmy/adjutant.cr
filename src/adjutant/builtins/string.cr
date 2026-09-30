@@ -5,10 +5,6 @@ require "./helpers"
 require "./regexp"
 
 module Adjutant::Builtins
-  # Builds the `String` class and its native methods. `+`, the
-  # comparisons and `[]` are opcodes, not methods. `*` isn't
-  # supported.
-  # ameba:disable Metrics/CyclomaticComplexity - one `define` call per native method, each a flat independent case; count comes from many methods, not tangled branching
   # Ruby's `String#split(pattern, limit)`, following `rb_str_split_m`:
   #
   #   1. No pattern, or `" "`, splits on runs of ASCII whitespace,
@@ -22,7 +18,7 @@ module Adjutant::Builtins
   #      `limit` keeps them.
   #
   # An empty string gives no fields.
-  def self.ruby_split(s : String, pattern : ::Regex | String | Nil, limit : Int32) : Array(String)
+  def self.ruby_split(s : String, pattern : (::Regex | String)?, limit : Int32) : Array(String)
     return [] of String if s.empty?
     return [s] if limit == 1
     fields = [] of String
@@ -48,22 +44,22 @@ module Adjutant::Builtins
     fin = 0
     skip = true
     count = 1
-    s.each_char_with_index do |c, i|
+    s.each_char_with_index do |char, index|
       if skip
-        if c.ascii_whitespace?
-          beg = i + 1
+        if char.ascii_whitespace?
+          beg = index + 1
         else
-          fin = i + 1
+          fin = index + 1
           skip = false
           break if limit > 0 && limit <= count
         end
-      elsif c.ascii_whitespace?
+      elsif char.ascii_whitespace?
         fields << s[beg...fin]
         skip = true
-        beg = i + 1
+        beg = index + 1
         count += 1
       else
-        fin = i + 1
+        fin = index + 1
       end
     end
     beg
@@ -100,6 +96,10 @@ module Adjutant::Builtins
     beg
   end
 
+  # Builds the `String` class and its native methods. `+`, the
+  # comparisons and `[]` are opcodes, not methods. `*` isn't
+  # supported.
+  # ameba:disable Metrics/CyclomaticComplexity - one `define` call per native method, each a flat independent case; count comes from many methods, not tangled branching
   def self.bootstrap_string(interp : Adjutant::Interpreter) : Adjutant::RubyClass
     cls = Adjutant::RubyClass.new("String")
 
