@@ -35,6 +35,21 @@ module Adjutant
       precedence_outcome("x = true ? 1 : 2\nx").should eq "1"
     end
 
+    it "keeps `and` and `or` out of a paren-less call's arguments" do
+      setup = "def save(x)\n  false\nend\nlog = []\n"
+      eval(setup + "save 1 or log.push(:fallback)\nlog.inspect").as_string.should eq "[:fallback]"
+      eval(setup + "save 1 and log.push(:after)\nlog.inspect").as_string.should eq "[]"
+    end
+
+    it "rejects `and` and `or` inside a call's parentheses, as Ruby does" do
+      expect_raises(ParseError) { Parser.new("f(a or b)", "t.rb").parse }
+      expect_raises(ParseError) { Parser.new("f(k: a and b)", "t.rb").parse }
+    end
+
+    it "still allows them in a parenthesised expression passed as an argument" do
+      eval("def f(x)\n  x\nend\nf (nil or 5)").as_int.should eq 5
+    end
+
     it "rejects chaining a non-associative operator (P008)" do
       {"1 == 1 == true", "1..2..3", "1 <=> 2 == 0"}.each do |src|
         error = expect_raises(ParseError) { Parser.new(src, "t.rb").parse }
