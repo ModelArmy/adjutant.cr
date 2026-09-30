@@ -25,15 +25,6 @@ configuration.
 Where an entry lists two remedies, rejecting the construct is always
 acceptable, since it restores the subset.
 
-- **A paren-less call takes `and` and `or` into its last argument.**
-  Found in the Will Fix review. `parse_call_arg` parses each argument
-  with `parse_expression(0)`, so `save x or raise "failed"` is
-  `save(x or raise "failed")`, where Ruby reads `(save x) or raise
-  "failed"`: the raise then never runs when `x` is truthy, whatever
-  `save` returns. The fix is `PREC_AND_OR` there, as assignment's
-  right-hand side already uses; inside parentheses that makes
-  `f(a or b)` a parse error, which is Ruby's answer too.
-
 - **A risk-flow rule can't name the sink's subject.** `RiskFlowRule`
   (`risk_flow_policy.cr`) is keyed on `(Authority, Sensitivity)`, so a
   policy can say "High data must not reach `Net`" but not "this API

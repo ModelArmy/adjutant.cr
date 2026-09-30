@@ -449,7 +449,8 @@ module Adjutant
     }
 
     # The precedence of `and` and `or`. An assignment's right-hand
-    # side, a ternary's branches and `not`'s operand stop before it.
+    # side, a call's arguments, a ternary's branches and `not`'s
+    # operand stop before it.
     PREC_AND_OR = 1
 
     # Operators Ruby doesn't associate: a second at the same level
@@ -866,14 +867,15 @@ module Adjutant
 
     # Parses one call argument into `args`, or into `kwargs` when it
     # is `name: value`. The lookahead for `:` as the second token keeps
-    # a ternary's `? a : b` out.
+    # a ternary's `? a : b` out. An argument stops before `and` and
+    # `or`, as in Ruby, so `save x or raise` is `(save x) or raise`.
     private def parse_call_arg(args : Array(Node), kwargs : Array({String, Node})) : Nil
       if at_kind?(TokenKind::Identifier) && peek_kind == TokenKind::Colon
         name = advance.lexeme
         advance # the Colon
-        kwargs << {name, parse_expression(0)}
+        kwargs << {name, parse_expression(PREC_AND_OR)}
       else
-        args << parse_expression(0)
+        args << parse_expression(PREC_AND_OR)
       end
     end
 
