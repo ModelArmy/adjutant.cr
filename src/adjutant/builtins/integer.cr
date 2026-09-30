@@ -63,9 +63,8 @@ module Adjutant::Builtins
     # block, returns self.
     define(cls, interp, "times", arity: 0) do |args, blk, ncc|
       recv = args.first
-      if blk
-        recv.as_int.times { |i| ncc.invoke(blk, [Adjutant::Value.int(i.to_i64)]) }
-      end
+      block = require_block!(blk, "Integer#times", ncc)
+      recv.as_int.times { |i| ncc.invoke(block, [Adjutant::Value.int(i.to_i64)]) }
       recv
     end
 

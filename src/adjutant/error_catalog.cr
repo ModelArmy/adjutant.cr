@@ -536,6 +536,22 @@ module Adjutant
         help: "Declare the shared methods in a `module`, or inherit from " \
               "the class instead (`class Child < Parent`)."
       ),
+      "R056" => Entry.new(
+        code: "R056",
+        summary: "recursive array join",
+        why: "`join` joins nested Arrays in place, and this Array " \
+             "contains itself, so joining it would never end.",
+        help: "Join a copy without the self-reference, or map the " \
+              "elements to Strings first."
+      ),
+      "R057" => Entry.new(
+        code: "R057",
+        summary: "undefined group name reference: {name}",
+        why: "The pattern has no group named `{name}`, so the match " \
+             "has nothing under that name.",
+        help: "Use a name the pattern declares with `(?<name>...)`, or " \
+              "the group's number."
+      ),
 
       # --- L: limits reached ----------------------------------------
       #
@@ -642,6 +658,15 @@ module Adjutant
               "break on success inside the loop, and re-raise once " \
               "the counter's used up, rather than relying on an " \
               "implicit repeat."
+      ),
+      "U022" => Entry.new(
+        code: "U022",
+        summary: "`{method}` without a block is not supported",
+        why: "Ruby returns an Enumerator here, for chaining such as " \
+             "`each_with_index.map`. Adjutant has no Enumerator (see " \
+             "UNSUPPORTED.md, U022), so the call would have nothing to " \
+             "return.",
+        help: "Pass a block: `{method} { |x| ... }`."
       ),
       "U007" => Entry.new(
         code: "U007",

@@ -46,7 +46,10 @@ module Adjutant
     # does only under its MULTILINE option, so that is always passed.
     # Ruby's `m` flag (dot matches newline) maps to DOTALL.
     def self.regex_options(adjutant_flags : Int32) : ::Regex::Options
-      opts = ::Regex::Options::MULTILINE # real Ruby's ^/$ semantics, always on
+      # Ruby's `^` and `$` match at every line, always. Crystal's
+      # `MULTILINE` also makes `.` match a newline, which Ruby's `/m`
+      # alone does, so `MULTILINE_ONLY`.
+      opts = ::Regex::Options::MULTILINE_ONLY
       opts |= ::Regex::Options::IGNORE_CASE if adjutant_flags & IGNORECASE != 0
       opts |= ::Regex::Options::DOTALL if adjutant_flags & MULTILINE != 0
       opts |= ::Regex::Options::EXTENDED if adjutant_flags & EXTENDED != 0
@@ -88,13 +91,40 @@ module Adjutant
     # caller.
     def self.compile_regex(pattern : String, adjutant_flags : Int32,
                            ctx : NativeCallContext?) : ::Regex
-      ::Regex.new(pattern, regex_options(adjutant_flags))
+      ::Regex.new(ruby_capture_pattern(pattern), regex_options(adjutant_flags))
     rescue ex : ::Exception
       reason = ex.message || "invalid pattern"
       if ctx
         ctx.raise_error("R021", {"reason" => reason}, error_class: "RegexpError")
       else
         raise ex
+      end
+    end
+
+    # `pattern` with each unnamed group made non-capturing when it also
+    # has a named one, since Ruby then captures only the named groups
+    # and PCRE2 would number both. A `(` escaped, inside a character
+    # class, or starting a `(?` or `(*` construct is left alone.
+    def self.ruby_capture_pattern(pattern : String) : String
+      return pattern unless pattern.matches?(/\(\?(<[A-Za-z_]|'|P<)/)
+      String.build do |io|
+        escaped = false
+        in_class = false
+        pattern.each_char_with_index do |c, i|
+          if escaped
+            escaped = false
+          elsif c == '\\'
+            escaped = true
+          elsif c == '['
+            in_class = true
+          elsif c == ']'
+            in_class = false
+          elsif c == '(' && !in_class && pattern[i + 1]? != '?' && pattern[i + 1]? != '*'
+            io << "(?:"
+            next
+          end
+          io << c
+        end
       end
     end
 
@@ -168,6 +198,7 @@ module Adjutant
       # returned.
       define(cls, interp, "match", arity: 1) do |args, blk, ncc|
         robj = args.first.as_robject.as(RegexpObject)
+        next Value.nil_value if args[1].null?
         str = args[1]?.try(&.as_string?)
         ncc.raise_error("R022", {"method" => "match"}, "ArgumentError") unless str
         if md = robj.regex.match(str)
@@ -184,6 +215,7 @@ module Adjutant
       # Whether it matches, without building a MatchData.
       define(cls, interp, "match?", arity: 1) do |args, _blk, ncc|
         robj = args.first.as_robject.as(RegexpObject)
+        next Value.bool(false) if args[1].null?
         str = args[1]?.try(&.as_string?)
         ncc.raise_error("R022", {"method" => "match?"}, "ArgumentError") unless str
         Value.bool(robj.regex.matches?(str))
@@ -193,6 +225,7 @@ module Adjutant
       # String (R022). Sets no `$~` or `$1` (U011).
       define(cls, interp, "=~", arity: 1) do |args, _blk, ncc|
         robj = args.first.as_robject.as(RegexpObject)
+        next Value.nil_value if args[1].null?
         str = args[1]?.try(&.as_string?)
         ncc.raise_error("R022", {"method" => "=~"}, "ArgumentError") unless str
         if md = robj.regex.match(str)
@@ -203,8 +236,8 @@ module Adjutant
         end
       end
 
-      # `===` is the TripleEq opcode, not a method, so
-      # `/re/.===(s)` is an undefined method.
+      # `===` is the TripleEq opcode; `/re/.===(s)` reaches it through
+      # `exec_builtin`.
       cls
     end
 
@@ -228,16 +261,19 @@ module Adjutant
       # `[]`: an Integer (0 the whole match) or a group name. Nil for
       # an index out of range, a group that didn't participate, or an
       # unknown name, where Ruby raises IndexError.
-      define(cls, interp, "[]", arity: 1) do |args, _blk, _ncc|
+      # A group by number, or by name; a name the pattern doesn't have
+      # raises R057 (IndexError), as in Ruby.
+      define(cls, interp, "[]", arity: 1) do |args, _blk, ncc|
         obj = args.first.as_robject.as(MatchDataObject)
-        key = args[1]?
-        next Value.nil_value unless key
+        key = args[1]
         result =
           if i = key.as_int?
             obj.md[i.to_i]?
-          else
-            name = key.as_string? || key.as_sym?.try(&.name)
-            name ? obj.md[name]? : nil
+          elsif name = key.as_string? || key.as_sym?.try(&.name)
+            unless obj.md.regex.name_table.values.includes?(name)
+              ncc.raise_error("R057", {"name" => name}, "IndexError")
+            end
+            obj.md[name]?
           end
         result ? Value.string(result, args.first.label) : Value.nil_value
       end

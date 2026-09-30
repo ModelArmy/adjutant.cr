@@ -74,10 +74,14 @@ module Adjutant::Builtins
       end
     end
 
+    # Yields each `[key, value]` pair as one Array, as Ruby does, so
+    # `|pair|` gets the pair and `|k, v|` spreads it.
     define(cls, interp, "each", arity: 0) do |args, blk, ncc|
       recv = args.first
-      if blk
-        recv.as_hash.each { |k, v| ncc.invoke(blk, [k, v]) }
+      block = require_block!(blk, "Hash#each", ncc)
+      recv.as_hash.each do |k, v|
+        pair = Adjutant::LabeledArray.new([k, v], Adjutant::RiskFlowLabel.join(k.label, v.label))
+        ncc.invoke(block, [Adjutant::Value.new(pair, pair.label)])
       end
       recv
     end

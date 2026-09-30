@@ -9,6 +9,97 @@ module Adjutant::Builtins
   # comparisons and `[]` are opcodes, not methods. `*` isn't
   # supported.
   # ameba:disable Metrics/CyclomaticComplexity - one `define` call per native method, each a flat independent case; count comes from many methods, not tangled branching
+  # Ruby's `String#split(pattern, limit)`, following `rb_str_split_m`:
+  #
+  #   1. No pattern, or `" "`, splits on runs of ASCII whitespace,
+  #      ignoring leading whitespace.
+  #   2. Otherwise each match of the pattern (a String is matched
+  #      literally) separates fields, and a Regexp's captures are kept
+  #      between them. An empty match splits off one character.
+  #   3. A positive `limit` stops after `limit - 1` splits, leaving the
+  #      rest as the last field; 1 returns the whole string.
+  #   4. With `limit` 0, trailing empty fields are dropped; a negative
+  #      `limit` keeps them.
+  #
+  # An empty string gives no fields.
+  def self.ruby_split(s : String, pattern : ::Regex | String | Nil, limit : Int32) : Array(String)
+    return [] of String if s.empty?
+    return [s] if limit == 1
+    fields = [] of String
+    beg = if pattern.nil? || pattern == " "
+            awk_split(s, limit, fields)
+          else
+            regex = pattern.is_a?(::Regex) ? pattern : ::Regex.new(::Regex.escape(pattern))
+            pattern_split(s, regex, limit, fields)
+          end
+    fields << s[beg..] if limit != 0 || s.size > beg
+    if limit == 0
+      while fields.last? == ""
+        fields.pop
+      end
+    end
+    fields
+  end
+
+  # Step 1 of `ruby_split`: pushes each whitespace-separated field
+  # before the last onto `fields`, and returns where the last starts.
+  private def self.awk_split(s : String, limit : Int32, fields : Array(String)) : Int32
+    beg = 0
+    fin = 0
+    skip = true
+    count = 1
+    s.each_char_with_index do |c, i|
+      if skip
+        if c.ascii_whitespace?
+          beg = i + 1
+        else
+          fin = i + 1
+          skip = false
+          break if limit > 0 && limit <= count
+        end
+      elsif c.ascii_whitespace?
+        fields << s[beg...fin]
+        skip = true
+        beg = i + 1
+        count += 1
+      else
+        fin = i + 1
+      end
+    end
+    beg
+  end
+
+  # Step 2 of `ruby_split`: pushes each field before the last, and
+  # captures, onto `fields`, and returns where the last starts. An
+  # empty match at the search position is skipped once, then splits
+  # off the character before the next search, as Ruby does.
+  private def self.pattern_split(s : String, regex : ::Regex, limit : Int32, fields : Array(String)) : Int32
+    beg = 0
+    start = 0
+    count = 1
+    last_null = false
+    while start <= s.size && (m = regex.match(s, start))
+      if start == m.begin(0) && m.begin(0) == m.end(0)
+        if last_null
+          fields << s[beg, 1]
+          beg = start
+        else
+          start += 1
+          last_null = true
+          next
+        end
+      else
+        fields << s[beg...m.begin(0)]
+        beg = start = m.end(0)
+      end
+      last_null = false
+      (1...m.size).each { |group| m[group]?.try { |capture| fields << capture } }
+      count += 1
+      break if limit > 0 && limit <= count
+    end
+    beg
+  end
+
   def self.bootstrap_string(interp : Adjutant::Interpreter) : Adjutant::RubyClass
     cls = Adjutant::RubyClass.new("String")
 
@@ -65,22 +156,20 @@ module Adjutant::Builtins
       Adjutant::Value.bool(needle ? args.first.as_string.includes?(needle) : false)
     end
 
+    # Ruby's rules (`ruby_split`): no separator or `" "` splits on
+    # whitespace runs, trailing empty fields are dropped unless `limit`
+    # is negative, and a positive `limit` caps the fields.
     define(cls, interp, "split", arity: 0..2) do |args|
       recv = args.first
       s = recv.as_string
       sep_val = args[1]?
-      # A `limit` applies to Regexp and String separators, through
-      # Crystal's `split(sep, limit)`; it is ignored for a whitespace
-      # split.
-      limit = args[2]?.try(&.as_int?).try(&.to_i)
-      parts =
-        if (robj = sep_val.try(&.as_robject?)) && robj.is_a?(Adjutant::RegexpObject)
-          limit ? s.split(robj.regex, limit) : s.split(robj.regex)
-        elsif sep = sep_val.try(&.as_string?)
-          limit ? s.split(sep, limit) : s.split(sep)
-        else
-          s.split
-        end
+      limit = args[2]?.try(&.as_int?).try(&.to_i) || 0
+      pattern = if (robj = sep_val.try(&.as_robject?)) && robj.is_a?(Adjutant::RegexpObject)
+                  robj.regex
+                else
+                  sep_val.try(&.as_string?)
+                end
+      parts = ruby_split(s, pattern, limit)
       # Each piece's label, and the Array's, joins the receiver's and
       # the separator's.
       whole_label = Adjutant::RiskFlowLabel.join(recv.label, sep_val.try(&.label))
@@ -153,25 +242,27 @@ module Adjutant::Builtins
     # rejoin into the string; no empty chunk after a final separator.
     # Without a block, returns the receiver. An empty separator splits
     # on "\n", not by paragraph as Ruby does.
+    # Yields each line with its separator. An empty separator is
+    # Ruby's paragraph mode: a paragraph ends at a blank line and takes
+    # every newline after it.
     define(cls, interp, "each_line", arity: 0..1) do |args, blk, ncc|
       recv = args.first
       s = recv.as_string
+      block = require_block!(blk, "String#each_line", ncc)
       sep = args[1]?.try(&.as_string?) || "\n"
-      sep = "\n" if sep.empty?
-      if blk
-        pos = 0
-        loop do
-          idx = s.index(sep, pos)
-          if idx
-            chunk = s[pos..(idx + sep.size - 1)]
-            ncc.invoke(blk, [Adjutant::Value.string(chunk, recv.label)])
-            pos = idx + sep.size
-          else
-            chunk = s[pos..]
-            ncc.invoke(blk, [Adjutant::Value.string(chunk, recv.label)]) unless chunk.empty?
-            break
+      paragraph = sep.empty?
+      sep = "\n\n" if paragraph
+      pos = 0
+      while pos < s.size
+        idx = s.index(sep, pos)
+        stop = idx ? idx + sep.size : s.size
+        if paragraph && idx
+          while stop < s.size && s[stop] == '\n'
+            stop += 1
           end
         end
+        ncc.invoke(block, [Adjutant::Value.string(s[pos...stop], recv.label)])
+        pos = stop
       end
       recv
     end

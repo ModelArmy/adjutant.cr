@@ -91,11 +91,8 @@ module Adjutant::Builtins
       hi
     end
 
-    # `exclude_end?` is Ruby's name; `exclusive?` is not Ruby.
-    {"exclusive?", "exclude_end?"}.each do |name|
-      define(cls, interp, name, arity: 0) do |args|
-        args.first.as_robject.ivars[excl_sym]
-      end
+    define(cls, interp, "exclude_end?", arity: 0) do |args|
+      args.first.as_robject.ivars[excl_sym]
     end
 
     # `to_s` renders each bound with its own `to_s`, `inspect` with its
@@ -141,14 +138,13 @@ module Adjutant::Builtins
       lo = obj.ivars[min_sym]
       hi = obj.ivars[max_sym]
       ncc.raise_error("R024", {"method" => "each"}, "TypeError") if lo.null?
-      if blk
-        current = lo
-        loop do
-          in_bounds = hi.null? || (exclusive ? ncc.compare(current, hi, :<) : ncc.compare(current, hi, :<=))
-          break unless in_bounds
-          ncc.invoke(blk, [current])
-          current = ncc.call_method(current, "succ", [] of Adjutant::Value)
-        end
+      block = require_block!(blk, "Range#each", ncc)
+      current = lo
+      loop do
+        in_bounds = hi.null? || (exclusive ? ncc.compare(current, hi, :<) : ncc.compare(current, hi, :<=))
+        break unless in_bounds
+        ncc.invoke(block, [current])
+        current = ncc.call_method(current, "succ", [] of Adjutant::Value)
       end
       recv
     end
@@ -190,14 +186,13 @@ module Adjutant::Builtins
         ncc.raise_error("R020", {} of String => String, "ArgumentError")
       end
       ncc.raise_error("R025", {} of String => String, "ArgumentError") if lo.null?
-      if blk
-        current = lo
-        loop do
-          in_bounds = hi.null? || (exclusive ? ncc.compare(current, hi, :<) : ncc.compare(current, hi, :<=))
-          break unless in_bounds
-          ncc.invoke(blk, [current])
-          current = ncc.add(current, n)
-        end
+      block = require_block!(blk, "Range#step", ncc)
+      current = lo
+      loop do
+        in_bounds = hi.null? || (exclusive ? ncc.compare(current, hi, :<) : ncc.compare(current, hi, :<=))
+        break unless in_bounds
+        ncc.invoke(block, [current])
+        current = ncc.add(current, n)
       end
       recv
     end

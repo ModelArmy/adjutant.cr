@@ -2430,6 +2430,11 @@ module Adjutant
     end
 
     protected def values_equal?(a : Value, b : Value) : Bool
+      ValueOps.equal?(a, b) { |x, y| leaf_values_equal?(x, y) }
+    end
+
+    # `values_equal?` for a pair that isn't two Arrays or two Hashes.
+    private def leaf_values_equal?(a : Value, b : Value) : Bool
       if range_receiver?(a) && range_receiver?(b)
         range_values_equal?(a, b)
       elsif a.robject? && b.robject? && script_responds_to?(a, "<=>")
@@ -2439,7 +2444,7 @@ module Adjutant
         # `<=>`, `==` is identity.
         robject_equal_via_spaceship?(a, b)
       else
-        ValueOps.equal?(a, b)
+        ValueOps.leaf_equal?(a, b)
       end
     end
 

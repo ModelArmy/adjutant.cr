@@ -68,14 +68,16 @@ module Adjutant
       end
     end
 
+    # Ruby's `%`: ZeroDivisionError for an Integer divided by zero,
+    # NaN when either side is a Float.
     def self.mod(a : Value, b : Value, on_error : OnError) : Value
-      on_error.call("divided by 0", "ZeroDivisionError") if (b.int? && b.as_int == 0) || (b.float? && b.as_float == 0.0)
+      on_error.call("divided by 0", "ZeroDivisionError") if a.int? && b.int? && b.as_int == 0
       case
       when a.int? && b.int? then Value.int(a.as_int % b.as_int)
       when a.float? || b.float?
         fa = a.int? ? a.as_int.to_f64 : a.as_float
         fb = b.int? ? b.as_int.to_f64 : b.as_float
-        Value.float(fa % fb)
+        Value.float(fb == 0.0 ? Float64::NAN : fa % fb)
       else
         on_error.call("type error in modulo", "TypeError")
       end
@@ -172,12 +174,19 @@ module Adjutant
     # can't exhaust the native stack. Hash keys match by `Value#==`,
     # Ruby's `eql?`, and values by `==`, as in Ruby's `Hash#==`.
     def self.equal?(a : Value, b : Value) : Bool
-      ContainerWalk.equal?(a, b) { |x, y| leaf_equal?(x, y) }
+      equal?(a, b) { |x, y| leaf_equal?(x, y) }
+    end
+
+    # `equal?` with `leaf` deciding each pair that isn't two Arrays or
+    # two Hashes, so the VM compares Ranges and objects inside a
+    # container as it does outside one.
+    def self.equal?(a : Value, b : Value, &leaf : Value, Value -> Bool) : Bool
+      ContainerWalk.equal?(a, b) { |x, y| leaf.call(x, y) }
     end
 
     # `equal?` for everything but a pair of Arrays or of Hashes.
     # ameba:disable Metrics/CyclomaticComplexity
-    private def self.leaf_equal?(a : Value, b : Value) : Bool
+    def self.leaf_equal?(a : Value, b : Value) : Bool
       case
       when a.null? && b.null?     then true
       when a.bool? && b.bool?     then a.as_bool == b.as_bool

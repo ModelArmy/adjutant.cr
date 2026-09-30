@@ -316,6 +316,11 @@ module Adjutant
       # coverage stays here, unaffected in behavior, just now running
       # through the shared opcode instead of a `Regexp`-specific
       # native method.
+      it "doesn't let `.` match a newline without /m, as in Ruby" do
+        eval(%(("a\\nb" =~ /a.b/).nil?)).as_bool.should be_true
+        eval(%("a\\nb" =~ /a.b/m)).as_int.should eq 0
+      end
+
       it "works as a dot-call, as in Ruby" do
         eval(%(/^b/.===("bar"))).as_bool.should be_true
       end

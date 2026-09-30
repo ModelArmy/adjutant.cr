@@ -361,10 +361,10 @@ module Adjutant
         result.truthy?.should be_true
       end
 
-      it "with no block, does not raise, and returns the receiver" do
+      it "with no block, raises U022, as Adjutant has no Enumerator" do
         interp, _ = make_interp
-        result = interp.eval(%("a\\nb".each_line))
-        result.as_string.should eq "a\nb"
+        error = expect_raises(RuntimeError) { interp.eval(%("a\\nb".each_line)) }
+        error.diagnostic.not_nil!.code.should eq "U022"
       end
     end
 

@@ -322,10 +322,9 @@ module Adjutant
         result.truthy?.should be_true
       end
 
-      it "with no block, does not raise, and returns the receiver" do
-        interp, _ = make_interp
-        result = interp.eval("[1, 2, 3].each")
-        result.as_array.map(&.as_int).should eq [1, 2, 3]
+      it "with no block, raises U022, as Adjutant has no Enumerator" do
+        error = expect_raises(RuntimeError) { eval("[1, 2, 3].each") }
+        error.diagnostic.not_nil!.code.should eq "U022"
       end
     end
 
@@ -561,8 +560,9 @@ module Adjutant
         RUBY
       end
 
-      it "with no block, returns an empty array" do
-        eval("[1, 2, 3].select").as_array.empty?.should be_true
+      it "with no block, raises U022, as Adjutant has no Enumerator" do
+        error = expect_raises(RuntimeError) { eval("[1, 2, 3].select") }
+        error.diagnostic.not_nil!.code.should eq "U022"
       end
     end
 
@@ -666,9 +666,9 @@ module Adjutant
         error.diagnostic.not_nil!.code.should eq("R044")
       end
 
-      it "raises R045 with no block" do
+      it "raises U022 with no block, as Adjutant has no Enumerator" do
         error = expect_raises(RuntimeError) { eval("[1, 2].sort_by") }
-        error.diagnostic.not_nil!.code.should eq("R045")
+        error.diagnostic.not_nil!.code.should eq "U022"
       end
     end
 

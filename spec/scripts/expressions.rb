@@ -138,12 +138,12 @@ assert("Ranges") do
   assert_equal a.class, Range
   assert_equal a.min, 0
   assert_equal a.max, 3
-  assert_equal a.exclusive?, false
+  assert_equal a.exclude_end?, false
 
   b = 0...3
   assert_not_nil b
   assert_equal b.class, Range
-  assert_equal b.exclusive?, true
+  assert_equal b.exclude_end?, true
 
   total = 0
   for x in 1..4

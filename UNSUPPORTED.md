@@ -943,6 +943,26 @@ uninitialized-constant or undefined-method error, which names the
 construct but not the Legate replacement. Tracked in
 [SCOPE.md](./SCOPE.md)'s Error reporting group.
 
+### U022 — Enumerator
+
+`Enumerator`, and the Enumerator a block-taking method returns when
+called without a block: `arr.each`, `arr.map`, `hash.each`,
+`(1..3).each`, `3.times`, `str.each_line` and the rest. With it goes
+chaining through one, such as `each_with_index.map` or
+`each_slice(2).to_a`.
+
+**Why:** an Enumerator is a lazy, resumable iteration: an object that
+holds a paused loop and hands out one element per call. Short scripts
+use it almost only to chain iterators, and every chain has a direct
+form with a block. Building it means external iteration over native
+and script loops alike, for little a script can't already say.
+
+**Instead:** pass the block. For an index, keep a counter; for slices,
+index the Array (`arr[i, 2]`).
+
+**Enforcement — enforced.** Every builtin block-taking method raises
+U022 without a block (`Builtins.require_block!`).
+
 ---
 
 ## 2. Design decisions with no script-visible surface

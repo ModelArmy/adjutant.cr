@@ -102,6 +102,12 @@ module Adjutant::Builtins
   # builds a new container from an existing one's contents. Pass the
   # source container's label as `seed`: it can carry labels no current
   # element does, and dropping them would under-label the result.
+  # The block of a method that iterates, or U022 without one: Ruby
+  # returns an Enumerator there, which Adjutant doesn't have.
+  def self.require_block!(blk : Adjutant::ScriptProc?, method : String, ncc : Adjutant::NativeCallContext) : Adjutant::ScriptProc
+    blk || ncc.raise_error("U022", {"method" => method}, "RuntimeError")
+  end
+
   def self.joined_label(values : Array(Adjutant::Value), seed : Adjutant::RiskFlowLabel? = nil) : Adjutant::RiskFlowLabel?
     values.reduce(seed) { |acc, v| Adjutant::RiskFlowLabel.join(acc, v.label) }
   end

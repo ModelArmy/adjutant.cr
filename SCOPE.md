@@ -25,80 +25,16 @@ configuration.
 Where an entry lists two remedies, rejecting the construct is always
 acceptable, since it restores the subset.
 
-- **`Hash#each` with one block parameter binds the key alone.**
-  Predicted by reading `hash.cr`; no spec or model has hit
-  it. `h.each { |pair| }` gives `pair` the key, where Ruby gives
-  `[k, v]`, so the script runs and answers wrongly. `Hash#each` passes
-  `k` and `v` as two arguments. The likely fix is passing one
-  `[k, v]` Array and letting `spread_block_args` (vm.cr) spread it for
-  `|k, v|`, which is how Ruby does it.
-
-- **Float `%` by zero raises ZeroDivisionError.** `ValueOps.mod`
-  raises for a zero divisor of either type; Ruby raises only for
-  Integer `%` and returns NaN for `5.0 % 0` and `5 % 0.0`. Float `/`
-  by zero already returns Infinity, as in Ruby.
-
-- **Blockless iterators return a value instead of an Enumerator.**
-  `Array#each` without a block returns the receiver, and `map`,
-  `select` and `reject` return `[]`, where Ruby returns an
-  Enumerator. So `arr.map` is silently empty; `arr.map.with_index`
-  fails only one call later. Adjutant has no Enumerator, so the fix is
-  raising, as `sort_by` already does (R045), for every block-taking
-  builtin method called without one. Audit `hash.cr`, `range.cr`,
-  `string.cr` and `integer.cr` (`times`) for the same shape.
-
-- **`Array#join` renders elements with Crystal's `to_s`, not the
-  script's.** `join` calls `Value#to_s`, which renders a nested Array
-  or Hash as `#<Adjutant::LabeledArray>` and ignores an object's own
-  `to_s`. Ruby joins nested arrays recursively (`[1, [2, 3]].join(",")`
-  is `"1,2,3"`) and calls each element's `to_s`. The fix is dispatching
-  `to_s` through `ncc.call_method`, recursing into Arrays, as
-  `inspect` already does.
-
-- **`String#split` follows Crystal's rules, not Ruby's.** `split`
-  calls Crystal's `String#split`, which keeps trailing empty fields:
-  `"a,b,,".split(",")` is `["a", "b", "", ""]`, where Ruby gives
-  `["a", "b"]`. A `" "` separator is literal, where Ruby treats it as
-  a whitespace split (`"a  b".split(" ")` is `["a", "b"]`). A `limit`
-  is passed to Crystal unchecked against Ruby's rules (positive caps
-  the fields, negative keeps trailing empties), and is ignored for a
-  whitespace split. CSV-style parsing, as in exam task 04, meets the
-  first case.
-
-- **`String#each_line("")` splits on newlines, not paragraphs.** Ruby's
-  empty separator is paragraph mode, splitting on runs of blank lines;
-  Adjutant falls back to `"\n"` without saying so.
-
-- **Regexp and MatchData edge cases differ from Ruby.**
-  `Regexp#match(nil)` raises R022, where Ruby returns nil, so
-  `re.match(maybe_nil)` fails only in Adjutant. `MatchData#[]` with an
-  unknown group name returns nil, where Ruby raises IndexError. And in
-  a pattern with named groups, Ruby doesn't capture the unnamed ones,
-  so `/(a)(?<b>b)/.match("ab")[1]` is "b"; PCRE2 numbers both, so
-  Adjutant gives "a".
-
-- **Methods Ruby doesn't have.** `Range#exclusive?` is registered
-  alongside Ruby's `exclude_end?`; a script using it is not Ruby. The
-  fix is removing it. Other builtins may carry similar extras: the
-  whitelist check in `spec/skill/TODO.md` §3 lists every registered
-  method, which is where to compare each class against Ruby's.
-
-- **`Array#inject`/`reduce` with a Symbol and no block returns `nil`.**
-  Found by reading `builtins/array.cr`. `[1, 2, 3].inject(:+)` treats
-  `:+` as the initial value and, finding no block, returns `nil`. Real
-  Ruby returns `6`. Supporting the Symbol form means dispatching the
-  named method; until then it should raise rather than return a
-  plausible `nil`.
-  The two-argument form, `inject(0, :+)`, raises ArgumentError (R046)
-  until then, since `reduce` is declared with the arity it implements.
-
-- **Array and Hash `==` compare Ranges and objects with `<=>` inside
-  them by identity.** Predicted by reading `value_ops.cr` and
-  `VM#values_equal?`. `1..2 == 1..2` is true, since the VM compares
-  Ranges by bounds and derives `==` from a script's `<=>`, but
-  `ValueOps.equal?` recurses into itself rather than back into the VM,
-  so `[1..2] == [1..2]` is false. Ruby says true. Fix: have
-  `equal?` take the element comparison from its caller.
+- **A class with `<=>` gets `==`, `<`, `<=`, `>` and `>=` without
+  including Comparable.** Found while fixing container `==`.
+  `VM#values_equal?` derives `==` from a script's `<=>`, and
+  `strict_compare` derives the ordering operators the same way, for
+  any class that defines `<=>`. Ruby derives them only for a class
+  that includes Comparable; without it, `==` is identity and `<`
+  raises NoMethodError. Adjutant has no Comparable module, so a script
+  that defines only `<=>` compares differently here. The likely fix
+  is adding Comparable as a module and deriving the operators only for
+  classes that include it.
 
 - **A risk-flow rule can't name the sink's subject.** `RiskFlowRule`
   (`risk_flow_policy.cr`) is keyed on `(Authority, Sensitivity)`, so a
@@ -668,7 +604,7 @@ individually.
   Each builtin method declares the arity it implements, so an argument
   Ruby accepts and Adjutant would ignore raises R046 instead of
   producing a different answer: `Array#pop(n)`, `#min(n)`, `#max(n)`,
-  `#any?(pattern)`, `#all?(pattern)`, `#reduce(init, sym)`;
+  `#any?(pattern)`, `#all?(pattern)`;
   `Range#min(n)`, `#max(n)`, `#last(n)`; `String#to_i(base)`,
   `#upcase`/`#downcase`/`#capitalize` options, several prefixes to
   `#start_with?`/`#end_with?`, `#match(str, pos)`; `Regexp#match` and
