@@ -155,6 +155,7 @@ R054|A Legate::Stream copied with `dup` or `clone`                      |`method
 R055|`include` or `extend` given something other than a module          |`type`                                     
 R056|An Array joined that contains itself                               |—                                          
 R057|A MatchData group name the pattern lacks                           |`name`                                     
+R058|`clamp` given a minimum above its maximum                          |—                                          
 
 Scripts can `rescue` these. R008 raises a `NameError`, matching Ruby;
 R011, R012, R015, and R018 raise `ArgumentError`, also matching Ruby;
@@ -167,8 +168,9 @@ R030 raise a `RangeError`, also matching Ruby; R032, R034, R035, R040,
 R041, R042, R043, R044, R045, and R046 raise an `ArgumentError`, also
 matching Ruby; R047 raises a `NoMethodError`, R048 a `TypeError`, R049
 and R050 an `IndexError`, R051 a `RangeError`, R052 a `FrozenError`,
-R053, R054 and R055 a `TypeError`, R056 an `ArgumentError`, and R057
-an `IndexError`, all matching Ruby; the rest raise `RuntimeError`.
+R053, R054 and R055 a `TypeError`, R056 and R058 an `ArgumentError`,
+and R057 an `IndexError`, all matching Ruby; the rest raise
+`RuntimeError`.
 
 Adjutant's constants are assign-once, which Ruby only warns about. R001 is
 that rule firing on an ordinary constant; reopening a class or module is

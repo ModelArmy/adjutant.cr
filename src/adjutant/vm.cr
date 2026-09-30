@@ -475,7 +475,7 @@ module Adjutant
     # Operations `exec_builtin` performs for any receiver, which
     # `respond_to?` reports.
     UNIVERSAL_METHODS = Set{"nil?", "is_a?", "kind_of?", "class", "respond_to?", "equal?",
-                            "dup", "clone", "to_s", "inspect", "==", "!=", "===", "!"}
+                            "dup", "clone", "to_s", "inspect", "==", "!=", "===", "!", "<=>"}
 
     # `respond_to?`: a method dispatch finds, an operation every object
     # has, an operator the receiver's type has, or `superclass` on a
@@ -2180,10 +2180,9 @@ module Adjutant
         a = args[0]? || Value.nil_value
         b = args[1]? || Value.nil_value
         if a.robject? || b.robject?
-          # An object without `<=>` has no default; returning nil
-          # here lets dispatch raise R008. One with `<=>` never gets
-          # this far.
-          nil
+          # Object#<=>, for an object without its own: 0 for the same
+          # object, nil for anything else.
+          identical?(a, b) ? Value.int(0_i64) : Value.nil_value
         elsif sign = spaceship(a, b, filename, line)
           Value.int(sign.to_i64)
         else
@@ -2317,8 +2316,9 @@ module Adjutant
     protected def compare(a : Value, b : Value, op : Symbol,
                           filename : String = current_frame.filename,
                           line : Int32 = current_frame.line) : Bool
-      # An object operand dispatches to its `<=>`, standing in for
-      # Comparable. Base types are ordered by ValueOps.
+      # An object operand dispatches to its `<=>`, as Ruby's Range and
+      # sorting do; the script-level operators check Comparable first
+      # (`operator_defined?`). Base types are ordered by ValueOps.
       if a.robject? || b.robject?
         compare_via_spaceship(a, b, op, filename, line)
       else
@@ -2437,11 +2437,10 @@ module Adjutant
     private def leaf_values_equal?(a : Value, b : Value) : Bool
       if range_receiver?(a) && range_receiver?(b)
         range_values_equal?(a, b)
-      elsif a.robject? && b.robject? && script_responds_to?(a, "<=>")
-        # An object with `<=>` gets `==` derived from it, as
-        # Comparable gives in Ruby: equal when `<=>` returns 0, and
-        # not equal when it returns anything else or raises. Without
-        # `<=>`, `==` is identity.
+      elsif comparable_object?(a)
+        # Comparable's `==`: equal when `<=>` returns 0, and not equal
+        # when it returns anything else or raises. Without Comparable,
+        # an object's `==` is identity.
         robject_equal_via_spaceship?(a, b)
       else
         ValueOps.leaf_equal?(a, b)
@@ -2525,13 +2524,20 @@ module Adjutant
       "FalseClass" => LOGIC_OPERATORS,
     }
 
+    # Whether `v` is an object whose class includes Comparable, which
+    # derives `==`, `<`, `<=`, `>` and `>=` from its `<=>`.
+    private def comparable_object?(v : Value) : Bool
+      comparable = builtin_class_by_name("Comparable")
+      !!(comparable && v.as_robject?.try(&.rclass.ancestors.includes?(comparable)))
+    end
+
     # Whether `v` has the operator `name` as a method, as Ruby decides
     # between NoMethodError (`nil + 1`) and the receiver's own error
     # (`"a" + 1`). An object has it if its class defines it, or for a
     # comparison, `<=>`; a class is left to the operation itself.
     private def operator_defined?(v : Value, name : String) : Bool
       if v.robject?
-        script_responds_to?(v, name) || (COMPARISONS.includes?(name) && script_responds_to?(v, "<=>"))
+        script_responds_to?(v, name) || (COMPARISONS.includes?(name) && comparable_object?(v))
       elsif v.rclass?
         true
       else

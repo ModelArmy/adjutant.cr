@@ -552,6 +552,13 @@ module Adjutant
         help: "Use a name the pattern declares with `(?<name>...)`, or " \
               "the group's number."
       ),
+      "R058" => Entry.new(
+        code: "R058",
+        summary: "min argument must be less than or equal to max argument",
+        why: "`clamp(min, max)` keeps a value within a range, so `min` " \
+             "can't lie above `max`.",
+        help: "Swap the arguments, or check them before calling `clamp`."
+      ),
 
       # --- L: limits reached ----------------------------------------
       #

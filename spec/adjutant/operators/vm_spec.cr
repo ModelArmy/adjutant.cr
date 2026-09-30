@@ -238,15 +238,12 @@ module Adjutant
     end
 
     describe "<=> and comparisons on script objects" do
-      # SCOPE.md's `<=>` item: real Ruby's own answer to "how do
-      # </<=/>/>= work for a custom object" is the Comparable mixin,
-      # deriving all four from one `<=>` — Adjutant has no mixins, so
-      # `<`/`<=`/`>`/`>=` dispatch through a script-defined `<=>`
-      # directly for RubyObject operands, as a fixed VM rule standing
-      # in for it.
+      # `<`/`<=`/`>`/`>=` on a custom object come from Comparable,
+      # which derives them from the class's own `<=>`, as in Ruby.
       it "dispatches < through a script-defined <=>" do
         src = <<-RUBY
         class Box
+          include Comparable
           def initialize(v); @v = v; end
           def v; @v; end
           def <=>(other); @v <=> other.v; end
@@ -259,6 +256,7 @@ module Adjutant
       it "dispatches <=, >, >= through the same <=>" do
         src = <<-RUBY
         class Box
+          include Comparable
           def initialize(v); @v = v; end
           def v; @v; end
           def <=>(other); @v <=> other.v; end
@@ -318,6 +316,7 @@ module Adjutant
         # ArgumentError: comparison of Foo with Foo failed.
         src = <<-RUBY
         class Foo
+          include Comparable
           def <=>(other); nil; end
         end
         Foo.new < Foo.new
@@ -332,7 +331,7 @@ module Adjutant
       end
     end
 
-    describe "== derived from a script-defined <=> (Comparable-style, no mixin needed)" do
+    describe "== derived from a script-defined <=> in a class that includes Comparable" do
       # Companion to the "<=> and comparisons on script objects" block
       # above — `<`/`<=`/`>`/`>=` already dispatched through a
       # script-defined `<=>` before this; `==` (Op::Eq, a separate
@@ -350,6 +349,7 @@ module Adjutant
       it "two different objects with the same <=>-comparable value are == (NOT identity)" do
         eval(<<-RUBY).as_bool.should eq true
         class Box
+          include Comparable
           def initialize(v); @v = v; end
           def <=>(other); @v <=> other.v; end
           def v; @v; end
@@ -361,6 +361,7 @@ module Adjutant
       it "two objects with different <=>-comparable values are not ==" do
         eval(<<-RUBY).as_bool.should eq false
         class Box
+          include Comparable
           def initialize(v); @v = v; end
           def <=>(other); @v <=> other.v; end
           def v; @v; end
@@ -387,6 +388,7 @@ module Adjutant
       it "<=> returning nil (genuinely unorderable) makes == false, NOT a raised R013 — unlike < which does raise" do
         eval(<<-RUBY).as_bool.should eq false
         class Foo
+          include Comparable
           def <=>(other); nil; end
         end
         Foo.new == Foo.new
@@ -396,6 +398,7 @@ module Adjutant
       it "<=> raising makes == false rather than propagating the error — matches real Ruby's non-raising Comparable#==" do
         eval(<<-RUBY).as_bool.should eq false
         class Foo
+          include Comparable
           def <=>(other); raise "boom"; end
         end
         Foo.new == Foo.new

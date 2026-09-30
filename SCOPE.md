@@ -25,17 +25,6 @@ configuration.
 Where an entry lists two remedies, rejecting the construct is always
 acceptable, since it restores the subset.
 
-- **A class with `<=>` gets `==`, `<`, `<=`, `>` and `>=` without
-  including Comparable.** Found while fixing container `==`.
-  `VM#values_equal?` derives `==` from a script's `<=>`, and
-  `strict_compare` derives the ordering operators the same way, for
-  any class that defines `<=>`. Ruby derives them only for a class
-  that includes Comparable; without it, `==` is identity and `<`
-  raises NoMethodError. Adjutant has no Comparable module, so a script
-  that defines only `<=>` compares differently here. The likely fix
-  is adding Comparable as a module and deriving the operators only for
-  classes that include it.
-
 - **A risk-flow rule can't name the sink's subject.** `RiskFlowRule`
   (`risk_flow_policy.cr`) is keyed on `(Authority, Sensitivity)`, so a
   policy can say "High data must not reach `Net`" but not "this API
@@ -610,7 +599,8 @@ individually.
   `#start_with?`/`#end_with?`, `#match(str, pos)`; `Regexp#match` and
   `#match?` with a position; `MatchData#[](start, length)`;
   `Time.at`'s unit; `Time.utc`/`local`'s ten-argument form;
-  `Time#localtime(offset)`, `#getlocal(offset)`; `include` and
+  `Time#localtime(offset)`, `#getlocal(offset)`; `Comparable#clamp`
+  with a Range; `include` and
   `extend` with several modules. Each is supported by
   implementing the argument and widening the declared arity.
 

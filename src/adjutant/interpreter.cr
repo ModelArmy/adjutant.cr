@@ -381,20 +381,23 @@ module Adjutant
     # `register_builtin_class` supplies the superclass and class.
     private def bootstrap_builtin_classes : Nil
       bootstrap_error_classes
-      register_builtin_class(Builtins.bootstrap_integer(self))
-      register_builtin_class(Builtins.bootstrap_float(self))
+      comparable = Builtins.bootstrap_comparable(self)
+      comparable.rclass = module_class
+      define_global_class(comparable)
+      register_builtin_class(Builtins.bootstrap_integer(self)).include_module(comparable)
+      register_builtin_class(Builtins.bootstrap_float(self)).include_module(comparable)
       register_builtin_class(Builtins.bootstrap_nil_class(self))
       register_builtin_class(Builtins.bootstrap_true_class(self))
       register_builtin_class(Builtins.bootstrap_false_class(self))
       register_builtin_class(Builtins.bootstrap_symbol(self))
-      register_builtin_class(Builtins.bootstrap_string(self))
+      register_builtin_class(Builtins.bootstrap_string(self)).include_module(comparable)
       register_builtin_class(Builtins.bootstrap_array(self))
       register_builtin_class(Builtins.bootstrap_hash(self))
       register_builtin_class(Builtins.bootstrap_range(self))
       register_builtin_class(Builtins.bootstrap_regexp(self))
       register_builtin_class(Builtins.bootstrap_match_data(self))
       register_builtin_class(Builtins.bootstrap_proc(self))
-      register_builtin_class(Builtins.bootstrap_time(self))
+      register_builtin_class(Builtins.bootstrap_time(self)).include_module(comparable)
       Builtins.register_module_methods(module_class, self)
     end
 
