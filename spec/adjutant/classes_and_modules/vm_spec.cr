@@ -299,14 +299,15 @@ module Adjutant
 
       it "calling a module-body local like a method raises, matching real Ruby" do
         # Real Ruby: `dbl(3)` where dbl is a local (not a method) is a
-        # NameError — locals are never callable with ()-call syntax.
+        # method call, so NoMethodError — locals are never callable with
+        # ()-call syntax.
         src = <<-RUBY
         module M
           dbl = ->(n) { n + n }
           dbl(3)
         end
         RUBY
-        expect_raises(Adjutant::RuntimeError, /undefined method or variable `dbl`/) do
+        expect_raises(Adjutant::RuntimeError, /undefined method `dbl` for module M/) do
           eval(src)
         end
       end
@@ -671,8 +672,8 @@ module Adjutant
         arr[1].as_string.should eq "first"
       end
 
-      it "dup on a builtin-kind receiver still raises (deliberately out of scope, see SCOPE.md)" do
-        expect_raises(RuntimeError) { eval("5.dup") }
+      it "dup on an immediate returns it, as in Ruby" do
+        eval("5.dup").as_int.should eq 5
       end
     end
 
@@ -1167,9 +1168,9 @@ module Adjutant
         result.truthy?.should be_true
       end
 
-      it "a class with NO override still fails respond_to?(:to_s) — the documented, accepted, narrower residual gap" do
+      it "a class with NO override still responds to to_s, as every object does" do
         result = eval("class Foo\nend\nFoo.respond_to?(:to_s)")
-        result.falsy?.should be_true
+        result.truthy?.should be_true
       end
 
       it "an exception (deliberately raised inside the override) propagates normally, is NOT silently swallowed into a fallback rendering" do

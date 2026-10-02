@@ -29,13 +29,17 @@ module Adjutant
       end
     end
 
-    # --- Equality / hashing (Crystal-level, NOT Ruby's own ==) ---------
+    # --- Equality / hashing (Ruby's eql?, NOT Ruby's ==) ---------------
 
-    # Compares and hashes `@raw` alone, ignoring the label, so a
-    # labelled key and an unlabelled lookup key match in a Crystal
-    # `Hash(Value, Value)`, as they do for Ruby's `==`.
+    # Ruby's `eql?`, which Hash keys compare with: `@raw` alone, so a
+    # labelled key and an unlabelled lookup key match, and an Integer
+    # never equals a Float (`5.eql?(5.0)` is false, though `5 == 5.0`).
+    # Arrays and Hashes compare their elements the same way. Ruby's
+    # `==` is `ValueOps.equal?`.
     def ==(other : Value) : Bool
-      @raw == other.raw
+      other_raw = other.raw
+      return false if @raw.is_a?(Float64) != other_raw.is_a?(Float64)
+      @raw == other_raw
     end
 
     def hash(hasher)

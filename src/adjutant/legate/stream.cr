@@ -48,6 +48,12 @@ module Adjutant
                    @state : StreamConsumption = StreamConsumption.new)
       super(rclass)
     end
+
+    # None: a copy would share the open source with the original, so
+    # reading either would move both. `dup` and `clone` raise TypeError.
+    def shallow_copy : RubyObject?
+      nil
+    end
   end
 
   module Legate
@@ -68,17 +74,17 @@ module Adjutant
         too_large = Helpers.fetch(legate, interp, "TooLarge")
         eof = Helpers.fetch(legate, interp, "EOF")
 
-        Builtins.define(cls, interp, "map") { |args, blk, _ncc| chain(args, blk, StreamOp::Kind::Map) }
-        Builtins.define(cls, interp, "select") { |args, blk, _ncc| chain(args, blk, StreamOp::Kind::Select) }
-        Builtins.define(cls, interp, "reject") { |args, blk, _ncc| chain(args, blk, StreamOp::Kind::Reject) }
+        Builtins.define(cls, interp, "map", arity: 0) { |args, blk, _ncc| chain(args, blk, StreamOp::Kind::Map) }
+        Builtins.define(cls, interp, "select", arity: 0) { |args, blk, _ncc| chain(args, blk, StreamOp::Kind::Select) }
+        Builtins.define(cls, interp, "reject", arity: 0) { |args, blk, _ncc| chain(args, blk, StreamOp::Kind::Reject) }
 
-        Builtins.define(cls, interp, "take") do |args, _blk, _ncc|
+        Builtins.define(cls, interp, "take", arity: 1) do |args, _blk, _ncc|
           n = (args[1]? || Value.nil_value).as_int.to_i32
           obj = args.first.as_robject.as(StreamObject)
           Value.robject(StreamObject.new(obj.rclass, obj.source, obj.ops + [StreamOp.new(StreamOp::Kind::Take, limit: n)], obj.state))
         end
 
-        Builtins.define(cls, interp, "each") do |args, blk, ncc|
+        Builtins.define(cls, interp, "each", arity: 0) do |args, blk, ncc|
           obj = args.first.as_robject.as(StreamObject)
           if b = blk
             walk(obj, ncc, eof) { |val| ncc.invoke(b, [val]) }
@@ -86,7 +92,7 @@ module Adjutant
           args.first
         end
 
-        Builtins.define(cls, interp, "to_a") do |args, _blk, ncc|
+        Builtins.define(cls, interp, "to_a", arity: 0) do |args, _blk, ncc|
           obj = args.first.as_robject.as(StreamObject)
           items = [] of Value
           walk(obj, ncc, eof) do |val|
@@ -100,19 +106,19 @@ module Adjutant
           Value.new(LabeledArray.new(items, label), label)
         end
 
-        Builtins.define(cls, interp, "sum") do |args, _blk, ncc|
+        Builtins.define(cls, interp, "sum", arity: 0) do |args, _blk, ncc|
           obj = args.first.as_robject.as(StreamObject)
           sum(obj, ncc, eof)
         end
 
-        Builtins.define(cls, interp, "count") do |args, _blk, ncc|
+        Builtins.define(cls, interp, "count", arity: 0) do |args, _blk, ncc|
           obj = args.first.as_robject.as(StreamObject)
           n = 0_i64
           walk(obj, ncc, eof) { |_val| n += 1 }
           Value.int(n)
         end
 
-        Builtins.define(cls, interp, "first") do |args, _blk, ncc|
+        Builtins.define(cls, interp, "first", arity: 0..1) do |args, _blk, ncc|
           obj = args.first.as_robject.as(StreamObject)
           first(obj, ncc, eof, args[1]?)
         end

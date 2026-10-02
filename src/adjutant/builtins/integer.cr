@@ -11,7 +11,7 @@ module Adjutant::Builtins
 
     # `to_s(base)`, base 2 to 36; another base raises R015
     # (ArgumentError), as in Ruby.
-    define(cls, interp, "to_s") do |args, _blk, ncc|
+    define(cls, interp, "to_s", arity: 0..1) do |args, _blk, ncc|
       n = args.first.as_int
       if base_arg = args[1]?
         base = base_arg.as_int
@@ -24,72 +24,71 @@ module Adjutant::Builtins
       end
     end
 
-    define(cls, interp, "to_i") do |args|
+    define(cls, interp, "to_i", arity: 0) do |args|
       args.first
     end
 
-    define(cls, interp, "to_f") do |args|
+    define(cls, interp, "to_f", arity: 0) do |args|
       Adjutant::Value.float(args.first.as_int.to_f64)
     end
 
     # `succ` and its alias `next`, which Range iteration uses.
-    define(cls, interp, "succ") do |args|
+    define(cls, interp, "succ", arity: 0) do |args|
       recv = args.first
       Adjutant::Value.int(recv.as_int + 1, recv.label)
     end
 
-    define(cls, interp, "next") do |args|
+    define(cls, interp, "next", arity: 0) do |args|
       recv = args.first
       Adjutant::Value.int(recv.as_int + 1, recv.label)
     end
 
-    define(cls, interp, "abs") do |args|
+    define(cls, interp, "abs", arity: 0) do |args|
       Adjutant::Value.int(args.first.as_int.abs)
     end
 
-    define(cls, interp, "even?") do |args|
+    define(cls, interp, "even?", arity: 0) do |args|
       Adjutant::Value.bool(args.first.as_int.even?)
     end
 
-    define(cls, interp, "odd?") do |args|
+    define(cls, interp, "odd?", arity: 0) do |args|
       Adjutant::Value.bool(args.first.as_int.odd?)
     end
 
-    define(cls, interp, "zero?") do |args|
+    define(cls, interp, "zero?", arity: 0) do |args|
       Adjutant::Value.bool(args.first.as_int.zero?)
     end
 
     # Yields 0 up to self, excluded, and returns self. Without a
     # block, returns self.
-    define(cls, interp, "times") do |args, blk, ncc|
+    define(cls, interp, "times", arity: 0) do |args, blk, ncc|
       recv = args.first
-      if blk
-        recv.as_int.times { |i| ncc.invoke(blk, [Adjutant::Value.int(i.to_i64)]) }
-      end
+      block = require_block!(blk, "Integer#times", ncc)
+      recv.as_int.times { |i| ncc.invoke(block, [Adjutant::Value.int(i.to_i64)]) }
       recv
     end
 
     # With a negative `ndigits`, rounds to a power of ten
     # (`12345.round(-2)` is 12300); otherwise returns self.
-    define(cls, interp, "ceil") do |args|
+    define(cls, interp, "ceil", arity: 0..1) do |args|
       n = args.first.as_int
       ndigits = args[1]?.try(&.as_int) || 0_i64
       Adjutant::Value.int(Adjutant::Builtins.integer_round_to_power_of_ten(n, ndigits, :ceil), args.first.label)
     end
 
-    define(cls, interp, "floor") do |args|
+    define(cls, interp, "floor", arity: 0..1) do |args|
       n = args.first.as_int
       ndigits = args[1]?.try(&.as_int) || 0_i64
       Adjutant::Value.int(Adjutant::Builtins.integer_round_to_power_of_ten(n, ndigits, :floor), args.first.label)
     end
 
-    define(cls, interp, "round") do |args|
+    define(cls, interp, "round", arity: 0..1) do |args|
       n = args.first.as_int
       ndigits = args[1]?.try(&.as_int) || 0_i64
       Adjutant::Value.int(Adjutant::Builtins.integer_round_to_power_of_ten(n, ndigits, :round), args.first.label)
     end
 
-    define(cls, interp, "truncate") do |args|
+    define(cls, interp, "truncate", arity: 0..1) do |args|
       n = args.first.as_int
       ndigits = args[1]?.try(&.as_int) || 0_i64
       Adjutant::Value.int(Adjutant::Builtins.integer_round_to_power_of_ten(n, ndigits, :truncate), args.first.label)

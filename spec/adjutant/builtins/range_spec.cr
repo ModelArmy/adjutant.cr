@@ -106,13 +106,13 @@ module Adjutant
       end
     end
 
-    describe "#exclusive?" do
+    describe "#exclude_end?" do
       it "is false for .." do
-        eval("(1..5).exclusive?").as_bool.should be_false
+        eval("(1..5).exclude_end?").as_bool.should be_false
       end
 
       it "is true for ..." do
-        eval("(1...5).exclusive?").as_bool.should be_true
+        eval("(1...5).exclude_end?").as_bool.should be_true
       end
     end
 
@@ -300,9 +300,9 @@ module Adjutant
         result.as_bool.should be_true
       end
 
-      it "with no block, does not raise, and returns the receiver" do
-        result = eval("(1..3).each")
-        result.as_robject.rclass.name.should eq "Range"
+      it "with no block, raises U022, as Adjutant has no Enumerator" do
+        error = expect_raises(RuntimeError) { eval("(1..3).each") }
+        error.diagnostic.not_nil!.code.should eq "U022"
       end
 
       # Nil-bound handling — confirmed against real Ruby via `irb`
@@ -338,7 +338,7 @@ module Adjutant
     it "every builtin Range method defaults to RiskProfile.none" do
       interp, _ = make_interp
       cls = interp.get_global("Range").as_rclass
-      %w[min max first last exclusive? to_s include? each].each do |name|
+      %w[min max first last exclude_end? to_s include? each].each do |name|
         sym_id = interp.symbols.lookup(name).not_nil!.value
         cls.find_native_method(sym_id).not_nil!.risk.should eq RiskProfile.none
       end
@@ -364,9 +364,9 @@ module Adjutant
       result.should eq [2, 7, 2, 7]
     end
 
-    it "exclusive? is false for .. and true for ..." do
+    it "exclude_end? is false for .. and true for ..." do
       src = <<-RUBY
-      [(1..5).exclusive?, (1...5).exclusive?]
+      [(1..5).exclude_end?, (1...5).exclude_end?]
       RUBY
       result = eval(src).as_array.map(&.as_bool)
       result.should eq [false, true]
@@ -503,10 +503,9 @@ module Adjutant
         result.as_bool.should be_true
       end
 
-      it "with no block, does not raise, and returns the receiver" do
-        interp, _ = make_interp
-        result = interp.eval("(1..3).step(1)")
-        result.truthy?.should be_true
+      it "with no block, raises U022, as Adjutant has no Enumerator" do
+        error = expect_raises(RuntimeError) { eval("(1..3).step(1)") }
+        error.diagnostic.not_nil!.code.should eq "U022"
       end
 
       it "raises ArgumentError (R020) for a step of 0" do
@@ -613,7 +612,7 @@ module Adjutant
     end
 
     describe "#exclude_end? / #member?" do
-      it "exclude_end? matches exclusivity, same as #exclusive?" do
+      it "exclude_end? matches exclusivity" do
         interp, _ = make_interp
         interp.eval("(1...10).exclude_end?").truthy?.should be_true
         interp.eval("(1..10).exclude_end?").truthy?.should be_false

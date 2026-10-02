@@ -40,11 +40,11 @@ module Adjutant
 
         # Nil when absent, as for a `raise Legate::Redirect, "..."`
         # that set no attributes.
-        Builtins.define(cls, interp, "status") do |args|
+        Builtins.define(cls, interp, "status", arity: 0) do |args|
           args.first.as_robject.ivars[status_sym]? || Value.nil_value
         end
 
-        Builtins.define(cls, interp, "location") do |args|
+        Builtins.define(cls, interp, "location", arity: 0) do |args|
           args.first.as_robject.ivars[location_sym]? || Value.nil_value
         end
       end

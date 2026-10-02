@@ -7,7 +7,7 @@ module Adjutant
       # / subclass.new" describe block, below, for the fix and its
       # regression coverage) is why every case in the OTHER describe
       # blocks below still constructs via `raise ClassName, message;
-      # rescue e; e` rather than `ClassName.new(message)` directly —
+      # rescue => e; e` rather than `ClassName.new(message)` directly —
       # kept that way even after the fix landed, since it exercises
       # the genuinely separate `make_error_object` (vm.cr) path,
       # which was never in question.
@@ -79,7 +79,7 @@ module Adjutant
           eval(<<-RUBY).as_string.should eq "boom"
           begin
             raise RuntimeError, "boom"
-          rescue e
+          rescue => e
             e.to_s
           end
           RUBY
@@ -89,7 +89,7 @@ module Adjutant
           eval(<<-RUBY).as_string.should eq "RuntimeError"
           begin
             raise RuntimeError
-          rescue e
+          rescue => e
             e.to_s
           end
           RUBY
@@ -99,7 +99,7 @@ module Adjutant
           eval(<<-RUBY).as_string.should eq "TypeError"
           begin
             raise TypeError
-          rescue e
+          rescue => e
             e.to_s
           end
           RUBY
@@ -115,7 +115,7 @@ module Adjutant
           eval(<<-RUBY).as_string.should eq "#<RuntimeError: boom>"
           begin
             raise RuntimeError, "boom"
-          rescue e
+          rescue => e
             e.inspect
           end
           RUBY
@@ -125,7 +125,7 @@ module Adjutant
           eval(<<-RUBY).as_string.should eq "#<RuntimeError: RuntimeError>"
           begin
             raise RuntimeError
-          rescue e
+          rescue => e
             e.inspect
           end
           RUBY
@@ -135,7 +135,7 @@ module Adjutant
           eval(<<-RUBY).as_string.should eq "#<TypeError: nope>"
           begin
             raise TypeError, "nope"
-          rescue e
+          rescue => e
             e.inspect
           end
           RUBY
@@ -150,7 +150,7 @@ module Adjutant
           end
           begin
             raise MyError
-          rescue e
+          rescue => e
             e.inspect
           end
           RUBY
@@ -161,7 +161,7 @@ module Adjutant
           eval(<<-RUBY).as_string.should eq "#<ArgumentError: bad arg>"
           begin
             raise ArgumentError, "bad arg"
-          rescue e
+          rescue => e
             e.inspect
           end
           RUBY
@@ -173,7 +173,7 @@ module Adjutant
           eval(<<-RUBY).as_string.should eq "boom"
           begin
             raise RuntimeError, "boom"
-          rescue e
+          rescue => e
             e.message
           end
           RUBY

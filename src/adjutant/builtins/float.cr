@@ -13,11 +13,11 @@ module Adjutant::Builtins
     cls.constants[interp.symbols.intern("INFINITY").value] = Adjutant::Value.float(Float64::INFINITY)
     cls.constants[interp.symbols.intern("NAN").value] = Adjutant::Value.float(Float64::NAN)
 
-    define(cls, interp, "to_s") do |args|
+    define(cls, interp, "to_s", arity: 0) do |args|
       Adjutant::Value.string(args.first.as_float.to_s)
     end
 
-    define(cls, interp, "to_i") do |args, _blk, ncc|
+    define(cls, interp, "to_i", arity: 0) do |args, _blk, ncc|
       # Truncates toward zero, as in Ruby. Infinity and NaN raise R016
       # (FloatDomainError).
       val = args.first.as_float
@@ -32,7 +32,7 @@ module Adjutant::Builtins
     # R016 only when the result would be an Integer:
     # `Float::INFINITY.floor(2)` is Infinity, as in Ruby.
     {% for method in [:ceil, :floor, :round, :truncate] %}
-    define(cls, interp, {{ method.id.stringify }}) do |args, _blk, ncc|
+    define(cls, interp, {{ method.id.stringify }}, arity: 0..1) do |args, _blk, ncc|
       val = args.first.as_float
       ndigits = args[1]?.try(&.as_int) || 0_i64
       if !val.finite? && ndigits <= 0
@@ -51,7 +51,7 @@ module Adjutant::Builtins
     # Mapped methods returning a Bool.
     __define_mapped_methods(cls, interp, self_as: float, return_as: bool, methods: [finite?, nan?])
 
-    define(cls, interp, "infinite?") do |args|
+    define(cls, interp, "infinite?", arity: 0) do |args|
       val = args.first.as_float
       case result = val.infinite?
       when Int then Adjutant::Value.int(result)
@@ -59,7 +59,7 @@ module Adjutant::Builtins
       end
     end
 
-    define(cls, interp, "to_f") do |args|
+    define(cls, interp, "to_f", arity: 0) do |args|
       args.first
     end
 

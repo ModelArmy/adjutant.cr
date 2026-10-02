@@ -13,12 +13,16 @@ jobs:
       matrix:
         include:
           - { os: ubuntu-latest, crystal: "1.21" }
-          - { os: ubuntu-24.04-arm, crystal: "1.21" }
+          - { os: ubuntu-24.04-arm, crystal: latest }
           - { os: macos-latest, crystal: "1.21" }
 
     runs-on: ${{ matrix.os }}
 
     steps:
+      - name: Force apt update (Linux only)
+        if: ${{ runner.os == 'Linux' }}
+        run: sudo -n apt-get update
+
       - name: Checkout code
         uses: actions/checkout@v6
 

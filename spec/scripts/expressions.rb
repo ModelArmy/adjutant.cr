@@ -138,12 +138,12 @@ assert("Ranges") do
   assert_equal a.class, Range
   assert_equal a.min, 0
   assert_equal a.max, 3
-  assert_equal a.exclusive?, false
+  assert_equal a.exclude_end?, false
 
   b = 0...3
   assert_not_nil b
   assert_equal b.class, Range
-  assert_equal b.exclusive?, true
+  assert_equal b.exclude_end?, true
 
   total = 0
   for x in 1..4
@@ -228,13 +228,15 @@ assert "lambdas in module" do
   module M2
     dbl = ->(n) { n + n }
     assert_not_nil dbl
+    assert_equal dbl.call(3), 6
 
-    def self.x; end
+    def self.x; :x; end
 
     assert_not_nil(x)
   end
 
-  assert_equal dbl.call(3), 6
+  # A module body's locals stay in the module body, as in Ruby.
+  assert_raise(NameError) { dbl }
   true
 end
 
@@ -289,8 +291,8 @@ assert "signed no-paren parameter to method" do
   eq (6/3), 2
   eq(-1, -1)
   eq 1, -1
-  eq 1, -1, -3
-  eq 1, -1, -3, 4
+  assert_raise(ArgumentError) { eq 1, -1, -3 }
+  assert_raise(ArgumentError) { eq 1, -1, -3, 4 }
   eq(5, 5)
   eq 5, 5
 end

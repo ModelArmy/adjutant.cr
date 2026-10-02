@@ -234,7 +234,7 @@ module Adjutant
       end
 
       it "parses begin/rescue as assignment rhs" do
-        node = parse_expr("x = begin\nfoo\nrescue e\nbar\nend")
+        node = parse_expr("x = begin\nfoo\nrescue => e\nbar\nend")
         n = node.as(Assign).value.as(BeginNode)
         n.rescue_clauses[0].var.should eq "e"
       end

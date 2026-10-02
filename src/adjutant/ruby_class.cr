@@ -100,13 +100,13 @@ module Adjutant
 
     # Defines a native instance method. The receiver arrives as
     # `args.first`. `risk` has no default, so each registration
-    # decides it; see `NativeCallable` for `kwarg_names` and
-    # `authorities`.
+    # decides it; see `NativeCallable` for `kwarg_names`,
+    # `authorities` and `arity`. `arity` defaults to any count.
     def define_native_method(sym_id : Int32, risk : RiskProfile, kwarg_names : Set(String) = Set(String).new, is_private : Bool = false,
-                             authorities : Set(Authority) = Set(Authority).new,
+                             authorities : Set(Authority) = Set(Authority).new, arity : ArityLike = Arity.any,
                              &block : Array(Value), ScriptProc?, NativeCallContext -> Value) : Nil
       func = NativeFunc.new { |args, blk, ncc| block.call(args, blk, ncc) }
-      @native_methods[sym_id] = NativeCallable.new(func, risk, kwarg_names, authorities)
+      @native_methods[sym_id] = NativeCallable.new(func, risk, kwarg_names, authorities, Arity.from(arity))
       if is_private
         @native_private_methods << sym_id
       else
@@ -118,12 +118,13 @@ module Adjutant
     # `new` that allocates a `RubyObject` subclass. The class itself
     # arrives as `args.first`, followed by the call's arguments; a
     # native `new` must return a `Value.robject`. `risk` has no
-    # default, as for `define_native_method`.
+    # default, and `arity` defaults to any count, as for
+    # `define_native_method`.
     def define_native_singleton_method(sym_id : Int32, risk : RiskProfile, kwarg_names : Set(String) = Set(String).new,
-                                       authorities : Set(Authority) = Set(Authority).new,
+                                       authorities : Set(Authority) = Set(Authority).new, arity : ArityLike = Arity.any,
                                        &block : Array(Value), ScriptProc?, NativeCallContext -> Value) : Nil
       func = NativeFunc.new { |args, blk, ncc| block.call(args, blk, ncc) }
-      @native_singleton_methods[sym_id] = NativeCallable.new(func, risk, kwarg_names, authorities)
+      @native_singleton_methods[sym_id] = NativeCallable.new(func, risk, kwarg_names, authorities, Arity.from(arity))
     end
 
     # Finds a native singleton method: this class's own, then its
@@ -378,6 +379,20 @@ module Adjutant
 
     def initialize(@rclass : RubyClass)
       @ivars = {} of Int32 => Value
+    end
+
+    # A new object of the same class with the same ivars and, in a
+    # subclass, the same native state, for `dup` and `clone`; nil for
+    # an object that can't be copied.
+    def shallow_copy : RubyObject?
+      copy_ivars_to(RubyObject.new(@rclass))
+    end
+
+    # Gives `copy` this object's ivars and closure, and returns it.
+    protected def copy_ivars_to(copy : RubyObject) : RubyObject
+      copy.ivars.merge!(@ivars)
+      copy.outer_locals = @outer_locals
+      copy
     end
 
     # Whether this object's class or one of its superclasses is named

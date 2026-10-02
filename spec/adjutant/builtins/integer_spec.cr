@@ -130,8 +130,9 @@ module Adjutant
       eval("3.times { |i| i }").as_int.should eq 3_i64
     end
 
-    it "times with no block is a no-op that returns the receiver" do
-      eval("3.times").as_int.should eq 3_i64
+    it "times with no block raises U022, as Adjutant has no Enumerator" do
+      error = expect_raises(RuntimeError) { eval("3.times") }
+      error.diagnostic.not_nil!.code.should eq "U022"
     end
 
     it "times on zero yields nothing" do

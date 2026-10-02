@@ -20,7 +20,7 @@ module Adjutant::Builtins
 
     # `Range.new(begin, end, exclude_end = false)`. A nil bound builds
     # a beginless or endless range, as `..5` and `1..` do.
-    define_singleton(cls, interp, "new") do |args, _blk, _ncc|
+    define_singleton(cls, interp, "new", arity: 2..3) do |args, _blk, _ncc|
       rstart = args[1]? || Adjutant::Value.nil_value
       rend = args[2]? || Adjutant::Value.nil_value
       exclusive = args[3]?.try(&.truthy?) || false
@@ -33,7 +33,7 @@ module Adjutant::Builtins
 
     # `min` and `max` raise RangeError on a missing bound, as `first`
     # and `last` do, with Ruby's messages.
-    define(cls, interp, "min") do |args, _blk, ncc|
+    define(cls, interp, "min", arity: 0) do |args, _blk, ncc|
       obj = args.first.as_robject
       lo = obj.ivars[min_sym]
       ncc.raise_error("R029", {} of String => String, "RangeError") if lo.null?
@@ -43,7 +43,7 @@ module Adjutant::Builtins
     # A beginless range raises RangeError, with or without `n`, as in
     # Ruby. With `n`, an Array of the first `n` elements, which works
     # on an endless range; a negative `n` raises ArgumentError.
-    define(cls, interp, "first") do |args, _blk, ncc|
+    define(cls, interp, "first", arity: 0..1) do |args, _blk, ncc|
       obj = args.first.as_robject
       lo = obj.ivars[min_sym]
       ncc.raise_error("R030", {} of String => String, "RangeError") if lo.null?
@@ -69,40 +69,37 @@ module Adjutant::Builtins
     end
 
     # The bounds as stored, nil included; never raises.
-    define(cls, interp, "begin") do |args|
+    define(cls, interp, "begin", arity: 0) do |args|
       args.first.as_robject.ivars[min_sym]
     end
 
-    define(cls, interp, "end") do |args|
+    define(cls, interp, "end", arity: 0) do |args|
       args.first.as_robject.ivars[max_sym]
     end
 
-    define(cls, interp, "max") do |args, _blk, ncc|
+    define(cls, interp, "max", arity: 0) do |args, _blk, ncc|
       obj = args.first.as_robject
       hi = obj.ivars[max_sym]
       ncc.raise_error("R027", {} of String => String, "RangeError") if hi.null?
       hi
     end
 
-    define(cls, interp, "last") do |args, _blk, ncc|
+    define(cls, interp, "last", arity: 0) do |args, _blk, ncc|
       obj = args.first.as_robject
       hi = obj.ivars[max_sym]
       ncc.raise_error("R028", {} of String => String, "RangeError") if hi.null?
       hi
     end
 
-    # `exclude_end?` is Ruby's name; `exclusive?` is not Ruby.
-    {"exclusive?", "exclude_end?"}.each do |name|
-      define(cls, interp, name) do |args|
-        args.first.as_robject.ivars[excl_sym]
-      end
+    define(cls, interp, "exclude_end?", arity: 0) do |args|
+      args.first.as_robject.ivars[excl_sym]
     end
 
     # `to_s` renders each bound with its own `to_s`, `inspect` with its
     # own `inspect`, so `("a".."c").to_s` is "a..c" and its `inspect`
     # is "\"a\"..\"c\"". A nil bound is omitted: `(..5).inspect` is
     # "..5".
-    define(cls, interp, "to_s") do |args, _blk, ncc|
+    define(cls, interp, "to_s", arity: 0) do |args, _blk, ncc|
       obj = args.first.as_robject
       sep = obj.ivars[excl_sym].as_bool ? "..." : ".."
       min_v = obj.ivars[min_sym]
@@ -112,7 +109,7 @@ module Adjutant::Builtins
       Adjutant::Value.string("#{min_str}#{sep}#{max_str}")
     end
 
-    define(cls, interp, "inspect") do |args, _blk, ncc|
+    define(cls, interp, "inspect", arity: 0) do |args, _blk, ncc|
       obj = args.first.as_robject
       sep = obj.ivars[excl_sym].as_bool ? "..." : ".."
       min_v = obj.ivars[min_sym]
@@ -122,33 +119,32 @@ module Adjutant::Builtins
       Adjutant::Value.string("#{min_str}#{sep}#{max_str}")
     end
 
-    define(cls, interp, "include?") do |args, _blk, ncc|
+    define(cls, interp, "include?", arity: 1) do |args, _blk, ncc|
       range_includes?(args, ncc, min_sym, max_sym, excl_sym)
     end
 
     # Ruby's alias of `include?`.
-    define(cls, interp, "member?") do |args, _blk, ncc|
+    define(cls, interp, "member?", arity: 1) do |args, _blk, ncc|
       range_includes?(args, ncc, min_sym, max_sym, excl_sym)
     end
 
     # Yields from the start up to the end (excluded if exclusive),
     # stepping with `succ`. A beginless range raises TypeError (R024),
     # as in Ruby; an endless one iterates until the block breaks.
-    define(cls, interp, "each") do |args, blk, ncc|
+    define(cls, interp, "each", arity: 0) do |args, blk, ncc|
       recv = args.first
       obj = recv.as_robject
       exclusive = obj.ivars[excl_sym].as_bool
       lo = obj.ivars[min_sym]
       hi = obj.ivars[max_sym]
       ncc.raise_error("R024", {"method" => "each"}, "TypeError") if lo.null?
-      if blk
-        current = lo
-        loop do
-          in_bounds = hi.null? || (exclusive ? ncc.compare(current, hi, :<) : ncc.compare(current, hi, :<=))
-          break unless in_bounds
-          ncc.invoke(blk, [current])
-          current = ncc.call_method(current, "succ", [] of Adjutant::Value)
-        end
+      block = require_block!(blk, "Range#each", ncc)
+      current = lo
+      loop do
+        in_bounds = hi.null? || (exclusive ? ncc.compare(current, hi, :<) : ncc.compare(current, hi, :<=))
+        break unless in_bounds
+        ncc.invoke(block, [current])
+        current = ncc.call_method(current, "succ", [] of Adjutant::Value)
       end
       recv
     end
@@ -156,7 +152,7 @@ module Adjutant::Builtins
     # Every value `each` would yield, as an Array. Its label joins the
     # Range's and each value's. A beginless range raises TypeError
     # (R024), an endless one RangeError (R026).
-    define(cls, interp, "to_a") do |args, _blk, ncc|
+    define(cls, interp, "to_a", arity: 0) do |args, _blk, ncc|
       recv = args.first
       obj = recv.as_robject
       exclusive = obj.ivars[excl_sym].as_bool
@@ -179,7 +175,7 @@ module Adjutant::Builtins
     # step raises ArgumentError (R020); a beginless range raises
     # ArgumentError (R025), as Ruby does; an endless one iterates until
     # the block breaks. Without a block, returns the receiver.
-    define(cls, interp, "step") do |args, blk, ncc|
+    define(cls, interp, "step", arity: 0..1) do |args, blk, ncc|
       recv = args.first
       obj = recv.as_robject
       exclusive = obj.ivars[excl_sym].as_bool
@@ -190,14 +186,13 @@ module Adjutant::Builtins
         ncc.raise_error("R020", {} of String => String, "ArgumentError")
       end
       ncc.raise_error("R025", {} of String => String, "ArgumentError") if lo.null?
-      if blk
-        current = lo
-        loop do
-          in_bounds = hi.null? || (exclusive ? ncc.compare(current, hi, :<) : ncc.compare(current, hi, :<=))
-          break unless in_bounds
-          ncc.invoke(blk, [current])
-          current = ncc.add(current, n)
-        end
+      block = require_block!(blk, "Range#step", ncc)
+      current = lo
+      loop do
+        in_bounds = hi.null? || (exclusive ? ncc.compare(current, hi, :<) : ncc.compare(current, hi, :<=))
+        break unless in_bounds
+        ncc.invoke(block, [current])
+        current = ncc.add(current, n)
       end
       recv
     end

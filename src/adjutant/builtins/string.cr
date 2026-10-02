@@ -5,6 +5,97 @@ require "./helpers"
 require "./regexp"
 
 module Adjutant::Builtins
+  # Ruby's `String#split(pattern, limit)`, following `rb_str_split_m`:
+  #
+  #   1. No pattern, or `" "`, splits on runs of ASCII whitespace,
+  #      ignoring leading whitespace.
+  #   2. Otherwise each match of the pattern (a String is matched
+  #      literally) separates fields, and a Regexp's captures are kept
+  #      between them. An empty match splits off one character.
+  #   3. A positive `limit` stops after `limit - 1` splits, leaving the
+  #      rest as the last field; 1 returns the whole string.
+  #   4. With `limit` 0, trailing empty fields are dropped; a negative
+  #      `limit` keeps them.
+  #
+  # An empty string gives no fields.
+  def self.ruby_split(s : String, pattern : (::Regex | String)?, limit : Int32) : Array(String)
+    return [] of String if s.empty?
+    return [s] if limit == 1
+    fields = [] of String
+    beg = if pattern.nil? || pattern == " "
+            awk_split(s, limit, fields)
+          else
+            regex = pattern.is_a?(::Regex) ? pattern : ::Regex.new(::Regex.escape(pattern))
+            pattern_split(s, regex, limit, fields)
+          end
+    fields << s[beg..] if limit != 0 || s.size > beg
+    if limit == 0
+      while fields.last? == ""
+        fields.pop
+      end
+    end
+    fields
+  end
+
+  # Step 1 of `ruby_split`: pushes each whitespace-separated field
+  # before the last onto `fields`, and returns where the last starts.
+  private def self.awk_split(s : String, limit : Int32, fields : Array(String)) : Int32
+    beg = 0
+    fin = 0
+    skip = true
+    count = 1
+    s.each_char_with_index do |char, index|
+      if skip
+        if char.ascii_whitespace?
+          beg = index + 1
+        else
+          fin = index + 1
+          skip = false
+          break if limit > 0 && limit <= count
+        end
+      elsif char.ascii_whitespace?
+        fields << s[beg...fin]
+        skip = true
+        beg = index + 1
+        count += 1
+      else
+        fin = index + 1
+      end
+    end
+    beg
+  end
+
+  # Step 2 of `ruby_split`: pushes each field before the last, and
+  # captures, onto `fields`, and returns where the last starts. An
+  # empty match at the search position is skipped once, then splits
+  # off the character before the next search, as Ruby does.
+  private def self.pattern_split(s : String, regex : ::Regex, limit : Int32, fields : Array(String)) : Int32
+    beg = 0
+    start = 0
+    count = 1
+    last_null = false
+    while start <= s.size && (m = regex.match(s, start))
+      if start == m.begin(0) && m.begin(0) == m.end(0)
+        if last_null
+          fields << s[beg, 1]
+          beg = start
+        else
+          start += 1
+          last_null = true
+          next
+        end
+      else
+        fields << s[beg...m.begin(0)]
+        beg = start = m.end(0)
+      end
+      last_null = false
+      (1...m.size).each { |group| m[group]?.try { |capture| fields << capture } }
+      count += 1
+      break if limit > 0 && limit <= count
+    end
+    beg
+  end
+
   # Builds the `String` class and its native methods. `+`, the
   # comparisons and `[]` are opcodes, not methods. `*` isn't
   # supported.
@@ -12,104 +103,102 @@ module Adjutant::Builtins
   def self.bootstrap_string(interp : Adjutant::Interpreter) : Adjutant::RubyClass
     cls = Adjutant::RubyClass.new("String")
 
-    define(cls, interp, "to_s") do |args|
+    define(cls, interp, "to_s", arity: 0) do |args|
       args.first
     end
 
-    define(cls, interp, "to_i") do |args|
+    define(cls, interp, "to_i", arity: 0) do |args|
       recv = args.first
       Adjutant::Value.int(recv.as_string.to_i64? || 0_i64, recv.label)
     end
 
-    define(cls, interp, "to_f") do |args|
+    define(cls, interp, "to_f", arity: 0) do |args|
       recv = args.first
       Adjutant::Value.float(recv.as_string.to_f64? || 0.0, recv.label)
     end
 
-    define(cls, interp, "to_sym") do |args|
+    define(cls, interp, "to_sym", arity: 0) do |args|
       recv = args.first
       Adjutant::Value.symbol(interp.symbols.intern(recv.as_string), recv.label)
     end
 
-    define(cls, interp, "length") do |args|
+    define(cls, interp, "length", arity: 0) do |args|
       Adjutant::Value.int(args.first.as_string.size.to_i64)
     end
 
-    define(cls, interp, "size") do |args|
+    define(cls, interp, "size", arity: 0) do |args|
       Adjutant::Value.int(args.first.as_string.size.to_i64)
     end
 
     # A one-string transform carries the receiver's label to its
     # result.
-    define(cls, interp, "upcase") do |args|
+    define(cls, interp, "upcase", arity: 0) do |args|
       recv = args.first
       Adjutant::Value.string(recv.as_string.upcase, recv.label)
     end
 
-    define(cls, interp, "downcase") do |args|
+    define(cls, interp, "downcase", arity: 0) do |args|
       recv = args.first
       Adjutant::Value.string(recv.as_string.downcase, recv.label)
     end
 
-    define(cls, interp, "strip") do |args|
+    define(cls, interp, "strip", arity: 0) do |args|
       recv = args.first
       Adjutant::Value.string(recv.as_string.strip, recv.label)
     end
 
-    define(cls, interp, "empty?") do |args|
+    define(cls, interp, "empty?", arity: 0) do |args|
       Adjutant::Value.bool(args.first.as_string.empty?)
     end
 
-    define(cls, interp, "include?") do |args|
+    define(cls, interp, "include?", arity: 1) do |args|
       needle = args[1]?.try(&.as_string?)
       Adjutant::Value.bool(needle ? args.first.as_string.includes?(needle) : false)
     end
 
-    define(cls, interp, "split") do |args|
+    # Ruby's rules (`ruby_split`): no separator or `" "` splits on
+    # whitespace runs, trailing empty fields are dropped unless `limit`
+    # is negative, and a positive `limit` caps the fields.
+    define(cls, interp, "split", arity: 0..2) do |args|
       recv = args.first
       s = recv.as_string
       sep_val = args[1]?
-      # A `limit` applies to Regexp and String separators, through
-      # Crystal's `split(sep, limit)`; it is ignored for a whitespace
-      # split.
-      limit = args[2]?.try(&.as_int?).try(&.to_i)
-      parts =
-        if (robj = sep_val.try(&.as_robject?)) && robj.is_a?(Adjutant::RegexpObject)
-          limit ? s.split(robj.regex, limit) : s.split(robj.regex)
-        elsif sep = sep_val.try(&.as_string?)
-          limit ? s.split(sep, limit) : s.split(sep)
-        else
-          s.split
-        end
+      limit = args[2]?.try(&.as_int?).try(&.to_i) || 0
+      pattern = if (robj = sep_val.try(&.as_robject?)) && robj.is_a?(Adjutant::RegexpObject)
+                  robj.regex
+                else
+                  sep_val.try(&.as_string?)
+                end
+      parts = ruby_split(s, pattern, limit)
       # Each piece's label, and the Array's, joins the receiver's and
       # the separator's.
       whole_label = Adjutant::RiskFlowLabel.join(recv.label, sep_val.try(&.label))
       Adjutant::Value.new(Adjutant::LabeledArray.new(parts.map { |part| Adjutant::Value.string(part, whole_label) }, whole_label), nil)
     end
 
-    define(cls, interp, "reverse") do |args|
+    define(cls, interp, "reverse", arity: 0) do |args|
       recv = args.first
       Adjutant::Value.string(recv.as_string.reverse, recv.label)
     end
 
-    define(cls, interp, "chars") do |args|
+    define(cls, interp, "chars", arity: 0) do |args|
       recv = args.first
       # Each character carries the receiver's label.
       Adjutant::Value.new(Adjutant::LabeledArray.new(recv.as_string.chars.map { |char| Adjutant::Value.string(char.to_s) }, recv.label), nil)
     end
 
-    define(cls, interp, "start_with?") do |args|
+    define(cls, interp, "start_with?", arity: 0..1) do |args|
       prefix = args[1]?.try(&.as_string?)
       Adjutant::Value.bool(prefix ? args.first.as_string.starts_with?(prefix) : false)
     end
 
-    define(cls, interp, "end_with?") do |args|
+    define(cls, interp, "end_with?", arity: 0..1) do |args|
       suffix = args[1]?.try(&.as_string?)
       Adjutant::Value.bool(suffix ? args.first.as_string.ends_with?(suffix) : false)
     end
 
     # Upcases the first character and downcases the rest, as in Ruby.
-    define(cls, interp, "capitalize") do |args|
+    define(cls, interp, "capitalize", arity: 0) do |args|
       recv = args.first
       Adjutant::Value.string(recv.as_string.capitalize, recv.label)
     end
@@ -117,7 +206,7 @@ module Adjutant::Builtins
     # With no argument, strips one trailing "\r\n", "\n" or "\r".
     # With a separator, strips it if the string ends with it; with
     # "", strips every trailing newline.
-    define(cls, interp, "chomp") do |args|
+    define(cls, interp, "chomp", arity: 0..1) do |args|
       recv = args.first
       s = recv.as_string
       sep = args[1]?.try(&.as_string?)
@@ -153,25 +242,27 @@ module Adjutant::Builtins
     # rejoin into the string; no empty chunk after a final separator.
     # Without a block, returns the receiver. An empty separator splits
     # on "\n", not by paragraph as Ruby does.
-    define(cls, interp, "each_line") do |args, blk, ncc|
+    # Yields each line with its separator. An empty separator is
+    # Ruby's paragraph mode: a paragraph ends at a blank line and takes
+    # every newline after it.
+    define(cls, interp, "each_line", arity: 0..1) do |args, blk, ncc|
       recv = args.first
       s = recv.as_string
+      block = require_block!(blk, "String#each_line", ncc)
       sep = args[1]?.try(&.as_string?) || "\n"
-      sep = "\n" if sep.empty?
-      if blk
-        pos = 0
-        loop do
-          idx = s.index(sep, pos)
-          if idx
-            chunk = s[pos..(idx + sep.size - 1)]
-            ncc.invoke(blk, [Adjutant::Value.string(chunk, recv.label)])
-            pos = idx + sep.size
-          else
-            chunk = s[pos..]
-            ncc.invoke(blk, [Adjutant::Value.string(chunk, recv.label)]) unless chunk.empty?
-            break
+      paragraph = sep.empty?
+      sep = "\n\n" if paragraph
+      pos = 0
+      while pos < s.size
+        idx = s.index(sep, pos)
+        stop = idx ? idx + sep.size : s.size
+        if paragraph && idx
+          while stop < s.size && s[stop] == '\n'
+            stop += 1
           end
         end
+        ncc.invoke(block, [Adjutant::Value.string(s[pos...stop], recv.label)])
+        pos = stop
       end
       recv
     end
@@ -180,7 +271,7 @@ module Adjutant::Builtins
     # `start`; a negative `start` counts from the end, and one still
     # negative gives nil. A missing pattern raises R018
     # (`ArgumentError`), another type R019 (`TypeError`).
-    define(cls, interp, "index") do |args, _blk, ncc|
+    define(cls, interp, "index", arity: 1..2) do |args, _blk, ncc|
       recv = args.first
       pattern = string_pattern_arg(args, "index", ncc)
       s = recv.as_string
@@ -193,7 +284,7 @@ module Adjutant::Builtins
 
     # The last index of `pattern` starting at or before `start`,
     # default the end; negative `start` as for `index`.
-    define(cls, interp, "rindex") do |args, _blk, ncc|
+    define(cls, interp, "rindex", arity: 1..2) do |args, _blk, ncc|
       recv = args.first
       pattern = string_pattern_arg(args, "rindex", ncc)
       s = recv.as_string
@@ -212,12 +303,12 @@ module Adjutant::Builtins
     # and whatever was substituted: the replacement's, or each block
     # result's. The block's argument carries the receiver's and the
     # pattern's, being text taken from the receiver.
-    define(cls, interp, "sub") do |args, blk, ncc|
+    define(cls, interp, "sub", arity: 1..2) do |args, blk, ncc|
       text, label = string_sub_or_gsub(args, blk, ncc, "sub", all: false)
       Adjutant::Value.string(text, label)
     end
 
-    define(cls, interp, "gsub") do |args, blk, ncc|
+    define(cls, interp, "gsub", arity: 1..2) do |args, blk, ncc|
       text, label = string_sub_or_gsub(args, blk, ncc, "gsub", all: true)
       Adjutant::Value.string(text, label)
     end
@@ -225,7 +316,7 @@ module Adjutant::Builtins
     # A String pattern is compiled as a regex, as in Ruby
     # (`"hello".match("l+")` matches "ll"), unlike `index`, `sub` and
     # `split`, where it is literal.
-    define(cls, interp, "match") do |args, blk, ncc|
+    define(cls, interp, "match", arity: 1) do |args, blk, ncc|
       recv = args.first
       pattern_val = args[1]?
       ncc.raise_error("R018", {"method" => "match"}, "ArgumentError") unless pattern_val
@@ -261,7 +352,7 @@ module Adjutant::Builtins
     # The index of the first match of a Regexp, or nil. A String on
     # the right raises R033 (`TypeError`), as in Ruby; `match` is the
     # one that accepts a String.
-    define(cls, interp, "=~") do |args, _blk, ncc|
+    define(cls, interp, "=~", arity: 1) do |args, _blk, ncc|
       recv = args.first
       pattern_val = args[1]?
       regex =

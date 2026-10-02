@@ -82,8 +82,8 @@ assert("a class-defined initialize_copy runs on dup, original as arg") do
   copy.tag == "copy of first" && original.tag == "first"
 end
 
-assert("dup/clone on a builtin-kind receiver still raises (out of scope)") do
-  assert_raise { 5.dup }
-  assert_raise { "hello".dup }
-  assert_raise { [1, 2].dup }
+assert("dup/clone on a builtin-kind receiver supported") do
+  assert_nothing_raised { 5.dup }
+  assert_nothing_raised { "hello".dup }
+  assert_nothing_raised { [1, 2].dup }
 end

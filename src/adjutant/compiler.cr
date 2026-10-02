@@ -65,15 +65,28 @@ module Adjutant
     property next_slot : Int32
     getter? is_block : Bool
     getter parent : CompilerScope?
+    # A `for` body: a block at runtime, but a name it assigns belongs
+    # to the scope the loop is in, as in Ruby.
+    getter? for_body : Bool
 
     # `starting_slot` continues slot numbering from an enclosing scope
     # without seeing its names. A class or module body runs in its
     # enclosing frame, so its locals need fresh slots, but it must not
     # close over the enclosing locals (Ruby raises NameError), so it
     # gets no `parent`.
-    def initialize(@is_block = false, @parent = nil, starting_slot : Int32 = 0)
+    def initialize(@is_block = false, @parent = nil, starting_slot : Int32 = 0, @for_body = false)
       @vars = {} of String => Int32
       @next_slot = starting_slot
+    end
+
+    # Where a new name assigned in this scope is defined: here, or for
+    # a `for` body, the nearest enclosing scope that isn't one.
+    def local_host : CompilerScope
+      scope = self
+      while scope.for_body? && (parent = scope.parent)
+        scope = parent
+      end
+      scope
     end
 
     # Defines a local and returns its slot.
@@ -146,10 +159,11 @@ module Adjutant
       parent_scope : CompilerScope? = nil,
       def_depth : Int32 = 0,
       enclosing_method : String? = nil,
+      for_body : Bool = false,
     ) : {Chunk, Int32}
       c = new(symbols, def_depth)
       c.enclosing_method = enclosing_method
-      scope = CompilerScope.new(in_block, parent_scope)
+      scope = CompilerScope.new(in_block, parent_scope, for_body: for_body)
       c.scope = scope
       slots = params.map { |param| scope.define(param.name) }
       c.emit_default_prologue(params, slots)
@@ -194,24 +208,27 @@ module Adjutant
     # default can use earlier parameters: `def add(a, b = a + 1)`. Per
     # parameter with a default:
     #
-    #   [HasKwarg name | GetArgc; Const(slot+1); Gte]; JumpIfTrue skip
+    #   [HasKwarg name | GetArgc; Const(threshold); Gte]; JumpIfTrue skip
     #   compile(default); SetLocal slot; Pop
     #   skip:
     #
-    # A keyword is tested by name, a positional parameter by argument
-    # count. `VM#bind_args` handles splats and missing required keywords
-    # (R011); an omitted required positional parameter stays nil.
+    # A keyword is tested by name. A positional parameter was supplied
+    # when the argument count covers every required parameter and each
+    # optional one up to and including it, since `VM#bind_args` fills
+    # required parameters first and optional ones left to right.
     protected def emit_default_prologue(params : Array(Param), slots : Array(Int32)) : Nil
+      required = params.count { |param| !param.splat? && !param.kwarg? && !param.block_param? && param.default.nil? }
+      optional_seen = 0
       params.each_with_index do |param, i|
         next unless default = param.default
         slot = slots[i]
         line = param.line
-        # Supplied or not: by name for a keyword, by count otherwise.
         if param.kwarg?
           @chunk.emit(Op::HasKwarg, line, c: intern(param.name))
         else
+          optional_seen += 1
           @chunk.emit(Op::GetArgc, line)
-          count_idx = @chunk.add_const(Value.int(i + 1))
+          count_idx = @chunk.add_const(Value.int(required + optional_seen))
           @chunk.emit(Op::Const, line, c: count_idx)
           @chunk.emit(Op::Gte, line)
         end
@@ -304,11 +321,26 @@ module Adjutant
     end
 
     private def compile_int(node : IntLiteral) : Nil
-      # `_` separators are valid (`1_000`) but `to_i64` rejects them.
-      raw = node.value.delete('_')
-      n = raw.starts_with?("0x") || raw.starts_with?("0X") ? raw[2..].to_i64(16) : raw.to_i64
-      idx = @chunk.add_const(Value.int(n))
+      idx = @chunk.add_const(Value.int(Compiler.int_literal_value(node.value)))
       @chunk.emit(Op::Const, node.line, c: idx)
+    end
+
+    # An Integer literal's value, as Ruby reads it: an optional `-`,
+    # then a `0x`, `0b`, `0o` or `0d` prefix, or a bare leading `0` for
+    # octal, with `_` separators. The lexer has checked the digits.
+    def self.int_literal_value(lexeme : String) : Int64
+      raw = lexeme.delete('_')
+      negative = raw.starts_with?('-')
+      raw = raw.lchop('-')
+      base, digits = if raw.size > 1 && raw[0] == '0' && raw[1].ascii_letter?
+                       {Lexer::RADIX_PREFIXES[raw[1].downcase], raw[2..]}
+                     elsif raw.size > 1 && raw[0] == '0'
+                       {8, raw[1..]}
+                     else
+                       {10, raw}
+                     end
+      value = digits.to_i64(base)
+      negative ? -value : value
     end
 
     private def compile_float(node : FloatLiteral) : Nil
@@ -646,6 +678,7 @@ module Adjutant
 
     private def compile_op_assign(node : OpAssign) : Nil
       # `x += y` compiles as `x = x + y`.
+      declare_assigned_local(node.target)
       compile_node(node.target)
       compile_node(node.value)
       @chunk.emit(binary_op(node.op), node.line)
@@ -654,6 +687,7 @@ module Adjutant
 
     private def compile_cond_assign(node : CondAssign) : Nil
       # `x ||= y` assigns only if x is falsy; `x &&= y` only if truthy.
+      declare_assigned_local(node.target)
       compile_node(node.target)
       @chunk.emit(Op::Dup, node.line)
       if node.op == TokenKind::OrAssign
@@ -673,6 +707,16 @@ module Adjutant
         emit_store(node.target, node.line)
         @chunk.patch_jump(jmp_end, @chunk.pos)
       end
+    end
+
+    # Defines a local for `x` in `x ||= y` or `x += y` before `x` is
+    # read, where `emit_store_name` would define it, so an undefined
+    # `x` reads as nil, as in Ruby, rather than as an undefined name.
+    private def declare_assigned_local(target : Node) : Nil
+      return unless target.is_a?(Identifier) && (scope = @scope)
+      name = target.name
+      return if scope.resolve_local(name) || scope.resolve_outer(name)
+      scope.local_host.define(name)
     end
 
     private def compile_multi_assign(node : MultiAssign) : Nil
@@ -711,7 +755,8 @@ module Adjutant
         # this order.
         compile_node(target.target)
         compile_node(target.index)
-        @chunk.emit(Op::SetIndexFromValue, line)
+        target.length.try { |length| compile_node(length) }
+        @chunk.emit(Op::SetIndexFromValue, line, a: index_arg_count(target.length))
       else
         raise CompileError.new(
           Diagnostic.new(
@@ -730,28 +775,33 @@ module Adjutant
     # --- Calls --------------------------------------------------------------
 
     # Stores the top of the stack into the variable `name`: a local of
-    # this scope, else an enclosing scope's local, else a new local.
-    # `force_define`, for `rescue => e`, skips enclosing scopes and
-    # always defines a local here, as Ruby binds a rescue variable
-    # locally even inside a block.
-    private def emit_store_name(name : String, line : Int32, force_define : Bool = false) : Nil
+    # this scope, else an enclosing scope's local, else a new local of
+    # `CompilerScope#local_host`, so a block's new name is local to the
+    # block and a `for` body's belongs to the scope around the loop.
+    # A `rescue => e` binding is stored the same way, as Ruby's
+    # grammar makes it an ordinary assignment.
+    private def emit_store_name(name : String, line : Int32) : Nil
       if scope = @scope
         if slot = scope.resolve_local(name)
           @chunk.emit(Op::SetLocal, line, c: slot.to_u32)
           return
         end
-        if !force_define && (depth_slot = scope.resolve_outer(name))
+        if depth_slot = scope.resolve_outer(name)
           depth, slot = depth_slot
           @chunk.emit(Op::SetOuter, line, a: depth.to_u8, c: slot.to_u32)
           return
         end
-        # In a block, a name found in no scope is stored as a global,
-        # not a block-local as in Ruby.
-        if force_define || !scope.is_block?
-          slot = scope.define(name)
+        host = scope.local_host
+        slot = host.define(name)
+        # Defined here, or around a `for` loop, where `resolve_outer`
+        # now finds it.
+        if !host.same?(scope) && (depth_slot = scope.resolve_outer(name))
+          depth, outer_slot = depth_slot
+          @chunk.emit(Op::SetOuter, line, a: depth.to_u8, c: outer_slot.to_u32)
+        else
           @chunk.emit(Op::SetLocal, line, c: slot.to_u32)
-          return
         end
+        return
       end
       sym_idx = intern(name)
       @chunk.emit(Op::SetGlobal, line, c: sym_idx)
@@ -803,15 +853,23 @@ module Adjutant
     private def compile_index(node : Index) : Nil
       compile_node(node.target)
       compile_node(node.index)
+      node.length.try { |length| compile_node(length) }
       op = node.safe? ? Op::SafeIndex : Op::GetIndex
-      @chunk.emit(op, node.line)
+      @chunk.emit(op, node.line, a: index_arg_count(node.length))
     end
 
     private def compile_index_assign(node : IndexAssign) : Nil
       compile_node(node.target)
       compile_node(node.index)
+      node.length.try { |length| compile_node(length) }
       compile_node(node.value)
-      @chunk.emit(Op::SetIndex, node.line)
+      @chunk.emit(Op::SetIndex, node.line, a: index_arg_count(node.length))
+    end
+
+    # An index instruction's `a`: how many index arguments were
+    # pushed, 2 for `[index, length]`, else 1.
+    private def index_arg_count(length : Node?) : UInt8
+      length ? 2_u8 : 1_u8
     end
 
     # `recv.attr = value` calls the setter `attr=`. The receiver is
@@ -899,6 +957,32 @@ module Adjutant
       "def #{prefix}#{node.name}"
     end
 
+    # Callback hooks Ruby calls on a class or module, as singleton
+    # methods, and on an object, as instance methods.
+    SINGLETON_HOOKS = {"inherited", "included", "extended", "method_added",
+                       "singleton_method_added", "const_missing"}
+    INSTANCE_HOOKS = {"singleton_method_added" => "U015", "method_missing" => "U005",
+                      "respond_to_missing?" => "U005"}
+
+    # The U-code for defining a callback hook, or nil for any other
+    # method.
+    private def callback_hook_code(node : DefNode) : String?
+      if node.receiver
+        "U015" if SINGLETON_HOOKS.includes?(node.name)
+      else
+        INSTANCE_HOOKS[node.name]?
+      end
+    end
+
+    # `self.` or `Name.` for a def with a receiver, as written.
+    private def def_receiver_text(node : DefNode) : String
+      case recv = node.receiver
+      when nil      then ""
+      when Constant then "#{recv.name}."
+      else               "self."
+      end
+    end
+
     private def compile_def(node : DefNode) : Nil
       if OVERLOADABLE_OPERATOR_NAMES.includes?(node.name)
         # Rejected before anything else about the def. The caret
@@ -913,6 +997,17 @@ module Adjutant
               label: "not overloadable"
             ),
             data: {"operator" => node.name}
+          )
+        )
+      end
+      if code = callback_hook_code(node)
+        # Ruby would call the method itself, and Adjutant never does
+        # (U015, U005).
+        raise CompileError.new(
+          Diagnostic.new(
+            code: code,
+            primary: Span.new(line: node.line, column: node.column, length: 3, label: "Ruby calls this itself"),
+            data: {"construct" => "def #{def_receiver_text(node)}#{node.name}"}
           )
         )
       end
@@ -1130,21 +1225,29 @@ module Adjutant
     end
 
     private def compile_for(node : ForNode) : Nil
-      # `for i in expr ... end` compiles as `expr.each { |i| ... }`.
+      # `for i in expr ... end` compiles as `expr.each { |<for>i| i = <for>i; ... }`:
+      # the block takes each element under a name no script can write,
+      # then assigns the loop variable, which as a `for` body's name
+      # belongs to the scope around the loop and outlives it.
       compile_node(node.iter) # receiver: the iterable
 
-      # Loop variables are plain names, so plain Params are built for
-      # them, at the loop's own position.
-      for_params = node.vars.map { |name| Param.new(name, nil, false, false, false, node.line, node.column) }
+      l, c = node.line, node.column
+      param_names = node.vars.map { |name| "<for>#{name}" }
+      for_params = param_names.map { |name| Param.new(name, nil, false, false, false, l, c) }
+      binds = node.vars.zip(param_names).map do |var, param|
+        Assign.new(Identifier.new(var, l, c), Identifier.new(param, l, c), l, c).as(Node)
+      end
+      body = Body.new(binds + node.body.stmts, node.body.line, node.body.column)
       blk_chunk, blk_locals = Compiler.compile_proc(
-        node.body, @symbols,
+        body, @symbols,
         params: for_params,
         in_block: true,
         parent_scope: @scope,
         def_depth: @def_depth,
-        enclosing_method: @enclosing_method
+        enclosing_method: @enclosing_method,
+        for_body: true
       )
-      sproc = ScriptProc.new(blk_chunk, "<block>", node.vars, blk_locals, true,
+      sproc = ScriptProc.new(blk_chunk, "<block>", param_names, blk_locals, true,
         ast_params: for_params, home_method: @enclosing_method)
       proc_idx = @chunk.add_const(Value.proc(sproc))
       @chunk.emit(Op::MakeProc, node.line, c: proc_idx)
@@ -1236,6 +1339,7 @@ module Adjutant
         jmp = @chunk.emit_jump(Op::Jump, node.line)
         @loop_stack.last.breaks << jmp
       else
+        reject_jump_outside_block("break", node)
         emit_ensure_unwind(0, node.line)
         @chunk.emit(Op::BlockBreak, node.line)
       end
@@ -1250,6 +1354,7 @@ module Adjutant
         emit_ensure_unwind(@loop_stack.last.ensure_depth_at_entry, node.line)
         @chunk.emit(Op::Jump, node.line, c: @loop_stack.last.start_pos.to_u32)
       else
+        reject_jump_outside_block("next", node)
         if v = node.value
           compile_node(v)
         else
@@ -1258,6 +1363,19 @@ module Adjutant
         emit_ensure_unwind(0, node.line)
         @chunk.emit(Op::Ret, node.line)
       end
+    end
+
+    # Raises C003 for a `break` or `next` with no loop around it, unless
+    # it is in a block or lambda, as Ruby rejects it ("Invalid break").
+    private def reject_jump_outside_block(keyword : String, node : Node) : Nil
+      return if @scope.try(&.is_block?)
+      raise CompileError.new(
+        Diagnostic.new(
+          code: "C003",
+          primary: Span.new(line: node.line, column: node.column, length: keyword.size, label: "no loop or block"),
+          data: {"keyword" => keyword}
+        )
+      )
     end
 
     private def compile_redo(node : RedoNode) : Nil
@@ -1411,7 +1529,7 @@ module Adjutant
     private def compile_rescue_bind_and_body(clause : RescueClause) : Nil
       if rvar = clause.var
         @chunk.emit(Op::PushError, clause.body.line)
-        emit_store_name(rvar, clause.body.line, force_define: true)
+        emit_store_name(rvar, clause.body.line)
         @chunk.emit(Op::Pop, clause.body.line)
       end
       compile_body(clause.body)

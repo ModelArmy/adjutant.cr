@@ -49,6 +49,14 @@ module Adjutant
         help: "Move the `redo` inside a `while`, `until`, `loop`, or `for` " \
               "body, or remove it."
       ),
+      "C003" => Entry.new(
+        code: "C003",
+        summary: "`{keyword}` outside a loop or block",
+        why: "`{keyword}` leaves a loop or a block, so where there is " \
+             "neither it has nothing to leave. Ruby rejects it too.",
+        help: "Use `return` to leave a method, or move the `{keyword}` " \
+              "into a loop or block."
+      ),
 
       # --- R: runtime faults ----------------------------------------
       "R002" => Entry.new(
@@ -446,6 +454,111 @@ module Adjutant
              "to do.",
         help: "Pass a block: `{method} { |x| ... }`."
       ),
+      "R046" => Entry.new(
+        code: "R046",
+        summary: "wrong number of arguments (given {given}, expected {expected})",
+        why: "`{method}` takes {expected} positional arguments, and this " \
+             "call passed {given}. Methods and lambdas check the count; " \
+             "only blocks drop extra arguments or fill missing ones with " \
+             "nil.",
+        help: "Pass the arguments `{method}` declares, or give a parameter " \
+              "a default (`name = value`) or a splat (`*rest`) if it should " \
+              "accept fewer or more."
+      ),
+      "R047" => Entry.new(
+        code: "R047",
+        summary: "undefined method `{method}` for {target}",
+        why: "{target} has no `{method}` method. Operators and indexing " \
+             "are method calls too: `x + 1` calls `+`, and `x[i]` calls " \
+             "`[]`, which nil doesn't have.",
+        help: "Check the receiver isn't nil first, check the method's " \
+              "spelling, or call a method it has."
+      ),
+      "R048" => Entry.new(
+        code: "R048",
+        summary: "no implicit conversion {conversion}",
+        why: "An Array or String index must be an Integer (a Float is " \
+             "truncated) or a Range, and a length an Integer.",
+        help: "Convert the index first, e.g. `a[i.to_i]`, or look the " \
+              "value up in a Hash instead."
+      ),
+      "R049" => Entry.new(
+        code: "R049",
+        summary: "index {index} too small for array; minimum: {minimum}",
+        why: "A negative index counts from the end, and this one reaches " \
+             "before the first element, so there is nothing to assign to.",
+        help: "Use an index from {minimum} upwards, or `unshift` to add " \
+              "at the front."
+      ),
+      "R050" => Entry.new(
+        code: "R050",
+        summary: "negative length ({length})",
+        why: "`a[start, length] = value` replaces `length` elements, and " \
+             "a count can't be negative.",
+        help: "Pass a length of 0 or more; 0 inserts without replacing."
+      ),
+      "R051" => Entry.new(
+        code: "R051",
+        summary: "{range} out of range",
+        why: "`a[range] = value` replaces the elements the Range covers, " \
+             "and this Range starts before the first element.",
+        help: "Start the Range at an index from -{size} upwards."
+      ),
+      "R052" => Entry.new(
+        code: "R052",
+        summary: "can't modify frozen String: {value}",
+        why: "Adjutant's Strings are frozen, as Ruby's are under " \
+             "`# frozen_string_literal: true`: a change in place would " \
+             "not reach other references to the same String.",
+        help: "Build a new String instead, e.g. `s = \"x\" + s[1..]`."
+      ),
+      "R053" => Entry.new(
+        code: "R053",
+        summary: "class or module required",
+        why: "`is_a?`, `kind_of?` and `rescue` test against a class or " \
+             "module, and this was neither.",
+        help: "Pass the class itself, e.g. `rescue ArgumentError`, or a " \
+              "variable holding one."
+      ),
+      "R054" => Entry.new(
+        code: "R054",
+        summary: "can't {method} {class}",
+        why: "A {class} can't be copied: a copy would share its open " \
+             "source with the original, so reading one would move both.",
+        help: "Keep one reference and read from it, or collect what you " \
+              "need with `to_a` and copy that Array."
+      ),
+      "R055" => Entry.new(
+        code: "R055",
+        summary: "wrong argument type {type} (expected Module)",
+        why: "`include` and `extend` mix in a module's methods; a class " \
+             "or any other value can't be mixed in.",
+        help: "Declare the shared methods in a `module`, or inherit from " \
+              "the class instead (`class Child < Parent`)."
+      ),
+      "R056" => Entry.new(
+        code: "R056",
+        summary: "recursive array join",
+        why: "`join` joins nested Arrays in place, and this Array " \
+             "contains itself, so joining it would never end.",
+        help: "Join a copy without the self-reference, or map the " \
+              "elements to Strings first."
+      ),
+      "R057" => Entry.new(
+        code: "R057",
+        summary: "undefined group name reference: {name}",
+        why: "The pattern has no group named `{name}`, so the match " \
+             "has nothing under that name.",
+        help: "Use a name the pattern declares with `(?<name>...)`, or " \
+              "the group's number."
+      ),
+      "R058" => Entry.new(
+        code: "R058",
+        summary: "min argument must be less than or equal to max argument",
+        why: "`clamp(min, max)` keeps a value within a range, so `min` " \
+             "can't lie above `max`.",
+        help: "Swap the arguments, or check them before calling `clamp`."
+      ),
 
       # --- L: limits reached ----------------------------------------
       #
@@ -552,6 +665,15 @@ module Adjutant
               "break on success inside the loop, and re-raise once " \
               "the counter's used up, rather than relying on an " \
               "implicit repeat."
+      ),
+      "U022" => Entry.new(
+        code: "U022",
+        summary: "`{method}` without a block is not supported",
+        why: "Ruby returns an Enumerator here, for chaining such as " \
+             "`each_with_index.map`. Adjutant has no Enumerator (see " \
+             "UNSUPPORTED.md, U022), so the call would have nothing to " \
+             "return.",
+        help: "Pass a block: `{method} { |x| ... }`."
       ),
       "U007" => Entry.new(
         code: "U007",
@@ -762,6 +884,32 @@ module Adjutant
         help: "Merge the two `else` bodies into one, or remove the " \
               "second `else` entirely."
       ),
+      "P008" => Entry.new(
+        code: "P008",
+        summary: "`{operator}` can't be chained",
+        why: "`==`, `!=`, `===`, `=~`, `!~`, `<=>` and ranges don't " \
+             "associate in Ruby, so a second one straight after the " \
+             "first has no meaning.",
+        help: "Add parentheses, or join two comparisons with `&&`: " \
+              "`a == b && b == c`."
+      ),
+      "P006" => Entry.new(
+        code: "P006",
+        summary: "unexpected parameter order",
+        why: "Ruby takes parameters in a fixed order: required, optional " \
+             "(`name = value`), one splat (`*rest`), more required, " \
+             "keywords, then the block. `{name}` is out of that order.",
+        help: "Reorder the parameters, e.g. `def f(a, b = 1, *rest, c, " \
+              "key:)`."
+      ),
+      "P007" => Entry.new(
+        code: "P007",
+        summary: "duplicated argument name",
+        why: "Two parameters are both named `{name}`, so the second would " \
+             "hide the first. Only names starting with `_` may repeat, " \
+             "for arguments the method ignores.",
+        help: "Rename one of them, or name both `_` if neither is used."
+      ),
       "U001" => Entry.new(
         code: "U001",
         summary: "block parameter capture (`&{param}`) is not supported",
@@ -821,6 +969,16 @@ module Adjutant
              "without running the script first.",
         help: "Define `{name}` once, with all of its methods in that one " \
               "body."
+      ),
+      "U015" => Entry.new(
+        code: "U015",
+        summary: "`{construct}` is not supported",
+        why: "Ruby calls this hook itself, when a class is subclassed, a " \
+             "module is mixed in, a method is defined or a constant is " \
+             "missing. Adjutant never calls it, and a hook runs code the " \
+             "script's text never calls.",
+        help: "Do it explicitly where it happens: for a registry, append " \
+              "each class to an Array in its own body."
       ),
       "U016" => Entry.new(
         code: "U016",

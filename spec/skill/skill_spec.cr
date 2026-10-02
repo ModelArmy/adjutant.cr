@@ -24,6 +24,7 @@ module Adjutant
     "U019" => "proc { }",
     "U020" => "retry",
     "U021" => "The outside world is reached only through `Legate`",
+    "U022" => "there is no Enumerator",
   }
 
   # U-codes the skill leaves to their diagnostics, with the reason.

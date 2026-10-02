@@ -10,6 +10,7 @@ require "./builtins/range"
 require "./builtins/regexp"
 require "./builtins/proc"
 require "./builtins/time"
+require "./builtins/comparable"
 require "./builtins/exceptions"
 require "./builtins/mixins"
 

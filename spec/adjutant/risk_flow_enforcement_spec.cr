@@ -122,7 +122,7 @@ module Adjutant
         result = interp.eval(<<-RUBY)
           begin
             delete_file(tainted_path("/etc/passwd"))
-          rescue e
+          rescue => e
             e
           end
         RUBY
@@ -148,7 +148,7 @@ module Adjutant
         result = interp.eval(<<-RUBY)
           begin
             delete_file(tainted_path("/etc/passwd"))
-          rescue e
+          rescue => e
             :caught
           end
         RUBY
@@ -163,7 +163,7 @@ module Adjutant
           begin
             delete_file(tainted_path("/etc/passwd"))
             deleted = true
-          rescue e
+          rescue => e
             nil
           end
           deleted
@@ -176,7 +176,7 @@ module Adjutant
         result = interp.eval(<<-RUBY)
           begin
             delete_file(tainted_path("/etc/passwd"))
-          rescue e
+          rescue => e
             e.message
           end
         RUBY
@@ -407,7 +407,7 @@ module Adjutant
           interp.eval(<<-RUBY)
             begin
               1 + 1
-            rescue e
+            rescue => e
               "rescued"
             else
               delete_file(tainted_path("/etc/passwd"))
@@ -440,7 +440,7 @@ module Adjutant
           begin
             begin
               1 + 1
-            rescue e
+            rescue => e
               "inner rescued"
             else
               delete_file(tainted_path("/etc/passwd"))

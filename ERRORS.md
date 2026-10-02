@@ -68,6 +68,9 @@ P002|This can't start an expression                 |`found`
 P003|A block construct is missing its `end`         |`construct`, `found`, `expected`
 P004|`else` without `rescue` is useless             |—                               
 P005|A `begin` block can have only one `else` clause|—                               
+P006|Parameters out of Ruby's order                 |`name`                          
+P007|Two parameters with the same name              |`name`                          
+P008|A non-associative operator chained             |`operator`                      
 
 P003 points at two places: where the parser ran out of input, and the
 `def`, `class`, `if`, or other construct that was never closed. The second
@@ -87,6 +90,7 @@ Code|Meaning                                |Placeholders
 ----|---------------------------------------|------------
 C001|Left-hand side of `=` can't be assigned|`target`    
 C002|`redo` used outside any loop           |—           
+C003|`break`/`next` outside loop or block   |`keyword`   
 
 ## R — Runtime
 
@@ -139,6 +143,19 @@ R042|`Legate.random` given an `n` that isn't positive                   |`method
 R043|`Legate.env` called with no `name` argument                        |—                                          
 R044|Two values with no order between them were compared or sorted      |`left`, `right`                            
 R045|A block-taking method called with no block                         |`method`                                   
+R046|A method or lambda called with the wrong number of arguments       |`given`, `expected`, `method`              
+R047|A receiver without `[]` or `[]=` was indexed                       |`method`, `target`                         
+R048|An index or length that isn't an Integer, Float or Range           |`conversion`                               
+R049|An Array index assigned to before the first element                |`index`, `minimum`                         
+R050|A negative length in `a[start, length] = value`                    |`length`                                   
+R051|A Range assigned to that starts before the first element           |`range`, `size`                            
+R052|A String changed in place                                          |`value`                                    
+R053|`is_a?` or `rescue` given a non-class                              |—                                          
+R054|A Legate::Stream copied with `dup` or `clone`                      |`method`, `class`                          
+R055|`include` or `extend` given something other than a module          |`type`                                     
+R056|An Array joined that contains itself                               |—                                          
+R057|A MatchData group name the pattern lacks                           |`name`                                     
+R058|`clamp` given a minimum above its maximum                          |—                                          
 
 Scripts can `rescue` these. R008 raises a `NameError`, matching Ruby;
 R011, R012, R015, and R018 raise `ArgumentError`, also matching Ruby;
@@ -148,8 +165,12 @@ R037, R038, and R039 raise a `TypeError`, also matching Ruby; R020, R022,
 R025, and R031 raise an `ArgumentError`, also matching Ruby; R021
 raises a `RegexpError`, also matching Ruby; R026, R027, R028, R029, and
 R030 raise a `RangeError`, also matching Ruby; R032, R034, R035, R040,
-R041, R042, R043, R044, and R045 raise an `ArgumentError`, also
-matching Ruby; the rest raise `RuntimeError`.
+R041, R042, R043, R044, R045, and R046 raise an `ArgumentError`, also
+matching Ruby; R047 raises a `NoMethodError`, R048 a `TypeError`, R049
+and R050 an `IndexError`, R051 a `RangeError`, R052 a `FrozenError`,
+R053, R054 and R055 a `TypeError`, R056 and R058 an `ArgumentError`,
+and R057 an `IndexError`, all matching Ruby; the rest raise
+`RuntimeError`.
 
 Adjutant's constants are assign-once, which Ruby only warns about. R001 is
 that rule firing on an ordinary constant; reopening a class or module is
@@ -159,6 +180,13 @@ R011/R012 apply to script-defined methods only. A native function, a
 builtin, or `Class.new`/`initialize` has no declared `name:` parameter
 list to check against — passing any keyword argument to one of these
 raises R012 outright, rather than silently discarding it.
+
+R046 is Ruby's positional arity check, message included, for script
+methods, lambdas, builtin methods and functions, and `new` on a class
+with no `initialize`. Blocks don't raise it: as in Ruby, they drop extra
+arguments and leave missing ones nil. A few builtin methods accept
+fewer arguments than Ruby's, because Adjutant doesn't implement the
+optional one; passing it raises R046 rather than being ignored.
 
 ## L — Limits
 
@@ -198,13 +226,14 @@ U011|`$globals`                                      |`name`
 U012|Numbered block parameters (`_1`, `_2`)          |—                
 U013|Endless method definitions                      |—                
 U014|`class << self` singleton-class syntax          |—                
-U015|`undef` / method-added hooks                    |`construct`      
+U015|`undef` / callback hooks                        |`construct`      
 U016|`begin...end while`/`until` (do-while)          |—                
 U017|Operator-method overloading (`def ==`, ...)     |`operator`       
 U018|`extend`/`include` via an explicit receiver     |`construct`      
 U019|`proc { ... }`                                  |`construct`      
 U020|`retry`                                         |—                
 U021|Ruby's effectful core (`File`, `ENV`, `system`) |`name`           
+U022|Enumerator (a call without its block)           |`method`         
 
 U005 and U006 are reported when a name that would resolve to one of them
 resolves to nothing else. A script is still free to define its own method
@@ -216,7 +245,7 @@ U010 was investigated and found not to be a real gap — see
 retired, not reassigned: codes are never reused for a different
 problem once allocated (see "Reading a code" above).
 
-**U008, U009, U012–U015 and U021 status: decided, not yet enforced.** Using one
+**U008, U009, U012–U014, U015's `undef` and U021 status: decided, not yet enforced.** Using one
 of these constructs today falls through to an ordinary undefined-name
 or generic parse error rather than naming the construct specifically —
 expect a less-specific error than the table above until enforcement

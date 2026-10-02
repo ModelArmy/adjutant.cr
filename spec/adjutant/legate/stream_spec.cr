@@ -38,6 +38,13 @@ module Adjutant
   end
 
   describe "Legate::Stream (phase 1)" do
+    it "raises TypeError for dup and clone, as a copy would share its source" do
+      interp = interp_with_test_stream
+      %w(dup clone).each do |name|
+        interp.eval("begin\n  stream_of(1).#{name}\nrescue TypeError\n  :refused\nend").as_sym.name.should eq "refused"
+      end
+    end
+
     it "a TestStream instance is a real Legate::Stream via include, not a simulation" do
       interp = interp_with_test_stream
       interp.eval("stream_of(1, 2, 3).is_a?(Legate::Stream)").as_bool.should eq true

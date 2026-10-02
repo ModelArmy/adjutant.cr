@@ -25,42 +25,42 @@ module Adjutant
         absolute_sym = interp.symbols.intern("__absolute").value
         malformed = Helpers.fetch(legate, interp, "Malformed")
 
-        Builtins.define_singleton(cls, interp, "new") do |args|
+        Builtins.define_singleton(cls, interp, "new", arity: 1) do |args|
           first = args[1]? || Value.nil_value
           build(args.first.as_rclass, first.as_string, parts_sym, absolute_sym, first.label)
         end
 
-        Builtins.define(cls, interp, "/") do |args, _blk, ncc|
+        Builtins.define(cls, interp, "/", arity: 1) do |args, _blk, ncc|
           join(args, ncc, parts_sym, absolute_sym, malformed)
         end
 
-        Builtins.define(cls, interp, "parent") do |args|
+        Builtins.define(cls, interp, "parent", arity: 0) do |args|
           obj = args.first.as_robject
           parts = obj.ivars[parts_sym].as_array.to_a.map(&.as_string)
           absolute = obj.ivars[absolute_sym].as_bool
           make(obj.rclass, parts[0...-1]? || [] of String, absolute, parts_sym, absolute_sym, args.first.label)
         end
 
-        Builtins.define(cls, interp, "basename") do |args|
+        Builtins.define(cls, interp, "basename", arity: 0) do |args|
           Value.string(basename_of(args, parts_sym), args.first.label)
         end
 
-        Builtins.define(cls, interp, "ext") do |args|
+        Builtins.define(cls, interp, "ext", arity: 0) do |args|
           Value.string(ext_of(basename_of(args, parts_sym)), args.first.label)
         end
 
-        Builtins.define(cls, interp, "stem") do |args|
+        Builtins.define(cls, interp, "stem", arity: 0) do |args|
           b = basename_of(args, parts_sym)
           e = ext_of(b)
           Value.string(e.empty? ? b : b[0...(b.size - e.size)], args.first.label)
         end
 
-        Builtins.define(cls, interp, "parts") do |args|
+        Builtins.define(cls, interp, "parts", arity: 0) do |args|
           args.first.as_robject.ivars[parts_sym]
         end
 
         # A derived fact, so unlabelled.
-        Builtins.define(cls, interp, "absolute?") do |args|
+        Builtins.define(cls, interp, "absolute?", arity: 0) do |args|
           args.first.as_robject.ivars[absolute_sym]
         end
 
@@ -68,11 +68,11 @@ module Adjutant
         # lexically without resolving `..` or `.`, so
         # `/work/../etc` is `under?` `/work`; not a containment check.
         # Unlabelled, as a derived fact.
-        Builtins.define(cls, interp, "under?") do |args|
+        Builtins.define(cls, interp, "under?", arity: 1) do |args|
           under(args, parts_sym, absolute_sym)
         end
 
-        Builtins.define(cls, interp, "to_s") do |args|
+        Builtins.define(cls, interp, "to_s", arity: 0) do |args|
           obj = args.first.as_robject
           parts = obj.ivars[parts_sym].as_array.to_a.map(&.as_string)
           absolute = obj.ivars[absolute_sym].as_bool

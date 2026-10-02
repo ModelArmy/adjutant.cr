@@ -13,6 +13,10 @@ module Adjutant
     def initialize(rclass : RubyClass, @regex : ::Regex)
       super(rclass)
     end
+
+    def shallow_copy : RubyObject?
+      copy_ivars_to(RegexpObject.new(rclass, @regex))
+    end
   end
 
   # A MatchData's state: Crystal's `::Regex::MatchData` and the
@@ -24,6 +28,10 @@ module Adjutant
 
     def initialize(rclass : RubyClass, @md : ::Regex::MatchData, @subject : String, @regexp_value : Value)
       super(rclass)
+    end
+
+    def shallow_copy : RubyObject?
+      copy_ivars_to(MatchDataObject.new(rclass, @md, @subject, @regexp_value))
     end
   end
 
@@ -38,7 +46,10 @@ module Adjutant
     # does only under its MULTILINE option, so that is always passed.
     # Ruby's `m` flag (dot matches newline) maps to DOTALL.
     def self.regex_options(adjutant_flags : Int32) : ::Regex::Options
-      opts = ::Regex::Options::MULTILINE # real Ruby's ^/$ semantics, always on
+      # Ruby's `^` and `$` match at every line, always. Crystal's
+      # `MULTILINE` also makes `.` match a newline, which Ruby's `/m`
+      # alone does, so `MULTILINE_ONLY`.
+      opts = ::Regex::Options::MULTILINE_ONLY
       opts |= ::Regex::Options::IGNORE_CASE if adjutant_flags & IGNORECASE != 0
       opts |= ::Regex::Options::DOTALL if adjutant_flags & MULTILINE != 0
       opts |= ::Regex::Options::EXTENDED if adjutant_flags & EXTENDED != 0
@@ -80,13 +91,40 @@ module Adjutant
     # caller.
     def self.compile_regex(pattern : String, adjutant_flags : Int32,
                            ctx : NativeCallContext?) : ::Regex
-      ::Regex.new(pattern, regex_options(adjutant_flags))
+      ::Regex.new(ruby_capture_pattern(pattern), regex_options(adjutant_flags))
     rescue ex : ::Exception
       reason = ex.message || "invalid pattern"
       if ctx
         ctx.raise_error("R021", {"reason" => reason}, error_class: "RegexpError")
       else
         raise ex
+      end
+    end
+
+    # `pattern` with each unnamed group made non-capturing when it also
+    # has a named one, since Ruby then captures only the named groups
+    # and PCRE2 would number both. A `(` escaped, inside a character
+    # class, or starting a `(?` or `(*` construct is left alone.
+    def self.ruby_capture_pattern(pattern : String) : String
+      return pattern unless pattern.matches?(/\(\?(<[A-Za-z_]|'|P<)/)
+      String.build do |io|
+        escaped = false
+        in_class = false
+        pattern.each_char_with_index do |char, index|
+          if escaped
+            escaped = false
+          elsif char == '\\'
+            escaped = true
+          elsif char == '['
+            in_class = true
+          elsif char == ']'
+            in_class = false
+          elsif char == '(' && !in_class && pattern[index + 1]? != '?' && pattern[index + 1]? != '*'
+            io << "(?:"
+            next
+          end
+          io << char
+        end
       end
     end
 
@@ -103,7 +141,7 @@ module Adjutant
       # `Regexp.new(pattern, options = 0)`, or `Regexp.new(regexp)` to
       # copy one. Allocates the receiver's class, so a subclass gets
       # instances of itself.
-      define_singleton(cls, interp, "new") do |args, _blk, ncc|
+      define_singleton(cls, interp, "new", arity: 1..2) do |args, _blk, ncc|
         first = args[1]? || Value.nil_value
         pattern, flags =
           if (robj = first.as_robject?) && robj.is_a?(RegexpObject)
@@ -120,15 +158,15 @@ module Adjutant
         Value.robject(obj, first.label)
       end
 
-      define(cls, interp, "source") do |args|
+      define(cls, interp, "source", arity: 0) do |args|
         args.first.as_robject.ivars[source_sym]
       end
 
-      define(cls, interp, "options") do |args|
+      define(cls, interp, "options", arity: 0) do |args|
         args.first.as_robject.ivars[options_sym]
       end
 
-      define(cls, interp, "casefold?") do |args|
+      define(cls, interp, "casefold?", arity: 0) do |args|
         flags = args.first.as_robject.ivars[options_sym].as_int.to_i32
         Value.bool(flags & IGNORECASE != 0)
       end
@@ -137,7 +175,7 @@ module Adjutant
       # "(?i-mx:a)", with `-disabled` omitted when every flag is set.
       # `inspect` is `/pattern/flags`, escaping `/`:
       # `Regexp.new("a/b").inspect` is `/a\/b/`.
-      define(cls, interp, "to_s") do |args|
+      define(cls, interp, "to_s", arity: 0) do |args|
         obj = args.first.as_robject
         pattern = obj.ivars[source_sym].as_string
         flags = obj.ivars[options_sym].as_int.to_i32
@@ -146,7 +184,7 @@ module Adjutant
         Value.string("(?#{enabled}#{suffix}:#{pattern})")
       end
 
-      define(cls, interp, "inspect") do |args|
+      define(cls, interp, "inspect", arity: 0) do |args|
         obj = args.first.as_robject
         pattern = escape_slashes(obj.ivars[source_sym].as_string)
         flags = obj.ivars[options_sym].as_int.to_i32
@@ -158,8 +196,9 @@ module Adjutant
       # anything else, including nil, raises R022. With a block, the
       # MatchData is yielded on a match and the block's result
       # returned.
-      define(cls, interp, "match") do |args, blk, ncc|
+      define(cls, interp, "match", arity: 1) do |args, blk, ncc|
         robj = args.first.as_robject.as(RegexpObject)
+        next Value.nil_value if args[1].null?
         str = args[1]?.try(&.as_string?)
         ncc.raise_error("R022", {"method" => "match"}, "ArgumentError") unless str
         if md = robj.regex.match(str)
@@ -174,8 +213,9 @@ module Adjutant
       end
 
       # Whether it matches, without building a MatchData.
-      define(cls, interp, "match?") do |args, _blk, ncc|
+      define(cls, interp, "match?", arity: 1) do |args, _blk, ncc|
         robj = args.first.as_robject.as(RegexpObject)
+        next Value.bool(false) if args[1].null?
         str = args[1]?.try(&.as_string?)
         ncc.raise_error("R022", {"method" => "match?"}, "ArgumentError") unless str
         Value.bool(robj.regex.matches?(str))
@@ -183,8 +223,9 @@ module Adjutant
 
       # The index of the first match, or nil. The argument must be a
       # String (R022). Sets no `$~` or `$1` (U011).
-      define(cls, interp, "=~") do |args, _blk, ncc|
+      define(cls, interp, "=~", arity: 1) do |args, _blk, ncc|
         robj = args.first.as_robject.as(RegexpObject)
+        next Value.nil_value if args[1].null?
         str = args[1]?.try(&.as_string?)
         ncc.raise_error("R022", {"method" => "=~"}, "ArgumentError") unless str
         if md = robj.regex.match(str)
@@ -195,8 +236,8 @@ module Adjutant
         end
       end
 
-      # `===` is the TripleEq opcode, not a method, so
-      # `/re/.===(s)` is an undefined method.
+      # `===` is the TripleEq opcode; `/re/.===(s)` reaches it through
+      # `exec_builtin`.
       cls
     end
 
@@ -210,7 +251,6 @@ module Adjutant
       Value.robject(MatchDataObject.new(cls, md, subject, regexp_value), label)
     end
 
-    # ameba:disable Metrics/CyclomaticComplexity - one `define` call per native method, each a flat independent case; count comes from many methods, not tangled branching
     def self.bootstrap_match_data(interp : Interpreter) : RubyClass
       cls = RubyClass.new("MatchData")
 
@@ -221,65 +261,68 @@ module Adjutant
       # `[]`: an Integer (0 the whole match) or a group name. Nil for
       # an index out of range, a group that didn't participate, or an
       # unknown name, where Ruby raises IndexError.
-      define(cls, interp, "[]") do |args, _blk, _ncc|
+      # A group by number, or by name; a name the pattern doesn't have
+      # raises R057 (IndexError), as in Ruby.
+      define(cls, interp, "[]", arity: 1) do |args, _blk, ncc|
         obj = args.first.as_robject.as(MatchDataObject)
-        key = args[1]?
-        next Value.nil_value unless key
+        key = args[1]
         result =
           if i = key.as_int?
             obj.md[i.to_i]?
-          else
-            name = key.as_string? || key.as_sym?.try(&.name)
-            name ? obj.md[name]? : nil
+          elsif name = key.as_string? || key.as_sym?.try(&.name)
+            unless obj.md.regex.name_table.values.includes?(name)
+              ncc.raise_error("R057", {"name" => name}, "IndexError")
+            end
+            obj.md[name]?
           end
         result ? Value.string(result, args.first.label) : Value.nil_value
       end
 
-      define(cls, interp, "to_s") do |args|
+      define(cls, interp, "to_s", arity: 0) do |args|
         obj = args.first.as_robject.as(MatchDataObject)
         Value.string(obj.md[0], args.first.label)
       end
 
-      define(cls, interp, "pre_match") do |args|
+      define(cls, interp, "pre_match", arity: 0) do |args|
         obj = args.first.as_robject.as(MatchDataObject)
         Value.string(obj.md.pre_match, args.first.label)
       end
 
-      define(cls, interp, "post_match") do |args|
+      define(cls, interp, "post_match", arity: 0) do |args|
         obj = args.first.as_robject.as(MatchDataObject)
         Value.string(obj.md.post_match, args.first.label)
       end
 
-      define(cls, interp, "string") do |args|
+      define(cls, interp, "string", arity: 0) do |args|
         obj = args.first.as_robject.as(MatchDataObject)
         Value.string(obj.subject, args.first.label)
       end
 
-      define(cls, interp, "begin") do |args|
+      define(cls, interp, "begin", arity: 1) do |args|
         obj = args.first.as_robject.as(MatchDataObject)
-        n = args[1]?.try(&.as_int.to_i) || 0
+        n = args[1].as_int.to_i
         pos = obj.md.begin(n)
         pos ? Value.int(pos.to_i64) : Value.nil_value
       end
 
       # The offset just past a group's match.
-      define(cls, interp, "end") do |args|
+      define(cls, interp, "end", arity: 1) do |args|
         obj = args.first.as_robject.as(MatchDataObject)
-        n = args[1]?.try(&.as_int.to_i) || 0
+        n = args[1].as_int.to_i
         pos = obj.md.end(n)
         pos ? Value.int(pos.to_i64) : Value.nil_value
       end
 
       # Every numbered group's text, without the whole match; nil for
       # a group that didn't participate.
-      define(cls, interp, "captures") do |args|
+      define(cls, interp, "captures", arity: 0) do |args|
         obj = args.first.as_robject.as(MatchDataObject)
         caps = (1...obj.md.size).map { |i| (c = obj.md[i]?) ? Value.string(c, args.first.label) : Value.nil_value }
         Value.new(LabeledArray.new(caps, args.first.label), nil)
       end
 
       # The Regexp that produced the match.
-      define(cls, interp, "regexp") do |args|
+      define(cls, interp, "regexp", arity: 0) do |args|
         args.first.as_robject.as(MatchDataObject).regexp_value
       end
 
@@ -287,7 +330,7 @@ module Adjutant
       # group by name if it has one, else by number, `nil` unquoted
       # for a group that didn't participate. Each text is its String
       # `inspect`.
-      define(cls, interp, "inspect") do |args, _blk, ncc|
+      define(cls, interp, "inspect", arity: 0) do |args, _blk, ncc|
         obj = args.first.as_robject.as(MatchDataObject)
         regexp_obj = obj.regexp_value.as_robject.as(RegexpObject)
         names = regexp_obj.regex.name_table

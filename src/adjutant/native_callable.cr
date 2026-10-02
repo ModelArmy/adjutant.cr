@@ -1,3 +1,4 @@
+require "./arity"
 require "./authority"
 require "./risk_profile"
 
@@ -22,9 +23,14 @@ module Adjutant
     # `NativeCallContext#kwargs` and supplies its own defaults.
     getter kwarg_names : Set(String)
 
+    # How many positional arguments the call accepts, receiver
+    # excluded; `VM#call_native` raises R046 for any other count.
+    getter arity : Arity
+
     def initialize(@func : NativeFunc, @risk : RiskProfile = RiskProfile.none,
                    @kwarg_names : Set(String) = Set(String).new,
-                   @authorities : Set(Authority) = Set(Authority).new)
+                   @authorities : Set(Authority) = Set(Authority).new,
+                   @arity : Arity = Arity.any)
     end
 
     def call(args : Array(Value), blk : ScriptProc?, ctx : NativeCallContext) : Value

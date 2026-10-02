@@ -90,8 +90,18 @@ module Adjutant
       @items.dup
     end
 
-    # Structural, by `ContainerWalk.equal?` with `Value#==` for
-    # everything else. `Hash(Value, Value)` matches keys with it.
+    # Replaces `count` items from `start` with `replacement`, first
+    # padding with nil up to `start`, as Ruby's `a[start, count] = x`.
+    def splice(start : Int32, count : Int32, replacement : Array(Value)) : Nil
+      while @items.size < start
+        @items << Value.nil_value
+      end
+      @items[start, count] = replacement
+    end
+
+    # Ruby's `eql?`: structural, by `ContainerWalk.equal?`, with
+    # `Value#==` for everything else. `Hash(Value, Value)` matches keys
+    # with it.
     def ==(other : LabeledArray) : Bool
       ContainerWalk.equal?(Value.new(self, nil), Value.new(other, nil)) { |x, y| x == y }
     end
@@ -167,7 +177,8 @@ module Adjutant
       @entries.dup
     end
 
-    # Structural, as `LabeledArray#==`.
+    # Ruby's `eql?`, as `LabeledArray#==`: keys and values both by
+    # `Value#==`.
     def ==(other : LabeledHash) : Bool
       ContainerWalk.equal?(Value.new(self, nil), Value.new(other, nil)) { |x, y| x == y }
     end

@@ -13,6 +13,10 @@ module Adjutant
     def initialize(rclass : RubyClass, @time : ::Time)
       super(rclass)
     end
+
+    def shallow_copy : RubyObject?
+      copy_ivars_to(TimeObject.new(rclass, @time))
+    end
   end
 
   module Builtins
@@ -27,13 +31,13 @@ module Adjutant
     def self.bootstrap_time(interp : Interpreter) : RubyClass
       cls = RubyClass.new("Time")
 
-      define_singleton(cls, interp, "now") do |args|
+      define_singleton(cls, interp, "now", arity: 0) do |args|
         Value.robject(TimeObject.new(args.first.as_rclass, ::Time.local))
       end
 
       # `Time.at(seconds, usec = 0)`; `seconds` may be a Float. A
       # non-finite value raises R034 (FloatDomainError).
-      define_singleton(cls, interp, "at") do |args, _blk, ncc|
+      define_singleton(cls, interp, "at", arity: 1..2) do |args, _blk, ncc|
         seconds = numeric_arg_to_f64(args[1]? || Value.nil_value, ncc)
         usec = args[2]?.try { |v| numeric_arg_to_f64(v, ncc) } || 0.0
         t = ::Time.unix(0) + seconds_span(seconds) + (usec * 1_000).round.to_i64.nanoseconds
@@ -41,54 +45,54 @@ module Adjutant
       end
 
       # `Time.utc(year, month = 1, day = 1, hour = 0, min = 0,
-      # sec = 0)` and its alias `gm`; `local` and `mktime` take the same
-      # arguments in the local zone.
+      # sec = 0, usec = 0)` and its alias `gm`; `local` and `mktime`
+      # take the same arguments in the local zone.
       {"utc" => true, "gm" => true, "local" => false, "mktime" => false}.each do |name, utc|
-        define_singleton(cls, interp, name) do |args, _blk, _ncc|
+        define_singleton(cls, interp, name, arity: 1..7) do |args, _blk, _ncc|
           Value.robject(TimeObject.new(args.first.as_rclass, time_from_ymdhms(args, utc)))
         end
       end
 
-      define(cls, interp, "year") { |args| Value.int(time_of(args).year) }
-      define(cls, interp, "month") { |args| Value.int(time_of(args).month) }
-      define(cls, interp, "mon") { |args| Value.int(time_of(args).month) }
-      define(cls, interp, "day") { |args| Value.int(time_of(args).day) }
-      define(cls, interp, "mday") { |args| Value.int(time_of(args).day) }
-      define(cls, interp, "hour") { |args| Value.int(time_of(args).hour) }
-      define(cls, interp, "min") { |args| Value.int(time_of(args).minute) }
-      define(cls, interp, "sec") { |args| Value.int(time_of(args).second) }
-      define(cls, interp, "usec") { |args| Value.int(time_of(args).nanosecond // 1_000) }
+      define(cls, interp, "year", arity: 0) { |args| Value.int(time_of(args).year) }
+      define(cls, interp, "month", arity: 0) { |args| Value.int(time_of(args).month) }
+      define(cls, interp, "mon", arity: 0) { |args| Value.int(time_of(args).month) }
+      define(cls, interp, "day", arity: 0) { |args| Value.int(time_of(args).day) }
+      define(cls, interp, "mday", arity: 0) { |args| Value.int(time_of(args).day) }
+      define(cls, interp, "hour", arity: 0) { |args| Value.int(time_of(args).hour) }
+      define(cls, interp, "min", arity: 0) { |args| Value.int(time_of(args).minute) }
+      define(cls, interp, "sec", arity: 0) { |args| Value.int(time_of(args).second) }
+      define(cls, interp, "usec", arity: 0) { |args| Value.int(time_of(args).nanosecond // 1_000) }
 
       # Sunday 0 to Saturday 6. Crystal numbers Monday 1 to Sunday 7,
       # so `% 7`.
-      define(cls, interp, "wday") { |args| Value.int(time_of(args).day_of_week.value % 7) }
-      define(cls, interp, "yday") { |args| Value.int(time_of(args).day_of_year) }
+      define(cls, interp, "wday", arity: 0) { |args| Value.int(time_of(args).day_of_week.value % 7) }
+      define(cls, interp, "yday", arity: 0) { |args| Value.int(time_of(args).day_of_year) }
 
-      define(cls, interp, "to_i") { |args| Value.int(time_of(args).to_unix) }
-      define(cls, interp, "to_f") { |args| Value.float(time_of(args).to_unix_f) }
+      define(cls, interp, "to_i", arity: 0) { |args| Value.int(time_of(args).to_unix) }
+      define(cls, interp, "to_f", arity: 0) { |args| Value.float(time_of(args).to_unix_f) }
 
       # A Time `seconds` later. A non-finite value raises R034.
-      define(cls, interp, "+") do |args, _blk, ncc|
+      define(cls, interp, "+", arity: 1) do |args, _blk, ncc|
         new_t = time_of(args) + seconds_span(numeric_arg_to_f64(args[1]? || Value.nil_value, ncc))
         Value.robject(TimeObject.new(args.first.as_robject.rclass, new_t))
       end
 
       # `t - seconds` is a Time; `t - other_time` is the difference in
       # seconds, as a Float.
-      define(cls, interp, "-") do |args, _blk, ncc|
+      define(cls, interp, "-", arity: 1) do |args, _blk, ncc|
         time_sub(args, ncc)
       end
 
       # The comparisons and `==` derive from this. Nil for a non-Time
       # argument, as in Ruby.
-      define(cls, interp, "<=>") do |args|
+      define(cls, interp, "<=>", arity: 1) do |args|
         time_spaceship(args)
       end
 
       # `utc`, `gmtime` and `localtime` change the receiver's zone and
       # return it; `getutc`, `getgm` and `getlocal` return a new Time.
       {"utc" => true, "gmtime" => true, "localtime" => false}.each do |name, to_utc|
-        define(cls, interp, name) do |args|
+        define(cls, interp, name, arity: 0) do |args|
           obj = args.first.as_robject.as(TimeObject)
           obj.time = zoned(obj.time, to_utc)
           args.first
@@ -96,35 +100,35 @@ module Adjutant
       end
 
       {"getutc" => true, "getgm" => true, "getlocal" => false}.each do |name, to_utc|
-        define(cls, interp, name) do |args|
+        define(cls, interp, name, arity: 0) do |args|
           Value.robject(TimeObject.new(args.first.as_robject.rclass, zoned(time_of(args), to_utc)))
         end
       end
 
-      define(cls, interp, "utc?") { |args| Value.bool(time_of(args).utc?) }
-      define(cls, interp, "gmt?") { |args| Value.bool(time_of(args).utc?) }
-      define(cls, interp, "dst?") { |_args| Value.bool(false) } # no real DST database — same fixed `false` mruby-time itself gives (see file-top scope note)
+      define(cls, interp, "utc?", arity: 0) { |args| Value.bool(time_of(args).utc?) }
+      define(cls, interp, "gmt?", arity: 0) { |args| Value.bool(time_of(args).utc?) }
+      define(cls, interp, "dst?", arity: 0) { |_args| Value.bool(false) } # no real DST database — same fixed `false` mruby-time itself gives (see file-top scope note)
 
-      define(cls, interp, "zone") { |args| Value.string(time_of(args).zone.name) }
-      define(cls, interp, "utc_offset") { |args| Value.int(time_of(args).offset) }
-      define(cls, interp, "gmt_offset") { |args| Value.int(time_of(args).offset) }
-      define(cls, interp, "gmtoff") { |args| Value.int(time_of(args).offset) }
+      define(cls, interp, "zone", arity: 0) { |args| Value.string(time_of(args).zone.name) }
+      define(cls, interp, "utc_offset", arity: 0) { |args| Value.int(time_of(args).offset) }
+      define(cls, interp, "gmt_offset", arity: 0) { |args| Value.int(time_of(args).offset) }
+      define(cls, interp, "gmtoff", arity: 0) { |args| Value.int(time_of(args).offset) }
 
       # `to_s` writes "UTC" for a UTC time and `+HHMM` otherwise;
       # `inspect` always writes the offset.
-      define(cls, interp, "to_s") do |args|
+      define(cls, interp, "to_s", arity: 0) do |args|
         t = time_of(args)
         Value.string("#{format_datetime(t)} #{t.utc? ? "UTC" : format_offset(t)}")
       end
 
-      define(cls, interp, "inspect") do |args|
+      define(cls, interp, "inspect", arity: 0) do |args|
         t = time_of(args)
         Value.string("#{format_datetime(t)} #{format_offset(t)}")
       end
 
       {"sunday?" => 0, "monday?" => 1, "tuesday?" => 2, "wednesday?" => 3,
        "thursday?" => 4, "friday?" => 5, "saturday?" => 6}.each do |name, wday|
-        define(cls, interp, name) do |args|
+        define(cls, interp, name, arity: 0) do |args|
           Value.bool(time_of(args).day_of_week.value % 7 == wday)
         end
       end
@@ -158,7 +162,8 @@ module Adjutant
     end
 
     # The body of `Time.utc` and `Time.local`. `args[0]` is the class;
-    # `args[1..6]` are year to sec, all but year defaulted.
+    # `args[1..7]` are year to sec and then usec, all but year
+    # defaulted.
     private def self.time_from_ymdhms(args : Array(Value), utc : Bool) : ::Time
       y = args[1]?.try(&.as_int.to_i32) || 1
       mo = args[2]?.try(&.as_int.to_i32) || 1
@@ -166,7 +171,9 @@ module Adjutant
       h = args[4]?.try(&.as_int.to_i32) || 0
       mi = args[5]?.try(&.as_int.to_i32) || 0
       s = args[6]?.try(&.as_int.to_i32) || 0
-      utc ? ::Time.utc(y, mo, d, h, mi, s) : ::Time.local(y, mo, d, h, mi, s)
+      usec = args[7]?.try { |v| v.float? ? v.as_float : v.as_int.to_f64 } || 0.0
+      ns = (usec * 1_000).round.to_i32
+      utc ? ::Time.utc(y, mo, d, h, mi, s, nanosecond: ns) : ::Time.local(y, mo, d, h, mi, s, nanosecond: ns)
     end
 
     # The body of `Time#-`.

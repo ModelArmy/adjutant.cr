@@ -29,6 +29,10 @@ module Adjutant
     # frame, which is only its defining frame while the call is live.
     abstract def invoke(proc : ScriptProc, args : Array(Value)) : Value
 
+    # Calls a script method with `self_val` as self, with its arity
+    # checked, as a native `new` runs a script `initialize`.
+    abstract def invoke_method(method : ScriptProc, args : Array(Value), self_val : Value) : Value
+
     # Calls a stored `Proc` object (from `->(){}` or `lambda { }`)
     # with its own captured closure.
     abstract def invoke_proc(proc_obj : RubyObject, args : Array(Value)) : Value

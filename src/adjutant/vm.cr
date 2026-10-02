@@ -336,7 +336,7 @@ module Adjutant
         )
       end
       sproc = proc_obj.ivars[@symbols.intern("__sproc").value].as_proc
-      invoke_internal(sproc, args, self_val, outer_locals: proc_obj.outer_locals)
+      invoke_internal(sproc, args, self_val, outer_locals: proc_obj.outer_locals, lambda_call: true)
     end
 
     # Returns a live block as a Proc object closing over the current
@@ -349,10 +349,13 @@ module Adjutant
 
     # Runs `proc` in an isolated frame and value stack and returns its
     # result. `outer_locals` is the closure to run it with, or nil for
-    # the current frame and the scopes it closes over. Its instructions
-    # and frames count toward the same limits as the caller's.
+    # the current frame and the scopes it closes over. `lambda_call`
+    # checks arity strictly for a block-compiled proc, as a lambda
+    # needs. Its instructions and frames count toward the same limits
+    # as the caller's.
     private def invoke_internal(proc : ScriptProc, args : Array(Value), self_val : Value? = nil,
-                                outer_locals : OuterChain? = nil, kwargs : Hash(String, Value)? = nil) : Value
+                                outer_locals : OuterChain? = nil, kwargs : Hash(String, Value)? = nil,
+                                lambda_call : Bool = false) : Value
       saved_frames = @frames
       saved_stack = @stack
       saved_cur_block = @current_block
@@ -379,7 +382,7 @@ module Adjutant
         # frame would, since that frame's call is still in progress.
         call_script_proc(proc, args, f.filename, nil, effective_outer, self_val: inherited_self,
           lexical_scope: inherited_lexical, lexical_override: true, kwargs: kwargs,
-          own_yield: f.yield_target, own_yield_outer: f.yield_outer)
+          own_yield: f.yield_target, own_yield_outer: f.yield_outer, lambda_call: lambda_call)
         result = execute
       ensure
         @frames = saved_frames
@@ -409,15 +412,10 @@ module Adjutant
                   recv.as_rclass?.try(&.rclass) ||
                   @interpreter.try(&.builtin_class_for(recv))
       return false unless start_cls && target
-      cls = start_cls.as(RubyClass?)
-      while cls
-        return true if cls == target
-        # Direct includes only; a module included by an included
-        # module is missed.
-        return true if cls.included_modules.includes?(target)
-        cls = cls.superclass
-      end
-      false
+      return true if start_cls.ancestors.includes?(target)
+      # A class that extends a module is an instance of it, as its
+      # singleton class includes it in Ruby.
+      !!recv.as_rclass?.try(&.singleton_ancestors.any? { |(cls, singleton)| !singleton && cls == target })
     end
 
     # Whether `v` is a Range instance, by class, not by its ivars.
@@ -472,47 +470,95 @@ module Adjutant
       end
     end
 
-    # `String#[range]`, by Ruby's rules for Integer bounds: negative
-    # bounds count from the end, a start past the end gives nil, a
-    # start at the end gives "", and a late end is clamped. Returns nil
-    # for any other bound, including a missing one (`s[1..]`).
-    private def exec_get_index_string_range(target : Value, range : Value) : Value
-      obj = range.as_robject
-      lo_val = obj.ivars[@symbols.intern("__min").value]
-      hi_val = obj.ivars[@symbols.intern("__max").value]
-      exclusive = obj.ivars[@symbols.intern("__exclusive").value].as_bool
-      return Value.nil_value unless lo_val.int? && hi_val.int?
-
-      s = target.as_string
-      lo = lo_val.as_int.to_i
-      hi = hi_val.as_int.to_i
-      lo += s.size if lo < 0
-      return Value.nil_value if lo < 0 || lo > s.size
-
-      hi += s.size if hi < 0
-      hi -= 1 if exclusive
-      hi = s.size - 1 if hi >= s.size
-      return Value.string("", target.label) if hi < lo
-
-      Value.string(s[lo..hi], target.label)
-    end
-
     # Whether `recv` has `method_name`, in the order `dispatch_call`
     # resolves it, without calling it.
+    # Operations `exec_builtin` performs for any receiver, which
+    # `respond_to?` reports.
+    UNIVERSAL_METHODS = Set{"nil?", "is_a?", "kind_of?", "class", "respond_to?", "equal?",
+                            "dup", "clone", "to_s", "inspect", "==", "!=", "===", "!", "<=>"}
+
+    # `respond_to?`: a method dispatch finds, an operation every object
+    # has, an operator the receiver's type has, or `superclass` on a
+    # class.
+    private def value_responds_to?(recv : Value, method_name : String) : Bool
+      script_responds_to?(recv, method_name) || UNIVERSAL_METHODS.includes?(method_name) ||
+        operator_defined?(recv, method_name) ||
+        (method_name == "superclass" && !!recv.as_rclass?.try { |cls| !cls.is_module? })
+    end
+
+    # A script `initialize` that `cls` or a superclass defines, if any.
+    private def script_initialize(cls : RubyClass) : ScriptProc?
+      @symbols.lookup("initialize").try { |sym| cls.find_method(sym.value) }
+    end
+
+    # Ruby's `equal?`: the same object for a String, container, object
+    # or class; equal content for an immediate.
+    private def identical?(a : Value, b : Value) : Bool
+      ra = a.raw
+      rb = b.raw
+      if ra.is_a?(Reference) && rb.is_a?(Reference)
+        ra.same?(rb)
+      else
+        a == b
+      end
+    end
+
+    # `dup` and `clone`, which are the same here as nothing is frozen
+    # but Strings. An object gets `RubyObject#shallow_copy`, then its
+    # `initialize_copy(original)` if defined; one that can't be copied
+    # raises R054 (TypeError). An Array or Hash is copied shallowly.
+    # An immediate or String is returned as is, as for Ruby's frozen
+    # values. A class or Proc has no copy here, so dispatch raises
+    # NoMethodError.
+    private def copy_value(recv : Value, method : String, filename : String, line : Int32) : Value?
+      if obj = recv.as_robject?
+        return if obj.rclass == builtin_class_by_name("Proc")
+        copy = obj.shallow_copy
+        unless copy
+          raise runtime_diagnostic(
+            Diagnostic.new(code: "R054", primary: Span.new(line: line, filename: filename),
+              data: {"method" => method, "class" => obj.rclass.name}),
+            current_frame, error_class: "TypeError")
+        end
+        copy_val = Value.robject(copy)
+        if (sym_id = @symbols.lookup("initialize_copy").try(&.value)) && (method_proc = obj.rclass.find_method(sym_id))
+          invoke(method_proc, [recv], self_val: copy_val)
+        end
+        copy_val
+      elsif recv.array?
+        arr = recv.as_array
+        Value.new(LabeledArray.new(arr.dup_items, arr.label), recv.label)
+      elsif recv.hash?
+        h = recv.as_hash
+        Value.new(LabeledHash.new(h.dup_entries, h.label), recv.label)
+      elsif recv.rclass? || recv.proc?
+        nil
+      else
+        recv
+      end
+    end
+
     private def script_responds_to?(recv : Value, method_name : String) : Bool
       sym = @symbols.lookup(method_name)
       return false unless sym
       sym_id = sym.value
       if obj = recv.as_robject?
-        cls = obj.rclass
-        !!(cls.find_method(sym_id) || cls.find_native_method(sym_id))
+        public_instance_method?(obj.rclass, sym_id)
       elsif cls = recv.as_rclass?
         !!(cls.find_singleton_method(sym_id) || cls.find_native_singleton_method(sym_id))
-      elsif interp = @interpreter
-        !!(interp.builtin_class_for(recv).try(&.find_native_method(sym_id)))
+      elsif cls = @interpreter.try(&.builtin_class_for(recv))
+        public_instance_method?(cls, sym_id)
       else
         false
       end
+    end
+
+    # Whether `cls` has a public script or native instance method
+    # `sym_id`; a private one (a top-level `def`, `lambda`) can't be
+    # called with a receiver, so it doesn't count, as in Ruby.
+    private def public_instance_method?(cls : RubyClass, sym_id : Int32) : Bool
+      (!!cls.find_method(sym_id) && !cls.find_method_private?(sym_id)) ||
+        (!!cls.find_native_method(sym_id) && !cls.find_native_method_private?(sym_id))
     end
 
     # The class whose cvars `f` reads: self's class for an instance,
@@ -762,28 +808,27 @@ module Adjutant
             push(val)
 
             # --- Stack ops ------------------------------------------------------
-          when Op::GetIndex
+          when Op::GetIndex, Op::SafeIndex
+            length = inst.a == 2 ? pop : nil
             idx = pop
             target = pop
-            push(exec_get_index(target, idx, safe: false, filename: f.filename, line: inst.line))
-          when Op::SafeIndex
-            idx = pop
-            target = pop
-            push(exec_get_index(target, idx, safe: true, filename: f.filename, line: inst.line))
+            push(exec_get_index(target, idx, length, safe: inst.op.safe_index?, filename: f.filename, line: inst.line))
           when Op::SetIndex
             val = pop
+            length = inst.a == 2 ? pop : nil
             idx = pop
             target = pop
-            exec_set_index(target, idx, val)
+            exec_set_index(target, idx, length, val, f.filename, inst.line)
             @risk_flow_log.record("SetIndex", [target.label, val.label], target.label, f.line)
             push(val)
           when Op::SetIndexFromValue
-            # The stack is `[value, target, index]`: the value was
-            # pushed first, the reverse of SetIndex.
+            # The stack is `[value, target, index(, length)]`: the
+            # value was pushed first, the reverse of SetIndex.
+            length = inst.a == 2 ? pop : nil
             idx = pop
             target = pop
             val = pop
-            exec_set_index(target, idx, val)
+            exec_set_index(target, idx, length, val, f.filename, inst.line)
             @risk_flow_log.record("SetIndexFromValue", [target.label, val.label], target.label, f.line)
             push(val)
           when Op::SetAttr
@@ -1358,7 +1403,8 @@ module Adjutant
     private def call_super_native(native : NativeCallable, call_args : Array(Value), call_kwargs : Hash(String, Value)?,
                                   f : Frame, filename : String, line : Int32, candidate : RubyClass, name : String) : Value
       # Native methods take the receiver as `args.first`.
-      call_native(native, [f.self_val] + call_args, filename, line, f.block, "#{candidate.name}##{name}", kwargs: call_kwargs)
+      call_native(native, [f.self_val] + call_args, filename, line, f.block, "#{candidate.name}##{name}",
+        has_receiver: true, kwargs: call_kwargs)
     end
 
     # The arguments bare `super` forwards: each parameter's current
@@ -1494,7 +1540,7 @@ module Adjutant
             end
             if native = cls.find_native_method(sym_id)
               raise_if_private_call(cls, sym_id, name, recv, self_val, filename, line, native: true)
-              return call_native(native, args, filename, line, blk, "#{cls.name}##{name}", kwargs: kwargs)
+              return call_native(native, args, filename, line, blk, "#{cls.name}##{name}", has_receiver: true, kwargs: kwargs)
             end
           end
         elsif recv.rclass?
@@ -1506,7 +1552,7 @@ module Adjutant
               return call_script_proc(method, args[1..], filename, blk, nil, self_val: recv, block_outer: blk_outer, kwargs: kwargs, block_yield: blk_yield, block_yield_outer: blk_yield_outer)
             end
             if native = cls.find_native_singleton_method(sym_id)
-              return call_native(native, args, filename, line, blk, "#{cls.name}.#{name}", kwargs: kwargs)
+              return call_native(native, args, filename, line, blk, "#{cls.name}.#{name}", has_receiver: true, kwargs: kwargs)
             end
           end
         elsif interp = @interpreter
@@ -1514,7 +1560,7 @@ module Adjutant
           # class.
           if (cls = interp.builtin_class_for(recv)) && (sym_id = @symbols.lookup(name).try(&.value))
             if native = cls.find_native_method(sym_id)
-              return call_native(native, args, filename, line, blk, "#{cls.name}##{name}", kwargs: kwargs)
+              return call_native(native, args, filename, line, blk, "#{cls.name}##{name}", has_receiver: true, kwargs: kwargs)
             end
           end
         end
@@ -1542,7 +1588,7 @@ module Adjutant
               return call_script_proc(method, args, filename, blk, nil, self_val: self_val, block_outer: blk_outer, kwargs: kwargs, block_yield: blk_yield, block_yield_outer: blk_yield_outer)
             end
             if native = cls.find_native_method(sym_id)
-              return call_native(native, args, filename, line, blk, display_name_for_implicit_self(name), kwargs: kwargs)
+              return call_native(native, args, filename, line, blk, display_name_for_implicit_self(name), has_receiver: false, kwargs: kwargs)
             end
           elsif self_rclass = self_val.as_rclass?
             # self is a class or module (in its body). First its own
@@ -1555,14 +1601,14 @@ module Adjutant
               return call_script_proc(singleton, args, filename, blk, nil, self_val: self_val, block_outer: blk_outer, kwargs: kwargs, block_yield: blk_yield, block_yield_outer: blk_yield_outer)
             end
             if native_singleton = self_rclass.find_native_singleton_method(sym_id)
-              return call_native(native_singleton, args, filename, line, blk, display_name_for_implicit_self(name), kwargs: kwargs)
+              return call_native(native_singleton, args, filename, line, blk, display_name_for_implicit_self(name), has_receiver: false, kwargs: kwargs)
             end
             if meta = self_rclass.rclass
               if method = meta.find_method(sym_id)
                 return call_script_proc(method, args, filename, blk, nil, self_val: self_val, block_outer: blk_outer, kwargs: kwargs, block_yield: blk_yield, block_yield_outer: blk_yield_outer)
               end
               if native = meta.find_native_method(sym_id)
-                return call_native(native, args, filename, line, blk, display_name_for_implicit_self(name), kwargs: kwargs)
+                return call_native(native, args, filename, line, blk, display_name_for_implicit_self(name), has_receiver: false, kwargs: kwargs)
               end
             end
           end
@@ -1581,7 +1627,7 @@ module Adjutant
       end
 
       # 5. Builtin operations.
-      if result = exec_builtin(name, args, filename, line, blk, kwargs: kwargs)
+      if result = exec_builtin(name, args, filename, line, blk, has_receiver, kwargs: kwargs)
         return result
       end
 
@@ -1592,7 +1638,12 @@ module Adjutant
         raise excluded_construct(code, name, filename, line)
       end
 
-      # NameError, as Ruby raises for an undefined name.
+      # With a receiver, arguments or a block it can only be a method,
+      # so NoMethodError (R047); a bare name could be a variable, so
+      # NameError (R008), as in Ruby.
+      if has_receiver || !args.empty? || blk
+        raise undefined_method_error(name, has_receiver ? args.first : (self_val || current_frame.self_val), filename, line)
+      end
       raise runtime_diagnostic(
         Diagnostic.new(
           code: "R008",
@@ -1605,12 +1656,17 @@ module Adjutant
     end
 
     # Calls a native function or method, turning any Crystal exception
-    # into N001. First runs the risk-flow check, which raises
+    # into N001. `has_receiver` says whether `args` starts with the
+    # receiver, which the arity check doesn't count. Raises R046 for a
+    # positional count outside the native's arity and R012 for an
+    # undeclared keyword. Then runs the risk-flow check, which raises
     # RiskFlowRejectedError when policy rejects a labelled argument, or
     # an Ask is answered with Reject.
     private def call_native(native : NativeCallable, args : Array(Value),
                             filename : String, line : Int32, blk : ScriptProc?, name : String,
-                            kwargs : Hash(String, Value)? = nil) : Value
+                            has_receiver : Bool, kwargs : Hash(String, Value)? = nil) : Value
+      given = has_receiver ? args.size - 1 : args.size
+      raise_arity_error(given, native.arity.to_s, name, filename, line) unless native.arity.accepts?(given)
       check_unknown_native_keywords!(kwargs, native.kwarg_names, name, filename, line)
       check_risk_flow(native, args, kwargs, name, filename, line)
       NativeFunctionCall.new(self, native, filename, line, name, kwargs).call(args, blk)
@@ -1755,7 +1811,7 @@ module Adjutant
         if native_new = cls.find_native_singleton_method(sym_id)
           # A native `new` accepts the keywords in its `kwarg_names`,
           # like any native call.
-          return call_native(native_new, [Value.rclass(cls)] + args, filename, line, blk, "#{cls.name}.new", kwargs: kwargs)
+          return call_native(native_new, [Value.rclass(cls)] + args, filename, line, blk, "#{cls.name}.new", has_receiver: true, kwargs: kwargs)
         end
       end
       construct_object(cls, args, filename, line, kwargs)
@@ -1773,7 +1829,9 @@ module Adjutant
           return obj_val
         end
       end
-      # Without an `initialize`, any keyword is unknown (R012).
+      # Without an `initialize`, as Ruby's BasicObject#initialize, any
+      # argument raises R046 and any keyword R012.
+      raise_arity_error(args.size, "0", "#{cls.name}.new", filename, line) unless args.empty?
       reject_kwargs!(kwargs, "#{cls.name}.new", filename, line)
       obj_val
     end
@@ -1785,7 +1843,8 @@ module Adjutant
     # `self_val` defaults to the caller's self, as a block needs.
     # `lexical_override` replaces the proc's lexical scope, for
     # `invoke`. `blk` is the block passed to `proc`, and `block_outer`
-    # the scopes it closes over, for `yield` inside `proc`.
+    # the scopes it closes over, for `yield` inside `proc`. Arity is
+    # checked for a method, or with `lambda_call`, and not for a block.
     private def call_script_proc(proc : ScriptProc,
                                  args : Array(Value),
                                  filename : String,
@@ -1799,7 +1858,8 @@ module Adjutant
                                  block_yield : ScriptProc? = nil,
                                  own_yield : ScriptProc? = nil,
                                  block_yield_outer : OuterChain? = nil,
-                                 own_yield_outer : OuterChain? = nil) : Value
+                                 own_yield_outer : OuterChain? = nil,
+                                 lambda_call : Bool = false) : Value
       base = @stack.size
       inherited_self = self_val || (@frames.empty? ? Value.nil_value : current_frame.self_val)
       effective_lexical = if lexical_override
@@ -1814,7 +1874,7 @@ module Adjutant
         block_yield: block_yield, own_yield: own_yield,
         block_yield_outer: block_yield_outer, own_yield_outer: own_yield_outer)
       frame.kwarg_names = kwargs.keys.to_set if kwargs
-      bind_args(frame, proc, args, caller_line, kwargs)
+      bind_args(frame, proc, args, caller_line, kwargs, strict: lambda_call || !proc.is_block?)
       Value.nil_value # sentinel; Op::Ret will push the real return value
     end
 
@@ -1824,7 +1884,8 @@ module Adjutant
     # `|a, *rest|` takes the first element and the rest. A block with one
     # parameter, or only a splat, keeps the Array whole. Lambdas never
     # spread; they are called through `invoke_proc`, which does not come
-    # here. Elements keep their own labels, as `Array#first` returns them.
+    # here, so `->(a, b) {}.call([1, 2])` raises R046. Elements keep
+    # their own labels, as `Array#first` returns them.
     private def spread_block_args(proc : ScriptProc, args : Array(Value),
                                   kwargs : Hash(String, Value)? = nil) : Array(Value)
       return args unless proc.is_block? && args.size == 1 && (kwargs.nil? || kwargs.empty?)
@@ -1836,44 +1897,105 @@ module Adjutant
       spreads ? arr.to_a : args
     end
 
-    # Binds a call's arguments into `frame.locals` in declared order:
+    # Binds a call's arguments into `frame.locals`, as Ruby does:
     #
-    #   1. A plain parameter takes the next positional argument, or
-    #      stays nil if there is none.
-    #   2. A parameter with a default and no argument stays nil; the
-    #      compiled prologue then evaluates the default.
-    #   3. A splat takes the remaining positional arguments as an
-    #      Array.
+    #   1. With `strict` (a method, or a lambda), a positional count
+    #      outside the proc's arity raises R046. A block instead leaves
+    #      missing arguments nil and drops extras.
+    #   2. Required parameters take arguments first, from both ends of
+    #      the list; optional parameters take what is left, left to
+    #      right; a splat takes the rest as an Array. With
+    #      `def f(a = 1, b)`, `f(5)` binds `b` and leaves `a`.
+    #   3. An optional parameter with no argument stays nil; the
+    #      compiled prologue then evaluates its default.
     #   4. A keyword parameter is bound by name: from `kwargs`, else
-    #      left for its default, else R011.
+    #      left for its default, else R011. Unknown keywords raise R012.
     #
-    # Extra positional arguments are ignored, and unknown keywords
-    # raise R012. Positional arity is not checked, unlike Ruby. A proc
-    # with no `ast_params` binds by position.
+    # A proc with no `ast_params` binds by position.
     private def bind_args(frame : Frame, proc : ScriptProc, args : Array(Value), caller_line : Int32,
-                          kwargs : Hash(String, Value)? = nil) : Nil
+                          kwargs : Hash(String, Value)? = nil, strict : Bool = false) : Nil
       ast_params = proc.ast_params
       unless ast_params
         args.each_with_index { |arg, i| frame.locals[i] = arg if i < frame.locals.size }
         return
       end
-      pos = 0 # index into `args` — advances only for non-splat, non-kwarg params
+      check_script_arity!(ast_params, args.size, proc, frame, caller_line) if strict
+      bind_positional(frame, ast_params, args, caller_line)
       declared_kwargs = Set(String).new
       ast_params.each_with_index do |param, slot|
-        next if slot >= frame.locals.size
-        if param.splat?
-          frame.locals[slot] = collect_splat(args, pos, caller_line)
-          pos = args.size
-        elsif param.kwarg?
-          declared_kwargs << param.name
-          bind_kwarg_param(frame, proc, param, slot, kwargs, caller_line)
-        elsif pos < args.size
-          frame.locals[slot] = args[pos]
-          pos += 1
-        end
-        # Otherwise left nil: no argument, or a default to come.
+        next unless param.kwarg? && slot < frame.locals.size
+        declared_kwargs << param.name
+        bind_kwarg_param(frame, proc, param, slot, kwargs, caller_line)
       end
       check_unknown_keywords!(kwargs, declared_kwargs, proc, frame, caller_line)
+    end
+
+    # Binds the positional parameters, steps 2 and 3 of `bind_args`:
+    # each parameter takes the next argument in declared order, except
+    # that an optional parameter takes one only while there are more
+    # arguments than required parameters, and a splat takes those
+    # left over after the optional ones.
+    private def bind_positional(frame : Frame, ast_params : Array(Param), args : Array(Value), caller_line : Int32) : Nil
+      required, optional, has_splat = positional_counts(ast_params)
+      spare = args.size - required
+      optional_filled = spare.clamp(0, optional)
+      splat_size = has_splat ? Math.max(spare - optional, 0) : 0
+      pos = 0 # index into `args`
+      optional_seen = 0
+      ast_params.each_with_index do |param, slot|
+        next if slot >= frame.locals.size || param.kwarg? || param.block_param?
+        if param.splat?
+          frame.locals[slot] = collect_splat(args, pos, splat_size, caller_line)
+          pos += splat_size
+        elsif param.default
+          if optional_seen < optional_filled
+            frame.locals[slot] = args[pos]
+            pos += 1
+          end
+          optional_seen += 1
+        else
+          frame.locals[slot] = args[pos] if pos < args.size
+          pos += 1
+        end
+      end
+    end
+
+    # The required and optional positional parameter counts, and
+    # whether there is a splat. A block parameter (U001) counts as none.
+    private def positional_counts(ast_params : Array(Param)) : {Int32, Int32, Bool}
+      positional = ast_params.reject { |param| param.splat? || param.kwarg? || param.block_param? }
+      required = positional.count(&.default.nil?)
+      {required, positional.size - required, ast_params.any?(&.splat?)}
+    end
+
+    # Raises R046 unless `given` positional arguments fit the proc's
+    # arity. As in Ruby, the message names any required keywords.
+    private def check_script_arity!(ast_params : Array(Param), given : Int32, proc : ScriptProc,
+                                    frame : Frame, caller_line : Int32) : Nil
+      required, optional, has_splat = positional_counts(ast_params)
+      arity = Arity.new(required, has_splat ? nil : required + optional)
+      return if arity.accepts?(given)
+      expected = arity.to_s
+      required_kwargs = ast_params.select { |param| param.kwarg? && param.default.nil? }.map(&.name)
+      unless required_kwargs.empty?
+        noun = required_kwargs.size == 1 ? "keyword" : "keywords"
+        expected += "; required #{noun}: #{required_kwargs.join(", ")}"
+      end
+      raise_arity_error(given, expected, proc.name, frame.filename, caller_line)
+    end
+
+    # Raises R046, Ruby's ArgumentError for a wrong positional count.
+    private def raise_arity_error(given : Int32, expected : String, method : String,
+                                  filename : String, line : Int32) : NoReturn
+      raise runtime_diagnostic(
+        Diagnostic.new(
+          code: "R046",
+          primary: Span.new(line: line, filename: filename),
+          data: {"given" => given.to_s, "expected" => expected, "method" => method}
+        ),
+        current_frame,
+        error_class: "ArgumentError"
+      )
     end
 
     # Binds one keyword parameter: the supplied value, else nil for
@@ -1948,23 +2070,45 @@ module Adjutant
       )
     end
 
-    # for a splat parameter, labelled and logged as MakeArray labels
-    # an array literal, at the call site's `line`.
-    private def collect_splat(args : Array(Value), from : Int32, line : Int32) : Value
-      elements = from < args.size ? args[from..] : [] of Value
+    # The Array for a splat parameter: up to `count` arguments from
+    # `from`, labelled and logged as MakeArray labels an array literal,
+    # at the call site's `line`.
+    private def collect_splat(args : Array(Value), from : Int32, count : Int32, line : Int32) : Value
+      elements = from < args.size ? args[from, count] : [] of Value
       joined_label = elements.reduce(nil.as(RiskFlowLabel?)) { |acc, value| RiskFlowLabel.join(acc, value.label) }
       @risk_flow_log.record("MakeArray", elements.map(&.label), joined_label, line)
       Value.new(LabeledArray.new(elements, joined_label), joined_label)
     end
 
+    # Ruby's arity for each operation `exec_builtin` handles.
+    BUILTIN_ARITIES = {
+      "puts" => Arity.any, "print" => Arity.any, "p" => Arity.any,
+      "raise" => Arity.new(0, 3), "require" => Arity.from(1), "<=>" => Arity.from(1),
+      "nil?" => Arity.from(0), "is_a?" => Arity.from(1), "kind_of?" => Arity.from(1),
+      "class" => Arity.from(0), "superclass" => Arity.from(0), "respond_to?" => Arity.new(1, 2),
+      "equal?" => Arity.from(1), "dup" => Arity.from(0), "clone" => Arity.from(0),
+      "==" => Arity.from(1), "!=" => Arity.from(1), "===" => Arity.from(1),
+      "to_s" => Arity.from(0), "inspect" => Arity.from(0), "to_i" => Arity.from(0),
+      "to_f" => Arity.from(0), "length" => Arity.from(0), "size" => Arity.from(0),
+      "+" => Arity.from(1), "-" => Arity.from(1), "*" => Arity.from(1),
+      "/" => Arity.from(1), "%" => Arity.from(1),
+    }
+
     # Operations that resolve when nothing else does: output, `raise`,
     # reflection and the like. Returns nil when `name` isn't one.
+    # `has_receiver` says whether `args` starts with the receiver.
+    # Raises R046 for a positional count outside `BUILTIN_ARITIES`.
     # ameba:disable Metrics/CyclomaticComplexity
     private def exec_builtin(name : String,
                              args : Array(Value),
                              filename : String, line : Int32,
                              blk : ScriptProc? = nil,
+                             has_receiver : Bool = false,
                              kwargs : Hash(String, Value)? = nil) : Value?
+      if arity = BUILTIN_ARITIES[name]?
+        given = has_receiver ? args.size - 1 : args.size
+        raise_arity_error(given, arity.to_s, name, filename, line) unless arity.accepts?(given)
+      end
       reject_kwargs!(kwargs, name, filename, line)
       case name
       when "puts"
@@ -2004,6 +2148,15 @@ module Adjutant
         msg = if args.empty?
                 cls = builtin_class_by_name("RuntimeError")
                 "unhandled exception"
+              elsif (script_cls = args.first.as_rclass?) && script_cls.ancestors.any? { |ancestor| ancestor.name == "Exception" } &&
+                    (init = script_initialize(script_cls))
+                # `raise Oops, arg` for a class with a script
+                # `initialize`: built with `new(arg)`, as Ruby's
+                # `Oops.exception(arg)` is, so the `initialize` runs.
+                inst = RubyObject.new(script_cls)
+                invoke(init, args[1..], self_val: Value.robject(inst))
+                error_obj = inst
+                error_message(Value.robject(inst))
               elsif args.first.rclass?
                 # `raise NameError, "boo"`: a class and a message.
                 cls = args.first.as_rclass
@@ -2027,10 +2180,9 @@ module Adjutant
         a = args[0]? || Value.nil_value
         b = args[1]? || Value.nil_value
         if a.robject? || b.robject?
-          # An object without `<=>` has no default; returning nil
-          # here lets dispatch raise R008. One with `<=>` never gets
-          # this far.
-          nil
+          # Object#<=>, for an object without its own: 0 for the same
+          # object, nil for anything else.
+          identical?(a, b) ? Value.int(0_i64) : Value.nil_value
         elsif sign = spaceship(a, b, filename, line)
           Value.int(sign.to_i64)
         else
@@ -2051,8 +2203,16 @@ module Adjutant
         Value.bool(recv.null?)
       when "is_a?", "kind_of?"
         # Aliases, as in Ruby.
-        recv = args.first? || Value.nil_value
-        target = args[1]?.try(&.as_rclass?)
+        # A target that isn't a class or module raises R053
+        # (TypeError), as it does for `rescue`, which calls `is_a?`.
+        # Without a receiver, `is_a?(Foo)` asks about self.
+        recv = has_receiver ? args.first : current_frame.self_val
+        target = args[has_receiver ? 1 : 0]?.try(&.as_rclass?)
+        unless target
+          raise runtime_diagnostic(
+            Diagnostic.new(code: "R053", primary: Span.new(line: line, filename: filename)),
+            current_frame, error_class: "TypeError")
+        end
         Value.bool(is_a_target?(recv, target))
       when "class"
         # An object's class, a class's class (usually Class), or a
@@ -2062,46 +2222,45 @@ module Adjutant
               recv.as_rclass?.try(&.rclass) ||
               @interpreter.try(&.builtin_class_for(recv))
         cls ? Value.rclass(cls) : Value.nil_value
+      when "==", "!=", "==="
+        # The dot-call forms of the operators, `a.==(b)`. Without a
+        # receiver, a bare `==` isn't a call.
+        return unless has_receiver
+        recv = args.first
+        other = args[1]
+        result = case name
+                 when "==" then values_equal?(recv, other)
+                 when "!=" then !values_equal?(recv, other)
+                 else           triple_eq_matches?(recv, other)
+                 end
+        Value.bool(result)
       when "superclass"
-        # A class's superclass; nil for Object. For any other
-        # receiver it returns nil, where Ruby raises NoMethodError.
-        recv = args.first? || Value.nil_value
-        sup = recv.as_rclass?.try(&.superclass)
-        sup ? Value.rclass(sup) : Value.nil_value
-      when "respond_to?"
-        # Whether dispatch would find the method, checking what
-        # `dispatch_call` checks. A String name works as well as a
-        # Symbol. Operations that exist only here (`to_s`, `class`,
-        # `is_a?`, ...) are not seen, so answer false.
-        recv = args.first? || Value.nil_value
-        method_arg = args[1]? || Value.nil_value
-        method_name = method_arg.as_sym?.try(&.name) || method_arg.as_string?
-        Value.bool(method_name ? script_responds_to?(recv, method_name) : false)
-      when "equal?"
-        # Identity. Values with equal content are identical here, as
-        # Ruby's immediates are; two equal Strings are too, unlike
-        # Ruby.
-        recv = args.first? || Value.nil_value
-        other = args[1]? || Value.nil_value
-        Value.bool(recv == other)
-      when "dup", "clone"
-        # An object's shallow copy: a new object of the same class
-        # with the ivars copied, then its `initialize_copy(original)`
-        # if defined. `initialize` doesn't run. There is no frozen
-        # state, so `dup` and `clone` are the same. Other receivers get
-        # nil here, which dispatch reports as NoMethodError.
-        recv = args.first? || Value.nil_value
-        if obj = recv.as_robject?
-          copy = RubyObject.new(obj.rclass)
-          copy.ivars.merge!(obj.ivars)
-          copy_val = Value.robject(copy)
-          if sym_id = @symbols.lookup("initialize_copy").try(&.value)
-            if method = obj.rclass.find_method(sym_id)
-              invoke(method, [recv], self_val: copy_val)
-            end
-          end
-          copy_val
+        # A class's superclass; nil for Object. Anything else, a module
+        # included, has no `superclass`, so dispatch raises
+        # NoMethodError.
+        recv = has_receiver ? args.first : current_frame.self_val
+        if (cls = recv.as_rclass?) && !cls.is_module?
+          sup = cls.superclass
+          sup ? Value.rclass(sup) : Value.nil_value
         end
+      when "respond_to?"
+        # Whether a call would work: a method dispatch finds, an
+        # operation every object has here, or an operator the
+        # receiver's type has. Private Kernel functions (`puts`) answer
+        # false, as in Ruby. A String name works as well as a Symbol.
+        recv = has_receiver ? args.first : current_frame.self_val
+        method_arg = args[has_receiver ? 1 : 0]? || Value.nil_value
+        method_name = method_arg.as_sym?.try(&.name) || method_arg.as_string?
+        Value.bool(method_name ? value_responds_to?(recv, method_name) : false)
+      when "equal?"
+        # Identity: the same object for a String, container or object,
+        # and equal content for an immediate, as in Ruby.
+        recv = has_receiver ? args.first : current_frame.self_val
+        other = args[has_receiver ? 1 : 0]? || Value.nil_value
+        Value.bool(identical?(recv, other))
+      when "dup", "clone"
+        recv = has_receiver ? args.first : current_frame.self_val
+        copy_value(recv, name, filename, line)
       when "to_s"
         recv = args.first? || Value.nil_value
         Value.string(recv.to_s)
@@ -2157,8 +2316,9 @@ module Adjutant
     protected def compare(a : Value, b : Value, op : Symbol,
                           filename : String = current_frame.filename,
                           line : Int32 = current_frame.line) : Bool
-      # An object operand dispatches to its `<=>`, standing in for
-      # Comparable. Base types are ordered by ValueOps.
+      # An object operand dispatches to its `<=>`, as Ruby's Range and
+      # sorting do; the script-level operators check Comparable first
+      # (`operator_defined?`). Base types are ordered by ValueOps.
       if a.robject? || b.robject?
         compare_via_spaceship(a, b, op, filename, line)
       else
@@ -2270,16 +2430,20 @@ module Adjutant
     end
 
     protected def values_equal?(a : Value, b : Value) : Bool
+      ValueOps.equal?(a, b) { |x, y| leaf_values_equal?(x, y) }
+    end
+
+    # `values_equal?` for a pair that isn't two Arrays or two Hashes.
+    private def leaf_values_equal?(a : Value, b : Value) : Bool
       if range_receiver?(a) && range_receiver?(b)
         range_values_equal?(a, b)
-      elsif a.robject? && b.robject? && script_responds_to?(a, "<=>")
-        # An object with `<=>` gets `==` derived from it, as
-        # Comparable gives in Ruby: equal when `<=>` returns 0, and
-        # not equal when it returns anything else or raises. Without
-        # `<=>`, `==` is identity.
+      elsif comparable_object?(a)
+        # Comparable's `==`: equal when `<=>` returns 0, and not equal
+        # when it returns anything else or raises. Without Comparable,
+        # an object's `==` is identity.
         robject_equal_via_spaceship?(a, b)
       else
-        ValueOps.equal?(a, b)
+        ValueOps.leaf_equal?(a, b)
       end
     end
 
@@ -2336,65 +2500,58 @@ module Adjutant
 
     # --- Index helpers ------------------------------------------------------
 
-    # ameba:disable Metrics/CyclomaticComplexity
-    private def exec_get_index(target : Value, idx : Value, safe : Bool,
-                               filename : String, line : Int32) : Value
-      return Value.nil_value if safe && target.null?
-      case
-      when target.array? && idx.int?
-        i = idx.as_int
-        arr = target.as_array
-        i = arr.size + i if i < 0
-        (i >= 0 && i < arr.size) ? arr[i] : Value.nil_value
-      when target.hash?
-        target.as_hash[idx]? || Value.nil_value
-      when target.string? && idx.int?
-        i = idx.as_int.to_i
-        s = target.as_string
-        i = s.size + i if i < 0
-        (i >= 0 && i < s.size) ? Value.string(s[i].to_s, target.label) : Value.nil_value
-      when target.string? && range_receiver?(idx)
-        exec_get_index_string_range(target, idx)
+    # The method each binary-operator opcode stands for.
+    OPERATOR_NAMES = {
+      Op::Add => "+", Op::Sub => "-", Op::Mul => "*", Op::Div => "/", Op::Mod => "%",
+      Op::BitAnd => "&", Op::BitOr => "|", Op::Xor => "^", Op::Shl => "<<", Op::Shr => ">>",
+      Op::Lt => "<", Op::Lte => "<=", Op::Gt => ">", Op::Gte => ">=",
+    }
+
+    COMPARISONS = {"<", "<=", ">", ">=", "<=>"}
+
+    # The operators each builtin type has as methods in Ruby, by its
+    # class name (`Builtins.builtin_type_name`).
+    LOGIC_OPERATORS   = Set{"&", "|", "^"}
+    BUILTIN_OPERATORS = {
+      "Integer"    => Set{"+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>", "<", "<=", ">", ">=", "<=>"},
+      "Float"      => Set{"+", "-", "*", "/", "%", "<", "<=", ">", ">=", "<=>"},
+      "String"     => Set{"+", "*", "%", "<<", "<", "<=", ">", ">=", "<=>"},
+      "Array"      => Set{"+", "-", "*", "&", "|", "<<", "<=>"},
+      "Hash"       => Set{"<", "<=", ">", ">="},
+      "Symbol"     => Set{"<", "<=", ">", ">=", "<=>"},
+      "NilClass"   => LOGIC_OPERATORS,
+      "TrueClass"  => LOGIC_OPERATORS,
+      "FalseClass" => LOGIC_OPERATORS,
+    }
+
+    # Whether `v` is an object whose class includes Comparable, which
+    # derives `==`, `<`, `<=`, `>` and `>=` from its `<=>`.
+    private def comparable_object?(v : Value) : Bool
+      comparable = builtin_class_by_name("Comparable")
+      !!(comparable && v.as_robject?.try(&.rclass.ancestors.includes?(comparable)))
+    end
+
+    # Whether `v` has the operator `name` as a method, as Ruby decides
+    # between NoMethodError (`nil + 1`) and the receiver's own error
+    # (`"a" + 1`). An object has it if its class defines it, or for a
+    # comparison, `<=>`; a class is left to the operation itself.
+    private def operator_defined?(v : Value, name : String) : Bool
+      if v.robject?
+        script_responds_to?(v, name) || (COMPARISONS.includes?(name) && comparable_object?(v))
+      elsif v.rclass?
+        true
       else
-        exec_get_index_fallback(target, idx, filename, line)
-      end
-    end
-
-    # Indexing anything but an Array, Hash or String: an object's
-    # native `[]` is called. Anything else, including an object
-    # without a native `[]`, gives nil. A script-defined `[]` would
-    # push a frame this synchronous path can't wait for; U017 makes
-    # one impossible to write.
-    private def exec_get_index_fallback(target : Value, idx : Value,
-                                        filename : String, line : Int32) : Value
-      return Value.nil_value unless obj = target.as_robject?
-      sym_id = @symbols.lookup("[]").try(&.value)
-      return Value.nil_value unless sym_id
-      native = obj.rclass.find_native_method(sym_id)
-      return Value.nil_value unless native
-      call_native(native, [target, idx], filename, line, nil, "#{obj.rclass.name}#[]")
-    end
-
-    private def exec_set_index(target : Value, idx : Value, val : Value) : Nil
-      case
-      when target.array? && idx.int?
-        i = idx.as_int.to_i
-        arr = target.as_array
-        i = arr.size + i if i < 0
-        if i >= 0 && i < arr.size
-          arr[i] = val
-          arr.label = RiskFlowLabel.join(arr.label, val.label)
-        end
-      when target.hash?
-        h = target.as_hash
-        h[idx] = val
-        h.label = RiskFlowLabel.join(h.label, val.label)
+        !!BUILTIN_OPERATORS[Builtins.builtin_type_name(v)]?.try(&.includes?(name))
       end
     end
 
     private def exec_binary(inst : Instruction, &block : Value, Value -> Value) : Nil
       b = pop
       a = pop
+      if name = OPERATOR_NAMES[inst.op]?
+        f = current_frame
+        raise undefined_method_error(name, a, f.filename, f.line) unless operator_defined?(a, name)
+      end
       result = block.call(a, b).with_label(RiskFlowLabel.join(a.label, b.label))
       @risk_flow_log.record(inst.op.to_s, [a.label, b.label], result.label, current_frame.line)
       push(result)
@@ -2674,3 +2831,5 @@ module Adjutant
     end
   end
 end
+
+require "./vm_indexing"

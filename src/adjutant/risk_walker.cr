@@ -398,14 +398,15 @@ module Adjutant
       RiskSequence.new(children, node.line)
     end
 
-    # `arr[i] = expr`: target, index and value are each walked, in
-    # order.
+    # `arr[i] = expr` or `arr[i, n] = expr`: target, index, length and
+    # value are each walked, in order.
     private def walk_index_assign(node : IndexAssign, env : TypeInference::Env) : RiskNode
       children = [
         walk_node(node.target, env).as(RiskNode),
         walk_node(node.index, env).as(RiskNode),
-        walk_node(node.value, env).as(RiskNode),
       ]
+      node.length.try { |length| children << walk_node(length, env).as(RiskNode) }
+      children << walk_node(node.value, env).as(RiskNode)
       RiskSequence.new(children, node.line)
     end
 

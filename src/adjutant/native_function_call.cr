@@ -30,6 +30,10 @@ module Adjutant
       @vm.invoke(proc, args)
     end
 
+    def invoke_method(method : ScriptProc, args : Array(Value), self_val : Value) : Value
+      @vm.invoke(method, args, self_val: self_val)
+    end
+
     def self_val : Value
       @vm.current_self_val
     end

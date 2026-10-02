@@ -4,7 +4,7 @@ module Adjutant
   describe Parser do
     describe "begin/rescue/ensure" do
       it "parses begin/rescue/ensure" do
-        src = "begin\nfoo\nrescue e\nbar\nensure\nbaz\nend"
+        src = "begin\nfoo\nrescue => e\nbar\nensure\nbaz\nend"
         node = parse_expr(src)
         node.should be_a(BeginNode)
         b = node.as(BeginNode)

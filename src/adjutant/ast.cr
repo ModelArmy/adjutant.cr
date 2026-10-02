@@ -284,22 +284,27 @@ module Adjutant
     end
   end
 
+  # `target[index]`, or `target[index, length]` with `length`.
   class Index < Node
     getter target : Node
     getter index : Node
+    getter length : Node?
     getter? safe : Bool
 
-    def initialize(@target, @index, @safe, line, column)
+    def initialize(@target, @index, @safe, line, column, @length : Node? = nil)
       super(line, column)
     end
   end
 
+  # `target[index] = value`, or `target[index, length] = value` with
+  # `length`.
   class IndexAssign < Node
     getter target : Node
     getter index : Node
+    getter length : Node?
     getter value : Node
 
-    def initialize(@target, @index, @value, line, column)
+    def initialize(@target, @index, @value, line, column, @length : Node? = nil)
       super(line, column)
     end
   end

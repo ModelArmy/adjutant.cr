@@ -12,7 +12,7 @@ module Adjutant::Builtins
   #   - `crystal_methods`: Crystal names, where they differ
   private macro __define_mapped_methods(cls, interp, self_as, return_as, methods, crystal_methods = nil)
     {% for method, index in methods %}
-    define({{ cls }}, {{ interp }}, {{ method.stringify }}) do |args|
+    define({{ cls }}, {{ interp }}, {{ method.stringify }}, arity: 0) do |args|
       obj = args.first
       val = obj.as_{{ self_as }}
       Adjutant::Value.{{ return_as }}(
@@ -25,29 +25,33 @@ module Adjutant::Builtins
   # Defines a reader for ivar `name`, returning `default` (which may
   # use `obj`, the receiver) when unset.
   private macro __define_getter(cls, interp, name, default = Value.nil_value)
-    define({{ cls }}, {{ interp }}, {{ name }}) do |args|
+    define({{ cls }}, {{ interp }}, {{ name }}, arity: 0) do |args|
       obj = args.first.as_robject
       name_sym = {{ interp }}.symbols.intern({{ name }})
       obj.ivars[name_sym.value]? || {{ default }}
     end
   end
 
-  # Registers a native instance method on a builtin class. `risk`
-  # defaults to none, since builtin methods are pure.
+  # Registers a native instance method on a builtin class. `arity`
+  # is Ruby's for the method, as `0`, `0..1` or `(1..)`, and has no
+  # default, so each registration states it. `risk` defaults to none,
+  # since builtin methods are pure.
   def self.define(cls : Adjutant::RubyClass, interp : Adjutant::Interpreter, name : String,
+                  arity : Adjutant::ArityLike,
                   risk : Adjutant::RiskProfile = Adjutant::RiskProfile.none, is_private : Bool = false,
                   &block : Array(Adjutant::Value), Adjutant::ScriptProc?, Adjutant::NativeCallContext -> Adjutant::Value) : Nil
     sym_id = interp.symbols.intern(name).value
-    cls.define_native_method(sym_id, risk, is_private: is_private) { |args, blk, ncc| block.call(args, blk, ncc) }
+    cls.define_native_method(sym_id, risk, is_private: is_private, arity: arity) { |args, blk, ncc| block.call(args, blk, ncc) }
   end
 
   # Registers a native singleton method on a builtin class, as
   # `define` does.
   def self.define_singleton(cls : Adjutant::RubyClass, interp : Adjutant::Interpreter, name : String,
+                            arity : Adjutant::ArityLike,
                             risk : Adjutant::RiskProfile = Adjutant::RiskProfile.none,
                             &block : Array(Adjutant::Value), Adjutant::ScriptProc?, Adjutant::NativeCallContext -> Adjutant::Value) : Nil
     sym_id = interp.symbols.intern(name).value
-    cls.define_native_singleton_method(sym_id, risk) { |args, blk, ncc| block.call(args, blk, ncc) }
+    cls.define_native_singleton_method(sym_id, risk, arity: arity) { |args, blk, ncc| block.call(args, blk, ncc) }
   end
 
   # Integer rounding to `ndigits` for round, ceil, floor and
@@ -98,6 +102,12 @@ module Adjutant::Builtins
   # builds a new container from an existing one's contents. Pass the
   # source container's label as `seed`: it can carry labels no current
   # element does, and dropping them would under-label the result.
+  # The block of a method that iterates, or U022 without one: Ruby
+  # returns an Enumerator there, which Adjutant doesn't have.
+  def self.require_block!(blk : Adjutant::ScriptProc?, method : String, ncc : Adjutant::NativeCallContext) : Adjutant::ScriptProc
+    blk || ncc.raise_error("U022", {"method" => method}, "RuntimeError")
+  end
+
   def self.joined_label(values : Array(Adjutant::Value), seed : Adjutant::RiskFlowLabel? = nil) : Adjutant::RiskFlowLabel?
     values.reduce(seed) { |acc, v| Adjutant::RiskFlowLabel.join(acc, v.label) }
   end

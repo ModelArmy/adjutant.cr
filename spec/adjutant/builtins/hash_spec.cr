@@ -268,10 +268,10 @@ module Adjutant
         result.truthy?.should be_true
       end
 
-      it "with no block, does not raise, and returns the receiver" do
+      it "with no block, raises U022, as Adjutant has no Enumerator" do
         interp, _ = make_interp
-        result = interp.eval(%({"a" => 1}.each))
-        result.hash?.should be_true
+        error = expect_raises(RuntimeError) { interp.eval(%({"a" => 1}.each)) }
+        error.diagnostic.not_nil!.code.should eq "U022"
       end
     end
 
@@ -299,29 +299,51 @@ module Adjutant
       end
     end
 
-    describe "cross-type numeric key lookup" do
-      # Verified behavior, not assumed: Crystal's Int64/Float64#hash
-      # are cross-type consistent (5.hash == 5.0.hash when 5 == 5.0),
-      # so a Hash(Value, Value) keyed by an Integer IS found by a
-      # numerically-equal Float lookup, matching values_equal?'s own
-      # notion of equality. An earlier draft of this spec assumed the
-      # opposite (that Crystal's struct hash would diverge here) —
-      # this was wrong, caught by the test itself, not by re-reading
-      # documentation. Kept as a positive regression test now that
-      # it's confirmed correct, since it's the kind of behavior that's
-      # easy to accidentally break (e.g. by adding a custom Value#hash
-      # override later that ISN'T cross-type consistent).
-      it "an Integer key IS found via a numerically-equal Float lookup" do
-        interp, _ = make_interp
-        result = interp.eval(<<-RUBY)
-          h = {5 => "a"}
-          [h[5], h[5.0], (5 == 5.0)]
-        RUBY
-        arr = result.as_array
+    describe "keys compare with eql?, not ==" do
+      # Ruby keys a Hash by `eql?` and `hash`: `5 == 5.0` is true, but
+      # `5.eql?(5.0)` is false, so they are different keys.
+      it "doesn't find an Integer key with an equal Float" do
+        arr = eval(%(h = {5 => "a"}\n[h[5], h[5.0], 5 == 5.0])).as_array
         arr[0].as_string.should eq "a"
-        arr[1].as_string.should eq "a"
+        arr[1].null?.should be_true
         arr[2].truthy?.should be_true
       end
+
+      it "keeps an Integer and an equal Float as two keys" do
+        eval(%(h = {1 => :a, 1.0 => :b}\n[h.size, h[1], h[1.0]].inspect)).as_string.should eq "[2, :a, :b]"
+        eval(%(h = {1 => :a}\nh[1.0] = :b\nh.size)).as_int.should eq 2
+        eval(%({1 => :a}.merge({1.0 => :b}).size)).as_int.should eq 2
+      end
+
+      it "answers key? and delete by eql?" do
+        eval(%({1 => :a}.key?(1.0))).falsy?.should be_true
+        eval(%(h = {1 => :a}\n[h.delete(1.0), h.size].inspect)).as_string.should eq "[nil, 1]"
+      end
+
+      it "compares Array and Hash keys element by element with eql?" do
+        eval(%({[1] => :a}[[1.0]])).null?.should be_true
+        eval(%({[1] => :a}[[1]])).as_sym.name.should eq "a"
+        eval(%({{k: 1} => :a}[{k: 1.0}])).null?.should be_true
+      end
+
+      it "treats 0.0 and -0.0 as the same key, as Ruby does" do
+        eval(%({0.0 => :a}[-0.0])).as_sym.name.should eq "a"
+      end
+    end
+
+    describe "#== compares keys with eql? and values with ==" do
+      it "is false when keys differ only as Integer and Float" do
+        eval(%({1 => :x} == {1.0 => :x})).falsy?.should be_true
+      end
+
+      it "is true when values differ only as Integer and Float" do
+        eval(%({k: 1} == {k: 1.0})).truthy?.should be_true
+      end
+    end
+
+    it "leaves Array#== and #include? comparing with ==" do
+      eval(%([1] == [1.0])).truthy?.should be_true
+      eval(%([1].include?(1.0))).truthy?.should be_true
     end
 
     it "indexes into a hash" do

@@ -460,9 +460,11 @@ module Adjutant
         eval(src).as_array.map(&.as_int).should eq [2_i64, 3_i64]
       end
 
-      it "does not spread for a lambda" do
-        eval("f = ->(a, b) { a }\nf.call([1, 2])").as_array.map(&.as_int).should eq [1_i64, 2_i64]
-        eval("f = lambda { |a, b| a }\nf.call([1, 2])").as_array.map(&.as_int).should eq [1_i64, 2_i64]
+      it "does not spread for a lambda, which then raises for the missing argument" do
+        {"f = ->(a, b) { a }\nf.call([1, 2])", "f = lambda { |a, b| a }\nf.call([1, 2])"}.each do |src|
+          error = expect_raises(RuntimeError) { eval(src) }
+          error.diagnostic.not_nil!.code.should eq "R046"
+        end
       end
     end
 
@@ -625,18 +627,16 @@ module Adjutant
         interp.eval(src).as_string.should contain "NameError"
       end
 
-      it "x += 1 with no prior x raises, matching real Ruby's NameError " \
-         "for a first-ever compound assignment" do
-        # OpAssign compiles as `x = x + 1` — the READ half (x's
-        # current value) runs before the WRITE half (which is what
-        # defines x as a local on first sight — see emit_store).
-        # With no earlier plain `x = ...` anywhere in scope, the read
-        # genuinely has nothing to resolve to yet, same as real Ruby:
-        # `x += 1` alone raises NameError, it does not silently
-        # default x to 0/nil first.
-        expect_raises(Adjutant::RuntimeError, /undefined method or variable `x`/) do
+      it "x += 1 with no prior x reads x as nil, as in Ruby" do
+        # Ruby declares x when it parses the assignment, so the read
+        # half finds nil and `nil + 1` raises NoMethodError.
+        expect_raises(Adjutant::RuntimeError, /undefined method `\+` for nil/) do
           eval("x += 1")
         end
+      end
+
+      it "x ||= 5 with no prior x assigns, as in Ruby" do
+        eval("x ||= 5\nx").as_int.should eq 5
       end
 
       it "x += 1 works once x has a prior plain assignment earlier in scope" do

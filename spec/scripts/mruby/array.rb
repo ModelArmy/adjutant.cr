@@ -61,12 +61,23 @@ end
 #   assert_equal([1, 1], [1].<<(1))
 # end
 
-# --- BLOCKED: `[]` is opcode-only (Op::GetIndex), so the dot-call
-# form (`.[](...)`) used throughout this test isn't reachable via
-# method dispatch. Separately, even the bracket syntax only supports a
-# single Integer index — no two-arg (start, length) slicing, no Range
-# indexing (`a[1..-2]`, `a[1..]`, `a[..2]`), no Float index coercion —
-# see exec_get_index (vm.cr).
+# The bracket-syntax half of the ISO test below. The dot-call form
+# (`.[](...)`) stays commented out: `[]` is opcode-only (Op::GetIndex),
+# so it isn't reachable through method dispatch.
+assert('Array#[] (bracket syntax)', '15.2.12.5.4') do
+  assert_equal(2, [1,2,3][1])
+  assert_equal(nil, [1,2,3][4])
+  assert_equal(3, [1,2,3][-1])
+  assert_equal(nil, [1,2,3][-4])
+
+  a = [ "a", "b", "c", "d", "e" ]
+  assert_equal(["b", "c"], a[1,2])
+  assert_equal(["b", "c", "d"], a[1..-2])
+  assert_equal(["b", "c", "d", "e"], a[1..])
+  assert_equal(["a", "b", "c"], a[..2])
+  assert_equal("b", a[1.1])
+end
+
 # assert('Array#[]', '15.2.12.5.4') do
 #   a = Array.new
 #   assert_raise(ArgumentError) do
@@ -214,15 +225,9 @@ assert('Array#empty?', '15.2.12.5.12') do
   assert_false([1].empty?)
 end
 
-# --- Original ISO test's out-of-range (Bignum) ArgumentError and
-# multiple-arguments ArgumentError aren't implemented — native
-# methods here don't arity-check their own argument count, so passing
-# extra args is silently ignored rather than raising, and there's no
-# Bignum type to construct an out-of-range count with in the first
-# place. The count-argument form itself now works for real
-# (`array.cr`, 2026-08-19 — see SCOPE.md/git history), so those
-# assertions are uncommented below; the two ArgumentError cases stay
-# out, a real, separate gap if ever wanted.
+# --- Original ISO test's out-of-range (Bignum) ArgumentError isn't
+# implemented: there's no Bignum type to construct an out-of-range
+# count with.
 assert('Array#first', '15.2.12.5.13') do
   assert_nil([].first)
 
@@ -232,6 +237,7 @@ assert('Array#first', '15.2.12.5.13') do
   assert_equal([1,2,3], b.first(10))
   assert_equal([], b.first(0))
   assert_equal([], [].first(2))
+  assert_raise(ArgumentError) { b.first(1, 2) }
 end
 
 # --- BLOCKED: Array#index doesn't exist.

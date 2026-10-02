@@ -29,18 +29,17 @@ What is different, in order of importance:
 - `` `grep ...` ``, `system` → `Legate.grep(pattern, paths)`; nothing runs processes
 - `rand`, `Time.now` → `Legate.random`, `Legate.now`
 - `arr.each_with_index { |x, i| }` → `arr.each { |x| ...; i += 1 }` with `i = 0` before
-- `arr.sum` → `arr.inject(0) { |acc, x| acc + x }`
-- `arr.inject(:+)` → `arr.inject(0) { |acc, x| acc + x }`; `inject` needs a block
+- `arr.each_slice(2).to_a`, `arr.map.with_index`, any iterator called without a block → Pass the block; there is no Enumerator
+- `arr.sum` → `arr.inject(0, :+)`
 - `arr.max_by { ... }`, `min_by` → `arr.sort_by { ... }.last`, `.first`
 - `arr.uniq` → `seen = {}; arr.each { |x| seen[x] = true }; seen.keys`
 - `arr.count { ... }` → `arr.select { ... }.size`
 - `arr.find { ... }` → `arr.select { ... }.first`
 - `arr.group_by { ... }` → A Hash of Arrays built in `each`
 - `arr.map(&:name)` → `arr.map { |x| x.name }`
-- `arr[1..3]` → `arr.first(n)`, `arr.last(n)`; Arrays do not slice by Range
 - `hash.map`, `select`, `sort_by`, `find` → `hash.to_a.map { |pair| ... }` or `hash.each { |k, v| ... }`
 - `hash.fetch(k, d)`, `dig` → `hash.key?(k) ? hash[k] : d`; chain `[]`
-- `Hash.new(0)`, `counts[k] += 1` on a key not yet seen → `counts[k] = (counts[k] || 0) + 1`; a missing key is `nil`, and `nil + 1` is a TypeError
+- `Hash.new(0)`, `counts[k] += 1` on a key not yet seen → `counts[k] = (counts[k] || 0) + 1`; a missing key is `nil`, and `nil + 1` is a NoMethodError
 - `"ab" * 3`, `"%d" % n`, `format` → Interpolation: `"#{n}"`
 - `str << "x"` → `str = str + "x"`
 - `x ** 2` → `x * x`
@@ -52,7 +51,7 @@ What is different, in order of importance:
 - `proc { }` → `lambda { }` or `-> { }`
 - `send(:name)`, `define_method`, `eval` → A `case` on the name
 - `private`, `protected` → Leave methods public
-- `def ==(o)`, `def <(o)`, `def +(o)` → Define `<=>` instead, which drives `==`, `<`, `>`, `sort` and `min`/`max`; otherwise a named method such as `plus(o)`
+- `def ==(o)`, `def <(o)`, `def +(o)` → Define `<=>` and `include Comparable`, which gives `==`, `<`, `>`, `between?` and `clamp`; `<=>` alone gives only `sort` and `min`/`max`. Otherwise a named method such as `plus(o)`
 - `Struct.new(:a, :b)` → A class with `attr_accessor :a, :b`
 - `class << self` → `def self.name`
 - `$global` → A constant, or pass the value along
@@ -70,7 +69,7 @@ What is different, in order of importance:
 
 ## 3. Built-in methods
 
-These are complete lists. `<`, `<=`, `>`, `>=` order numbers with numbers and Strings with Strings; anything else raises `ArgumentError`. `<=>`, `sort`, `sort_by`, `min` and `max` also order Arrays element by element, so a two-key sort is `sort_by { |x| [-x.count, x.name] }`.
+These are complete lists. `<`, `<=`, `>`, `>=` order numbers with numbers, Strings with Strings, and objects whose class includes Comparable; a pair of different kinds raises `ArgumentError`. `<=>`, `sort`, `sort_by`, `min` and `max` also order Arrays element by element, so a two-key sort is `sort_by { |x| [-x.count, x.name] }`.
 
 **Every object**: `nil?` `is_a?` `kind_of?` `class` `respond_to?` `equal?` `dup` `clone` `to_s` `inspect`
 
@@ -78,11 +77,11 @@ These are complete lists. `<`, `<=`, `>`, `>=` order numbers with numbers and St
 
 **Float**: `+ - * / %` `abs` `ceil` `floor` `round` `truncate` `finite?` `infinite?` `nan?` `to_i` `to_f` `to_s`
 
-**String**: `+` `[i]` `[range]` `=~` `length` `size` `empty?` `upcase` `downcase` `capitalize` `strip` `chomp` `reverse` `chars` `each_line` `split` `include?` `start_with?` `end_with?` `index` `rindex` `sub` `gsub` `match` `to_i` `to_f` `to_sym`
+**String**: `+` `[i]` `[range]` `[start, length]` `[substring]` `[regexp]` `=~` `length` `size` `empty?` `upcase` `downcase` `capitalize` `strip` `chomp` `reverse` `chars` `each_line` `split` `include?` `start_with?` `end_with?` `index` `rindex` `sub` `gsub` `match` `to_i` `to_f` `to_sym`
 
 **Symbol**: `to_s` `to_sym`
 
-**Array**: `[i]` `[i]=` `<<` `+` `push` `pop` `first` `first(n)` `last` `last(n)` `length` `size` `empty?` `include?` `each` `map` `select` `reject` `inject` `reduce` `all?` `any?` `min` `max` `sort` `sort { |a, b| }` `sort_by` `reverse` `join(sep)`
+**Array**: `[i]` `[range]` `[start, length]` `[i]=` `[range]=` `<<` `+` `push` `pop` `first` `first(n)` `last` `last(n)` `length` `size` `empty?` `include?` `each` `map` `select` `reject` `inject` `reduce` `inject(:+)` `all?` `any?` `min` `max` `sort` `sort { |a, b| }` `sort_by` `reverse` `join(sep)`
 
 **Hash**: `[k]` `[k]=` `each { |k, v| }` `keys` `values` `key?` `has_key?` `include?` `delete` `merge` `length` `size` `empty?` `to_a`
 
@@ -91,6 +90,8 @@ These are complete lists. `<`, `<=`, `>`, `>=` order numbers with numbers and St
 **Regexp**: `=~` `match` `match?` `source` `options` `casefold?`. **MatchData**: `[n]` `captures` `pre_match` `post_match` `begin` `end` `string`
 
 **Proc**: `call` `lambda?`
+
+**Comparable** (Integer, Float, String and Time include it, and a class can): `between?` `clamp`
 
 **Time**: `Time.now` `Time.at` `+` `-` `<=>` `year` `month` `mon` `day` `mday` `hour` `min` `sec` `usec` `wday` `yday` `zone` `utc?` `utc_offset` `to_i` `to_f`
 

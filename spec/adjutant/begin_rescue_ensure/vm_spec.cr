@@ -16,7 +16,7 @@ module Adjutant
       result = eval(<<-RUBY)
         begin
           1 / 0
-        rescue e
+        rescue => e
           :caught
         end
       RUBY
@@ -28,7 +28,7 @@ module Adjutant
       eval(<<-RUBY).should eq Value.int(2_i64)
         begin
           1 + 1
-        rescue e
+        rescue => e
           :failed
         end
       RUBY
@@ -38,7 +38,7 @@ module Adjutant
       eval(<<-RUBY).should eq Value.string("divided by 0")
         begin
           1 / 0
-        rescue e
+        rescue => e
           e.message
         end
       RUBY
@@ -48,7 +48,7 @@ module Adjutant
       eval(<<-RUBY).should eq Value.string("boom")
         begin
           raise "boom"
-        rescue e
+        rescue => e
           e.message
         end
       RUBY
@@ -60,7 +60,7 @@ module Adjutant
         begin
           1 / 0
           ran_after = true
-        rescue e
+        rescue => e
           nil
         end
         ran_after
@@ -75,7 +75,7 @@ module Adjutant
 
         begin
           blow_up()
-        rescue e
+        rescue => e
           :caught
         end
       RUBY
@@ -99,7 +99,7 @@ module Adjutant
 
         begin
           level_one()
-        rescue e
+        rescue => e
           :caught
         end
       RUBY
@@ -117,7 +117,7 @@ module Adjutant
 
         begin
           blow_up()
-        rescue e
+        rescue => e
           nil
         end
 
@@ -156,7 +156,7 @@ module Adjutant
       result = interp.eval(<<-RUBY)
         begin
           raise "boom"
-        rescue e
+        rescue => e
           e
         end
       RUBY
@@ -169,7 +169,7 @@ module Adjutant
       result = interp.eval(<<-RUBY)
         begin
           raise TypeError, "expected a String"
-        rescue e
+        rescue => e
           e
         end
       RUBY
@@ -181,7 +181,7 @@ module Adjutant
       eval(<<-RUBY).should eq Value.string("ArgumentError")
         begin
           raise ArgumentError
-        rescue e
+        rescue => e
           e.message
         end
       RUBY
@@ -192,7 +192,7 @@ module Adjutant
       result = interp.eval(<<-RUBY)
         begin
           1 / 0
-        rescue e
+        rescue => e
           e
         end
       RUBY
@@ -204,7 +204,7 @@ module Adjutant
       eval(<<-RUBY).should eq Value.string("divided by 0")
         begin
           1 / 0
-        rescue e
+        rescue => e
           e.message
         end
       RUBY
@@ -595,7 +595,7 @@ module Adjutant
           else
             raise "boom"
           end
-        rescue e
+        rescue => e
           "outer caught: " + e.message
         end
       RUBY
@@ -618,7 +618,7 @@ module Adjutant
           ensure
             order << :ensure
           end
-        rescue e
+        rescue => e
           order << ("outer caught: " + e.message)
         end
         order
@@ -703,7 +703,7 @@ module Adjutant
       result = eval(<<-RUBY)
         begin
           raise "boom"
-        rescue e
+        rescue => e
           :caught
         ensure
           1
@@ -733,7 +733,7 @@ module Adjutant
       result = eval(<<-RUBY)
         begin
           raise "boom"
-        rescue e
+        rescue => e
           :caught
         end
       RUBY
@@ -806,7 +806,7 @@ module Adjutant
 
         begin
           inner()
-        rescue e
+        rescue => e
           "outer caught: " + e.message
         end
       RUBY
@@ -839,7 +839,7 @@ module Adjutant
 
         begin
           raise "second"
-        rescue e
+        rescue => e
           count
         end
       RUBY
@@ -868,7 +868,7 @@ module Adjutant
           ensure
             count += 1
           end
-        rescue e
+        rescue => e
           count
         end
       RUBY
@@ -1105,7 +1105,7 @@ module Adjutant
 
         begin
           raise "second"
-        rescue e
+        rescue => e
           count = 1
         end
         count
@@ -1127,7 +1127,7 @@ module Adjutant
           end
 
           raise "boom"
-        rescue e
+        rescue => e
           side << :outer_rescue
         end
         side

@@ -24,29 +24,33 @@ module Adjutant
         def initialize(rclass : RubyClass, @bytes : Bytes)
           super(rclass)
         end
+
+        def shallow_copy : RubyObject?
+          copy_ivars_to(ChunkObject.new(rclass, @bytes.dup))
+        end
       end
 
       def self.bootstrap(interp : Interpreter, legate : RubyClass) : Nil
         cls = Helpers.nest(legate, interp, "Chunk")
         malformed = Helpers.fetch(legate, interp, "Malformed")
 
-        Builtins.define(cls, interp, "size") { |args| Value.int(obj_of(args).bytes.size.to_i64) }
-        Builtins.define(cls, interp, "empty?") { |args| Value.bool(obj_of(args).bytes.size == 0) }
+        Builtins.define(cls, interp, "size", arity: 0) { |args| Value.int(obj_of(args).bytes.size.to_i64) }
+        Builtins.define(cls, interp, "empty?", arity: 0) { |args| Value.bool(obj_of(args).bytes.size == 0) }
 
-        Builtins.define(cls, interp, "[]") do |args|
+        Builtins.define(cls, interp, "[]", arity: 1) do |args|
           i = (args[1]? || Value.nil_value).as_int.to_i32
           bytes = obj_of(args).bytes
           i >= 0 && i < bytes.size ? Value.int(bytes[i].to_i64) : Value.nil_value
         end
 
-        Builtins.define(cls, interp, "each_byte") do |args, blk, ncc|
+        Builtins.define(cls, interp, "each_byte", arity: 0) do |args, blk, ncc|
           if b = blk
             obj_of(args).bytes.each { |byte| ncc.invoke(b, [Value.int(byte.to_i64)]) }
           end
           args.first
         end
 
-        Builtins.define(cls, interp, "to_a") do |args|
+        Builtins.define(cls, interp, "to_a", arity: 0) do |args|
           label = args.first.label
           items = obj_of(args).bytes.map { |byte| Value.int(byte.to_i64, label) }.to_a
           Value.new(LabeledArray.new(items, label), label)
@@ -58,6 +62,7 @@ module Adjutant
           interp.symbols.intern("to_s").value,
           RiskProfile.none,
           kwarg_names: Set{"scrub"},
+          arity: 0,
         ) do |args, _blk, ncc|
           bytes = obj_of(args).bytes
           label = args.first.label
@@ -70,7 +75,7 @@ module Adjutant
           Value.string(scrubbed, label)
         end
 
-        Builtins.define(cls, interp, "+") do |args|
+        Builtins.define(cls, interp, "+", arity: 1) do |args|
           a = obj_of(args).bytes
           b = (args[1]? || Value.nil_value).as_robject.as(ChunkObject).bytes
           combined = ::Bytes.new(a.size + b.size)

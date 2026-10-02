@@ -2,7 +2,7 @@
 
 Working notes between development sessions, kept current by whoever ends a session. Not user documentation.
 
-Last updated at the end of the `security-fixes` branch, before its merge to `main`.
+Last updated at the end of the `fix-ruby-divergences` branch, before its merge to `main`.
 
 ## How to use this document
 
@@ -33,11 +33,11 @@ Key documents: `SCOPE.md` (known defects and gaps: Must Fix, Will Fix), `LEGATE.
 9. **Never `git reset --hard` with uncommitted work in the tree.**
 10. **Markdown tables:** no literal `|` inside a cell; reword instead.
 11. **Spec first, when it can run.** A spec that compiles against the old code and fails there is its own commit, ahead of the fix. One that needs the fix's API, or would crash, hang or overflow the stack on the old code, goes in the same commit.
-12. **Lint as CI runs it.** Ameba accepts only `e` or `ex` for a rescued exception, prefers `max_of?` to `map { }.max?`, and caps cyclomatic complexity at 12; split a method rather than disable the check. Crystal has no chained comparisons (`0 < x <= 9`).
+12. **Lint as CI runs it.** Ameba accepts only `e` or `ex` for a rescued exception, rejects one-letter block parameters, `not_nil!`, `return nil` and `| Nil`, prefers `max_of?` to `map { }.max?`, and caps cyclomatic complexity at 12; split a method rather than disable the check. A new method goes above a method's doc comment, never between it and its `# ameba:disable` line. Crystal has no chained comparisons (`0 < x <= 9`), no trailing `while`, no variable defined in a modifier's condition, and reserves `responds_to?`, `is_a?`, `nil?`, `as` and `as?`.
 
 ## 3. The evidence method [Retain]
 
-1. **Adjutant is a proper subset of Ruby.** Anything it accepts and then runs differently from Ruby is a Must Fix defect, however rare; rejecting a construct Ruby accepts is only a gap. Adding a method or form Ruby lacks also breaks the subset.
+1. **Adjutant is a proper subset of Ruby.** Anything it accepts and then runs differently from Ruby is a Must Fix defect, however rare. Adding a method or form Ruby lacks also breaks the subset. A construct Ruby accepts and Adjutant rejects is either a deliberate exclusion, with a U-code in `UNSUPPORTED.md`, or a gap that raises and is logged in Will Fix; never a silent difference. Dynamic classes, modules and meta-programming are the usual candidates for exclusion, and are discussed before deciding.
 2. **The model writes the answer; we write the checks.** A model marking its own work agrees with its own misconceptions.
 3. **Classify every exam failure as one of three causes:** the skill was wrong, the skill was silent, or the model ignored it. Only the first two justify editing the skill. Failures that turn out to be Adjutant defects go to the runtime instead.
 4. **Predict, park, confirm.** A defect found by reading the code goes into `SCOPE.md` unfixed. It is fixed when a spec or a model hits it; for a Must Fix, write that spec first.
@@ -58,14 +58,23 @@ Key documents: `SCOPE.md` (known defects and gaps: Must Fix, Will Fix), `LEGATE.
 8. **Everything a nested run sets aside must still count.** A block a native method runs, a method it calls, and a file `require` loads each run with the caller's frames set aside. Call depth, instructions and the run boundary (budgets, streams, scratch) all leaked through that gap until each was counted across it.
 9. **Script data can be nested as deep as memory allows.** A recursive walk over it in Crystal ends the host process. Walks over script containers go through `ContainerWalk`, or re-enter the VM and so meet `call_depth_limit` (DEVELOPMENT.md).
 10. **"Per run" means per `eval`.** State built once per Interpreter (the Broker's Budget) outlives runs unless something resets it; `Budget#start_run!` does, from `Interpreter#eval` only.
+11. **Two equalities, two methods.** `Value#==` is Ruby's `eql?`, which Hash keys and container `eql?` use (`5` and `5.0` differ); `ValueOps.equal?`, reached through `VM#values_equal?`, is Ruby's `==`. Code comparing Values must pick the one Ruby would.
+12. **A leak hides wrong tests.** While block-assigned names leaked as globals, several specs passed by reading a name a neighbouring test had set. Fixing a leak, expect tests that were wrong all along; fix them to Ruby's behaviour rather than restoring the leak.
+13. **Every place Ruby's grammar says `arg` stops before `and`/`or`.** Assignment's right-hand side, call arguments, ternary branches and `not`'s operand all use `PREC_AND_OR`; a new construct taking an argument should too.
 
 ---
 
 ## 5. State
 
-The `security-fixes` branch fixed every security and policy entry in Must Fix, with a spec for each, and every fix's own findings along the way. In outcome: a script can no longer read or write outside its grants through symlinks, other drives or redirects; data labelled sensitive keeps its label through substitution, streaming reads, globs and per-file checks; a policy can't be incomplete, and a grants file can't be misspelt, without failing when loaded; every per-run budget has a default and holds per `eval`; and no script, however it nests data or recursion, can end the host process by exhausting its stack or escape the instruction, depth and wall-clock limits.
+The `fix-ruby-divergences` branch cleared Must Fix of Ruby divergences: all 27 it began with, and each one its fixes turned up. In outcome:
 
-Must Fix holds 29 entries: 27 Ruby divergences, then two pieces of policy design (a rule naming the sink's subject; one configuration document for every provider). Will Fix still carries dated notes and change history in the older style, and at least one resolved entry (`Legate::Exit`).
+1. **Calls:** positional arity is checked as Ruby checks it, for script methods, lambdas and every builtin; parameters bind in Ruby's order; parameter lists Ruby rejects don't parse; receiver calls take arguments without parentheses; `and`/`or` stay out of call arguments.
+2. **Scope and syntax:** a block's new names are local to it, and a `for` loop's outlive it; operator precedence is Ruby's table; `rescue` takes class expressions, and `=> e` assigns like any assignment; Integer prefixes, octal, quoted and operator Symbols, several heredocs per line, and CRLF source all read as in Ruby; stray `break`/`next` and callback hooks are rejected.
+3. **Values:** Hash keys compare with `eql?`; indexing covers Ranges, start and length, padding and splicing; Strings are frozen, as under `# frozen_string_literal: true`.
+4. **Objects:** NoMethodError where Ruby raises it; `is_a?` through nested includes; identity `equal?`; `respond_to?` for universal methods and operators; copies that keep native state; Exception subclasses' `initialize`; Comparable as a module, the only source of derived `==` and ordering.
+5. **Builtins:** Ruby's `split`, `join`, `each_line("")`, `Hash#each` pairs, `reduce(:sym)`, Float `%`, Regexp edges; blockless iterators raise U022 (no Enumerator).
+
+Must Fix now holds only the two policy-design entries. Will Fix was checked against the code and holds 55 entries, still in the older dated style. `SKILL.md` was updated for slicing, `inject(:sym)`, Comparable and U022.
 
 Model           |Latest result|Notes                          
 ----------------|-------------|-------------------------------
@@ -73,22 +82,23 @@ qwen3.8 (27B)   |10/10        |At the exam's ceiling
 Muse Glimmer 30b|10/10        |At the exam's ceiling          
 Ornith 1.5 (9B) |6/10         |03, 04, 08, 10 are model errors
 
-These sittings predate one skill edit: the Float whitelist was wrong (the census missed macro-registered methods), and `SKILL.md` now lists `round`, `floor`, `ceil`, `truncate`, `abs`, `finite?` and `nan?`. They also predate this branch; none of its changes is to the language a model writes, but a sitting would confirm it.
+These sittings predate this branch, which changed what a model's code does (block scoping, precedence, error classes, arity) and edited the skill. A sitting is needed before trusting the table.
 
 ## 6. Next
 
-1. **The Ruby divergences**, on a new branch, in the order that shares work: arity (script and native together), Hash key semantics (Integer and Float), indexing shapes, then the rest, ending with `respond_to?`, `dup`/`clone` of typed objects, and nested Range equality.
-2. **Exam tasks 11 to 13** (`spec/skill/TODO.md` §1) before fixing the divergences they touch, so their failures are the evidence.
-3. **Will Fix, in the current style**: verify each entry against the code, remove what's resolved, and drop dates and history, as was done for Must Fix.
-4. **The two policy-design entries** before 1.0, since the configuration document changes an embedder-facing format.
-5. **§10, the static analyser**, after Must Fix. It begins with a design question, what counts as the "effectful surface"; see Will Fix, Static risk assessment.
+1. **Merge `fix-ruby-divergences`** to `main`.
+2. **Sit the exam** on all three models, to confirm the skill after this branch.
+3. **Exam tasks 11 to 13** (`spec/skill/TODO.md` §1). Task 12 was meant to hit Array-keyed Hashes and slice assignment, both now fixed, so it becomes a regression check rather than evidence.
+4. **Will Fix, style pass**, by subsection, on its own branch: drop dates and history and bring the prose to the Must Fix style.
+5. **The two policy-design entries** before 1.0, since the configuration document changes an embedder-facing format.
+6. **§10, the static analyser.** It begins with a design question, what counts as the "effectful surface"; see Will Fix, Static risk assessment.
 
 ## 7. Open decisions
 
 - **D5. `Time.now`.** Core's ungated `Time.now` sits beside `Legate.now`, and `SKILL.md` both maps one to the other and whitelists `Time.now`. Keep it, fixing the skill, or bring it under U021?
 - **`Legate::Path#under?`.** It doesn't resolve `..`, so it misleads a script using it as a boundary check. Logged under Will Fix, Legate; promote to Must Fix?
-- **`Legate::Response` headers.** LEGATE.md §5.5 calls them frozen; Adjutant has no freezing. Correct §5.5, or add freezing to the backlog?
-- **LEGATE.md §1** says the core is "ordinary Ruby with mutation removed". It isn't: `<<` and `[]=` mutate. Correct it at the next spec revision.
+- **`Legate::Response` headers.** LEGATE.md §5.5 calls them frozen; Adjutant freezes only Strings. Correct §5.5, or add freezing to the backlog?
+- **LEGATE.md §1** says the core is "ordinary Ruby with mutation removed". It isn't: `<<` and `[]=` mutate Arrays and Hashes. Correct it at the next spec revision.
 - **`inspect` of deep data.** Printing an Array or Hash nested deeper than `call_depth_limit` (256) raises L002, since each level re-enters the VM. JSON from `fetch` may nest to 512. Make `inspect` walk built-in containers iteratively (safe, since scripts can't override their `inspect`, U003), or leave it?
 - **Default budgets.** `wall_clock` 300 s, `total_read` 4 GiB, `total_write` 1 GiB and `memory` 512 MiB (advice only) are LEGATE.md §7's example values. Revisit once a harness runs real workloads.
 

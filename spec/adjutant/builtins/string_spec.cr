@@ -361,10 +361,10 @@ module Adjutant
         result.truthy?.should be_true
       end
 
-      it "with no block, does not raise, and returns the receiver" do
+      it "with no block, raises U022, as Adjutant has no Enumerator" do
         interp, _ = make_interp
-        result = interp.eval(%("a\\nb".each_line))
-        result.as_string.should eq "a\nb"
+        error = expect_raises(RuntimeError) { interp.eval(%("a\\nb".each_line)) }
+        error.diagnostic.not_nil!.code.should eq "U022"
       end
     end
 
@@ -396,7 +396,7 @@ module Adjutant
       it "raises ArgumentError with no pattern argument" do
         interp, _ = make_interp
         error = expect_raises(RuntimeError) { interp.eval(%("hello".index)) }
-        error.diagnostic.not_nil!.code.should eq("R018")
+        error.diagnostic.not_nil!.code.should eq("R046")
       end
 
       it "raises TypeError for a non-String, non-Regexp pattern" do
@@ -434,7 +434,7 @@ module Adjutant
       it "raises ArgumentError with no pattern argument" do
         interp, _ = make_interp
         error = expect_raises(RuntimeError) { interp.eval(%("hello".rindex)) }
-        error.diagnostic.not_nil!.code.should eq("R018")
+        error.diagnostic.not_nil!.code.should eq("R046")
       end
 
       it "accepts a Regexp pattern" do
@@ -558,7 +558,7 @@ module Adjutant
       it "raises ArgumentError with no pattern argument" do
         interp, _ = make_interp
         error = expect_raises(RuntimeError) { interp.eval(%("hello".match)) }
-        error.diagnostic.not_nil!.code.should eq("R018")
+        error.diagnostic.not_nil!.code.should eq("R046")
       end
 
       it "raises TypeError for a non-String, non-Regexp pattern" do
@@ -606,9 +606,9 @@ module Adjutant
         error.diagnostic.not_nil!.code.should eq("R033")
       end
 
-      it "raises R033 (TypeError) when no argument is given" do
+      it "raises R046 (ArgumentError) when no argument is given" do
         error = expect_raises(RuntimeError) { eval(%("hello".=~)) }
-        error.diagnostic.not_nil!.code.should eq("R033")
+        error.diagnostic.not_nil!.code.should eq("R046")
       end
 
       it "the ArgumentError-equivalent TypeError is rescuable from script" do

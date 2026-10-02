@@ -21,15 +21,15 @@ module Adjutant
         transport = Helpers.fetch(legate, interp, "Transport")
         malformed = Helpers.fetch(legate, interp, "Malformed")
 
-        Builtins.define(cls, interp, "status") { |args| args.first.as_robject.ivars[status_sym] }
-        Builtins.define(cls, interp, "ok?") { |args| Value.bool(ok?(args.first.as_robject.ivars[status_sym].as_int)) }
-        Builtins.define(cls, interp, "headers") { |args| args.first.as_robject.ivars[headers_sym] }
-        Builtins.define(cls, interp, "body") { |args| args.first.as_robject.ivars[body_sym] }
-        Builtins.define(cls, interp, "url") { |args| args.first.as_robject.ivars[url_sym] }
+        Builtins.define(cls, interp, "status", arity: 0) { |args| args.first.as_robject.ivars[status_sym] }
+        Builtins.define(cls, interp, "ok?", arity: 0) { |args| Value.bool(ok?(args.first.as_robject.ivars[status_sym].as_int)) }
+        Builtins.define(cls, interp, "headers", arity: 0) { |args| args.first.as_robject.ivars[headers_sym] }
+        Builtins.define(cls, interp, "body", arity: 0) { |args| args.first.as_robject.ivars[body_sym] }
+        Builtins.define(cls, interp, "url", arity: 0) { |args| args.first.as_robject.ivars[url_sym] }
 
         # Parses a String body as JSON into Hashes and Arrays. Not a
         # general JSON API for scripts.
-        Builtins.define(cls, interp, "json") do |args, _blk, ncc|
+        Builtins.define(cls, interp, "json", arity: 0) do |args, _blk, ncc|
           body = args.first.as_robject.ivars[body_sym]
           str = body.as_string? || ncc.raise_error_class("Legate::Response#json — body is not a String", malformed)
           begin
@@ -41,7 +41,7 @@ module Adjutant
 
         # Raises `Legate::Transport` unless `ok?`; otherwise returns
         # self (§5.5).
-        Builtins.define(cls, interp, "raise!") do |args, _blk, ncc|
+        Builtins.define(cls, interp, "raise!", arity: 0) do |args, _blk, ncc|
           status = args.first.as_robject.ivars[status_sym].as_int
           unless ok?(status)
             ncc.raise_error_class("Legate::Response#raise! — HTTP #{status}, not 2xx", transport)

@@ -230,22 +230,20 @@ module Adjutant
         eval("7 === 3 + 4").as_bool.should be_true
       end
 
-      it "dot-call raises undefined-method, same as a.==(b) always has" do
-        error = expect_raises(RuntimeError) { eval("Integer.===(5)") }
-        error.diagnostic.not_nil!.code.should eq("R008")
+      it "works as a dot-call, as a.==(b) does, as in Ruby" do
+        eval("Integer.===(5)").as_bool.should be_true
+        eval("5.==(5)").as_bool.should be_true
+        eval("5.!=(5)").as_bool.should be_false
       end
     end
 
     describe "<=> and comparisons on script objects" do
-      # SCOPE.md's `<=>` item: real Ruby's own answer to "how do
-      # </<=/>/>= work for a custom object" is the Comparable mixin,
-      # deriving all four from one `<=>` — Adjutant has no mixins, so
-      # `<`/`<=`/`>`/`>=` dispatch through a script-defined `<=>`
-      # directly for RubyObject operands, as a fixed VM rule standing
-      # in for it.
+      # `<`/`<=`/`>`/`>=` on a custom object come from Comparable,
+      # which derives them from the class's own `<=>`, as in Ruby.
       it "dispatches < through a script-defined <=>" do
         src = <<-RUBY
         class Box
+          include Comparable
           def initialize(v); @v = v; end
           def v; @v; end
           def <=>(other); @v <=> other.v; end
@@ -258,6 +256,7 @@ module Adjutant
       it "dispatches <=, >, >= through the same <=>" do
         src = <<-RUBY
         class Box
+          include Comparable
           def initialize(v); @v = v; end
           def v; @v; end
           def <=>(other); @v <=> other.v; end
@@ -309,7 +308,7 @@ module Adjutant
         error = expect_raises(RuntimeError) do
           eval("class Bare; end\nBare.new < Bare.new")
         end
-        error.diagnostic.not_nil!.code.should eq("R008")
+        error.diagnostic.not_nil!.code.should eq("R047")
       end
 
       it "raises R013 when <=> returns something other than an Integer" do
@@ -317,6 +316,7 @@ module Adjutant
         # ArgumentError: comparison of Foo with Foo failed.
         src = <<-RUBY
         class Foo
+          include Comparable
           def <=>(other); nil; end
         end
         Foo.new < Foo.new
@@ -331,7 +331,7 @@ module Adjutant
       end
     end
 
-    describe "== derived from a script-defined <=> (Comparable-style, no mixin needed)" do
+    describe "== derived from a script-defined <=> in a class that includes Comparable" do
       # Companion to the "<=> and comparisons on script objects" block
       # above — `<`/`<=`/`>`/`>=` already dispatched through a
       # script-defined `<=>` before this; `==` (Op::Eq, a separate
@@ -349,6 +349,7 @@ module Adjutant
       it "two different objects with the same <=>-comparable value are == (NOT identity)" do
         eval(<<-RUBY).as_bool.should eq true
         class Box
+          include Comparable
           def initialize(v); @v = v; end
           def <=>(other); @v <=> other.v; end
           def v; @v; end
@@ -360,6 +361,7 @@ module Adjutant
       it "two objects with different <=>-comparable values are not ==" do
         eval(<<-RUBY).as_bool.should eq false
         class Box
+          include Comparable
           def initialize(v); @v = v; end
           def <=>(other); @v <=> other.v; end
           def v; @v; end
@@ -386,6 +388,7 @@ module Adjutant
       it "<=> returning nil (genuinely unorderable) makes == false, NOT a raised R013 — unlike < which does raise" do
         eval(<<-RUBY).as_bool.should eq false
         class Foo
+          include Comparable
           def <=>(other); nil; end
         end
         Foo.new == Foo.new
@@ -395,6 +398,7 @@ module Adjutant
       it "<=> raising makes == false rather than propagating the error — matches real Ruby's non-raising Comparable#==" do
         eval(<<-RUBY).as_bool.should eq false
         class Foo
+          include Comparable
           def <=>(other); raise "boom"; end
         end
         Foo.new == Foo.new
@@ -484,9 +488,9 @@ module Adjutant
         diag.data["right"].should eq("String")
       end
 
-      it "raises R044 for two Arrays, which order only through <=>" do
+      it "raises NoMethodError (R047) for two Arrays, which have `<=>` but no `<` in Ruby" do
         error = expect_raises(RuntimeError) { eval("[1] < [2]") }
-        error.diagnostic.not_nil!.code.should eq("R044")
+        error.diagnostic.not_nil!.code.should eq("R047")
       end
 
       it "still answers false for NaN, which is a number" do

@@ -9,7 +9,7 @@ module Adjutant::Builtins
   def self.bootstrap_nil_class(interp : Adjutant::Interpreter) : Adjutant::RubyClass
     cls = Adjutant::RubyClass.new("NilClass")
 
-    define(cls, interp, "to_s") do |args|
+    define(cls, interp, "to_s", arity: 0) do |args|
       Adjutant::Value.string(args.first.to_s)
     end
 
@@ -19,7 +19,7 @@ module Adjutant::Builtins
   def self.bootstrap_true_class(interp : Adjutant::Interpreter) : Adjutant::RubyClass
     cls = Adjutant::RubyClass.new("TrueClass")
 
-    define(cls, interp, "to_s") do |args|
+    define(cls, interp, "to_s", arity: 0) do |args|
       Adjutant::Value.string(args.first.to_s)
     end
 
@@ -29,7 +29,7 @@ module Adjutant::Builtins
   def self.bootstrap_false_class(interp : Adjutant::Interpreter) : Adjutant::RubyClass
     cls = Adjutant::RubyClass.new("FalseClass")
 
-    define(cls, interp, "to_s") do |args|
+    define(cls, interp, "to_s", arity: 0) do |args|
       Adjutant::Value.string(args.first.to_s)
     end
 
@@ -39,11 +39,11 @@ module Adjutant::Builtins
   def self.bootstrap_symbol(interp : Adjutant::Interpreter) : Adjutant::RubyClass
     cls = Adjutant::RubyClass.new("Symbol")
 
-    define(cls, interp, "to_s") do |args|
+    define(cls, interp, "to_s", arity: 0) do |args|
       Adjutant::Value.string(args.first.as_sym.name)
     end
 
-    define(cls, interp, "to_sym") do |args|
+    define(cls, interp, "to_sym", arity: 0) do |args|
       args.first
     end
 

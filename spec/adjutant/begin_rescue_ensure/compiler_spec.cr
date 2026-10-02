@@ -4,7 +4,7 @@ module Adjutant
   describe Compiler do
     describe "begin/rescue" do
       it "compiles begin/rescue with Try and EndTry" do
-        o = ops("begin\n1\nrescue e\n2\nend")
+        o = ops("begin\n1\nrescue => e\n2\nend")
         o.should contain(Op::Try)
         o.should contain(Op::EndTry)
       end
