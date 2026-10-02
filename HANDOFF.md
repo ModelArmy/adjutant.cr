@@ -69,7 +69,7 @@ Key documents: `SCOPE.md` (known defects and gaps: Must Fix, Will Fix), `LEGATE.
 The `fix-ruby-divergences` branch cleared Must Fix of Ruby divergences: all 27 it began with, and each one its fixes turned up. In outcome:
 
 1. **Calls:** positional arity is checked as Ruby checks it, for script methods, lambdas and every builtin; parameters bind in Ruby's order; parameter lists Ruby rejects don't parse; receiver calls take arguments without parentheses; `and`/`or` stay out of call arguments.
-2. **Scope and syntax:** a block's new names are local to it, and a `for` loop's outlive it; operator precedence is Ruby's table; `rescue` takes class expressions; Integer prefixes, octal, quoted and operator Symbols, and several heredocs per line all read as in Ruby; stray `break`/`next` and callback hooks are rejected.
+2. **Scope and syntax:** a block's new names are local to it, and a `for` loop's outlive it; operator precedence is Ruby's table; `rescue` takes class expressions, and `=> e` assigns like any assignment; Integer prefixes, octal, quoted and operator Symbols, several heredocs per line, and CRLF source all read as in Ruby; stray `break`/`next` and callback hooks are rejected.
 3. **Values:** Hash keys compare with `eql?`; indexing covers Ranges, start and length, padding and splicing; Strings are frozen, as under `# frozen_string_literal: true`.
 4. **Objects:** NoMethodError where Ruby raises it; `is_a?` through nested includes; identity `equal?`; `respond_to?` for universal methods and operators; copies that keep native state; Exception subclasses' `initialize`; Comparable as a module, the only source of derived `==` and ordering.
 5. **Builtins:** Ruby's `split`, `join`, `each_line("")`, `Hash#each` pairs, `reduce(:sym)`, Float `%`, Regexp edges; blockless iterators raise U022 (no Enumerator).
@@ -101,7 +101,6 @@ These sittings predate this branch, which changed what a model's code does (bloc
 - **LEGATE.md §1** says the core is "ordinary Ruby with mutation removed". It isn't: `<<` and `[]=` mutate Arrays and Hashes. Correct it at the next spec revision.
 - **`inspect` of deep data.** Printing an Array or Hash nested deeper than `call_depth_limit` (256) raises L002, since each level re-enters the VM. JSON from `fetch` may nest to 512. Make `inspect` walk built-in containers iteratively (safe, since scripts can't override their `inspect`, U003), or leave it?
 - **Default budgets.** `wall_clock` 300 s, `total_read` 4 GiB, `total_write` 1 GiB and `memory` 512 MiB (advice only) are LEGATE.md §7's example values. Revisit once a harness runs real workloads.
-- **`rescue => e` inside a block.** `emit_store_name`'s `force_define` binds `e` as a block-local even when an enclosing `e` exists, on the claim that Ruby does the same. Unverified; if Ruby assigns the enclosing variable instead, it's a Must Fix divergence.
 
 ## 8. Deferred tests
 

@@ -778,20 +778,18 @@ module Adjutant
     # this scope, else an enclosing scope's local, else a new local of
     # `CompilerScope#local_host`, so a block's new name is local to the
     # block and a `for` body's belongs to the scope around the loop.
-    # `force_define`, for `rescue => e`, skips enclosing scopes and
-    # always defines a local here, except in a `for` body.
-    private def emit_store_name(name : String, line : Int32, force_define : Bool = false) : Nil
+    # A `rescue => e` binding is stored the same way, as Ruby's
+    # grammar makes it an ordinary assignment.
+    private def emit_store_name(name : String, line : Int32) : Nil
       if scope = @scope
         if slot = scope.resolve_local(name)
           @chunk.emit(Op::SetLocal, line, c: slot.to_u32)
           return
         end
-        if !force_define || scope.for_body?
-          if depth_slot = scope.resolve_outer(name)
-            depth, slot = depth_slot
-            @chunk.emit(Op::SetOuter, line, a: depth.to_u8, c: slot.to_u32)
-            return
-          end
+        if depth_slot = scope.resolve_outer(name)
+          depth, slot = depth_slot
+          @chunk.emit(Op::SetOuter, line, a: depth.to_u8, c: slot.to_u32)
+          return
         end
         host = scope.local_host
         slot = host.define(name)
@@ -1531,7 +1529,7 @@ module Adjutant
     private def compile_rescue_bind_and_body(clause : RescueClause) : Nil
       if rvar = clause.var
         @chunk.emit(Op::PushError, clause.body.line)
-        emit_store_name(rvar, clause.body.line, force_define: true)
+        emit_store_name(rvar, clause.body.line)
         @chunk.emit(Op::Pop, clause.body.line)
       end
       compile_body(clause.body)
