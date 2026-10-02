@@ -58,6 +58,35 @@ module Adjutant
         RUBY
     end
 
+    it "assigns an enclosing variable from `=> e` inside a block, as an ordinary assignment" do
+      eval(<<-RUBY).as_bool.should be_true
+        e = :before
+        [1].each do
+          begin
+            raise "boom"
+          rescue => e
+          end
+        end
+        e.is_a?(RuntimeError)
+        RUBY
+    end
+
+    it "keeps a new `=> err` inside the block" do
+      eval(<<-RUBY).as_string.should eq "NameError"
+        [1].each do
+          begin
+            raise "boom"
+          rescue => err
+          end
+        end
+        begin
+          err
+        rescue NameError
+          "NameError"
+        end
+        RUBY
+    end
+
     it "makes is_a? raise TypeError for a value that isn't a class" do
       eval(%(begin\n  5.is_a?(3)\nrescue TypeError\n  "TypeError"\nend)).as_string.should eq "TypeError"
     end
