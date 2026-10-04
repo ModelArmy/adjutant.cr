@@ -32,7 +32,7 @@ Section                                  |Status      |Notes
 §8.6 diagnostics for removed constructs  |Built       |Every row enforced                                                
 §8.7 audit log                           |Partial     |No bytes, duration or argument detail                             
 §8.8 risk-flow sink enforcement          |Built       |`read` `write` `delete` `net` `log`                               
-§9 exception taxonomy                    |Built       |`grep` raises `Exhausted`, not `Timeout`, on the wall clock       
+§9 exception taxonomy                    |Built       |`grep` raises `Exhausted`, not `TimeoutError`, on the wall clock       
 §10 static analyser                      |Not built   |See §10's note                                                    
 §11 surface count                        |Aspirational|Counts the specified surface, not the built one                   
 
@@ -162,11 +162,11 @@ flowchart TB
 Error values are better suited to static analysis in isolation, but Legate scripts are written by models fluent in ordinary Ruby, where `Hash#fetch`, `Integer()` and `JSON.parse` all raise. A surface where the core language raises and the capability layer returns values forces the author to track two regimes, and its priors will win: it will write `rescue` around Legate calls and omit the value checks. Consistency with the host language is worth more than the analytical convenience, and §10 recovers most of the latter anyway.
 
 ```ruby
-config = Legate.read("config.json")          # raises Legate::NotFound if absent
+config = Legate.read("config.json")          # raises Legate::NotFoundError if absent
 
 rows = begin
          Legate.records("data.jsonl", format: :jsonl).to_a
-       rescue Legate::Malformed => e
+       rescue Legate::MalformedError => e
          Legate.log "bad input", path: e.path
          []
        end
@@ -190,7 +190,7 @@ HTTP non-2xx from `Legate.fetch` |`Legate::Response`|A status code is data about
 `Legate.rmdir` on a missing path |`false`           |As above                                                           
 `Legate.rmdir!` on a missing path|`0`               |As above; a count rather than a Bool, so `0` rather than `false`   
 
-All three delete verbs agree, and differ only in how they spell the non-result — which follows each one's return type, not any difference in meaning. Note the contrast with `Legate.cp`/`Legate.mv`, whose missing SOURCE raises `Legate::NotFound`: "make sure this isn't here" has already succeeded if it was never here, whereas "move this thing" with no thing to move is impossible. Deliberate, not an inconsistency.
+All three delete verbs agree, and differ only in how they spell the non-result — which follows each one's return type, not any difference in meaning. Note the contrast with `Legate.cp`/`Legate.mv`, whose missing SOURCE raises `Legate::NotFoundError`: "make sure this isn't here" has already succeeded if it was never here, whereas "move this thing" with no thing to move is impossible. Deliberate, not an inconsistency.
 
 The general rule: **the outcome of the operation raises; the content of the result is data.**
 
@@ -206,7 +206,7 @@ Some verbs have a variant that returns `nil` in place of raising. The rule is ex
 
 > A nilable variant suppresses **exactly one** named exception class, documented on the method, and **never** a fatal one.
 
-`Legate.read?` returns `nil` when the path is absent. It still raises `Legate::Denied` if no grant covers the path, and still raises `Legate::TooLarge` if the file exceeds the read limit. Suppression is per-class, not blanket.
+`Legate.read?` returns `nil` when the path is absent. It still raises `Legate::Denied` if no grant covers the path, and still raises `Legate::TooLargeError` if the file exceeds the read limit. Suppression is per-class, not blanket.
 
 **Naming.** In Ruby, `?` denotes a predicate — `empty?`, `include?`. It is safe on operators and accessors, where a boolean reading is impossible:
 
@@ -227,7 +227,7 @@ Implementations MAY provide `Legate.read?` as an alias but SHOULD NOT advertise 
 
 ### 2.6 Encoding
 
-All text returned by Legate is UTF-8. Invalid byte sequences are replaced with U+FFFD unless the verb is given `scrub: false`, in which case invalid input raises `Legate::Malformed`. Binary data is returned only by `Legate.bytes` and is tagged ASCII-8BIT.
+All text returned by Legate is UTF-8. Invalid byte sequences are replaced with U+FFFD unless the verb is given `scrub: false`, in which case invalid input raises `Legate::MalformedError`. Binary data is returned only by `Legate.bytes` and is tagged ASCII-8BIT.
 
 ### 2.7 Verb availability and the optional manifest
 
@@ -379,15 +379,15 @@ flowchart LR
 
 ## 4. `Legate` — the verb module
 
-Signatures use Ruby keyword-argument syntax. `->` names the return type. **Raises** lists the recoverable exceptions specific to the verb. Every verb may additionally raise the fatal tier (§9.2), and every verb that touches the filesystem `Filesystem` (§9.1); neither is repeated below.
+Signatures use Ruby keyword-argument syntax. `->` names the return type. **Raises** lists the recoverable exceptions specific to the verb. Every verb may additionally raise the fatal tier (§9.2), and every verb that touches the filesystem `FilesystemError` (§9.1); neither is repeated below.
 
 ### 4.1 Reading — grant `read`
 
 ```ruby
 Legate.read(path, limit: policy.read_limit, scrub: true, missing: :raise)  -> String
 ```
-Whole-file read. MUST check size before allocating, and MUST bound the read itself, since a file may grow after its size is checked and a pseudo-file may report 0. Raises `Legate::TooLarge` whose message names `Legate.lines` and `Legate.bytes`. Default limit 8 MiB.
-**Raises** `NotFound`, `TooLarge`, `Malformed` (encoding, when `scrub: false`). **Suppressible** `NotFound`, via `missing:`.
+Whole-file read. MUST check size before allocating, and MUST bound the read itself, since a file may grow after its size is checked and a pseudo-file may report 0. Raises `Legate::TooLargeError` whose message names `Legate.lines` and `Legate.bytes`. Default limit 8 MiB.
+**Raises** `NotFoundError`, `TooLargeError`, `MalformedError` (encoding, when `scrub: false`). **Suppressible** `NotFoundError`, via `missing:`.
 
 ```ruby
 Legate.stat(path)  -> Legate::Stat | nil
@@ -399,13 +399,13 @@ Returns `nil` for a non-existent path (§2.3). One call replaces `exist?`, `file
 Legate.list(pattern, limit: 100_000)  -> Array<Legate::Entry>
 ```
 Glob. `Legate.list("src/*")` is `ls`; `Legate.list("**/*.rb")` is `find`. Results sorted lexically for determinism. Symlinks reported, not followed. An empty match is an empty Array, not an error. The pattern's fixed leading directory is authorized once per call; each entry is then labelled by its own path's sensitivity, and asked or rejected as a `stat` of it would be.
-**Raises** `TooMany`.
+**Raises** `TooManyError`.
 
 ```ruby
 Legate.grep(pattern, paths, context: 0, limit: 10_000)  -> Array<Legate::Match>
 ```
-Content search. `pattern` is a `Regexp` or `String`; `paths` is a glob string or an Array. Binary files skipped. Each file is labelled, asked or rejected by its own path's sensitivity, as `Legate.read` of it would be, and the result carries the label of every file searched. Each file is read whole, so each is held to `read_limit`, as `Legate.read` holds it; a larger one raises `TooLarge` naming the file, and `Legate.lines` streams it instead. This verb exists so that scripts do not need to shell out to `rg`.
-**Raises** `TooMany`, `TooLarge`, `Timeout`.
+Content search. `pattern` is a `Regexp` or `String`; `paths` is a glob string or an Array. Binary files skipped. Each file is labelled, asked or rejected by its own path's sensitivity, as `Legate.read` of it would be, and the result carries the label of every file searched. Each file is read whole, so each is held to `read_limit`, as `Legate.read` holds it; a larger one raises `TooLargeError` naming the file, and `Legate.lines` streams it instead. This verb exists so that scripts do not need to shell out to `rg`.
+**Raises** `TooManyError`, `TooLargeError`, `TimeoutError`.
 
 ### 4.2 Streaming reads — grant `read`
 
@@ -414,10 +414,10 @@ Legate.lines(path, max_line: 1_048_576, scrub: true)  -> Legate::Lines
 Legate.bytes(path, chunk: 65_536)                     -> Legate::Bytes
 Legate.records(path, format:, headers: true)          -> Legate::Records
 ```
-`format:` is `:jsonl` or `:csv`. Streams are lazy, single-pass, constant-memory (§6). A `records` row, JSONL line or CSV row, is capped at 1 MiB, as `lines`' default `max_line` caps a line; a longer one raises `TooLarge`.
+`format:` is `:jsonl` or `:csv`. Streams are lazy, single-pass, constant-memory (§6). A `records` row, JSONL line or CSV row, is capped at 1 MiB, as `lines`' default `max_line` caps a line; a longer one raises `TooLargeError`.
 
-Note the timing: these verbs raise `NotFound` and `Denied` **eagerly**, at construction, not on first iteration. A lazy failure that surfaces three method calls later is unreadable in a stack trace and confusing to a model. Parse and cap failures necessarily raise during iteration.
-**Raises** at construction `NotFound`; during iteration `Malformed`, `TooLarge` (a line exceeding `max_line`), `Timeout`.
+Note the timing: these verbs raise `NotFoundError` and `Denied` **eagerly**, at construction, not on first iteration. A lazy failure that surfaces three method calls later is unreadable in a stack trace and confusing to a model. Parse and cap failures necessarily raise during iteration.
+**Raises** at construction `NotFoundError`; during iteration `MalformedError`, `TooLargeError` (a line exceeding `max_line`), `TimeoutError`.
 
 ### 4.3 Writing — grant `write`
 
@@ -427,7 +427,7 @@ Legate.write!(path, data)  -> Integer
 Legate.append(path, data)  -> Integer
 ```
 `data` is a `String` or any Enumerable of Strings, including a Legate stream — so a pipeline never materialises merely to reach disk. Parent directories are created automatically. Both write verbs MUST be atomic: temporary file in the same directory, `fsync`, then `rename`.
-**Raises** `Conflict`, `Exhausted` (fatal, on write-budget breach).
+**Raises** `ConflictError`, `Exhausted` (fatal, on write-budget breach).
 
 ```ruby
 Legate.mkdir(path)                       -> Legate::Path
@@ -435,18 +435,18 @@ Legate.cp(from, to, recursive: false)    -> Legate::Path
 Legate.cp!(from, to, recursive: false)   -> Legate::Path
 ```
 `mkdir` is always recursive and always idempotent — it succeeds on an existing directory, removing the `unless exist?` dance from every script.
-A recursive `cp` never follows a symlink inside the tree: it recreates the link, with the same target, at the destination, so nothing outside the tree is read. Each file it copies is authorized as a `read` of its own, so it is labelled, audited and budgeted as `Legate.read` would be. A FIFO, socket or device in the tree raises `Conflict`.
-**Raises** `NotFound` (`cp` source), `Conflict`.
+A recursive `cp` never follows a symlink inside the tree: it recreates the link, with the same target, at the destination, so nothing outside the tree is read. Each file it copies is authorized as a `read` of its own, so it is labelled, audited and budgeted as `Legate.read` would be. A FIFO, socket or device in the tree raises `ConflictError`.
+**Raises** `NotFoundError` (`cp` source), `ConflictError`.
 
 #### Replacement is opt-in: the bang convention
 
-**A verb that would destroy an existing destination refuses; its bang variant does it.** `write`, `cp` and `mv` (§4.4) raise `Legate::Conflict` when the destination already exists. `write!`, `cp!` and `mv!` replace it. The suffix means exactly one thing across the whole surface: *do the more destructive thing you would otherwise refuse.*
+**A verb that would destroy an existing destination refuses; its bang variant does it.** `write`, `cp` and `mv` (§4.4) raise `Legate::ConflictError` when the destination already exists. `write!`, `cp!` and `mv!` replace it. The suffix means exactly one thing across the whole surface: *do the more destructive thing you would otherwise refuse.*
 
 The rule exists because the perimeter cannot catch this class of loss. A destination inside a granted write root is precisely what the grant permits, so `Grants` answers yes and the previous content is gone — there is no layer below the verb that notices. Making replacement the default meant a script that merely got a path wrong destroyed a file silently, while declaring itself `Reversibility::Yes` (§10) as it did so.
 
 Three consequences worth stating outright:
 
-- **The refusal is recoverable.** `Conflict` is a `StandardError` (§9.1), so a script can rescue it and choose another destination. Nothing has happened when it fires: a refused `mv` leaves the source where it was.
+- **The refusal is recoverable.** `ConflictError` is a `StandardError` (§9.1), so a script can rescue it and choose another destination. Nothing has happened when it fires: a refused `mv` leaves the source where it was.
 - **A bang is not a way around the perimeter.** Both variants take identical authorizations. The bang governs what the verb will do to a destination it is already permitted to write.
 - **The bang does not lift every refusal.** `write!` still refuses a directory target; `cp!` and `mv!` still refuse to replace a file with a directory or the reverse. Replacing like with unlike is never what a caller meant. `cp!` replaces a destination directory wholesale — it does not merge into it — while `mv!` refuses one of any kind, empty or not. `rename`'s behaviour on a directory destination varies both by filesystem and by platform (POSIX replaces an empty one; Windows refuses), and a verb whose effect turns on where it happens to be running is worse than one that refuses everywhere. Replacing a directory is spelled `Legate.rmdir` followed by `Legate.mv` — two verbs, both declared, both audited.
 
@@ -464,13 +464,13 @@ Legate.mv!(from, to) -> Legate::Path
 
 **Three delete verbs, not one with a flag.** This REVERSES an earlier version of this section, which specified a single `rm(path, recursive: false)` that subsumed `rmdir` and `unlink`. Recursion only ever means directory-tree walking, so `recursive:` was always mis-attached to a verb that also deletes single files — `rm("f.txt", recursive: true)` is a sentence with no meaning. That was tolerable while `recursive:` was Legate's only modifier. It stopped being tolerable once §4.3 established the bang, because `rm!` would then have had to mean "recursive": a second, unrelated sense of the same suffix, in the same module, three verbs apart. The extra names are what keep the bang meaning one thing.
 
-The three partition the target space exactly, and every refusal is a `Conflict` naming the verb that would have worked — a script that picks wrong is always one word from correct:
+The three partition the target space exactly, and every refusal is a `ConflictError` naming the verb that would have worked — a script that picks wrong is always one word from correct:
 
 Called on         |`rm`                |`rmdir`              |`rmdir!`             
 ------------------|--------------------|---------------------|---------------------
-a file            |removes it, `true`  |`Conflict` → `rm`    |`Conflict` → `rm`    
-an empty directory|`Conflict` → `rmdir`|removes it, `true`   |removes it, `1`      
-a non-empty tree  |`Conflict` → `rmdir`|`Conflict` → `rmdir!`|removes it, the count
+a file            |removes it, `true`  |`ConflictError` → `rm`    |`ConflictError` → `rm`    
+an empty directory|`ConflictError` → `rmdir`|removes it, `true`   |removes it, `1`      
+a non-empty tree  |`ConflictError` → `rmdir`|`ConflictError` → `rmdir!`|removes it, the count
 nothing           |`false`             |`false`              |`0`                  
 
 `rm` returns a Bool rather than a count: a files-only verb can only ever remove one thing, and `if Legate.rm(p) > 0` is a clumsy spelling of a yes/no. The count survives on `rmdir!`, where "how many" is worth knowing. All three are idempotent on a missing path (§2.3).
@@ -482,7 +482,7 @@ nothing           |`false`             |`false`              |`0`
 Creating data and destroying it are different authorities, and policies routinely want to grant the first without the second. Splitting them also means a script that deletes announces the fact in its manifest line (§2.7).
 
 Note that this is an argument about the AUTHORITY a move needs, not about what survives one. A move destroys nothing: `mv` declares `Effect::MovesFiles` alone and is `Reversibility::Yes`, since `rename` preserves the information and the cross-device fallback is ordered copy-then-delete so a partway failure duplicates rather than loses. `mv!` additionally declares `DeletesFiles`, honestly, for the destination it clobbers. The asymmetry between authority and effect is deliberate; nothing infers one from the other.
-**Raises** `NotFound` (`mv` source), `Conflict`.
+**Raises** `NotFoundError` (`mv` source), `ConflictError`.
 
 ### 4.5 Network — grant `net`
 
@@ -502,11 +502,11 @@ One verb covers all of HTTP. `body:` accepts a String or an Enumerable, so uploa
 
 The boundary is important: transport failures raise; HTTP status codes do not. A 500 is an answer.
 
-**A redirect on a request that carried a body is handed to the script, not followed.** `Legate::Redirect` carries `status` (the Integer HTTP status) and `location` (the target URL), and the script re-issues the request itself if it means to. A request with no body — every `get`, and any other method called without `body:` — follows redirects automatically as normal, so `redirects:` governs body-less requests only. An empty-String body counts as no body.
+**A redirect on a request that carried a body is handed to the script, not followed.** `Legate::RedirectError` carries `status` (the Integer HTTP status) and `location` (the target URL), and the script re-issues the request itself if it means to. A request with no body — every `get`, and any other method called without `body:` — follows redirects automatically as normal, so `redirects:` governs body-less requests only. An empty-String body counts as no body.
 
 The rule is deliberately uniform across 301, 302, 303, 307 and 308 rather than following each code's convention. 307 and 308 ask for the body to be replayed, which cannot be done faithfully for a streamed body and means a second full upload to a different host when it can. 301, 302 and 303 are in practice degraded to GET with the body dropped, so the request the script asked for silently never happens and a 2xx comes back for it — the worse failure, because it looks like success. A script that wants to auto-follow one particular code can branch on `status` in a line.
 
-**Raises** `Transport` (DNS, TLS, connection, redirect loop), `Redirect`, `Timeout`, `TooLarge`.
+**Raises** `TransportError` (DNS, TLS, connection, redirect loop), `RedirectError`, `TimeoutError`, `TooLargeError`.
 
 ### 4.6 Execution — retired
 
@@ -555,7 +555,7 @@ path.under?(other)             -> Boolean
 path.to_s                      -> String
 ```
 
-`/` MUST raise `Legate::Malformed` on an absolute right-hand operand or any component equal to `..`. This turns the entire class of traversal-by-concatenation bugs into a construction-time error rather than a broker rejection, which is a better place to catch it and a clearer message when it fires.
+`/` MUST raise `Legate::MalformedError` on an absolute right-hand operand or any component equal to `..`. This turns the entire class of traversal-by-concatenation bugs into a construction-time error rather than a broker rejection, which is a better place to catch it and a clearer message when it fires.
 
 ### 5.2 `Legate::Stat`
 
@@ -596,8 +596,8 @@ response.ok?      -> Boolean          # 200..299
 response.headers  -> Hash             # downcased keys, frozen
 response.body     -> String | Legate::Bytes
 response.url      -> String           # final URL after redirects
-response.json     -> Hash | Array     # raises Legate::Malformed
-response.raise!   -> self             # raises Legate::Transport unless ok?
+response.json     -> Hash | Array     # raises Legate::MalformedError
+response.raise!   -> self             # raises Legate::TransportError unless ok?
 ```
 
 `raise!` exists for the common case where the script genuinely wants a non-2xx to be fatal, without forcing that choice on every caller.
@@ -613,7 +613,7 @@ response.raise!   -> self             # raises Legate::Transport unless ok?
 - **Lazy.** No element is read until demanded.
 - **Constant memory.** Element size bounded by `max_line` or `chunk`.
 - **Eager on authority.** Grant and existence checks happen at construction (§4.2).
-- **Single pass.** Once a stream's underlying source is physically exhausted, a terminal (§6.3/§6.4) that begins on it — or on anything derived from it via a streaming-safe operator (§6.2), which shares pull position and exhaustion state with its ancestor — MUST raise `Legate::EOF`, not silently re-open the source or silently return nothing. This does NOT forbid multiple terminal calls across streams derived from a common, not-yet-exhausted ancestor (e.g. `a = s.select{}; b = s.select{}; a.first(2); b.to_a`) — that is one ongoing walk continuing from a shared pull position, real Ruby's own lazy-enumerator aliasing behavior, not a restart. (Amended from an earlier draft that called for silently re-opening the source and re-checking the grant once physically exhausted: that would make a call which looks like a read of something the script already has able to trigger a fresh grant check, budget consumption, and possibly a policy `Ask` prompt, invisibly — exactly the kind of non-greppable implicit effect §1 exists to avoid. If a script wants to read the same source again from the start, it re-calls `Legate.lines`/`Legate.bytes`/`Legate.records` with the path it already holds — the effect stays attached to an explicit call site.)
+- **Single pass.** Once a stream's underlying source is physically exhausted, a terminal (§6.3/§6.4) that begins on it — or on anything derived from it via a streaming-safe operator (§6.2), which shares pull position and exhaustion state with its ancestor — MUST raise `Legate::ConsumedError`, not silently re-open the source or silently return nothing. This does NOT forbid multiple terminal calls across streams derived from a common, not-yet-exhausted ancestor (e.g. `a = s.select{}; b = s.select{}; a.first(2); b.to_a`) — that is one ongoing walk continuing from a shared pull position, real Ruby's own lazy-enumerator aliasing behavior, not a restart. (Amended from an earlier draft that called for silently re-opening the source and re-checking the grant once physically exhausted: that would make a call which looks like a read of something the script already has able to trigger a fresh grant check, budget consumption, and possibly a policy `Ask` prompt, invisibly — exactly the kind of non-greppable implicit effect §1 exists to avoid. If a script wants to read the same source again from the start, it re-calls `Legate.lines`/`Legate.bytes`/`Legate.records` with the path it already holds — the effect stays attached to an explicit call site.)
 - **Frozen elements.** Each yielded value is frozen; the stream holds no mutable buffer visible to the script.
 - **Run-scoped lifetime.** A stream's underlying source — an open file handle, or the connection behind `Legate.fetch(..., stream: true)` — is released as soon as the source is physically exhausted. A stream that is never exhausted still releases it: abandoning a walk (`first(n)`, `take(n)`), raising out of one, or simply dropping the reference leaves the source open only until the run ends, at which point everything still held is closed. This is not something a script arranges; there is no `close` in the protocol, and closing on a halted walk would break the shared-pull-position case above. `max_open_streams` (§7) bounds how many may be held at once, since run-scoped release bounds the leak in time but not in count.
 
@@ -635,7 +635,7 @@ Return a bounded value.
 
 `to_a` `sort` `sort_by` `group_by` `uniq`
 
-These MUST be bounded by the policy's memory cap and raise `Legate::TooLarge` on breach, with a hint naming `each_slice`, `top_by` or `tally`. Implementations SHOULD allow the static analyser to require an explicit `limit:` on these calls, making the unbounded step visible in source rather than only at runtime.
+These MUST be bounded by the policy's memory cap and raise `Legate::TooLargeError` on breach, with a hint naming `each_slice`, `top_by` or `tally`. Implementations SHOULD allow the static analyser to require an explicit `limit:` on these calls, making the unbounded step visible in source rather than only at runtime.
 
 ### 6.5 Worked example
 
@@ -804,14 +804,15 @@ flowchart TB
     EX --> FATAL["Fatal tier — direct Exception subclasses<br/>NOT caught by idiomatic rescue"]
 
     subgraph REC["Recoverable: script may handle"]
-        NF["Legate::NotFound<br/>path or host absent"]
-        MF["Legate::Malformed<br/>bad JSON, CSV, encoding"]
-        TO["Legate::Timeout<br/>per-call wall clock"]
-        TR["Legate::Transport<br/>DNS, TLS, connection"]
-        FS["Legate::Filesystem<br/>OS refused: permission, full disk"]
-        CF["Legate::Conflict<br/>exists, non-empty dir"]
-        TL["Legate::TooLarge<br/>per-call cap — message names the streaming verb"]
-        TM["Legate::TooMany<br/>per-call cardinality cap"]
+        NF["Legate::NotFoundError<br/>path or host absent"]
+        MF["Legate::MalformedError<br/>bad JSON, CSV, encoding"]
+        TO["Legate::TimeoutError<br/>per-call wall clock"]
+        TR["Legate::TransportError<br/>DNS, TLS, connection"]
+        FS["Legate::FilesystemError<br/>OS refused: permission, full disk"]
+        CF["Legate::ConflictError<br/>exists, non-empty dir"]
+        TL["Legate::TooLargeError<br/>per-call cap — message names the streaming verb"]
+        TM["Legate::TooManyError<br/>per-call cardinality cap"]
+        CN["Legate::ConsumedError<br/>single-pass stream walked again"]
     end
 
     STD --> REC
@@ -825,7 +826,7 @@ flowchart TB
     FATAL --> FAT
 
     subgraph SUPP["The ? / try_ variants"]
-        Q["Suppress exactly ONE named class,<br/>documented per method.<br/>e.g. Legate.read? suppresses NotFound only"]
+        Q["Suppress exactly ONE named class,<br/>documented per method.<br/>e.g. Legate.read? suppresses NotFoundError only"]
     end
 
     NF -.->|"suppressible"| Q
@@ -851,21 +852,22 @@ flowchart TB
 
 Caught by an ordinary `rescue => e`. These are expected conditions a script should handle.
 
-Class               |Meaning                                        |Message MUST hint at                         
---------------------|-----------------------------------------------|---------------------------------------------
-`Legate::NotFound`  |path or binary absent                          |—                                            
-`Legate::Malformed` |bad JSON, CSV, encoding, or path construction  |—                                            
-`Legate::TooLarge`  |per-call byte or memory cap                    |the streaming verb or `each_slice`           
-`Legate::TooMany`   |per-call cardinality cap, or `max_open_streams`|`limit:`, `each_slice`, or finishing a stream
-`Legate::Timeout`   |per-call wall clock                            |—                                            
-`Legate::Transport` |DNS, TLS, connection, redirect loop            |—                                            
-`Legate::Filesystem`|OS refused: permission, full disk, not a dir   |the file standing where a directory should be
-`Legate::Redirect`  |redirect on a request that carried a body      |`status`, `location`, and re-issuing it      
-`Legate::Conflict`  |destination exists, non-empty directory        |`recursive:`                                 
+Class                    |Meaning                                        |Message MUST hint at                         
+-------------------------|-----------------------------------------------|---------------------------------------------
+`Legate::NotFoundError`  |path or binary absent                          |—                                            
+`Legate::MalformedError` |bad JSON, CSV, encoding, or path construction  |—                                            
+`Legate::TooLargeError`  |per-call byte or memory cap                    |the streaming verb or `each_slice`           
+`Legate::TooManyError`   |per-call cardinality cap, or `max_open_streams`|`limit:`, `each_slice`, or finishing a stream
+`Legate::TimeoutError`   |per-call wall clock                            |—                                            
+`Legate::TransportError` |DNS, TLS, connection, redirect loop            |—                                            
+`Legate::FilesystemError`|OS refused: permission, full disk, not a dir   |the file standing where a directory should be
+`Legate::RedirectError`  |redirect on a request that carried a body      |`status`, `location`, and re-issuing it      
+`Legate::ConflictError`  |destination exists, non-empty directory        |`recursive:`                                 
+`Legate::ConsumedError`  |a single-pass stream walked again (§6.1)       |calling the verb again to re-read            
 
-`Filesystem` is the filesystem's counterpart to `Transport`: the policy allowed the call and the operating system refused it. A verb raises `NotFound` or `Conflict` for the failures it foresees, checked before acting, with a message naming the remedy; `Filesystem` is everything else, so a file removed between that check and its use raises `Filesystem`, not `NotFound`. Its message names the verb, the path, the system's reason and errno, as in *"Legate.cp! — out/report.txt is a file, not a directory (ENOTDIR)"*.
+`FilesystemError` is the filesystem's counterpart to `TransportError`: the policy allowed the call and the operating system refused it. A verb raises `NotFoundError` or `ConflictError` for the failures it foresees, checked before acting, with a message naming the remedy; `FilesystemError` is everything else, so a file removed between that check and its use raises `FilesystemError`, not `NotFoundError`. Its message names the verb, the path, the system's reason and errno, as in *"Legate.cp! — out/report.txt is a file, not a directory (ENOTDIR)"*.
 
-A `TooLarge` message MUST read like: *"config.json is 1.4 GB, over the 8 MiB read limit — use `Legate.lines(path)` to stream."* Models reliably read exception messages and unreliably read specifications; this is the cheapest documentation channel available.
+A `TooLargeError` message MUST read like: *"config.json is 1.4 GB, over the 8 MiB read limit — use `Legate.lines(path)` to stream."* Models reliably read exception messages and unreliably read specifications; this is the cheapest documentation channel available.
 
 ### 9.2 Fatal tier — direct subclasses of `Exception`
 
@@ -878,6 +880,8 @@ Class              |Meaning
 `Legate::Aborted`  |`Legate.fail`, or a runtime invariant broken            
 
 The design intent: a denial is not a malfunction to be handled but the policy functioning as specified. A model writing defensively robust code will wrap risky calls in `rescue`, and that reflex must not be able to convert a security boundary into a retry loop. Placing these outside `StandardError` means idiomatic Ruby cannot swallow them by accident, and implementing them as plain Crystal exceptions rather than `RuntimeError`s means it cannot do so on purpose. §10.2 would add a static gate on top; that gate is specified but not built, so it is not what makes this hold.
+
+The names follow the same line. Recoverable classes end in `Error` and fatal ones don't, as in Ruby, whose `StandardError` subclasses carry the suffix and whose `SystemExit` and `Interrupt` don't: a script handles an error, and a fatal signal is not one.
 
 ### 9.3 Placement rule
 

@@ -87,30 +87,6 @@ acceptable, since it restores the subset.
   There is no second provider today, so this generalises on the
   argument rather than on evidence.
 
-- **Legate's exception names don't say they are exceptions.**
-  `TooLarge`, `Timeout` and `Malformed` read as conditions, but
-  `Transport`, `Filesystem`, `Conflict` and `Redirect` read as things,
-  and they sit beside Legate's value classes (`Legate::Path`,
-  `Legate::Response`, `Legate::Stat`), which are things too. Neither
-  `rescue Legate::Transport` nor a bare `Legate::Filesystem` says
-  which kind it names. Ruby's convention, and so models' expectation,
-  is the `Error` suffix (`ArgumentError`, `IOError`,
-  `JSON::ParserError`), and `Legate::EOF` drops the suffix Ruby's own
-  `EOFError` has. The standard library isn't uniform
-  (`StopIteration`, `Errno::ENOENT`, `Net::ReadTimeout`), so the
-  choice is between suffixing every recoverable class
-  (`Legate::NotFoundError`, `Legate::TransportError`, …) and keeping
-  bare names. Renaming is cheap now and breaks every script after 1.0.
-  It reaches `exceptions.cr` and every `Helpers.fetch` by name in the
-  verbs, LEGATE.md §4 and §9, SKILL.md §5, the specs, and the skill
-  exam's tasks and recorded answers. Two questions first: whether the
-  fatal tier (`Denied`, `Exhausted`, `Aborted`), which scripts never
-  rescue but read in diagnostics, follows suit; and whether the base
-  class stays `Legate::Error`, which already has the suffix. Predicted
-  by reading, not confirmed: no sitting has been checked for misspelt
-  Legate classes, and its `rescue Legate::…` lines are the evidence to
-  gather.
-
 ## Will Fix
 
 Real gaps, not currently blocking anything, no active design conversation
@@ -671,14 +647,14 @@ section).
   R043). Declaring each verb's arity would make extras raise R046 like
   the Legate classes' methods, which do declare theirs.
 
-- **A script can't take over a body-less redirect.** With
-  `redirects: 0`, a redirect raises `Legate::Transport`; only a
-  request with a body gets `Legate::Redirect`, which carries `status`
-  and `location`. Since a cross-origin hop drops every header but four
-  defaults and those `net.redirect_headers` names, a script whose
-  target needs another has no way to re-issue the request itself. Fix: raise
-  `Legate::Redirect` whenever the redirect budget is spent at 0. Wait
-  for a live case before building it.
+- **A script can't take over a body-less redirect.** With `redirects:
+  0`, a redirect raises `Legate::TransportError`; only a request with a
+  body gets `Legate::RedirectError`, which carries `status` and
+  `location`. Since a cross-origin hop drops every header but four
+  defaults and those `net.redirect_headers` names, a script whose target
+  needs another has no way to re-issue the request itself. Fix: raise
+  `Legate::RedirectError` whenever the redirect budget is spent at 0.
+  Wait for a live case before building it.
 
 - **`Legate::Path#under?` doesn't resolve `..`.** It compares
   components lexically, so `Legate::Path.new("/work/../etc")` is
@@ -710,11 +686,11 @@ section).
   "Built". §0 now says "Partial" and lists the nine. Build the rest by
   what the skill exam shows models actually reach for.
 
-- **`Stream#to_a`'s `TooLarge` hint names methods that don't exist.**
-  Found alongside the above. The message recommends `each_slice`,
-  `top_by` or `tally`, none of which a stream has, so a model that
-  follows the diagnostic gets a second error. LEGATE.md §9's
-  `TooLarge`/`TooMany` rows have the same problem. Until those
+- **`Stream#to_a`'s `TooLargeError` hint names methods that don't
+  exist.** Found alongside the above. The message recommends
+  `each_slice`, `top_by` or `tally`, none of which a stream has, so a
+  model that follows the diagnostic gets a second error. LEGATE.md §9's
+  `TooLargeError`/`TooManyError` rows have the same problem. Until those
   operations exist, the hint should name what does: `each`, `take` or
   `first(n)`.
 
@@ -764,7 +740,7 @@ section).
   but puts a parsing concern on `Response`.
 
 - **`Response#json` cannot parse a streamed body.** Found 2026-08-30,
-  logged 2026-08-31. `#json` raises `Legate::Malformed` on a
+  logged 2026-08-31. `#json` raises `Legate::MalformedError` on a
   non-String body, so `stream: true` and `.json` are mutually
   exclusive. Correct as it stands — the alternative is silently
   buffering a body the script explicitly asked not to buffer — but it
@@ -822,27 +798,27 @@ section).
   the same native singleton methods already bootstrapped on `Legate`
   itself, rather than a second copy of each verb's implementation.
 
-- **`Legate.grep`'s documented `Timeout` (LEGATE.md §4.1) doesn't
-  actually raise `Legate::Timeout`.** Found 2026-08-27 implementing
+- **`Legate.grep`'s documented `TimeoutError` (LEGATE.md §4.1) doesn't
+  actually raise `Legate::TimeoutError`.** Found 2026-08-27 implementing
   `grep.cr`: unlike every other §4.1 verb, grep's own Raises list
-  includes `Timeout` — the only sensible reading is that a scan across
-  a large fileset should be able to notice it's taking too long
-  MID-scan, not just at the single up-front broker call every other
-  verb makes once. What `grep.cr` actually does is call
+  includes `TimeoutError` — the only sensible reading is that a scan
+  across a large fileset should be able to notice it's taking too long
+  MID-scan, not just at the single up-front broker call every other verb
+  makes once. What `grep.cr` actually does is call
   `Budget#check_wall_clock!` once per file in its scan loop (real,
   working protection against a runaway multi-file scan) — but that
   raises the FATAL, unrescuable `Legate::FatalSignal(:exhausted, ...)`
-  (budget.cr), not the script-catchable `Legate::Timeout` RuntimeError
-  class (exceptions.cr) LEGATE.md's own text names. No kwarg or
-  default duration for a SEPARATE, grep-local, recoverable timeout is
-  documented anywhere — inventing a second, independent timer with
-  its own semantics felt like more new, unspecified design surface
+  (budget.cr), not the script-catchable `Legate::TimeoutError`
+  RuntimeError class (exceptions.cr) LEGATE.md's own text names. No
+  kwarg or default duration for a SEPARATE, grep-local, recoverable
+  timeout is documented anywhere — inventing a second, independent timer
+  with its own semantics felt like more new, unspecified design surface
   than one verb's implementation should decide unilaterally. Needs a
   real decision: either LEGATE.md's text is describing the existing
-  fatal wall-clock mechanism loosely (in which case the doc should
-  stop implying a script can `rescue` it), or grep genuinely needs its
-  own recoverable per-call deadline (in which case its kwarg/default
-  need designing first).
+  fatal wall-clock mechanism loosely (in which case the doc should stop
+  implying a script can `rescue` it), or grep genuinely needs its own
+  recoverable per-call deadline (in which case its kwarg/default need
+  designing first).
 
 - **No terse, agent-facing reference doc for Legate (and Adjutant's
   Ruby subset generally) exists yet.** `LEGATE.md`/`ERRORS.md`/
