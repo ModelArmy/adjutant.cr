@@ -26,12 +26,13 @@ module Adjutant
           too_many = Helpers.fetch(legate, interp, "TooMany")
           too_large = Helpers.fetch(legate, interp, "TooLarge")
           malformed = Helpers.fetch(legate, interp, "Malformed")
+          filesystem = Helpers.fetch(legate, interp, "Filesystem")
           lines_cls = Helpers.nest(legate, interp, "Lines")
           stream_module = Helpers.fetch(legate, interp, "Stream")
           lines_cls.include_module(stream_module)
 
-          legate.define_native_singleton_method(
-            interp.symbols.intern("lines").value,
+          Helpers.define_verb(
+            legate, interp, "lines",
             RiskProfile.new(effects: Set{Effect::ReadsFiles}),
             KWARG_NAMES,
             # A Read sink, as `Legate.read` is, so `VM#check_risk_flow`
@@ -59,11 +60,13 @@ module Adjutant
 
             # The stream cap is checked before the handle is opened; see
             # `Broker#check_stream_capacity!`. A file removed since the
-            # existence check fails in `File.open` as a Crystal error.
+            # existence check fails in `File.open` as
+            # `Legate::Filesystem`.
             broker.check_stream_capacity!(ncc, too_many)
 
             io = File.open(raw, "rb")
-            iterator = LineIterator.new(io, max_line, scrub, malformed, too_large, raw, label, broker, ncc)
+            fs_errors = FilesystemErrors.new(filesystem, ncc, "Legate.lines")
+            iterator = LineIterator.new(io, max_line, scrub, malformed, too_large, raw, label, broker, ncc, fs_errors)
             # The verb registers the source, not the iterator's
             # constructor; see bytes.cr.
             broker.register_source(iterator)
@@ -96,7 +99,7 @@ module Adjutant
           # line, not the terminal's.
           def initialize(@io : File, @max_line : Int32, @scrub : Bool, @malformed : RubyClass,
                          @too_large : RubyClass, @path : String, @label : RiskFlowLabel?, @broker : Broker,
-                         @ncc : NativeCallContext)
+                         @ncc : NativeCallContext, @fs_errors : FilesystemErrors)
             @pending = ::Bytes.empty
             @io_done = false       # true once the underlying IO itself hit EOF (0-byte read)
             @done = false          # true once there is neither a pending partial line nor more IO to read
@@ -151,7 +154,7 @@ module Adjutant
           # read budget as it arrives.
           private def pull_more : Nil
             buf = ::Bytes.new(READ_CHUNK_SIZE)
-            n = @io.read(buf)
+            n = @fs_errors.guard(@path) { @io.read(buf) }
             if n == 0
               @io_done = true
               return

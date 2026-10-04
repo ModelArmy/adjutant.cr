@@ -35,10 +35,11 @@ module Adjutant
         eval("Legate::NotFound.to_s").as_string.should eq "Legate::NotFound"
       end
 
-      it "each of the seven recoverable classes is nested under Legate, not a flat global, and inherits Legate::Error" do
+      it "each recoverable class is nested under Legate, not a flat global, and inherits Legate::Error" do
         eval(<<-RUBY).as_string.should eq "ok"
         [Legate::NotFound, Legate::Malformed, Legate::TooLarge, Legate::TooMany,
-         Legate::Timeout, Legate::Transport, Legate::Conflict].each do |cls|
+         Legate::Timeout, Legate::Transport, Legate::Filesystem, Legate::Conflict,
+         Legate::EOF, Legate::Redirect].each do |cls|
           raise "\#{cls} does not inherit Legate::Error" unless cls.superclass == Legate::Error
         end
         "ok"

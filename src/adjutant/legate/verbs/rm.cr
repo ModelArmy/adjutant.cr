@@ -45,8 +45,8 @@ module Adjutant
                                      conflict : RubyClass) : Nil
           # A Delete sink, so a labelled path is checked against
           # policy as well as the path's own sensitivity.
-          legate.define_native_singleton_method(
-            interp.symbols.intern("rm").value,
+          Helpers.define_verb(
+            legate, interp, "rm",
             RiskProfile.new(
               effects: Set{Effect::DeletesFiles},
               reversible: Reversibility::No,
@@ -75,8 +75,8 @@ module Adjutant
         private def self.register_rmdir(interp : Interpreter, legate : RubyClass, broker : Broker,
                                         conflict : RubyClass) : Nil
           # A Delete sink.
-          legate.define_native_singleton_method(
-            interp.symbols.intern("rmdir").value,
+          Helpers.define_verb(
+            legate, interp, "rmdir",
             RiskProfile.new(
               effects: Set{Effect::DeletesFiles},
               reversible: Reversibility::No,
@@ -108,8 +108,8 @@ module Adjutant
         private def self.register_rmdir_bang(interp : Interpreter, legate : RubyClass, broker : Broker,
                                              conflict : RubyClass) : Nil
           # A Delete sink.
-          legate.define_native_singleton_method(
-            interp.symbols.intern("rmdir!").value,
+          Helpers.define_verb(
+            legate, interp, "rmdir!",
             RiskProfile.new(
               effects: Set{Effect::DeletesFiles, Effect::Recursive},
               reversible: Reversibility::No,

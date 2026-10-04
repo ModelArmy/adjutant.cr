@@ -19,8 +19,9 @@ module Adjutant
       def self.bootstrap(interp : Interpreter, legate : RubyClass, standard_error : RubyClass) : Nil
         error = Helpers.nest(legate, interp, "Error", standard_error)
         # `EOF` is raised by a second terminal walk over a stream, or
-        # over anything derived from it (§6.1).
-        %w[NotFound Malformed TooLarge TooMany Timeout Transport Conflict EOF].each do |name|
+        # over anything derived from it (§6.1). `Filesystem` by
+        # `FilesystemErrors`.
+        %w[NotFound Malformed TooLarge TooMany Timeout Transport Filesystem Conflict EOF].each do |name|
           Helpers.nest(legate, interp, name, error)
         end
 

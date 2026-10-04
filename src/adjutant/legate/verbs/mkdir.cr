@@ -17,8 +17,8 @@ module Adjutant
 
           # A Write sink, so a labelled path is checked against
           # policy. There's no data argument.
-          legate.define_native_singleton_method(
-            interp.symbols.intern("mkdir").value,
+          Helpers.define_verb(
+            legate, interp, "mkdir",
             RiskProfile.new(effects: Set{Effect::WritesFiles}),
             authorities: Set{Authority::Write},
           ) do |args, _blk, ncc|

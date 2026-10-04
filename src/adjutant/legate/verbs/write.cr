@@ -51,8 +51,8 @@ module Adjutant
           # A Write sink, so labelled data being written is checked
           # against policy; `authorize_write` checks only the
           # destination path's own sensitivity.
-          legate.define_native_singleton_method(
-            interp.symbols.intern(name).value,
+          Helpers.define_verb(
+            legate, interp, name,
             profile,
             authorities: Set{Authority::Write},
           ) do |args, _blk, ncc|
@@ -100,7 +100,7 @@ module Adjutant
         # directory. Symlinks aren't followed, so a dangling link at
         # the destination counts as occupied; a link pointing outside
         # the roots is denied earlier by the perimeter. A parent path
-        # component that is a file surfaces as a Crystal error from
+        # component that is a file raises `Legate::Filesystem` from
         # `mkdir_p`.
         private def self.check_destination(raw : String, name : String, clobber : Bool,
                                            ncc : NativeCallContext, conflict : RubyClass) : Nil

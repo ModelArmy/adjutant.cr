@@ -53,8 +53,8 @@ module Adjutant
 
           # Delete and Write sinks, matching the two authorizations
           # below.
-          legate.define_native_singleton_method(
-            interp.symbols.intern(name).value,
+          Helpers.define_verb(
+            legate, interp, name,
             profile,
             authorities: Set{Authority::Delete, Authority::Write},
           ) do |args, _blk, ncc|

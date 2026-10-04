@@ -14,8 +14,8 @@ module Adjutant
       # unchanged.
       module Fail
         def self.bootstrap(interp : Interpreter, legate : RubyClass, broker : Broker) : Nil
-          legate.define_native_singleton_method(
-            interp.symbols.intern("fail").value,
+          Helpers.define_verb(
+            legate, interp, "fail",
             RiskProfile.none,
           ) do |args, _blk, ncc|
             message_val = args[1]?

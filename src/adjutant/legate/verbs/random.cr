@@ -18,8 +18,8 @@ module Adjutant
       # this namespace, so they write `::Random::Secure`.
       module Random
         def self.bootstrap(interp : Interpreter, legate : RubyClass, broker : Broker) : Nil
-          legate.define_native_singleton_method(
-            interp.symbols.intern("random").value,
+          Helpers.define_verb(
+            legate, interp, "random",
             RiskProfile.none,
           ) do |args, _blk, ncc|
             n_val = args[1]?

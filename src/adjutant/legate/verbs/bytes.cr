@@ -22,13 +22,14 @@ module Adjutant
         def self.bootstrap(interp : Interpreter, legate : RubyClass, broker : Broker) : Nil
           not_found = Helpers.fetch(legate, interp, "NotFound")
           too_many = Helpers.fetch(legate, interp, "TooMany")
+          filesystem = Helpers.fetch(legate, interp, "Filesystem")
           bytes_cls = Helpers.nest(legate, interp, "Bytes")
           chunk_cls = Helpers.fetch(legate, interp, "Chunk")
           stream_module = Helpers.fetch(legate, interp, "Stream")
           bytes_cls.include_module(stream_module)
 
-          legate.define_native_singleton_method(
-            interp.symbols.intern("bytes").value,
+          Helpers.define_verb(
+            legate, interp, "bytes",
             RiskProfile.new(effects: Set{Effect::ReadsFiles}),
             KWARG_NAMES,
             # A Read sink, as `Legate.read` is, so `VM#check_risk_flow`
@@ -54,14 +55,15 @@ module Adjutant
             end
 
             # A file removed since the existence check fails in
-            # `File.open` as a Crystal error, not `NotFound`: other open
-            # failures, such as permissions, aren't a missing file. The
-            # stream cap is checked before opening, so a refusal leaves
-            # no handle.
+            # `File.open` as `Legate::Filesystem`, not `NotFound`: other
+            # open failures, such as permissions, aren't a missing file.
+            # The stream cap is checked before opening, so a refusal
+            # leaves no handle.
             broker.check_stream_capacity!(ncc, too_many)
 
             io = File.open(raw, "rb")
-            iterator = ChunkIterator.new(io, chunk_size, chunk_cls, label, broker)
+            fs_errors = FilesystemErrors.new(filesystem, ncc, "Legate.bytes")
+            iterator = ChunkIterator.new(io, chunk_size, chunk_cls, label, broker, raw, fs_errors)
             # Registered by the verb rather than the iterator's
             # constructor, so the object is complete before the run
             # holds it.
@@ -88,14 +90,15 @@ module Adjutant
           include Closable
 
           def initialize(@io : File, @chunk_size : Int32, @chunk_cls : RubyClass,
-                         @label : RiskFlowLabel?, @broker : Broker)
+                         @label : RiskFlowLabel?, @broker : Broker, @path : String,
+                         @fs_errors : FilesystemErrors)
             @done = false
           end
 
           def next
             return stop if @done
             buf = ::Bytes.new(@chunk_size)
-            n = @io.read(buf)
+            n = @fs_errors.guard(@path) { @io.read(buf) }
             if n == 0
               close_source
               return stop
