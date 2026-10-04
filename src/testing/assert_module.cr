@@ -105,7 +105,7 @@ module Testing
         expected = args[0]? || Adjutant::Value.nil_value
         actual = args[1]? || Adjutant::Value.nil_value
         ok = ncc.values_equal?(expected, actual)
-        msg = ok ? nil : "expected #{expected.inspect}, got #{actual.inspect}"
+        msg = ok ? nil : "expected #{script_inspect(expected, ncc)}, got #{script_inspect(actual, ncc)}"
         record("assert_equal", ok, msg, ncc)
         Adjutant::Value.bool(true)
       end
@@ -116,7 +116,7 @@ module Testing
         expected = args[0]? || Adjutant::Value.nil_value
         actual = args[1]? || Adjutant::Value.nil_value
         ok = !ncc.values_equal?(expected, actual)
-        record("assert_not_equal", ok, ok ? nil : "both are #{actual.inspect}", ncc)
+        record("assert_not_equal", ok, ok ? nil : "both are #{script_inspect(actual, ncc)}", ncc)
         Adjutant::Value.bool(true)
       end
     end
@@ -124,7 +124,7 @@ module Testing
     private def define_assert_nil(interp)
       interp.define_native("assert_nil") do |args, _blk, ncc|
         val = args.first? || Adjutant::Value.nil_value
-        record("assert_nil", val.null?, val.null? ? nil : "got #{val.inspect}", ncc)
+        record("assert_nil", val.null?, val.null? ? nil : "got #{script_inspect(val, ncc)}", ncc)
         Adjutant::Value.bool(true)
       end
     end
@@ -140,7 +140,7 @@ module Testing
     private def define_assert_true(interp)
       interp.define_native("assert_true") do |args, _blk, ncc|
         val = args.first? || Adjutant::Value.nil_value
-        record("assert_true", val.truthy?, val.truthy? ? nil : "got #{val.inspect}", ncc)
+        record("assert_true", val.truthy?, val.truthy? ? nil : "got #{script_inspect(val, ncc)}", ncc)
         Adjutant::Value.bool(true)
       end
     end
@@ -148,7 +148,7 @@ module Testing
     private def define_assert_false(interp)
       interp.define_native("assert_false") do |args, _blk, ncc|
         val = args.first? || Adjutant::Value.nil_value
-        record("assert_false", val.falsy?, val.falsy? ? nil : "got #{val.inspect}", ncc)
+        record("assert_false", val.falsy?, val.falsy? ? nil : "got #{script_inspect(val, ncc)}", ncc)
         Adjutant::Value.bool(true)
       end
     end
@@ -218,6 +218,14 @@ module Testing
       else
         "RuntimeError"
       end
+    end
+
+    # `val` as the script's own `inspect` renders it, or as
+    # `Value#inspect` does when that raises or returns a non-String.
+    private def script_inspect(val : Adjutant::Value, ncc : Adjutant::NativeCallContext) : String
+      ncc.call_method(val, "inspect", [] of Adjutant::Value).as_string? || val.inspect
+    rescue Adjutant::RuntimeError
+      val.inspect
     end
 
     private def record(description : String, passed : Bool, message : String?, ncc : Adjutant::NativeCallContext, cause = nil) : Nil
