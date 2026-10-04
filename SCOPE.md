@@ -87,6 +87,30 @@ acceptable, since it restores the subset.
   There is no second provider today, so this generalises on the
   argument rather than on evidence.
 
+- **Legate's exception names don't say they are exceptions.**
+  `TooLarge`, `Timeout` and `Malformed` read as conditions, but
+  `Transport`, `Filesystem`, `Conflict` and `Redirect` read as things,
+  and they sit beside Legate's value classes (`Legate::Path`,
+  `Legate::Response`, `Legate::Stat`), which are things too. Neither
+  `rescue Legate::Transport` nor a bare `Legate::Filesystem` says
+  which kind it names. Ruby's convention, and so models' expectation,
+  is the `Error` suffix (`ArgumentError`, `IOError`,
+  `JSON::ParserError`), and `Legate::EOF` drops the suffix Ruby's own
+  `EOFError` has. The standard library isn't uniform
+  (`StopIteration`, `Errno::ENOENT`, `Net::ReadTimeout`), so the
+  choice is between suffixing every recoverable class
+  (`Legate::NotFoundError`, `Legate::TransportError`, …) and keeping
+  bare names. Renaming is cheap now and breaks every script after 1.0.
+  It reaches `exceptions.cr` and every `Helpers.fetch` by name in the
+  verbs, LEGATE.md §4 and §9, SKILL.md §5, the specs, and the skill
+  exam's tasks and recorded answers. Two questions first: whether the
+  fatal tier (`Denied`, `Exhausted`, `Aborted`), which scripts never
+  rescue but read in diagnostics, follows suit; and whether the base
+  class stays `Legate::Error`, which already has the suffix. Predicted
+  by reading, not confirmed: no sitting has been checked for misspelt
+  Legate classes, and its `rescue Legate::…` lines are the evidence to
+  gather.
+
 ## Will Fix
 
 Real gaps, not currently blocking anything, no active design conversation
@@ -646,27 +670,6 @@ section).
   arguments already raise each verb's own code (R035, R040, R041,
   R043). Declaring each verb's arity would make extras raise R046 like
   the Legate classes' methods, which do declare theirs.
-
-- **An operating-system failure inside a Legate verb surfaces as
-  N001.** Ten verbs (`append`, `bytes`, `cp`, `grep`, `lines`, `mkdir`,
-  `mv`, `records`, `rm`, `write`) call Crystal's `File`, `FileUtils` or
-  `Dir` directly, and a refusal from the operating system (a file
-  where a directory should be, permission denied, a full disk) falls
-  through to `VM#call_native`'s catch-all. The script gets an N001
-  that blames the host, raised as an `Adjutant::RuntimeError` that
-  `rescue Legate::Error` misses. Ruby raises a `SystemCallError`
-  subclass (`Errno::ENOTDIR`, `Errno::EACCES`). Confirmed by a model
-  for `cp`: `Legate.cp!(path, Legate::Path.new(path) / ".bak")`
-  reached `FileUtils.mkdir_p` on the source file, in `copy_file`
-  (`cp.cr`); predicted for the other nine. LEGATE.md §9.1 has no class
-  for it, so the design comes first. A new recoverable class, the
-  filesystem's counterpart to `Legate::Transport`, with the errno name
-  in its message, keeps one rule: the operating system refused.
-  Mapping `ENOTDIR` and `EISDIR` onto `Legate::Conflict` reuses a class
-  but splits the rule by errno. Either way the mapping belongs in one
-  place at the verb boundary, not in each verb. `Legate::IOError` is
-  the wrong name: Ruby's `IOError` means a stream used wrongly (closed,
-  or not open for writing), not a refusal from the operating system.
 
 - **A script can't take over a body-less redirect.** With
   `redirects: 0`, a redirect raises `Legate::Transport`; only a
