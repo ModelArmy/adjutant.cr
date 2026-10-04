@@ -61,8 +61,8 @@ module Adjutant
           # A Write sink. Both arguments are paths: the copy goes
           # file to file, so no content passes through the VM for a
           # label to travel on.
-          legate.define_native_singleton_method(
-            interp.symbols.intern(name).value,
+          Helpers.define_verb(
+            legate, interp, name,
             profile,
             Set{"recursive"},
             authorities: Set{Authority::Write},

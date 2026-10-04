@@ -31,8 +31,8 @@ module Adjutant
           path_cls = Helpers.fetch(legate, interp, "Path")
 
           # A Read sink; see read.cr.
-          legate.define_native_singleton_method(
-            interp.symbols.intern("grep").value,
+          Helpers.define_verb(
+            legate, interp, "grep",
             RiskProfile.new(effects: Set{Effect::ReadsFiles}),
             KWARG_NAMES,
             authorities: Set{Authority::Read},

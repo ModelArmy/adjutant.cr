@@ -21,8 +21,8 @@ module Adjutant
       #    carrying the label from step 2.
       module Env
         def self.bootstrap(interp : Interpreter, legate : RubyClass, broker : Broker) : Nil
-          legate.define_native_singleton_method(
-            interp.symbols.intern("env").value,
+          Helpers.define_verb(
+            legate, interp, "env",
             RiskProfile.none,
           ) do |args, _blk, ncc|
             name_val = args[1]?

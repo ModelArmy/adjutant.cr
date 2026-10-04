@@ -3,7 +3,11 @@ require "../ruby_class"
 require "../diagnostic"
 require "../builtins/helpers"
 require "../native_call_context"
+require "../risk_profile"
+require "../authority"
+require "../arity"
 require "./stream"
+require "./filesystem_errors"
 
 module Adjutant
   module Legate
@@ -35,6 +39,30 @@ module Adjutant
       def self.fetch(parent : RubyClass, interp : Interpreter, name : String) : RubyClass
         val = parent.constants[interp.symbols.intern(name).value]?
         val.try(&.as_rclass?) || raise InternalError.new("Legate::#{name} not yet bootstrapped when Legate::Helpers.fetch(#{name.inspect}) was called — check bootstrap_legate's ordering")
+      end
+
+      # The effects that mark a verb as touching the filesystem.
+      FILE_EFFECTS = Set{Effect::ReadsFiles, Effect::WritesFiles, Effect::DeletesFiles, Effect::MovesFiles}
+
+      # Registers the verb `Legate.<name>`, taking the arguments
+      # `RubyClass#define_native_singleton_method` does. When `risk`
+      # touches the filesystem, an operating-system failure inside the
+      # verb raises `Legate::Filesystem` (`FilesystemErrors`).
+      def self.define_verb(legate : RubyClass, interp : Interpreter, name : String, risk : RiskProfile,
+                           kwarg_names : Set(String) = Set(String).new,
+                           authorities : Set(Authority) = Set(Authority).new, arity : ArityLike = Arity.any,
+                           &block : Array(Value), ScriptProc?, NativeCallContext -> Value) : Nil
+        sym_id = interp.symbols.intern(name).value
+        unless risk.effects.intersects?(FILE_EFFECTS)
+          legate.define_native_singleton_method(sym_id, risk, kwarg_names, authorities, arity, &block)
+          return
+        end
+
+        filesystem = fetch(legate, interp, "Filesystem")
+        verb = "Legate.#{name}"
+        legate.define_native_singleton_method(sym_id, risk, kwarg_names, authorities, arity) do |args, blk, ncc|
+          FilesystemErrors.new(filesystem, ncc, verb).guard { block.call(args, blk, ncc) }
+        end
       end
 
       # Converts parsed JSON to Values, recursively. Every piece,

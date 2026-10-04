@@ -18,8 +18,8 @@ module Adjutant
         def self.bootstrap(interp : Interpreter, legate : RubyClass, broker : Broker) : Nil
           path_cls = Helpers.fetch(legate, interp, "Path")
 
-          legate.define_native_singleton_method(
-            interp.symbols.intern("scratch").value,
+          Helpers.define_verb(
+            legate, interp, "scratch",
             RiskProfile.new(effects: Set{Effect::WritesFiles}),
           ) do |_args, _blk, _ncc|
             # `/` separators, as Legate::Path needs, and no label: the

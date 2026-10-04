@@ -26,12 +26,13 @@ module Adjutant
           too_many = Helpers.fetch(legate, interp, "TooMany")
           malformed = Helpers.fetch(legate, interp, "Malformed")
           too_large = Helpers.fetch(legate, interp, "TooLarge")
+          filesystem = Helpers.fetch(legate, interp, "Filesystem")
           records_cls = Helpers.nest(legate, interp, "Records")
           stream_module = Helpers.fetch(legate, interp, "Stream")
           records_cls.include_module(stream_module)
 
-          legate.define_native_singleton_method(
-            interp.symbols.intern("records").value,
+          Helpers.define_verb(
+            legate, interp, "records",
             RiskProfile.new(effects: Set{Effect::ReadsFiles}),
             KWARG_NAMES,
             # A Read sink, as `Legate.read` is, so `VM#check_risk_flow`
@@ -59,6 +60,7 @@ module Adjutant
             broker.check_stream_capacity!(ncc, too_many)
 
             io = File.open(raw, "rb")
+            fs_errors = FilesystemErrors.new(filesystem, ncc, "Legate.records")
 
             iterator =
               case format
@@ -67,7 +69,7 @@ module Adjutant
                 # JSON parser, and capped at `Lines::DEFAULT_MAX_LINE`;
                 # `records` has neither keyword.
                 line_iter = Lines::LineIterator.new(
-                  io, Lines::DEFAULT_MAX_LINE, true, malformed, too_large, raw, label, broker, ncc,
+                  io, Lines::DEFAULT_MAX_LINE, true, malformed, too_large, raw, label, broker, ncc, fs_errors,
                 )
                 # The line iterator owns the handle, so it is what's
                 # registered, not the JSONL wrapper.
@@ -77,7 +79,7 @@ module Adjutant
                 # Each row is capped at `Lines::DEFAULT_MAX_LINE` bytes, as
                 # a JSONL row is, so an unterminated quoted field can't
                 # grow without bound.
-                counting_io = BudgetCountingIO.new(io, broker, Lines::DEFAULT_MAX_LINE.to_i64, too_large, raw, ncc)
+                counting_io = BudgetCountingIO.new(io, broker, Lines::DEFAULT_MAX_LINE.to_i64, too_large, raw, ncc, fs_errors)
                 parser = ::CSV::Parser.new(counting_io)
                 csv_iter = CsvIterator.new(parser, counting_io, io, interp, headers_flag, label, ncc, malformed, raw, broker)
                 # The CSV iterator owns the handle.
@@ -160,7 +162,7 @@ module Adjutant
         # `too_large` past `row_limit`. `write` raises.
         class BudgetCountingIO < IO
           def initialize(@io : File, @broker : Broker, @row_limit : Int64, @too_large : RubyClass,
-                         @path : String, @ncc : NativeCallContext)
+                         @path : String, @ncc : NativeCallContext, @fs_errors : FilesystemErrors)
             @row_bytes = 0_i64
           end
 
@@ -169,7 +171,7 @@ module Adjutant
           end
 
           def read(slice : ::Bytes) : Int32
-            n = @io.read(slice)
+            n = @fs_errors.guard(@path) { @io.read(slice) }
             return n unless n > 0
             @broker.budget.record_read(n.to_i64)
             @row_bytes += n

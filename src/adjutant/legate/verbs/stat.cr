@@ -19,8 +19,8 @@ module Adjutant
           # labelled, and `authorize_read` calls `declare_sensitivity`
           # on the path's own text, labelled or not. `risk:` only
           # feeds the static risk walk.
-          legate.define_native_singleton_method(
-            interp.symbols.intern("stat").value,
+          Helpers.define_verb(
+            legate, interp, "stat",
             RiskProfile.new(effects: Set{Effect::ReadsFiles}),
             authorities: Set{Authority::Read},
           ) do |args, _blk, ncc|

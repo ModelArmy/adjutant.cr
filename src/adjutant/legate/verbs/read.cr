@@ -17,8 +17,8 @@ module Adjutant
           too_large = Helpers.fetch(legate, interp, "TooLarge")
           malformed = Helpers.fetch(legate, interp, "Malformed")
 
-          legate.define_native_singleton_method(
-            interp.symbols.intern("read").value,
+          Helpers.define_verb(
+            legate, interp, "read",
             RiskProfile.new(effects: Set{Effect::ReadsFiles}),
             KWARG_NAMES,
             # A Read sink, so `VM#check_risk_flow` checks labelled

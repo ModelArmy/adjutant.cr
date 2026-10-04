@@ -20,8 +20,8 @@ module Adjutant
           eof = Helpers.fetch(legate, interp, "EOF")
 
           # A Write sink; see write.cr.
-          legate.define_native_singleton_method(
-            interp.symbols.intern("append").value,
+          Helpers.define_verb(
+            legate, interp, "append",
             RiskProfile.new(effects: Set{Effect::WritesFiles}),
             authorities: Set{Authority::Write},
           ) do |args, _blk, ncc|

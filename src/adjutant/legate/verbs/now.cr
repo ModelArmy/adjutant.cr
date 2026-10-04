@@ -1,4 +1,5 @@
 require "../broker"
+require "../helpers"
 require "../../native_call_context"
 require "../../builtins/time"
 
@@ -15,8 +16,8 @@ module Adjutant
       # label: the clock isn't a source policy tracks.
       module Now
         def self.bootstrap(interp : Interpreter, legate : RubyClass, broker : Broker) : Nil
-          legate.define_native_singleton_method(
-            interp.symbols.intern("now").value,
+          Helpers.define_verb(
+            legate, interp, "now",
             RiskProfile.none,
           ) do |_args, _blk, _ncc|
             time_cls = interp.get_global("Time").as_rclass

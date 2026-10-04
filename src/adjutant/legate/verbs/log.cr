@@ -25,8 +25,8 @@ module Adjutant
       # the script can't see.
       module Log
         def self.bootstrap(interp : Interpreter, legate : RubyClass, broker : Broker) : Nil
-          legate.define_native_singleton_method(
-            interp.symbols.intern("log").value,
+          Helpers.define_verb(
+            legate, interp, "log",
             RiskProfile.new(effects: Set{Effect::ExternalOutput}),
             authorities: Set{Authority::Log},
           ) do |args, _blk, ncc|

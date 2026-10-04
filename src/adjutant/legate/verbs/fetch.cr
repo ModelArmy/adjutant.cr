@@ -64,8 +64,8 @@ module Adjutant
           # A Net sink: labelled data in the URL, `body:` or
           # `headers:` is checked against policy. Keywords are checked
           # as positional arguments are.
-          legate.define_native_singleton_method(
-            interp.symbols.intern("fetch").value,
+          Helpers.define_verb(
+            legate, interp, "fetch",
             RiskProfile.new(
               effects: Set{Effect::NetworkEgress},
               # Egress can't be undone.
