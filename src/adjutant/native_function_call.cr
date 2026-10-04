@@ -19,7 +19,8 @@ module Adjutant
     @callable : NativeCallable
     @name : String
 
-    protected def initialize(@vm, @callable, @filename, @line, @name, @kwargs : Hash(String, Value)? = nil); end
+    protected def initialize(@vm, @callable, @filename, @line, @name, @kwargs : Hash(String, Value)? = nil,
+                             @args : Array(Value) = [] of Value); end
 
     protected def call(args : Array(Value), blk : ScriptProc?) : Value
       @callable.call(args, blk, self)
@@ -77,6 +78,13 @@ module Adjutant
     def declare_sensitivity(authority : Authority, kind : ProvenanceKind, origin : String,
                             sensitivity : Sensitivity? = nil) : RiskFlowLabel?
       @vm.declare_sensitivity(authority, kind, origin, @name, @callable.risk, filename, line, sensitivity)
+    end
+
+    def check_flow_at(authority : Authority, subject : String,
+                      labels : Array(RiskFlowLabel)? = nil) : Nil
+      return unless @callable.checks_flow_at_subject? && @callable.authorities.includes?(authority)
+      labels ||= (@args + (@kwargs.try(&.values) || [] of Value)).compact_map(&.label)
+      @vm.check_flow_at(labels, authority, subject, @name, @callable.risk, filename, line)
     end
 
     def raise_error(code : String, data : Hash(String, String) = {} of String => String,

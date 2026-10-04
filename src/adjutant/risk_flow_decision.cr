@@ -32,9 +32,14 @@ module Adjutant
     getter matches : Array(RiskFlowMatch)
     getter filename : String
     getter line : Int32
+    # Where the data is going, as `Broker#authorize` names it (a path,
+    # `https://host:port`), so a prompt can say so. Nil when the call
+    # has no subject, such as `Legate.log` or a host's own function.
+    getter subject : String?
 
     def initialize(@call_name : String, @risk : RiskProfile, @authorities : Set(Authority),
-                   @matches : Array(RiskFlowMatch), @filename : String, @line : Int32)
+                   @matches : Array(RiskFlowMatch), @filename : String, @line : Int32,
+                   @subject : String? = nil)
     end
   end
 

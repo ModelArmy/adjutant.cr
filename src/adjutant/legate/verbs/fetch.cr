@@ -25,7 +25,8 @@ module Adjutant
       # (§8.2; see http_client_pinning.cr). Every hop reuses the call's
       # headers until a redirect leaves the first hop's origin; from
       # then on only `REDIRECT_HEADERS` and those the grants'
-      # `net_redirect_headers` names are sent.
+      # `net_redirect_headers` names are sent. The risk-flow check at
+      # each hop sees exactly what that hop is sent.
       #
       # `stream: true` returns a `Legate::Bytes` whose iterator owns the
       # connection for the walk. `HTTP::Client#exec` either buffers the
@@ -62,8 +63,8 @@ module Adjutant
           chunk_cls = Helpers.fetch(legate, interp, "Chunk")
 
           # A Net sink: labelled data in the URL, `body:` or
-          # `headers:` is checked against policy. Keywords are checked
-          # as positional arguments are.
+          # `headers:` is checked against policy at each hop's host.
+          # Keywords are checked as positional arguments are.
           Helpers.define_verb(
             legate, interp, "fetch",
             RiskProfile.new(
@@ -91,6 +92,7 @@ module Adjutant
               ncc.raise_error_class("Legate.fetch — URL is #{raw_url.bytesize} bytes, over the #{url_limit}-byte url_limit", too_large)
             end
 
+            header_labels = header_labels_of(ncc)
             current_url = raw_url
             hops = 0
             redirect_headers = REDIRECT_HEADERS + broker.grants.net_redirect_headers.to_set
@@ -112,7 +114,8 @@ module Adjutant
 
               # Every hop is authorized afresh (§8.2), so a redirect to
               # a host outside the allowlist is a fatal denial.
-              label = RiskFlowLabel.join(label, broker.authorize_net(scheme, host, port, opts.method, ncc))
+              flowing = flowing_labels(hops, label, opts, header_labels)
+              label = RiskFlowLabel.join(label, broker.authorize_net(scheme, host, port, opts.method, ncc, flowing))
 
               addresses = resolve(host, port, ncc, transport)
               allow_local = broker.net_allows_local?(scheme, host, port, opts.method)
@@ -303,6 +306,35 @@ module Adjutant
           def same_origin?(other : Target) : Bool
             @scheme == other.scheme && @host.downcase == other.host.downcase && @port == other.port
           end
+        end
+
+        # Each labelled header's label, its name's and value's joined,
+        # by lowercase name. Read after `Options.read`, which has
+        # already checked their types.
+        private def self.header_labels_of(ncc : NativeCallContext) : Hash(String, RiskFlowLabel)
+          labels = {} of String => RiskFlowLabel
+          hash = ncc.kwargs.try(&.["headers"]?).try(&.as_hash?)
+          return labels unless hash
+
+          hash.each do |key, value|
+            joined = RiskFlowLabel.join(key.label, value.label)
+            labels[key.as_string.downcase] = joined if joined
+          end
+          labels
+        end
+
+        # The labels of what hop `hops` is sent, for `Broker#authorize`.
+        # Nil for the first hop, which is sent every argument. A later
+        # hop is sent the URL it was redirected to, carrying `url_label`
+        # (the original URL's and each earlier hop's host's), and each
+        # header `opts` still holds.
+        private def self.flowing_labels(hops : Int32, url_label : RiskFlowLabel?, opts : Options,
+                                        header_labels : Hash(String, RiskFlowLabel)) : Array(RiskFlowLabel)?
+          return if hops.zero?
+
+          labels = opts.headers.keys.compact_map { |name| header_labels[name.downcase]? }
+          url_label.try { |present| labels << present }
+          labels
         end
 
         private def self.parse_uri(url : String, ncc : NativeCallContext, transport : RubyClass) : Target

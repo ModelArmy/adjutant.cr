@@ -88,6 +88,17 @@ module Adjutant
     abstract def declare_sensitivity(authority : Authority, kind : ProvenanceKind, origin : String,
                                      sensitivity : Sensitivity? = nil) : RiskFlowLabel?
 
+    # Checks the data reaching `subject` against the risk-flow policy
+    # for `authority`, as the VM would before the call, but where an
+    # exception can see the subject. `labels` are those of the values
+    # actually sent there; nil means every argument's. Raises as a
+    # rejection would; returns if allowed. A no-op unless the callable
+    # `checks_flow_at_subject?` and declares `authority`, so a subject
+    # authorized for any other reason, such as the source `cp` reads,
+    # checks only its own sensitivity.
+    abstract def check_flow_at(authority : Authority, subject : String,
+                               labels : Array(RiskFlowLabel)? = nil) : Nil
+
     # Raises the catalog diagnostic `code`, filled with `data`, as a
     # script-catchable `error_class`. Use it to reject bad input the
     # way Ruby would (`Integer#to_s(37)` raises `ArgumentError`).
