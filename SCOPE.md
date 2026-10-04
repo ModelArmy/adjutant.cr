@@ -25,22 +25,38 @@ configuration.
 Where an entry lists two remedies, rejecting the construct is always
 acceptable, since it restores the subset.
 
-- **A risk-flow rule can't name the sink's subject.** `RiskFlowRule`
-  (`risk_flow_policy.cr`) is keyed on `(Authority, Sensitivity)`, so a
-  policy can say "High data must not reach `Net`" but not "this API
-  key may reach `api.stripe.com` and nowhere else". A credential from
-  `Legate.env` reaching its own server is the normal case, so today a
-  policy must either reject it everywhere or allow it to every granted
-  host. The grants can't help: `net` rules say which hosts may be
-  reached, not which data. `Broker#authorize` receives the subject (a
-  path or host) but uses it only as the label's origin, and
-  `VM#check_risk_flow`, which checks the data arguments, has no subject
-  at all; a verb would have to say which argument is its subject. Fix:
-  an optional subject pattern on the rule, reusing
-  `SensitivityPattern`'s exact and regex matching. Two questions first:
-  whether an absent pattern means "any subject", which is convenient
-  but makes every rule without one broader than those with one, and
-  which subject a rule sees when `fetch` follows a redirect.
+- **A risk-flow rule can't name the data's origin or the sink's
+  subject.** `RiskFlowRule` (`risk_flow_policy.cr`) is keyed on
+  `(Authority, Sensitivity)`, so a policy can say "High data must not
+  reach `Net`" but not "this API key may reach `api.stripe.com` and
+  nowhere else". A credential from `Legate.env` reaching its own
+  server is the normal case, so today a policy must either reject it
+  everywhere or allow it to every granted host. Matching the subject
+  alone isn't enough: "High may reach api.stripe.com" lets every High
+  credential through, not just Stripe's. Decided:
+  1. **Rules may match the data's origin and the sink's subject.**
+     Both are optional, with `SensitivityPattern`'s exact and regex
+     matching; an origin names its `ProvenanceKind`.
+  2. **Two layers.** Rules without patterns are the base, one per pair
+     of authority and sensitivity, and must cover every pair as now.
+     Rules with a pattern are exceptions that override the base, with
+     an explicit `priority` among themselves; a tie at the top raises
+     an error, as tied `SensitivityPattern`s do. An exception never
+     covers a pair.
+  3. **The check moves to `Broker#authorize` for Legate's verbs**,
+     which sees the subject: each labelled argument is checked against
+     that authority and subject, once per subject and so once per
+     redirect hop. A native that checks no subject, such as
+     `Legate.log` or a host's own, keeps the VM's check, where an
+     exception with a subject pattern never applies.
+  4. **`RiskFlowDecisionRequest` carries the subject**, so a host's
+     prompt can say where the data is going.
+
+  Each tag is judged on its own and the worst decides, so a value
+  mixing an excepted origin with another is refused: an exception
+  grants one origin's data, never what it was mixed with. Side effect:
+  `cp` declares only `Write` but authorizes its source for `Read`, so
+  its arguments become checked against `Read` too.
 
 - **Authorization is in core, but its configuration and the specified
   static analyser still assume one provider.** The perimeter
