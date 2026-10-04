@@ -151,6 +151,152 @@ module Adjutant
       end
     end
 
+    # Exceptions: rules with an origin or subject pattern, overriding
+    # the base rule for their pair.
+    describe "#action_for with exceptions" do
+      stripe_key = ProvenanceTag.new(ProvenanceKind::Env, "STRIPE_KEY", Sensitivity::High)
+      github_token = ProvenanceTag.new(ProvenanceKind::Env, "GITHUB_TOKEN", Sensitivity::High)
+      stripe = "https://api.stripe.com:443"
+      elsewhere = "https://example.com:443"
+
+      base = RiskFlowRule.new(Authority::Net, Sensitivity::High, RiskFlowAction::Reject)
+      key_to_stripe = RiskFlowRule.new(Authority::Net, Sensitivity::High, RiskFlowAction::Allow,
+        origin: RiskFlowOrigin.new(ProvenanceKind::Env, "STRIPE_KEY"),
+        subject: RiskFlowSubject.new(stripe), priority: 10)
+
+      it "applies to its origin at its subject" do
+        policy = RiskFlowPolicy.new(risk_flow_rules: [base, key_to_stripe], default_action: RiskFlowAction::Reject)
+        action, rule = policy.action_for(Authority::Net, stripe_key, stripe)
+        action.should eq RiskFlowAction::Allow
+        rule.should eq key_to_stripe
+      end
+
+      it "leaves the base rule in force for another origin at the same subject" do
+        policy = RiskFlowPolicy.new(risk_flow_rules: [base, key_to_stripe], default_action: RiskFlowAction::Reject)
+        action, rule = policy.action_for(Authority::Net, github_token, stripe)
+        action.should eq RiskFlowAction::Reject
+        rule.should eq base
+      end
+
+      it "leaves the base rule in force for its origin at another subject" do
+        policy = RiskFlowPolicy.new(risk_flow_rules: [base, key_to_stripe], default_action: RiskFlowAction::Reject)
+        policy.action_for(Authority::Net, stripe_key, elsewhere)[0].should eq RiskFlowAction::Reject
+      end
+
+      it "never applies a subject pattern where the subject is unknown" do
+        policy = RiskFlowPolicy.new(risk_flow_rules: [base, key_to_stripe], default_action: RiskFlowAction::Reject)
+        policy.action_for(Authority::Net, stripe_key, nil)[0].should eq RiskFlowAction::Reject
+      end
+
+      it "applies an origin-only exception at any subject, known or not" do
+        key_anywhere = RiskFlowRule.new(Authority::Net, Sensitivity::High, RiskFlowAction::Ask,
+          origin: RiskFlowOrigin.new(ProvenanceKind::Env, "STRIPE_KEY"), priority: 10)
+        policy = RiskFlowPolicy.new(risk_flow_rules: [base, key_anywhere], default_action: RiskFlowAction::Reject)
+        policy.action_for(Authority::Net, stripe_key, elsewhere)[0].should eq RiskFlowAction::Ask
+        policy.action_for(Authority::Net, stripe_key, nil)[0].should eq RiskFlowAction::Ask
+      end
+
+      it "matches an origin of the named kind only" do
+        file_named_like_key = ProvenanceTag.new(ProvenanceKind::File, "STRIPE_KEY", Sensitivity::High)
+        policy = RiskFlowPolicy.new(risk_flow_rules: [base, key_to_stripe], default_action: RiskFlowAction::Reject)
+        policy.action_for(Authority::Net, file_named_like_key, stripe)[0].should eq RiskFlowAction::Reject
+      end
+
+      it "matches a regex subject" do
+        any_stripe = RiskFlowRule.new(Authority::Net, Sensitivity::High, RiskFlowAction::Allow,
+          origin: RiskFlowOrigin.new(ProvenanceKind::Env, "STRIPE_KEY"),
+          subject: RiskFlowSubject.new("^https://[a-z]+\\.stripe\\.com:443$", PatternType::Regex), priority: 10)
+        policy = RiskFlowPolicy.new(risk_flow_rules: [base, any_stripe], default_action: RiskFlowAction::Reject)
+        policy.action_for(Authority::Net, stripe_key, "https://files.stripe.com:443")[0].should eq RiskFlowAction::Allow
+        policy.action_for(Authority::Net, stripe_key, "https://stripe.com.evil.example:443")[0].should eq RiskFlowAction::Reject
+      end
+
+      it "picks the highest-priority matching exception" do
+        ask_anywhere = RiskFlowRule.new(Authority::Net, Sensitivity::High, RiskFlowAction::Ask,
+          origin: RiskFlowOrigin.new(ProvenanceKind::Env, "STRIPE_KEY"), priority: 5)
+        policy = RiskFlowPolicy.new(risk_flow_rules: [base, ask_anywhere, key_to_stripe], default_action: RiskFlowAction::Reject)
+        policy.action_for(Authority::Net, stripe_key, stripe)[0].should eq RiskFlowAction::Allow
+        policy.action_for(Authority::Net, stripe_key, elsewhere)[0].should eq RiskFlowAction::Ask
+      end
+
+      it "raises on matching exceptions tied at the top priority" do
+        rival = RiskFlowRule.new(Authority::Net, Sensitivity::High, RiskFlowAction::Reject,
+          subject: RiskFlowSubject.new(stripe), priority: 10)
+        policy = RiskFlowPolicy.new(risk_flow_rules: [base, key_to_stripe, rival], default_action: RiskFlowAction::Reject)
+        expect_raises(AmbiguousRiskFlowPolicyError) do
+          policy.action_for(Authority::Net, stripe_key, stripe)
+        end
+      end
+
+      it "doesn't apply an exception for another sensitivity" do
+        elevated_key = ProvenanceTag.new(ProvenanceKind::Env, "STRIPE_KEY", Sensitivity::Elevated)
+        policy = RiskFlowPolicy.new(risk_flow_rules: [base, key_to_stripe], default_action: RiskFlowAction::Reject)
+        policy.action_for(Authority::Net, elevated_key, stripe)[0].should eq RiskFlowAction::Reject
+      end
+
+      it "still allows Sensitivity::None whatever the exceptions say" do
+        public_value = ProvenanceTag.new(ProvenanceKind::Env, "LANG", Sensitivity::None)
+        policy = RiskFlowPolicy.new(risk_flow_rules: [base, key_to_stripe], default_action: RiskFlowAction::Reject)
+        policy.action_for(Authority::Net, public_value, elsewhere)[0].should eq RiskFlowAction::Allow
+      end
+
+      it "rejects everything under reject_all, which takes no rules" do
+        RiskFlowPolicy.reject_all.action_for(Authority::Net, stripe_key, stripe)[0].should eq RiskFlowAction::Reject
+      end
+    end
+
+    describe "exception validity" do
+      it "rejects an exception without a priority" do
+        expect_raises(InvalidRiskFlowPolicyError, /priority/) do
+          RiskFlowPolicy.new(risk_flow_rules: [
+            RiskFlowRule.new(Authority::Net, Sensitivity::High, RiskFlowAction::Allow,
+              subject: RiskFlowSubject.new("https://api.stripe.com:443")),
+          ], default_action: RiskFlowAction::Reject)
+        end
+      end
+
+      it "rejects a base rule with a priority" do
+        expect_raises(InvalidRiskFlowPolicyError, /priority/) do
+          RiskFlowPolicy.new(risk_flow_rules: [
+            RiskFlowRule.new(Authority::Net, Sensitivity::High, RiskFlowAction::Allow, priority: 10),
+          ], default_action: RiskFlowAction::Reject)
+        end
+      end
+
+      it "rejects two base rules for one pair" do
+        expect_raises(InvalidRiskFlowPolicyError, %r{Net/High}) do
+          RiskFlowPolicy.new(risk_flow_rules: [
+            RiskFlowRule.new(Authority::Net, Sensitivity::High, RiskFlowAction::Allow),
+            RiskFlowRule.new(Authority::Net, Sensitivity::High, RiskFlowAction::Reject),
+          ], default_action: RiskFlowAction::Reject)
+        end
+      end
+
+      it "doesn't count an exception as covering its pair" do
+        rules = RiskFlowPolicy.required_pairs.reject { |pair| pair == {Authority::Net, Sensitivity::High} }.map do |authority, sensitivity|
+          RiskFlowRule.new(authority, sensitivity, RiskFlowAction::Reject)
+        end
+        rules << RiskFlowRule.new(Authority::Net, Sensitivity::High, RiskFlowAction::Allow,
+          subject: RiskFlowSubject.new("https://api.stripe.com:443"), priority: 10)
+        expect_raises(InvalidRiskFlowPolicyError, %r{Net/High}) do
+          RiskFlowPolicy.new(risk_flow_rules: rules)
+        end
+      end
+
+      it "round-trips an exception through JSON" do
+        original = RiskFlowPolicy.new(risk_flow_rules: [
+          RiskFlowRule.new(Authority::Net, Sensitivity::High, RiskFlowAction::Reject),
+          RiskFlowRule.new(Authority::Net, Sensitivity::High, RiskFlowAction::Allow,
+            origin: RiskFlowOrigin.new(ProvenanceKind::Env, "STRIPE_KEY"),
+            subject: RiskFlowSubject.new("https://api.stripe.com:443"), priority: 10),
+        ], default_action: RiskFlowAction::Reject)
+        parsed = RiskFlowPolicy.from_json(original.to_json)
+        key = ProvenanceTag.new(ProvenanceKind::Env, "STRIPE_KEY", Sensitivity::High)
+        parsed.action_for(Authority::Net, key, "https://api.stripe.com:443")[0].should eq RiskFlowAction::Allow
+        parsed.action_for(Authority::Net, key, "https://example.com:443")[0].should eq RiskFlowAction::Reject
+      end
+    end
+
     # A gap in a policy must reach its author when it is built, not an
     # unattended run when a flow first meets it.
     describe "completeness" do

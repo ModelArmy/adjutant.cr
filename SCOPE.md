@@ -44,11 +44,15 @@ acceptable, since it restores the subset.
      an error, as tied `SensitivityPattern`s do. An exception never
      covers a pair.
   3. **The check moves to `Broker#authorize` for Legate's verbs**,
-     which sees the subject: each labelled argument is checked against
-     that authority and subject, once per subject and so once per
-     redirect hop. A native that checks no subject, such as
-     `Legate.log` or a host's own, keeps the VM's check, where an
-     exception with a subject pattern never applies.
+     which sees the subject. The verb passes the values that reach
+     that subject, and each is checked against its authority and
+     subject: all the call's labelled arguments for a single-subject
+     verb and for `fetch`'s first hop, and on a later hop only the
+     headers `Options#for_hop` keeps, plus the new URL. A key a
+     redirect strips is never refused, and one it carries is never
+     unchecked. A native that checks no subject, such as `Legate.log`
+     or a host's own, keeps the VM's check, where an exception with a
+     subject pattern never applies.
   4. **`RiskFlowDecisionRequest` carries the subject**, so a host's
      prompt can say where the data is going.
 
