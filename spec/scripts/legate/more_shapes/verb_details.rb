@@ -3,9 +3,9 @@ require "assert"
 # Rounding out coverage for behaviors none of the earlier scripts
 # (basics/, edge_cases/, grep_deep_dive/) happened to exercise —
 # `Legate.bytes`' own `chunk:` kwarg, `Legate.read`'s own size-based
-# `TooLarge` (distinct from `Legate.lines`' line-based cap — a
-# DIFFERENT mechanism, already demonstrated, worth showing this one
-# is real too, not just inherited), `Legate.records`' `Malformed` for
+# `TooLargeError` (distinct from `Legate.lines`' line-based cap — a
+# DIFFERENT mechanism, already demonstrated, worth showing this one is
+# real too, not just inherited), `Legate.records`' `MalformedError` for
 # BOTH formats, two `Legate.lines` edge shapes, and `Legate.list`'s
 # recursive `**` glob plus its `Entry` fields.
 FIXTURES = Legate::Path.new(__FILE__).parent / "fixtures"
@@ -26,7 +26,7 @@ default = Legate.bytes(FIXTURES / "twenty_bytes.txt").to_a
 assert_equal(1, default.length)
 assert_equal(20, default.first.size)
 
-# --- Legate.read: its OWN size-based TooLarge (not lines' line cap) ---
+# --- Legate.read: its OWN size-based TooLargeError (not lines' line cap) ---
 #
 # `big_for_read.txt` is 94 bytes; `limit: 10` makes even this small,
 # ordinary file too large for `Legate.read` specifically — a
@@ -34,12 +34,12 @@ assert_equal(20, default.first.size)
 # demonstrated in edge_cases/error_paths.rb): this one caps the WHOLE
 # FILE's size, checked once via `File.info?`, not a per-line running
 # buffer.
-assert_raise(Legate::TooLarge) { Legate.read(FIXTURES / "big_for_read.txt", limit: 10) }
+assert_raise(Legate::TooLargeError) { Legate.read(FIXTURES / "big_for_read.txt", limit: 10) }
 
-# --- Legate.records: Malformed for BOTH formats, not just one ---
+# --- Legate.records: MalformedError for BOTH formats, not just one ---
 
-assert_raise(Legate::Malformed) { Legate.records(FIXTURES / "bad.jsonl", format: :jsonl).to_a }
-assert_raise(Legate::Malformed) { Legate.records(FIXTURES / "bad.csv", format: :csv).to_a }
+assert_raise(Legate::MalformedError) { Legate.records(FIXTURES / "bad.jsonl", format: :jsonl).to_a }
+assert_raise(Legate::MalformedError) { Legate.records(FIXTURES / "bad.csv", format: :csv).to_a }
 
 # --- Legate.lines: two shapes worth pinning down explicitly ---
 

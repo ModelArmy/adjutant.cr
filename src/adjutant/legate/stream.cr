@@ -29,7 +29,7 @@ module Adjutant
   # records physical exhaustion, not whether a terminal has run:
   # `a = s.select {}; b = s.select {}; a.first(2); b.to_a` is one walk
   # continued, and only a terminal that starts after the source ran
-  # dry raises `Legate::EOF`.
+  # dry raises `Legate::ConsumedError`.
   class StreamConsumption
     property? exhausted : Bool = false
   end
@@ -65,14 +65,14 @@ module Adjutant
     # §6.2 to §6.4 isn't built.
     module Stream
       # How many elements a materialising terminal (`to_a`) may collect
-      # before raising `Legate::TooLarge`. A fixed count standing in for
-      # §6.4's policy memory cap.
+      # before raising `Legate::TooLargeError`. A fixed count standing
+      # in for §6.4's policy memory cap.
       MATERIALIZE_CAP = 100_000
 
       def self.bootstrap(interp : Interpreter, legate : RubyClass) : Nil
         cls = Helpers.nest(legate, interp, "Stream", is_module: true)
-        too_large = Helpers.fetch(legate, interp, "TooLarge")
-        eof = Helpers.fetch(legate, interp, "EOF")
+        too_large = Helpers.fetch(legate, interp, "TooLargeError")
+        consumed = Helpers.fetch(legate, interp, "ConsumedError")
 
         Builtins.define(cls, interp, "map", arity: 0) { |args, blk, _ncc| chain(args, blk, StreamOp::Kind::Map) }
         Builtins.define(cls, interp, "select", arity: 0) { |args, blk, _ncc| chain(args, blk, StreamOp::Kind::Select) }
@@ -87,7 +87,7 @@ module Adjutant
         Builtins.define(cls, interp, "each", arity: 0) do |args, blk, ncc|
           obj = args.first.as_robject.as(StreamObject)
           if b = blk
-            walk(obj, ncc, eof) { |val| ncc.invoke(b, [val]) }
+            walk(obj, ncc, consumed) { |val| ncc.invoke(b, [val]) }
           end
           args.first
         end
@@ -95,7 +95,7 @@ module Adjutant
         Builtins.define(cls, interp, "to_a", arity: 0) do |args, _blk, ncc|
           obj = args.first.as_robject.as(StreamObject)
           items = [] of Value
-          walk(obj, ncc, eof) do |val|
+          walk(obj, ncc, consumed) do |val|
             if items.size >= MATERIALIZE_CAP
               ncc.raise_error_class("Legate::Stream#to_a — over #{MATERIALIZE_CAP} elements — use each_slice, top_by, or tally instead", too_large)
             end
@@ -108,19 +108,19 @@ module Adjutant
 
         Builtins.define(cls, interp, "sum", arity: 0) do |args, _blk, ncc|
           obj = args.first.as_robject.as(StreamObject)
-          sum(obj, ncc, eof)
+          sum(obj, ncc, consumed)
         end
 
         Builtins.define(cls, interp, "count", arity: 0) do |args, _blk, ncc|
           obj = args.first.as_robject.as(StreamObject)
           n = 0_i64
-          walk(obj, ncc, eof) { |_val| n += 1 }
+          walk(obj, ncc, consumed) { |_val| n += 1 }
           Value.int(n)
         end
 
         Builtins.define(cls, interp, "first", arity: 0..1) do |args, _blk, ncc|
           obj = args.first.as_robject.as(StreamObject)
-          first(obj, ncc, eof, args[1]?)
+          first(obj, ncc, consumed, args[1]?)
         end
       end
 
@@ -132,18 +132,18 @@ module Adjutant
         Value.robject(StreamObject.new(obj.rclass, obj.source, obj.ops + [StreamOp.new(kind, block: blk)], obj.state))
       end
 
-      # Pulls each remaining element through the op chain and yields
-      # the ones that survive; every terminal is built on this, and it
-      # is the public seam for a verb to consume a stream one element at
-      # a time, as `Legate.write` does so a pipeline never materialises
+      # Pulls each remaining element through the op chain and yields the
+      # ones that survive; every terminal is built on this, and it is
+      # the public seam for a verb to consume a stream one element at a
+      # time, as `Legate.write` does so a pipeline never materialises
       # (§4.3). A `take` that reaches its limit stops further pulls from
       # the source, while ops after it still apply to the element that
       # reached it, as `Enumerator::Lazy#take` does, so later blocks
-      # never run on an element `take` excluded. Raises `eof`
-      # (`Legate::EOF`) if the source was already exhausted when the
-      # walk began (§6.1).
-      def self.walk(obj : StreamObject, ncc : NativeCallContext, eof : RubyClass, & : Value ->) : Nil
-        ncc.raise_error_class("Legate::Stream — source already exhausted; this stream is single-pass. Call Legate.lines/bytes/records again to re-read.", eof) if obj.state.exhausted?
+      # never run on an element `take` excluded. Raises `consumed`
+      # (`Legate::ConsumedError`) if the source was already exhausted
+      # when the walk began (§6.1).
+      def self.walk(obj : StreamObject, ncc : NativeCallContext, consumed : RubyClass, & : Value ->) : Nil
+        ncc.raise_error_class("Legate::Stream — source already exhausted; this stream is single-pass. Call Legate.lines/bytes/records again to re-read.", consumed) if obj.state.exhausted?
 
         take_counts = Hash(Int32, Int32).new(0)
         loop do
@@ -187,12 +187,12 @@ module Adjutant
       end
 
       # The label joins every summed element's.
-      private def self.sum(obj : StreamObject, ncc : NativeCallContext, eof : RubyClass) : Value
+      private def self.sum(obj : StreamObject, ncc : NativeCallContext, consumed : RubyClass) : Value
         int_total = 0_i64
         float_total = 0.0
         saw_float = false
         labels = [] of Value
-        walk(obj, ncc, eof) do |val|
+        walk(obj, ncc, consumed) do |val|
           labels << val
           if val.float?
             saw_float = true
@@ -207,12 +207,12 @@ module Adjutant
 
       # `first` gives one element, carrying its own label, or nil;
       # `first(n)` an Array of up to `n`, labelled as `to_a` labels.
-      private def self.first(obj : StreamObject, ncc : NativeCallContext, eof : RubyClass, count_arg : Value?) : Value
+      private def self.first(obj : StreamObject, ncc : NativeCallContext, consumed : RubyClass, count_arg : Value?) : Value
         if count_arg
           n = count_arg.as_int.to_i32
           items = [] of Value
           seen = 0
-          walk(obj, ncc, eof) do |val|
+          walk(obj, ncc, consumed) do |val|
             items << val
             seen += 1
             break if seen >= n
@@ -221,7 +221,7 @@ module Adjutant
           Value.new(LabeledArray.new(items, label), label)
         else
           result = Value.nil_value
-          walk(obj, ncc, eof) do |val|
+          walk(obj, ncc, consumed) do |val|
             result = val
             break
           end

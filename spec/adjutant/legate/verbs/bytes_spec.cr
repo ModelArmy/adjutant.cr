@@ -60,14 +60,14 @@ module Adjutant
       end
     end
 
-    it "raises Legate::NotFound eagerly, at construction, for a missing path under a granted root" do
+    it "raises Legate::NotFoundError eagerly, at construction, for a missing path under a granted root" do
       with_tmpdir do |dir|
         interp, _ = make_interp(grants: Legate::Grants.new(read_roots: [dir]))
         eval = interp.eval(<<-RUBY)
         begin
           Legate.bytes(#{(File.join(dir, "nope.txt")).inspect})
           "no error"
-        rescue Legate::NotFound
+        rescue Legate::NotFoundError
           "caught"
         end
         RUBY
@@ -87,7 +87,7 @@ module Adjutant
       end
     end
 
-    it "raises Legate::EOF on a second full iteration (single-pass, amended §6.1)" do
+    it "raises Legate::ConsumedError on a second full iteration (single-pass, amended §6.1)" do
       with_tmpdir do |dir|
         file = File.join(dir, "f.txt")
         File.write(file, "hello")
@@ -98,7 +98,7 @@ module Adjutant
         begin
           s.to_a
           "no error"
-        rescue Legate::EOF
+        rescue Legate::ConsumedError
           "eof"
         end
         RUBY

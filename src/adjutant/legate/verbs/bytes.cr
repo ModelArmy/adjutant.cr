@@ -20,9 +20,9 @@ module Adjutant
         DEFAULT_CHUNK_SIZE = 65_536
 
         def self.bootstrap(interp : Interpreter, legate : RubyClass, broker : Broker) : Nil
-          not_found = Helpers.fetch(legate, interp, "NotFound")
-          too_many = Helpers.fetch(legate, interp, "TooMany")
-          filesystem = Helpers.fetch(legate, interp, "Filesystem")
+          not_found = Helpers.fetch(legate, interp, "NotFoundError")
+          too_many = Helpers.fetch(legate, interp, "TooManyError")
+          filesystem = Helpers.fetch(legate, interp, "FilesystemError")
           bytes_cls = Helpers.nest(legate, interp, "Bytes")
           chunk_cls = Helpers.fetch(legate, interp, "Chunk")
           stream_module = Helpers.fetch(legate, interp, "Stream")
@@ -46,8 +46,8 @@ module Adjutant
             label = str_val.label
 
             # A missing path inside a granted root is
-            # `Legate::NotFound`, not a denial. The label joins the path
-            # argument's with the one policy gives the path.
+            # `Legate::NotFoundError`, not a denial. The label joins the
+            # path argument's with the one policy gives the path.
             label = RiskFlowLabel.join(label, broker.authorize_read(raw, ncc, allow_missing: true))
 
             unless File.info?(raw)
@@ -55,10 +55,10 @@ module Adjutant
             end
 
             # A file removed since the existence check fails in
-            # `File.open` as `Legate::Filesystem`, not `NotFound`: other
-            # open failures, such as permissions, aren't a missing file.
-            # The stream cap is checked before opening, so a refusal
-            # leaves no handle.
+            # `File.open` as `Legate::FilesystemError`, not
+            # `NotFoundError`: other open failures, such as permissions,
+            # aren't a missing file. The stream cap is checked before
+            # opening, so a refusal leaves no handle.
             broker.check_stream_capacity!(ncc, too_many)
 
             io = File.open(raw, "rb")
@@ -80,10 +80,10 @@ module Adjutant
         end
 
         # Owns the open file for one walk and closes it when a read
-        # returns 0, so a later terminal gets `Legate::EOF`. Each chunk
-        # is recorded against the read budget as it is pulled, so a
-        # large file exhausts `total_read` partway. A walk halted by
-        # `first(n)` or an exception leaves the file open for
+        # returns 0, so a later terminal gets `Legate::ConsumedError`.
+        # Each chunk is recorded against the read budget as it is
+        # pulled, so a large file exhausts `total_read` partway. A walk
+        # halted by `first(n)` or an exception leaves the file open for
         # `OpenSources` to close at the end of the run.
         class ChunkIterator
           include ::Iterator(Value)

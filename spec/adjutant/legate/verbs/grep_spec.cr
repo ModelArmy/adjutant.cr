@@ -118,7 +118,7 @@ module Adjutant
       end
     end
 
-    it "raises Legate::TooMany once matches exceed limit:" do
+    it "raises Legate::TooManyError once matches exceed limit:" do
       with_tmpdir do |dir|
         File.write(File.join(dir, "a.txt"), "x\nx\nx\n")
         interp, _ = make_interp(grants: Legate::Grants.new(read_roots: [dir]))
@@ -126,7 +126,7 @@ module Adjutant
         begin
           Legate.grep("x", #{(File.join(dir, "*.txt")).inspect}, limit: 2)
           "no error"
-        rescue Legate::TooMany
+        rescue Legate::TooManyError
           "caught"
         end
         RUBY
@@ -136,7 +136,7 @@ module Adjutant
 
     # Each file is read whole, so each is held to `read_limit`, as
     # `Legate.read` would hold it.
-    it "raises Legate::TooLarge for a file over read_limit, naming it and the streaming alternative" do
+    it "raises Legate::TooLargeError for a file over read_limit, naming it and the streaming alternative" do
       with_tmpdir do |dir|
         big = File.join(dir, "big.txt")
         File.write(big, "x\n" * 100)
@@ -146,7 +146,7 @@ module Adjutant
         begin
           Legate.grep("x", #{(File.join(dir, "*.txt")).inspect})
           "no error"
-        rescue Legate::TooLarge => e
+        rescue Legate::TooLargeError => e
           e.message
         end
         RUBY

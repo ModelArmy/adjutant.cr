@@ -12,7 +12,7 @@ module Adjutant
       # recursive and idempotent, as `FileUtils.mkdir_p` is.
       module Mkdir
         def self.bootstrap(interp : Interpreter, legate : RubyClass, broker : Broker) : Nil
-          conflict = Helpers.fetch(legate, interp, "Conflict")
+          conflict = Helpers.fetch(legate, interp, "ConflictError")
           path_cls = Helpers.fetch(legate, interp, "Path")
 
           # A Write sink, so a labelled path is checked against
@@ -30,8 +30,9 @@ module Adjutant
             # A path that doesn't exist yet is the normal case.
             label = RiskFlowLabel.join(label, broker.authorize_write(raw, ncc, allow_missing: true))
 
-            # A file at the path raises `Legate::Conflict`; idempotent
-            # means an existing directory, not anything at all.
+            # A file at the path raises `Legate::ConflictError`;
+            # idempotent means an existing directory, not anything at
+            # all.
             if File.exists?(raw) && !File.directory?(raw)
               ncc.raise_error_class("#{raw} exists and is not a directory; Legate.mkdir can't create a directory there", conflict)
             end

@@ -100,21 +100,21 @@ module Adjutant
         RUBY
       end
 
-      it "/ raises Legate::Malformed on an absolute right-hand operand" do
+      it "/ raises Legate::MalformedError on an absolute right-hand operand" do
         eval(<<-RUBY).as_string.should eq "caught"
         begin
           Legate::Path.new("logs") / "/etc/passwd"
-        rescue Legate::Malformed
+        rescue Legate::MalformedError
           "caught"
         end
         RUBY
       end
 
-      it "/ raises Legate::Malformed on a \"..\" component" do
+      it "/ raises Legate::MalformedError on a \"..\" component" do
         eval(<<-RUBY).as_string.should eq "caught"
         begin
           Legate::Path.new("logs") / "../etc/passwd"
-        rescue Legate::Malformed
+        rescue Legate::MalformedError
           "caught"
         end
         RUBY
@@ -188,14 +188,14 @@ module Adjutant
         RUBY
       end
 
-      it "ok? is false for a 404, and raise! raises Legate::Transport" do
+      it "ok? is false for a 404, and raise! raises Legate::TransportError" do
         interp = interp_with_value_type_triggers
         interp.eval(<<-RUBY).as_string.should eq "caught"
         r = make_response_404
         begin
           raise "should have raised" if r.ok?
           r.raise!
-        rescue Legate::Transport
+        rescue Legate::TransportError
           "caught"
         end
         RUBY
@@ -214,7 +214,7 @@ module Adjutant
         RUBY
       end
 
-      it "json raises Legate::Malformed on invalid JSON" do
+      it "json raises Legate::MalformedError on invalid JSON" do
         interp, _ = make_interp
         interp.modules.register("test/legate_bad_json") do |i|
           legate = i.get_global("Legate").as_rclass
@@ -227,7 +227,7 @@ module Adjutant
         interp.eval(<<-RUBY).as_string.should eq "caught"
         begin
           make_bad_json_response.json
-        rescue Legate::Malformed
+        rescue Legate::MalformedError
           "caught"
         end
         RUBY

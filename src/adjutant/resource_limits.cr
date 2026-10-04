@@ -9,9 +9,9 @@ module Adjutant
   class ResourceLimits
     # How many stream sources may be open at once. A cap on what is
     # held, not a cumulative budget, so breaching it is recoverable
-    # (`Legate::TooMany`): closing a stream frees a slot. Without it a
-    # leaking script fails at the process's fd limit, with an opaque
-    # error.
+    # (`Legate::TooManyError`): closing a stream frees a slot. Without
+    # it a leaking script fails at the process's fd limit, with an
+    # opaque error.
     DEFAULT_MAX_OPEN_STREAMS = 64
 
     getter max_open_streams : Int32

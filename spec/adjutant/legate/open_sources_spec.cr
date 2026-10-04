@@ -166,8 +166,8 @@ module Adjutant
         )
 
         # Three streams opened and none consumed. The third is the one
-        # that must fail, and it must fail as a recoverable TooMany the
-        # script can see — not as an fd exhaustion from inside File.
+        # that must fail, and it must fail as a recoverable TooManyError
+        # the script can see — not as an fd exhaustion from inside File.
         eval = interp.eval(<<-RUBY)
         opened = 0
         error = nil
@@ -176,7 +176,7 @@ module Adjutant
             Legate.bytes(#{file.inspect}, chunk: 4)
             opened = opened + 1
           end
-        rescue Legate::TooMany => e
+        rescue Legate::TooManyError => e
           error = e.message
         end
         [opened, error]
@@ -234,7 +234,7 @@ module Adjutant
         Legate.bytes(#{file.inspect}, chunk: 4)
         begin
           Legate.bytes(#{file.inspect}, chunk: 4)
-        rescue Legate::TooMany => e
+        rescue Legate::TooManyError => e
           nil
         end
         RUBY
@@ -259,7 +259,7 @@ module Adjutant
         caught = false
         begin
           Legate.lines(#{file.inspect})
-        rescue Legate::TooMany => e
+        rescue Legate::TooManyError => e
           caught = true
         end
         caught

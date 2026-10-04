@@ -22,11 +22,11 @@ module Adjutant
         NEWLINE = 0x0A_u8
 
         def self.bootstrap(interp : Interpreter, legate : RubyClass, broker : Broker) : Nil
-          not_found = Helpers.fetch(legate, interp, "NotFound")
-          too_many = Helpers.fetch(legate, interp, "TooMany")
-          too_large = Helpers.fetch(legate, interp, "TooLarge")
-          malformed = Helpers.fetch(legate, interp, "Malformed")
-          filesystem = Helpers.fetch(legate, interp, "Filesystem")
+          not_found = Helpers.fetch(legate, interp, "NotFoundError")
+          too_many = Helpers.fetch(legate, interp, "TooManyError")
+          too_large = Helpers.fetch(legate, interp, "TooLargeError")
+          malformed = Helpers.fetch(legate, interp, "MalformedError")
+          filesystem = Helpers.fetch(legate, interp, "FilesystemError")
           lines_cls = Helpers.nest(legate, interp, "Lines")
           stream_module = Helpers.fetch(legate, interp, "Stream")
           lines_cls.include_module(stream_module)
@@ -50,8 +50,8 @@ module Adjutant
             label = str_val.label
 
             # A missing path inside a granted root is
-            # `Legate::NotFound`, not a denial. The label joins the path
-            # argument's with the one policy gives the path.
+            # `Legate::NotFoundError`, not a denial. The label joins the
+            # path argument's with the one policy gives the path.
             label = RiskFlowLabel.join(label, broker.authorize_read(raw, ncc, allow_missing: true))
 
             unless File.info?(raw)
@@ -61,7 +61,7 @@ module Adjutant
             # The stream cap is checked before the handle is opened; see
             # `Broker#check_stream_capacity!`. A file removed since the
             # existence check fails in `File.open` as
-            # `Legate::Filesystem`.
+            # `Legate::FilesystemError`.
             broker.check_stream_capacity!(ncc, too_many)
 
             io = File.open(raw, "rb")
@@ -86,9 +86,10 @@ module Adjutant
         end
 
         # Owns the open file for one walk and closes it at exhaustion,
-        # so a later terminal gets `Legate::EOF`. Reads raw byte chunks
-        # rather than using `IO#gets(limit)`, which truncates an
-        # over-long line where §4.2 requires `Legate::TooLarge`.
+        # so a later terminal gets `Legate::ConsumedError`. Reads raw
+        # byte chunks rather than using `IO#gets(limit)`, which
+        # truncates an over-long line where §4.2 requires
+        # `Legate::TooLargeError`.
         class LineIterator
           include ::Iterator(Value)
           include Closable
@@ -175,7 +176,7 @@ module Adjutant
 
           # One line's Value. `String.new(Bytes)` doesn't validate, so
           # invalid UTF-8 is scrubbed to U+FFFD, or raises
-          # `Legate::Malformed` with `scrub: false`.
+          # `Legate::MalformedError` with `scrub: false`.
           private def build_line(raw_line : ::Bytes) : Value
             raw_str = String.new(raw_line)
             return Value.string(raw_str, @label) if raw_str.valid_encoding?

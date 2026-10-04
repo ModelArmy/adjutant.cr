@@ -65,7 +65,7 @@ module Adjutant
       end
     end
 
-    it "raises Legate::Conflict when the target is an existing directory" do
+    it "raises Legate::ConflictError when the target is an existing directory" do
       with_tmpdir do |dir|
         target = File.join(dir, "sub")
         Dir.mkdir(target)
@@ -74,7 +74,7 @@ module Adjutant
         begin
           Legate.write(#{(target).inspect}, "hi")
           "no error"
-        rescue Legate::Conflict
+        rescue Legate::ConflictError
           "caught"
         end
         RUBY
@@ -164,7 +164,7 @@ module Adjutant
     # the previous content, because "raises" without "and the file is
     # still there" would pass against a verb that destroyed the target
     # and then complained.
-    it "raises Legate::Conflict when the target file already exists" do
+    it "raises Legate::ConflictError when the target file already exists" do
       with_tmpdir do |dir|
         file = File.join(dir, "f.txt")
         File.write(file, "original")
@@ -173,7 +173,7 @@ module Adjutant
         begin
           Legate.write(#{(file).inspect}, "new")
           "no error"
-        rescue Legate::Conflict
+        rescue Legate::ConflictError
           "caught"
         end
         RUBY
@@ -182,7 +182,7 @@ module Adjutant
       end
     end
 
-    it "names Legate.write! in the Conflict message, per principle 6" do
+    it "names Legate.write! in the ConflictError message, per principle 6" do
       with_tmpdir do |dir|
         file = File.join(dir, "f.txt")
         File.write(file, "original")
@@ -191,7 +191,7 @@ module Adjutant
         begin
           Legate.write(#{(file).inspect}, "new")
           "no error"
-        rescue Legate::Conflict => e
+        rescue Legate::ConflictError => e
           e.message
         end
         RUBY
@@ -207,7 +207,7 @@ module Adjutant
         interp.eval(<<-RUBY)
         begin
           Legate.write(#{(file).inspect}, "new")
-        rescue Legate::Conflict
+        rescue Legate::ConflictError
         end
         RUBY
         Dir.children(dir).should eq ["f.txt"]
@@ -253,7 +253,7 @@ module Adjutant
         begin
           Legate.write(#{(link).inspect}, "clobbered")
           "no error"
-        rescue Legate::Conflict
+        rescue Legate::ConflictError
           "caught"
         end
         RUBY
@@ -275,7 +275,7 @@ module Adjutant
         begin
           Legate.write(#{(link).inspect}, "clobbered")
           "no error"
-        rescue Legate::Conflict
+        rescue Legate::ConflictError
           "caught"
         end
         RUBY
@@ -311,7 +311,7 @@ module Adjutant
     # The one refusal the bang does NOT lift. Replacing a file is what
     # it is for; turning a directory into a file is not a replacement
     # anyone asked for.
-    it "still raises Legate::Conflict when the target is an existing directory" do
+    it "still raises Legate::ConflictError when the target is an existing directory" do
       with_tmpdir do |dir|
         target = File.join(dir, "sub")
         Dir.mkdir(target)
@@ -320,7 +320,7 @@ module Adjutant
         begin
           Legate.write!(#{(target).inspect}, "hi")
           "no error"
-        rescue Legate::Conflict
+        rescue Legate::ConflictError
           "caught"
         end
         RUBY

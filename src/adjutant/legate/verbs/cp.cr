@@ -31,8 +31,8 @@ module Adjutant
         COPY_CHUNK_SIZE = 65_536
 
         def self.bootstrap(interp : Interpreter, legate : RubyClass, broker : Broker) : Nil
-          not_found = Helpers.fetch(legate, interp, "NotFound")
-          conflict = Helpers.fetch(legate, interp, "Conflict")
+          not_found = Helpers.fetch(legate, interp, "NotFoundError")
+          conflict = Helpers.fetch(legate, interp, "ConflictError")
           path_cls = Helpers.fetch(legate, interp, "Path")
 
           register(interp, legate, broker, not_found, conflict, path_cls, clobber: false)
@@ -79,7 +79,7 @@ module Adjutant
             label = RiskFlowLabel.join(from_str_val.label, to_str_val.label)
 
             # A missing source inside a granted read root is
-            # `Legate::NotFound`, not a denial.
+            # `Legate::NotFoundError`, not a denial.
             label = RiskFlowLabel.join(label, broker.authorize_read(raw_from, ncc, allow_missing: true))
             # `to` not existing yet is the normal case.
             label = RiskFlowLabel.join(label, broker.authorize_write(raw_to, ncc, allow_missing: true))
@@ -105,7 +105,7 @@ module Adjutant
           given.nil? ? false : given
         end
 
-        # For `cp`: raises `Legate::Conflict` if anything, even a
+        # For `cp`: raises `Legate::ConflictError` if anything, even a
         # dangling symlink, is at `to`. Not following symlinks is what
         # catches the dangling one. Checked after the source checks, so
         # a wrong `recursive:` is reported first.

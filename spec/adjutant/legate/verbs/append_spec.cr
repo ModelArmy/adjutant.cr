@@ -78,7 +78,7 @@ module Adjutant
       end
     end
 
-    it "raises Legate::Conflict when the target is an existing directory" do
+    it "raises Legate::ConflictError when the target is an existing directory" do
       with_tmpdir do |dir|
         target = File.join(dir, "sub")
         Dir.mkdir(target)
@@ -87,7 +87,7 @@ module Adjutant
         begin
           Legate.append(#{(target).inspect}, "hi")
           "no error"
-        rescue Legate::Conflict
+        rescue Legate::ConflictError
           "caught"
         end
         RUBY

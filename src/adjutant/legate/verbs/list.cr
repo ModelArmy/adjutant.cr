@@ -16,7 +16,7 @@ module Adjutant
         DEFAULT_LIMIT = 100_000
 
         def self.bootstrap(interp : Interpreter, legate : RubyClass, broker : Broker) : Nil
-          too_many = Helpers.fetch(legate, interp, "TooMany")
+          too_many = Helpers.fetch(legate, interp, "TooManyError")
           entry_cls = Helpers.fetch(legate, interp, "Entry")
           path_cls = Helpers.fetch(legate, interp, "Path")
 

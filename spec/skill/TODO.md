@@ -24,7 +24,7 @@ Only if the skill needs to serve larger models better. Put any extra depth in re
 
 1. A multi-step script that combines several verbs.
 2. A single-pass stream: read once, aggregate, never buffer.
-3. Recovery from `Legate::TooLarge`.
+3. Recovery from `Legate::TooLargeError`.
 4. A policy denial: the task needs a grant `_policy.yaml` withholds, and the check expects the error to be handled or reported, not faked around.
 
 ## 3. Drift spec

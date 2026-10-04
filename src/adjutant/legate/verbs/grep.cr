@@ -25,8 +25,8 @@ module Adjutant
         BINARY_SNIFF_BYTES = 8000
 
         def self.bootstrap(interp : Interpreter, legate : RubyClass, broker : Broker) : Nil
-          too_many = Helpers.fetch(legate, interp, "TooMany")
-          too_large = Helpers.fetch(legate, interp, "TooLarge")
+          too_many = Helpers.fetch(legate, interp, "TooManyError")
+          too_large = Helpers.fetch(legate, interp, "TooLargeError")
           match_cls = Helpers.fetch(legate, interp, "Match")
           path_cls = Helpers.fetch(legate, interp, "Path")
 
@@ -68,7 +68,7 @@ module Adjutant
             in_bounds.each do |file|
               # The wall clock is checked per file. Exceeding it raises
               # the fatal `Exhausted` signal, not the recoverable
-              # `Legate::Timeout` that §4.1 lists for grep.
+              # `Legate::TimeoutError` that §4.1 lists for grep.
               broker.budget.check_wall_clock!
 
               next unless File.file?(file) # a glob can match a directory; nothing to grep there

@@ -25,8 +25,8 @@ module Adjutant
       # it does. `mv!` adds DeletesFiles for the file it replaces.
       module Mv
         def self.bootstrap(interp : Interpreter, legate : RubyClass, broker : Broker) : Nil
-          not_found = Helpers.fetch(legate, interp, "NotFound")
-          conflict = Helpers.fetch(legate, interp, "Conflict")
+          not_found = Helpers.fetch(legate, interp, "NotFoundError")
+          conflict = Helpers.fetch(legate, interp, "ConflictError")
           path_cls = Helpers.fetch(legate, interp, "Path")
 
           register(interp, legate, broker, not_found, conflict, path_cls, clobber: false)
@@ -68,8 +68,8 @@ module Adjutant
             label = RiskFlowLabel.join(from_str_val.label, to_str_val.label)
 
             # A missing source inside a granted root is
-            # `Legate::NotFound` (§4.4), not a denial; `rm` returns 0
-            # for the same case.
+            # `Legate::NotFoundError` (§4.4), not a denial; `rm` returns
+            # 0 for the same case.
             label = RiskFlowLabel.join(label, broker.authorize_delete(raw_from, ncc, allow_missing: true))
             # `to` not existing yet is the normal case.
             label = RiskFlowLabel.join(label, broker.authorize_write(raw_to, ncc, allow_missing: true))

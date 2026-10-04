@@ -132,7 +132,7 @@ Every verb that takes a path accepts a String or a `Legate::Path`. Prefer paths:
 ## 5. Errors
 
 Recoverable errors are `StandardError`s; rescue them when you can act on them:
-`Legate::NotFound` `Legate::Conflict` (destination exists: use the `!` verb, or choose another path) `Legate::Malformed` `Legate::TooLarge` (use a streaming verb) `Legate::TooMany` `Legate::Timeout` `Legate::Transport` `Legate::Filesystem` (the system refused: permissions, a full disk, a file where a directory should be) `Legate::Redirect`
+`Legate::NotFoundError` `Legate::ConflictError` (destination exists: use the `!` verb, or choose another path) `Legate::MalformedError` `Legate::TooLargeError` (use a streaming verb) `Legate::TooManyError` `Legate::TimeoutError` `Legate::TransportError` `Legate::FilesystemError` (the system refused: permissions, a full disk, a file where a directory should be) `Legate::RedirectError` `Legate::ConsumedError` (a stream was already read: call the verb again)
 
 Fatal errors end the run and cannot be rescued, even with `rescue Exception`:
 `Legate::Denied` (the policy does not grant this) `Legate::Exhausted` (a run budget is spent) `Legate::Aborted` (`Legate.fail`)

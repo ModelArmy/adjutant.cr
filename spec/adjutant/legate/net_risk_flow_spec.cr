@@ -197,7 +197,7 @@ module Adjutant
           seen = []
           begin
             Legate.fetch("http://127.0.0.1:#{port}/", stream: true).body.each { |c| seen << c }
-          rescue Legate::TooLarge
+          rescue Legate::TooLargeError
           end
           seen.first
           RUBY
@@ -305,9 +305,9 @@ module Adjutant
         end
       end
 
-      # The label on `Legate::Redirect`'s own `location` — a redirect
-      # target is data the remote host chose, so handing it back
-      # unlabelled would be a laundering path straight out of the
+      # The label on `Legate::RedirectError`'s own `location` — a
+      # redirect target is data the remote host chose, so handing it
+      # back unlabelled would be a laundering path straight out of the
       # error object.
       it "labels the location on a handed-back redirect" do
         with_ifc_server(->(context : HTTP::Server::Context) {
@@ -320,7 +320,7 @@ module Adjutant
           target = nil
           begin
             Legate.fetch("http://127.0.0.1:#{port}/", method: :post, body: "payload")
-          rescue Legate::Redirect => e
+          rescue Legate::RedirectError => e
             target = e.location
           end
           target

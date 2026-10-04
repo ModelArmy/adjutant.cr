@@ -167,7 +167,7 @@ module Adjutant
           caught = false
           begin
             Legate.fetch("http://127.0.0.1:#{port}/", stream: true)
-          rescue Legate::TooMany => e
+          rescue Legate::TooManyError => e
             caught = true
           end
           caught
@@ -185,7 +185,7 @@ module Adjutant
       # sits between one chunk and two and the body spans three —
       # otherwise the first read breaches the limit and "partway" is
       # not what is being tested at all.
-      it "raises Legate::TooLarge partway through an over-limit body" do
+      it "raises Legate::TooLargeError partway through an over-limit body" do
         with_stream_server(->(context : HTTP::Server::Context) {
           context.response.print("q" * 200_000)
         }) do |port|
@@ -195,7 +195,7 @@ module Adjutant
           begin
             Legate.fetch("http://127.0.0.1:#{port}/", stream: true).body.each { |c| c }
             "no error"
-          rescue Legate::TooLarge
+          rescue Legate::TooLargeError
             "caught"
           end
           RUBY
@@ -203,8 +203,8 @@ module Adjutant
         end
       end
 
-      # The connection must be dropped before the raise — a script
-      # that rescues `TooLarge` must not be left holding a socket to a
+      # The connection must be dropped before the raise — a script that
+      # rescues `TooLargeError` must not be left holding a socket to a
       # server still sending.
       it "closes the connection when it refuses an over-limit body" do
         with_stream_server(->(context : HTTP::Server::Context) {
@@ -215,7 +215,7 @@ module Adjutant
           interp.eval(<<-RUBY)
           begin
             Legate.fetch("http://127.0.0.1:#{port}/", stream: true).body.each { |c| c }
-          rescue Legate::TooLarge
+          rescue Legate::TooLargeError
           end
           RUBY
           interp.broker.open_sources.size.should eq 0
@@ -302,7 +302,7 @@ module Adjutant
           code = nil
           begin
             Legate.fetch("http://127.0.0.1:#{port}/", method: :post, body: "payload", stream: true)
-          rescue Legate::Redirect => e
+          rescue Legate::RedirectError => e
             code = e.status
           end
           code

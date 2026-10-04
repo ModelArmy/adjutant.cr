@@ -50,11 +50,11 @@ module Adjutant
         READ_CHUNK_SIZE = 65_536
 
         def self.bootstrap(interp : Interpreter, legate : RubyClass, broker : Broker) : Nil
-          transport = Helpers.fetch(legate, interp, "Transport")
-          timeout_cls = Helpers.fetch(legate, interp, "Timeout")
-          too_large = Helpers.fetch(legate, interp, "TooLarge")
-          redirect = Helpers.fetch(legate, interp, "Redirect")
-          too_many = Helpers.fetch(legate, interp, "TooMany")
+          transport = Helpers.fetch(legate, interp, "TransportError")
+          timeout_cls = Helpers.fetch(legate, interp, "TimeoutError")
+          too_large = Helpers.fetch(legate, interp, "TooLargeError")
+          redirect = Helpers.fetch(legate, interp, "RedirectError")
+          too_many = Helpers.fetch(legate, interp, "TooManyError")
           response_cls = Helpers.fetch(legate, interp, "Response")
           # `stream: true` returns the same `Legate::Bytes` type as
           # `Legate.bytes`.
@@ -161,12 +161,12 @@ module Adjutant
               location = redirect_target(response)
 
               # A redirect of a request that carried a body raises
-              # `Legate::Redirect` rather than being followed (§4.5):
-              # 307 and 308 would resend the body, possibly to another
-              # host, and 301 to 303 would turn it into a GET that
-              # looks like success. The rule keys on the body, not the
-              # method or status; `Redirect#status` lets a script follow
-              # a 303 itself.
+              # `Legate::RedirectError` rather than being followed
+              # (§4.5): 307 and 308 would resend the body, possibly to
+              # another host, and 301 to 303 would turn it into a GET
+              # that looks like success. The rule keys on the body, not
+              # the method or status; `RedirectError#status` lets a
+              # script follow a 303 itself.
               if location && opts.payload?
                 raise_payload_redirect(ncc, redirect, response.status_code, location, label)
               end
@@ -599,7 +599,7 @@ module Adjutant
           location && !location.empty? ? location : nil
         end
 
-        # Raises `Legate::Redirect` for a redirected request with a
+        # Raises `Legate::RedirectError` for a redirected request with a
         # body.
         private def self.raise_payload_redirect(ncc : NativeCallContext, redirect : RubyClass,
                                                 status : Int32, location : String,

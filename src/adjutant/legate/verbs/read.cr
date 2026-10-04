@@ -13,9 +13,9 @@ module Adjutant
         KWARG_NAMES = Set{"limit", "scrub", "missing"}
 
         def self.bootstrap(interp : Interpreter, legate : RubyClass, broker : Broker) : Nil
-          not_found = Helpers.fetch(legate, interp, "NotFound")
-          too_large = Helpers.fetch(legate, interp, "TooLarge")
-          malformed = Helpers.fetch(legate, interp, "Malformed")
+          not_found = Helpers.fetch(legate, interp, "NotFoundError")
+          too_large = Helpers.fetch(legate, interp, "TooLargeError")
+          malformed = Helpers.fetch(legate, interp, "MalformedError")
 
           Helpers.define_verb(
             legate, interp, "read",
@@ -36,7 +36,7 @@ module Adjutant
             label = str_val.label
 
             # A missing path inside a granted root is
-            # `Legate::NotFound` (or the `missing:` value), not a
+            # `Legate::NotFoundError` (or the `missing:` value), not a
             # denial. The path's label is joined with the one policy
             # gives it.
             label = RiskFlowLabel.join(label, broker.authorize_read(raw, ncc, allow_missing: true))
@@ -98,8 +98,8 @@ module Adjutant
           end
         end
 
-        # §9.1's TooLarge wording, in binary units. `size` is nil for a
-        # file found over the limit only while reading it.
+        # §9.1's TooLargeError wording, in binary units. `size` is nil
+        # for a file found over the limit only while reading it.
         private def self.too_large_message(size : Int64?, limit : Int64) : String
           what = size ? "path is #{Helpers.humanize_bytes(size)}, over" : "path is over"
           "#{what} the #{Helpers.humanize_bytes(limit)} read limit — use Legate.lines(path) or Legate.bytes(path) to stream."

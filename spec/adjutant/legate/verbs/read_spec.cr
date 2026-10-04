@@ -31,13 +31,13 @@ module Adjutant
       end
     end
 
-    it "raises Legate::NotFound for a missing path under a granted root" do
+    it "raises Legate::NotFoundError for a missing path under a granted root" do
       with_tmpdir do |dir|
         interp, _ = make_interp(grants: Legate::Grants.new(read_roots: [dir]))
         eval = interp.eval(<<-RUBY)
         begin
           Legate.read(#{(File.join(dir, "nope.txt")).inspect})
-        rescue Legate::NotFound => e
+        rescue Legate::NotFoundError => e
           "caught: \#{e.message}"
         end
         RUBY
@@ -45,7 +45,7 @@ module Adjutant
       end
     end
 
-    it "raises Legate::FatalSignal (denied), not NotFound, for a missing path OUTSIDE every granted root" do
+    it "raises Legate::FatalSignal (denied), not NotFoundError, for a missing path OUTSIDE every granted root" do
       with_tmpdir do |dir|
         with_tmpdir do |other|
           interp, _ = make_interp(grants: Legate::Grants.new(read_roots: [dir]))
@@ -84,7 +84,7 @@ module Adjutant
         end
       end
 
-      it "missing: does NOT suppress Legate::TooLarge" do
+      it "missing: does NOT suppress Legate::TooLargeError" do
         with_tmpdir do |dir|
           file = File.join(dir, "big.txt")
           File.write(file, "x" * 100)
@@ -92,7 +92,7 @@ module Adjutant
           eval = interp.eval(<<-RUBY)
           begin
             Legate.read(#{(file).inspect}, limit: 10, missing: nil)
-          rescue Legate::TooLarge => e
+          rescue Legate::TooLargeError => e
             "caught"
           end
           RUBY
@@ -111,7 +111,7 @@ module Adjutant
     end
 
     describe "limit: kwarg" do
-      it "raises Legate::TooLarge when the file exceeds the policy's own read_limit" do
+      it "raises Legate::TooLargeError when the file exceeds the policy's own read_limit" do
         with_tmpdir do |dir|
           file = File.join(dir, "big.txt")
           File.write(file, "x" * 200)
@@ -120,7 +120,7 @@ module Adjutant
           eval = interp.eval(<<-RUBY)
           begin
             Legate.read(#{(file).inspect})
-          rescue Legate::TooLarge => e
+          rescue Legate::TooLargeError => e
             e.message
           end
           RUBY
@@ -161,7 +161,7 @@ module Adjutant
           eval = interp.eval(<<-RUBY)
           begin
             Legate.read(#{(file).inspect}, limit: 10)
-          rescue Legate::TooLarge
+          rescue Legate::TooLargeError
             "caught"
           end
           RUBY
@@ -228,7 +228,7 @@ module Adjutant
         end
       end
 
-      it "raises Legate::Malformed on invalid UTF-8 when scrub: false" do
+      it "raises Legate::MalformedError on invalid UTF-8 when scrub: false" do
         with_tmpdir do |dir|
           file = File.join(dir, "f.txt")
           raw = ::Bytes[0x68, 0x69, 0xFF]
@@ -238,7 +238,7 @@ module Adjutant
           begin
             Legate.read(#{(file).inspect}, scrub: false)
             "no error"
-          rescue Legate::Malformed
+          rescue Legate::MalformedError
             "caught"
           end
           RUBY

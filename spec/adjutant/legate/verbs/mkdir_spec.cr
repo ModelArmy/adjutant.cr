@@ -59,7 +59,7 @@ module Adjutant
       end
     end
 
-    it "raises Legate::Conflict when a FILE already exists at that path" do
+    it "raises Legate::ConflictError when a FILE already exists at that path" do
       with_tmpdir do |dir|
         target = File.join(dir, "f.txt")
         File.write(target, "hi")
@@ -68,7 +68,7 @@ module Adjutant
         begin
           Legate.mkdir(#{(target).inspect})
           "no error"
-        rescue Legate::Conflict
+        rescue Legate::ConflictError
           "caught"
         end
         RUBY

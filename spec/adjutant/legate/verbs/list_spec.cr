@@ -108,14 +108,14 @@ module Adjutant
       end
     end
 
-    it "raises Legate::TooMany when matches exceed limit:" do
+    it "raises Legate::TooManyError when matches exceed limit:" do
       with_tmpdir do |dir|
         3.times { |i| File.write(File.join(dir, "f#{i}.txt"), "") }
         interp, _ = make_interp(grants: Legate::Grants.new(read_roots: [dir]))
         eval = interp.eval(<<-RUBY)
         begin
           Legate.list(#{(File.join(dir, "*.txt")).inspect}, limit: 2)
-        rescue Legate::TooMany => e
+        rescue Legate::TooManyError => e
           "caught: \#{e.message}"
         end
         RUBY

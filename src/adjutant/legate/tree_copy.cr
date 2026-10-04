@@ -19,7 +19,7 @@ module Adjutant
       # Raised for an entry that is not a directory, regular file or
       # symlink (a FIFO, socket or device), which has no content that
       # can be copied safely: a FIFO blocks and a device may not end.
-      # The verb reports it as `Legate::Conflict`.
+      # The verb reports it as `Legate::ConflictError`.
       class SpecialFile < Exception
         getter path : String
 

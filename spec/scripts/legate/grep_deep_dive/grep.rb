@@ -3,7 +3,7 @@ require "assert"
 # `Legate.grep`'s own rich feature set (LEGATE.md §4.1) — regex vs
 # literal patterns, `context:`, an Array mixing literal files and
 # globs, and binary-file skipping — none of it exercised by any
-# script until now (only its `limit:`/`TooMany` behavior was, in
+# script until now (only its `limit:`/`TooManyError` behavior was, in
 # edge_cases/error_paths.rb). No Ruby precedent for any of grep.cr's
 # own judgment calls here either (the binary-skip heuristic, the
 # String-vs-Regexp pattern split, the context-window shape) — worth

@@ -23,7 +23,7 @@ module Adjutant
         cls = Helpers.nest(legate, interp, "Path")
         parts_sym = interp.symbols.intern("__parts").value
         absolute_sym = interp.symbols.intern("__absolute").value
-        malformed = Helpers.fetch(legate, interp, "Malformed")
+        malformed = Helpers.fetch(legate, interp, "MalformedError")
 
         Builtins.define_singleton(cls, interp, "new", arity: 1) do |args|
           first = args[1]? || Value.nil_value

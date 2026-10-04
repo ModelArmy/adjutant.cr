@@ -92,7 +92,7 @@ module Adjutant
     describe "URL validation and the url_limit" do
       # Checked BEFORE authorization on purpose, so an over-long URL
       # is never authorized, resolved, or audited as allowed egress.
-      it "raises Legate::TooLarge for a URL over the policy's url_limit" do
+      it "raises Legate::TooLargeError for a URL over the policy's url_limit" do
         grants = Legate::Grants.new(
           net_rules: [Legate::NetRule.parse("api.example.com")],
           net_methods: ["get"],
@@ -104,7 +104,7 @@ module Adjutant
         begin
           Legate.fetch(#{long.inspect})
           "no error"
-        rescue Legate::TooLarge
+        rescue Legate::TooLargeError
           "caught"
         end
         RUBY
@@ -122,32 +122,32 @@ module Adjutant
         interp.eval(<<-RUBY)
         begin
           Legate.fetch(#{long.inspect})
-        rescue Legate::TooLarge
+        rescue Legate::TooLargeError
         end
         RUBY
         interp.broker.audit_log.records.select { |r| r.verb == "net" }.size.should eq 0
       end
 
-      it "raises Legate::Transport for a non-http scheme" do
+      it "raises Legate::TransportError for a non-http scheme" do
         interp, _ = make_interp(grants: net_grants)
         eval = interp.eval(<<-RUBY)
         begin
           Legate.fetch("ftp://api.example.com/x")
           "no error"
-        rescue Legate::Transport
+        rescue Legate::TransportError
           "caught"
         end
         RUBY
         eval.as_string.should eq "caught"
       end
 
-      it "raises Legate::Transport for a URL with no host" do
+      it "raises Legate::TransportError for a URL with no host" do
         interp, _ = make_interp(grants: net_grants)
         eval = interp.eval(<<-RUBY)
         begin
           Legate.fetch("/just/a/path")
           "no error"
-        rescue Legate::Transport
+        rescue Legate::TransportError
           "caught"
         end
         RUBY
@@ -222,7 +222,7 @@ module Adjutant
           begin
             Legate.fetch("https://api.example.com/")
             "no error"
-          rescue Legate::Transport
+          rescue Legate::TransportError
             "caught"
           end
           RUBY
@@ -237,7 +237,7 @@ module Adjutant
           begin
             Legate.fetch("https://api.example.com/")
             "no error"
-          rescue Legate::Transport
+          rescue Legate::TransportError
             "caught"
           end
           RUBY
@@ -253,7 +253,7 @@ module Adjutant
             begin
               Legate.fetch("https://api.example.com/")
               "no error"
-            rescue Legate::Transport
+            rescue Legate::TransportError
               "caught"
             end
             RUBY
@@ -269,7 +269,7 @@ module Adjutant
           begin
             Legate.fetch("https://api.example.com/")
             "no error"
-          rescue Legate::Transport
+          rescue Legate::TransportError
             "caught"
           end
           RUBY
@@ -285,7 +285,7 @@ module Adjutant
             begin
               Legate.fetch("https://api.example.com/")
               "no error"
-            rescue Legate::Transport
+            rescue Legate::TransportError
               "caught"
             end
             RUBY
@@ -304,7 +304,7 @@ module Adjutant
           begin
             Legate.fetch("https://api.example.com/")
             "no error"
-          rescue Legate::Transport
+          rescue Legate::TransportError
             "caught"
           end
           RUBY
@@ -319,7 +319,7 @@ module Adjutant
           begin
             Legate.fetch("https://api.example.com/", timeout: 1)
             "no error"
-          rescue Legate::Transport => e
+          rescue Legate::TransportError => e
             e.message
           end
           RUBY
@@ -337,7 +337,7 @@ module Adjutant
           begin
             Legate.fetch("https://api.example.com/")
             "no error"
-          rescue Legate::Transport
+          rescue Legate::TransportError
             "caught"
           end
           RUBY
@@ -352,7 +352,7 @@ module Adjutant
           begin
             Legate.fetch("https://api.example.com/")
             "no error"
-          rescue Legate::Transport
+          rescue Legate::TransportError
             "caught"
           end
           RUBY
@@ -379,7 +379,7 @@ module Adjutant
           begin
             Legate.fetch("http://localhost:11434/api/tags")
             "no error"
-          rescue Legate::Transport
+          rescue Legate::TransportError
             "caught"
           end
           RUBY
@@ -387,9 +387,9 @@ module Adjutant
         end
       end
 
-      # Past the address check and on to the transport, which then
-      # fails because nothing is listening — the point being that the
-      # SSRF check no longer refuses it. A `Transport` from a refused
+      # Past the address check and on to the transport, which then fails
+      # because nothing is listening — the point being that the SSRF
+      # check no longer refuses it. A `TransportError` from a refused
       # ADDRESS and one from a refused CONNECTION are distinguished by
       # message.
       #
@@ -417,7 +417,7 @@ module Adjutant
           begin
             Legate.fetch("http://localhost:#{unbound_port}/api/tags")
             "no error"
-          rescue Legate::Transport => e
+          rescue Legate::TransportError => e
             e.message
           end
           RUBY
@@ -431,15 +431,15 @@ module Adjutant
       # deliberately not pinned to one failure class.
       #
       # Unlike its sibling above, this resolves to a ROUTABLE RFC 1918
-      # address, so the connection attempt genuinely leaves the
-      # machine. What happens next depends on the network the machine
-      # is attached to: a host that refuses gives `Transport` in
-      # milliseconds, one that silently drops gives `Timeout` after
-      # the full duration. Both prove the same thing. An earlier
-      # version rescued only `Transport` and so failed with a 30s hang
-      # on any network where 192.168.1.50 black-holes rather than
-      # refuses — a property of the tester's LAN, not of Adjutant.
-      # `timeout: 1` bounds the damage either way.
+      # address, so the connection attempt genuinely leaves the machine.
+      # What happens next depends on the network the machine is attached
+      # to: a host that refuses gives `TransportError` in milliseconds,
+      # one that silently drops gives `TimeoutError` after the full
+      # duration. Both prove the same thing. An earlier version rescued
+      # only `TransportError` and so failed with a 30s hang on any
+      # network where 192.168.1.50 black-holes rather than refuses — a
+      # property of the tester's LAN, not of Adjutant. `timeout: 1`
+      # bounds the damage either way.
       it "lets a rule with the opt-in reach RFC 1918 space" do
         with_resolver(["192.168.1.50"]) do
           interp, _ = make_interp(grants: local_grants.call("ollama.internal", 11434))
@@ -447,9 +447,9 @@ module Adjutant
           begin
             Legate.fetch("http://ollama.internal:11434/api/tags", timeout: 1)
             "no error"
-          rescue Legate::Transport => e
+          rescue Legate::TransportError => e
             e.message
-          rescue Legate::Timeout => e
+          rescue Legate::TimeoutError => e
             e.message
           end
           RUBY
@@ -467,7 +467,7 @@ module Adjutant
           begin
             Legate.fetch("http://api.example.com/")
             "no error"
-          rescue Legate::Transport => e
+          rescue Legate::TransportError => e
             e.message
           end
           RUBY
@@ -482,7 +482,7 @@ module Adjutant
           begin
             Legate.fetch("http://api.example.com/")
             "no error"
-          rescue Legate::Transport => e
+          rescue Legate::TransportError => e
             e.message
           end
           RUBY
@@ -500,7 +500,7 @@ module Adjutant
             begin
               Legate.fetch("http://api.example.com/", timeout: 1)
               "no error"
-            rescue Legate::Transport => e
+            rescue Legate::TransportError => e
               e.message
             end
             RUBY
@@ -517,7 +517,7 @@ module Adjutant
             begin
               Legate.fetch("http://api.example.com/", timeout: 1)
               "no error"
-            rescue Legate::Transport => e
+            rescue Legate::TransportError => e
               e.message
             end
             RUBY
@@ -535,7 +535,7 @@ module Adjutant
           begin
             Legate.fetch("http://localhost:11434/api/tags")
             "no error"
-          rescue Legate::Transport => e
+          rescue Legate::TransportError => e
             e.message
           end
           RUBY
@@ -611,13 +611,13 @@ module Adjutant
       # Staged, not silent. A script asking for a stream and quietly
       # receiving a buffered String would appear to work right up
       # until a response too large to hold in memory.
-      it "raises Legate::Transport for the not-yet-implemented stream: true" do
+      it "raises Legate::TransportError for the not-yet-implemented stream: true" do
         interp, _ = make_interp(grants: net_grants)
         eval = interp.eval(<<-RUBY)
         begin
           Legate.fetch("https://api.example.com/", stream: true)
           "no error"
-        rescue Legate::Transport
+        rescue Legate::TransportError
           "caught"
         end
         RUBY
@@ -722,7 +722,7 @@ module Adjutant
         end
       end
 
-      it "raises Legate::Transport when the redirect budget is spent" do
+      it "raises Legate::TransportError when the redirect budget is spent" do
         resolving_or_placeholder do
           Wiretap.intercept("legate_fetch_redirect_loop", mode: RECORDED_MODE) do
             interp, _ = make_interp(grants: net_grants(recorded_host))
@@ -730,7 +730,7 @@ module Adjutant
             begin
               Legate.fetch("https://#{recorded_host}/redirect/6", redirects: 2)
               "no error"
-            rescue Legate::Transport
+            rescue Legate::TransportError
               "caught"
             end
             RUBY
@@ -739,7 +739,7 @@ module Adjutant
         end
       end
 
-      it "raises Legate::TooLarge when the response exceeds limit:" do
+      it "raises Legate::TooLargeError when the response exceeds limit:" do
         resolving_or_placeholder do
           Wiretap.intercept("legate_fetch_too_large", mode: RECORDED_MODE) do
             interp, _ = make_interp(grants: net_grants(recorded_host))
@@ -747,7 +747,7 @@ module Adjutant
             begin
               Legate.fetch("https://#{recorded_host}/bytes/4096", limit: 128)
               "no error"
-            rescue Legate::TooLarge
+            rescue Legate::TooLargeError
               "caught"
             end
             RUBY
@@ -799,7 +799,7 @@ module Adjutant
     describe "redirects on a request that carried a body" do
       payload_host = "api.example.com"
 
-      it "raises Legate::Redirect rather than following a 307" do
+      it "raises Legate::RedirectError rather than following a 307" do
         with_resolver(["93.184.216.34"]) do
           Wiretap.intercept("legate_fetch_redirect_payload", mode: :none) do
             interp, _ = make_interp(grants: net_grants(payload_host, ["get", "post"]))
@@ -807,7 +807,7 @@ module Adjutant
             begin
               Legate.fetch("https://#{payload_host}/orders", method: :post, body: "an order")
               "followed"
-            rescue Legate::Redirect
+            rescue Legate::RedirectError
               "handed back"
             end
             RUBY
@@ -827,7 +827,7 @@ module Adjutant
             target = nil
             begin
               Legate.fetch("https://#{payload_host}/orders", method: :post, body: "an order")
-            rescue Legate::Redirect => e
+            rescue Legate::RedirectError => e
               status = e.status
               target = e.location
             end
@@ -851,7 +851,7 @@ module Adjutant
             code = nil
             begin
               Legate.fetch("https://#{payload_host}/submit", method: :post, body: "a form")
-            rescue Legate::Redirect => e
+            rescue Legate::RedirectError => e
               code = e.status
             end
             code
@@ -872,7 +872,7 @@ module Adjutant
             code = nil
             begin
               Legate.fetch("https://#{payload_host}/legacy", method: :post, body: "data")
-            rescue Legate::Redirect => e
+            rescue Legate::RedirectError => e
               code = e.status
             end
             code
@@ -916,7 +916,7 @@ module Adjutant
             interp.eval(<<-RUBY)
             begin
               Legate.fetch("https://#{payload_host}/orders", method: :post, body: "an order")
-            rescue Legate::Redirect => e
+            rescue Legate::RedirectError => e
               nil
             end
             RUBY

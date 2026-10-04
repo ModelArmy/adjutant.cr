@@ -27,9 +27,9 @@ module Adjutant
       RUBY
   end
 
-  describe "Legate::Filesystem" do
+  describe "Legate::FilesystemError" do
     it "is a recoverable Legate::Error" do
-      eval("Legate::Filesystem.superclass == Legate::Error").truthy?.should be_true
+      eval("Legate::FilesystemError.superclass == Legate::Error").truthy?.should be_true
     end
 
     describe "raised for an operating-system failure no verb foresees" do
@@ -39,7 +39,7 @@ module Adjutant
           File.write(from, "hi")
           result = legate_error_of(dir, %(Legate.cp!(#{from.inspect}, #{File.join(from, ".bak").inspect})))
           cls, message = result.split('|', 2)
-          cls.should eq "Legate::Filesystem"
+          cls.should eq "Legate::FilesystemError"
           message.should contain "Legate.cp!"
           message.should contain "report.txt"
           {% unless flag?(:win32) %}
@@ -53,7 +53,7 @@ module Adjutant
           file = File.join(dir, "notes.txt")
           File.write(file, "hi")
           result = legate_error_of(dir, %(Legate.write(#{File.join(file, "more.txt").inspect}, "x")))
-          result.split('|', 2).first.should eq "Legate::Filesystem"
+          result.split('|', 2).first.should eq "Legate::FilesystemError"
         end
       end
 
@@ -62,7 +62,7 @@ module Adjutant
           file = File.join(dir, "notes.txt")
           File.write(file, "hi")
           result = legate_error_of(dir, %(Legate.mkdir(#{File.join(file, "sub").inspect})))
-          result.split('|', 2).first.should eq "Legate::Filesystem"
+          result.split('|', 2).first.should eq "Legate::FilesystemError"
         end
       end
 
@@ -72,7 +72,7 @@ module Adjutant
           Dir.mkdir(sub)
           result = legate_error_of(dir, %(Legate.lines(#{sub.inspect}).to_a))
           cls, message = result.split('|', 2)
-          cls.should eq "Legate::Filesystem"
+          cls.should eq "Legate::FilesystemError"
           message.should contain "sub"
         end
       end

@@ -64,14 +64,14 @@ module Adjutant
       end
     end
 
-    it "raises Legate::NotFound when the source doesn't exist" do
+    it "raises Legate::NotFoundError when the source doesn't exist" do
       with_tmpdir do |dir|
         interp, _ = make_interp(grants: Legate::Grants.new(read_roots: [dir], write_roots: [dir]))
         eval = interp.eval(<<-RUBY)
         begin
           Legate.cp(#{(File.join(dir, "nope.txt")).inspect}, #{(File.join(dir, "dest.txt")).inspect})
           "no error"
-        rescue Legate::NotFound
+        rescue Legate::NotFoundError
           "caught"
         end
         RUBY
@@ -79,7 +79,7 @@ module Adjutant
       end
     end
 
-    it "raises Legate::Conflict when the destination is an existing directory" do
+    it "raises Legate::ConflictError when the destination is an existing directory" do
       with_tmpdir do |dir|
         from = File.join(dir, "src.txt")
         File.write(from, "hi")
@@ -90,7 +90,7 @@ module Adjutant
         begin
           Legate.cp(#{(from).inspect}, #{(to).inspect})
           "no error"
-        rescue Legate::Conflict
+        rescue Legate::ConflictError
           "caught"
         end
         RUBY
@@ -98,7 +98,7 @@ module Adjutant
       end
     end
 
-    it "raises Legate::Conflict for a directory source without recursive: true" do
+    it "raises Legate::ConflictError for a directory source without recursive: true" do
       with_tmpdir do |dir|
         from = File.join(dir, "src_dir")
         Dir.mkdir(from)
@@ -108,7 +108,7 @@ module Adjutant
         begin
           Legate.cp(#{(from).inspect}, #{(to).inspect})
           "no error"
-        rescue Legate::Conflict
+        rescue Legate::ConflictError
           "caught"
         end
         RUBY
@@ -131,7 +131,7 @@ module Adjutant
       end
     end
 
-    it "raises Legate::Conflict copying a directory onto an existing file" do
+    it "raises Legate::ConflictError copying a directory onto an existing file" do
       with_tmpdir do |dir|
         from = File.join(dir, "src_dir")
         Dir.mkdir(from)
@@ -142,7 +142,7 @@ module Adjutant
         begin
           Legate.cp(#{(from).inspect}, #{(to).inspect}, recursive: true)
           "no error"
-        rescue Legate::Conflict
+        rescue Legate::ConflictError
           "caught"
         end
         RUBY
@@ -216,7 +216,7 @@ module Adjutant
     # verb that destroyed the destination and then complained would
     # pass a bare `expect_raises`, and that is the exact failure this
     # split exists to fix.
-    it "raises Legate::Conflict when the destination file already exists" do
+    it "raises Legate::ConflictError when the destination file already exists" do
       with_tmpdir do |dir|
         from = File.join(dir, "src.txt")
         to = File.join(dir, "dest.txt")
@@ -227,7 +227,7 @@ module Adjutant
         begin
           Legate.cp(#{(from).inspect}, #{(to).inspect})
           "no error"
-        rescue Legate::Conflict
+        rescue Legate::ConflictError
           "caught"
         end
         RUBY
@@ -236,7 +236,7 @@ module Adjutant
       end
     end
 
-    it "names Legate.cp! in the Conflict message, per principle 6" do
+    it "names Legate.cp! in the ConflictError message, per principle 6" do
       with_tmpdir do |dir|
         from = File.join(dir, "src.txt")
         to = File.join(dir, "dest.txt")
@@ -247,7 +247,7 @@ module Adjutant
         begin
           Legate.cp(#{(from).inspect}, #{(to).inspect})
           "no error"
-        rescue Legate::Conflict => e
+        rescue Legate::ConflictError => e
           e.message
         end
         RUBY
@@ -260,7 +260,7 @@ module Adjutant
     # own into place. `keep.txt` is the witness — it is not in the
     # source tree, so if the destination were replaced rather than
     # refused, it would be gone.
-    it "raises Legate::Conflict rather than replacing an existing destination tree" do
+    it "raises Legate::ConflictError rather than replacing an existing destination tree" do
       with_tmpdir do |dir|
         from = File.join(dir, "src")
         Dir.mkdir(from)
@@ -273,7 +273,7 @@ module Adjutant
         begin
           Legate.cp(#{(from).inspect}, #{(to).inspect}, recursive: true)
           "no error"
-        rescue Legate::Conflict
+        rescue Legate::ConflictError
           "caught"
         end
         RUBY
@@ -297,7 +297,7 @@ module Adjutant
         begin
           Legate.cp(#{(from).inspect}, #{(to).inspect})
           "no error"
-        rescue Legate::Conflict => e
+        rescue Legate::ConflictError => e
           e.message
         end
         RUBY
@@ -316,7 +316,7 @@ module Adjutant
         begin
           Legate.cp(#{(from).inspect}, #{(link).inspect})
           "no error"
-        rescue Legate::Conflict
+        rescue Legate::ConflictError
           "caught"
         end
         RUBY
@@ -470,7 +470,7 @@ module Adjutant
     # The refusals the bang does NOT lift. Replacing like with like is
     # what it is for; swapping a file for a tree or a tree for a file
     # is never what a caller meant.
-    it "still raises Legate::Conflict copying a file onto an existing directory" do
+    it "still raises Legate::ConflictError copying a file onto an existing directory" do
       with_tmpdir do |dir|
         from = File.join(dir, "src.txt")
         File.write(from, "hi")
@@ -481,7 +481,7 @@ module Adjutant
         begin
           Legate.cp!(#{(from).inspect}, #{(to).inspect})
           "no error"
-        rescue Legate::Conflict
+        rescue Legate::ConflictError
           "caught"
         end
         RUBY
@@ -490,7 +490,7 @@ module Adjutant
       end
     end
 
-    it "still raises Legate::Conflict copying a directory onto an existing file" do
+    it "still raises Legate::ConflictError copying a directory onto an existing file" do
       with_tmpdir do |dir|
         from = File.join(dir, "src")
         Dir.mkdir(from)
@@ -501,7 +501,7 @@ module Adjutant
         begin
           Legate.cp!(#{(from).inspect}, #{(to).inspect}, recursive: true)
           "no error"
-        rescue Legate::Conflict
+        rescue Legate::ConflictError
           "caught"
         end
         RUBY
@@ -519,7 +519,7 @@ module Adjutant
         begin
           Legate.cp!(#{(from).inspect}, #{(File.join(dir, "dest")).inspect})
           "no error"
-        rescue Legate::Conflict
+        rescue Legate::ConflictError
           "caught"
         end
         RUBY

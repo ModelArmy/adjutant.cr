@@ -18,8 +18,8 @@ module Adjutant
         headers_sym = interp.symbols.intern("__headers").value
         body_sym = interp.symbols.intern("__body").value
         url_sym = interp.symbols.intern("__url").value
-        transport = Helpers.fetch(legate, interp, "Transport")
-        malformed = Helpers.fetch(legate, interp, "Malformed")
+        transport = Helpers.fetch(legate, interp, "TransportError")
+        malformed = Helpers.fetch(legate, interp, "MalformedError")
 
         Builtins.define(cls, interp, "status", arity: 0) { |args| args.first.as_robject.ivars[status_sym] }
         Builtins.define(cls, interp, "ok?", arity: 0) { |args| Value.bool(ok?(args.first.as_robject.ivars[status_sym].as_int)) }
@@ -39,8 +39,8 @@ module Adjutant
           end
         end
 
-        # Raises `Legate::Transport` unless `ok?`; otherwise returns
-        # self (§5.5).
+        # Raises `Legate::TransportError` unless `ok?`; otherwise
+        # returns self (§5.5).
         Builtins.define(cls, interp, "raise!", arity: 0) do |args, _blk, ncc|
           status = args.first.as_robject.ivars[status_sym].as_int
           unless ok?(status)

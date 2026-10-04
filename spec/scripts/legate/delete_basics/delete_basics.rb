@@ -67,7 +67,7 @@ assert_nil(Legate.stat(WORKSPACE / "staging-old" / "scratch.txt"))
 # refuse it — the three delete verbs partition the target space, and
 # each refusal names the one that would have worked.
 
-assert_raise(Legate::Conflict) { Legate.rm(WORKSPACE / "staging-old") }
+assert_raise(Legate::ConflictError) { Legate.rm(WORKSPACE / "staging-old") }
 assert_equal(true, Legate.rmdir(WORKSPACE / "staging-old"))
 assert_nil(Legate.stat(WORKSPACE / "staging-old"))
 
@@ -77,7 +77,7 @@ assert_nil(Legate.stat(WORKSPACE / "staging-old"))
 # `archive/` + `archive/2026/` + `archive/2026/report.txt` is 3.
 # `rmdir` would refuse this one for being non-empty.
 
-assert_raise(Legate::Conflict) { Legate.rmdir(WORKSPACE / "archive") }
+assert_raise(Legate::ConflictError) { Legate.rmdir(WORKSPACE / "archive") }
 assert_equal(3, Legate.rmdir!(WORKSPACE / "archive"))
 assert_nil(Legate.stat(WORKSPACE / "archive"))
 
