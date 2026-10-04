@@ -444,14 +444,14 @@ flowchart TD
 `builtins/array.cr`/`builtins/hash.cr`, reviewed before settling the API
 below):
 
-|Area               |Sites                                                                                                            |Impact                                                                                                                                                                                                                                                                                                                   |
-|-------------------|-----------------------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-|`value.cr`         |4 accessors (`as_array`, `as_hash`, `as_array?`, `as_hash?`) + `array?`/`hash?` predicates + the `ValueRaw` union|The actual type definitions — everything else follows from here                                                                                                                                                                                                                                                          |
-|`builtins/array.cr`|9                                                                                                                |All reduce to `Indexable`/`Enumerable`-style ops (`.size`, `.empty?`, `.push`, `.pop`, `.any?`, `.map`, `.each`) — expected to need **no call-site changes**                                                                                                                                                             |
-|`builtins/hash.cr` |7                                                                                                                |Same — `.size`, `.empty?`, `.keys`, `.values`, `.has_key?`, `.each`                                                                                                                                                                                                                                                      |
-|`vm.cr`            |11                                                                                                               |`exec_get_index`/`exec_set_index` (2), `values_equal?`'s array/hash cases (2), `arith_add`'s array `+` (1, genuine new-array construction — needs `LabeledArray.new(...)` instead of a bare literal), `exec_shl`'s array `<<` (1, **same write-back gap as `SetIndex`, same fix**), `exec_builtin`'s `.size` fallback (1)|
-|`interpreter.cr`   |0 direct, 2 predicate                                                                                            |Unaffected beyond the predicate implementation itself                                                                                                                                                                                                                                                                    |
-|specs              |~32 across 7 files                                                                                               |Mostly read-only assertions (`.size`, `[]`, `.map(&.as_int)`) — expected to keep working unchanged                                                                                                                                                                                                                       |
+Area               |Sites                                                                                                            |Impact                                                                                                                                                                                                                                                                                                                   
+-------------------|-----------------------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+`value.cr`         |4 accessors (`as_array`, `as_hash`, `as_array?`, `as_hash?`) + `array?`/`hash?` predicates + the `ValueRaw` union|The actual type definitions — everything else follows from here                                                                                                                                                                                                                                                          
+`builtins/array.cr`|9                                                                                                                |All reduce to `Indexable`/`Enumerable`-style ops (`.size`, `.empty?`, `.push`, `.pop`, `.any?`, `.map`, `.each`) — expected to need **no call-site changes**                                                                                                                                                             
+`builtins/hash.cr` |7                                                                                                                |Same — `.size`, `.empty?`, `.keys`, `.values`, `.has_key?`, `.each`                                                                                                                                                                                                                                                      
+`vm.cr`            |11                                                                                                               |`exec_get_index`/`exec_set_index` (2), `values_equal?`'s array/hash cases (2), `arith_add`'s array `+` (1, genuine new-array construction — needs `LabeledArray.new(...)` instead of a bare literal), `exec_shl`'s array `<<` (1, **same write-back gap as `SetIndex`, same fix**), `exec_builtin`'s `.size` fallback (1)
+`interpreter.cr`   |0 direct, 2 predicate                                                                                            |Unaffected beyond the predicate implementation itself                                                                                                                                                                                                                                                                    
+specs              |~32 across 7 files                                                                                               |Mostly read-only assertions (`.size`, `[]`, `.map(&.as_int)`) — expected to keep working unchanged                                                                                                                                                                                                                       
 
 Smaller than initially estimated: most of the edit surface is
 `value.cr` plus a handful of direct-construction sites in `vm.cr`, not "most
@@ -719,6 +719,35 @@ file, an internal-to-internal flow are all `None` and none of them
 should prompt), with per-`(RiskTag, Sensitivity)` override rows only
 where the action differs from that default. Most tags won't need a row
 for every sensitivity level in practice.
+
+### Exceptions by origin and subject (decided)
+
+The table above is keyed on `(Authority, Sensitivity)`, so it can say
+"High data must not reach `Net`" but not "this API key may reach
+`api.stripe.com` and nowhere else". A credential reaching its own
+server is the normal case, so the table alone forces a choice between
+rejecting it everywhere and allowing it to every granted host.
+
+Considered matching the sink's subject alone. Rejected: "High may reach
+api.stripe.com" admits every High credential, not just Stripe's. A
+rule must be able to name the data's origin as well.
+
+Decided: two layers. Rules without patterns are the base, one per pair,
+and still cover every pair. Rules with an `origin` pattern, a `subject`
+pattern or both are exceptions that override their pair's base rule,
+ranked by an explicit `priority` with a tie raising H003, as tied
+sensitivity patterns do. An exception never covers a pair. Patterns
+reuse `SensitivityPattern`'s exact and regex matching; there is no
+suffix mode, since a regex covers one and a rule guarding data is no
+worse for spelling out its hosts.
+
+The check moved from the VM, which runs before the call and can't see
+the subject, to `Broker#authorize`, which can; the verb passes the
+labels of what actually reaches each subject, so `fetch` judges each
+redirect hop by its own host and only the headers that survive the
+redirect. Tags are still judged one by one with the worst deciding,
+which keeps the property declassification depends on: an exception
+grants one origin's data, never what it was mixed with.
 
 ### Pattern matching for sensitivity lookup (decided)
 

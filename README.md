@@ -309,9 +309,20 @@ policy = Adjutant::RiskFlowPolicy.from_json(<<-JSON
 )
 ```
 
+A rule may also name where the data came from (`origin`, with a `kind`) and where it is going (`subject`, as Legate names it: a path, or `scheme://host:port`), each by `exact` match or `regex`. Such a rule is an exception: it overrides the base rule for its pair, needs a `priority` to rank it against other exceptions, and never counts toward covering a pair. This lets a credential reach its own server and nowhere else:
+
+```json
+{ "authority": "Net", "sensitivity": "High", "action": "Reject" },
+{ "authority": "Net", "sensitivity": "High", "action": "Allow", "priority": 10,
+  "origin": { "kind": "Env", "pattern": "STRIPE_KEY" },
+  "subject": { "pattern": "https://api.stripe.com:443" } }
+```
+
+Each origin a value carries is judged separately and the worst decides, so the key concatenated with another secret is still refused at `api.stripe.com`.
+
 ### Handling an Ask — the interactivity is yours to design
 
-`on_risk_flow_decision` is called synchronously with a `RiskFlowDecisionRequest` (the call name, its `RiskProfile`, and every `RiskFlowMatch` — the specific rule and tainted provenance that triggered the decision, sorted worst-first) whenever policy resolves to `Ask`. Adjutant never generates any end-user-facing text itself — an integration may need the prompt in any language, any format, any UI — it only supplies the structured data. Building the actual prompt (terminal, chat UI, whatever) is entirely up to you:
+`on_risk_flow_decision` is called synchronously with a `RiskFlowDecisionRequest` (the call name, its `RiskProfile`, and every `RiskFlowMatch` — the specific rule and tainted provenance that triggered the decision, sorted worst-first) whenever policy resolves to `Ask`; its `subject` says where the data is going, when the call has one. Adjutant never generates any end-user-facing text itself — an integration may need the prompt in any language, any format, any UI — it only supplies the structured data. Building the actual prompt (terminal, chat UI, whatever) is entirely up to you:
 
 ```crystal
 on_risk_flow_decision: ->(req : Adjutant::RiskFlowDecisionRequest) {
@@ -326,7 +337,7 @@ A rejected call (from a matched `Reject` rule, or an `Ask` your callback answere
 
 ### Current limitations
 
-Risk flow tracks explicit data flow only (assignment, arithmetic, string/array/hash construction) — not implicit flow through control structure (see [`research/IFC_DESIGN.md`](./research/IFC_DESIGN.md) for why this scope was chosen deliberately). There's no approval cache yet, so an `Ask` for the same origin repeats every time it's reached within one script run.
+Risk flow tracks explicit data flow only (assignment, arithmetic, string/array/hash construction) — not implicit flow through control structure (see [`research/IFC_DESIGN.md`](./research/IFC_DESIGN.md) for why this scope was chosen deliberately). There's no approval cache yet, so an `Ask` for the same origin repeats every time it's reached within one script run. A host's own functions are checked before they run, with no subject, so an exception naming a subject applies only to Legate's verbs.
 
 ## Legate
 
