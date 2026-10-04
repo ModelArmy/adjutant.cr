@@ -647,6 +647,27 @@ section).
   R043). Declaring each verb's arity would make extras raise R046 like
   the Legate classes' methods, which do declare theirs.
 
+- **An operating-system failure inside a Legate verb surfaces as
+  N001.** Ten verbs (`append`, `bytes`, `cp`, `grep`, `lines`, `mkdir`,
+  `mv`, `records`, `rm`, `write`) call Crystal's `File`, `FileUtils` or
+  `Dir` directly, and a refusal from the operating system (a file
+  where a directory should be, permission denied, a full disk) falls
+  through to `VM#call_native`'s catch-all. The script gets an N001
+  that blames the host, raised as an `Adjutant::RuntimeError` that
+  `rescue Legate::Error` misses. Ruby raises a `SystemCallError`
+  subclass (`Errno::ENOTDIR`, `Errno::EACCES`). Confirmed by a model
+  for `cp`: `Legate.cp!(path, Legate::Path.new(path) / ".bak")`
+  reached `FileUtils.mkdir_p` on the source file, in `copy_file`
+  (`cp.cr`); predicted for the other nine. LEGATE.md §9.1 has no class
+  for it, so the design comes first. A new recoverable class, the
+  filesystem's counterpart to `Legate::Transport`, with the errno name
+  in its message, keeps one rule: the operating system refused.
+  Mapping `ENOTDIR` and `EISDIR` onto `Legate::Conflict` reuses a class
+  but splits the rule by errno. Either way the mapping belongs in one
+  place at the verb boundary, not in each verb. `Legate::IOError` is
+  the wrong name: Ruby's `IOError` means a stream used wrongly (closed,
+  or not open for writing), not a refusal from the operating system.
+
 - **A script can't take over a body-less redirect.** With
   `redirects: 0`, a redirect raises `Legate::Transport`; only a
   request with a body gets `Legate::Redirect`, which carries `status`
