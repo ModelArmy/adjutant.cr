@@ -232,6 +232,10 @@ module Adjutant
       nil
     end
 
+    def check_flow_at(authority : Authority, subject : String,
+                      labels : Array(RiskFlowLabel)? = nil) : Nil
+    end
+
     # No-op raise — a real diagnostic needs a VM (builtin_class_by_name,
     # current_frame, the ErrorCatalog-backed error object), none of
     # which exists in this direct-NativeCallable harness. Raises a

@@ -318,8 +318,11 @@ module Adjutant
             Value.string(args.first.as_string, RiskFlowLabel.of(ProvenanceKind::UserInput, "cli-arg", Sensitivity::Elevated))
           end
 
+          # `records` validates its required `format:` before
+          # authorizing, so the call must be otherwise valid.
+          format = verb == "records" ? ", format: :jsonl" : ""
           expect_raises(RuntimeError, /risk flow policy rejected/) do
-            interp.eval(%(Legate.#{verb}(tainted_path(#{file.inspect}))))
+            interp.eval(%(Legate.#{verb}(tainted_path(#{file.inspect})#{format})))
           end
         end
       end

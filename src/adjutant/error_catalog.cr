@@ -743,10 +743,11 @@ module Adjutant
       "H003" => Entry.new(
         code: "H003",
         summary: "{count} policy rules tie at priority {priority} for {target}",
-        why: "Sensitivity patterns are resolved by priority, and a tie " \
-             "leaves no defined answer. Adjutant refuses to guess rather " \
-             "than silently pick one, since which rule wins would decide " \
-             "how sensitive the data is treated as being.",
+        why: "Sensitivity patterns and risk-flow exceptions are resolved " \
+             "by priority, and a tie leaves no defined answer. Adjutant " \
+             "refuses to guess rather than silently pick one, since which " \
+             "rule wins would decide how sensitive the data is treated as " \
+             "being, or where it may go.",
         help: "Give the intended rule a higher `priority`, or remove the " \
               "duplicate."
       ),

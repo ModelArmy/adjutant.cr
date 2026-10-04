@@ -1669,7 +1669,7 @@ module Adjutant
       raise_arity_error(given, native.arity.to_s, name, filename, line) unless native.arity.accepts?(given)
       check_unknown_native_keywords!(kwargs, native.kwarg_names, name, filename, line)
       check_risk_flow(native, args, kwargs, name, filename, line)
-      NativeFunctionCall.new(self, native, filename, line, name, kwargs).call(args, blk)
+      NativeFunctionCall.new(self, native, filename, line, name, kwargs, args).call(args, blk)
     rescue ex : BlockBreakSignal
       # A `break` in the block this call received ends the call with
       # the break's value, as in Ruby.
@@ -1700,12 +1700,15 @@ module Adjutant
     end
 
     # The automatic risk-flow check: each labelled argument against
-    # each authority the callable is a sink for. A no-op for callables
-    # with no authorities. Keyed on authorities, not the RiskProfile,
-    # so describing an effect never changes enforcement.
+    # each authority the callable is a sink for, with the subject
+    # unknown. A no-op for callables with no authorities, and for
+    # those that check at each subject instead
+    # (`NativeCallable#checks_flow_at_subject?`). Keyed on
+    # authorities, not the RiskProfile, so describing an effect never
+    # changes enforcement.
     private def check_risk_flow(native : NativeCallable, args : Array(Value), kwargs : Hash(String, Value)?,
                                 name : String, filename : String, line : Int32) : Nil
-      return if native.authorities.empty?
+      return if native.authorities.empty? || native.checks_flow_at_subject?
       kwarg_values = kwargs.try(&.values)
       labeled_args = args.any?(&.label)
       labeled_kwargs = kwarg_values.try(&.any?(&.label)) || false
@@ -1718,7 +1721,7 @@ module Adjutant
           label = arg.label
           next unless label
           label.tags.each do |provenance_tag|
-            action, rule = @risk_flow_policy.action_for(authority, provenance_tag.sensitivity)
+            action, rule = @risk_flow_policy.action_for(authority, provenance_tag, nil)
             next if action.allow?
             matches << RiskFlowMatch.new(action, rule, provenance_tag)
           end
@@ -1727,6 +1730,23 @@ module Adjutant
       return if matches.empty?
 
       resolve_risk_flow_matches(matches, name, native.risk, native.authorities, filename, line)
+    end
+
+    # The check behind `NativeCallContext#check_flow_at`: each tag in
+    # `labels` reaching `subject` with `authority`.
+    def check_flow_at(labels : Array(RiskFlowLabel), authority : Authority, subject : String, name : String,
+                      risk : RiskProfile, filename : String, line : Int32) : Nil
+      matches = [] of RiskFlowMatch
+      labels.each do |label|
+        label.tags.each do |provenance_tag|
+          action, rule = @risk_flow_policy.action_for(authority, provenance_tag, subject)
+          next if action.allow?
+          matches << RiskFlowMatch.new(action, rule, provenance_tag)
+        end
+      end
+      return if matches.empty?
+
+      resolve_risk_flow_matches(matches, name, risk, Set{authority}, filename, line, subject)
     end
 
     # The explicit risk-flow check behind
@@ -1743,13 +1763,14 @@ module Adjutant
 
       label = RiskFlowLabel.of(kind, origin, resolved_sensitivity)
 
-      action, rule = @risk_flow_policy.action_for(authority, resolved_sensitivity)
+      # The subject's own data reaching the subject itself.
+      provenance_tag = ProvenanceTag.new(kind, origin, resolved_sensitivity)
+      action, rule = @risk_flow_policy.action_for(authority, provenance_tag, origin)
       return label if action.allow?
 
-      provenance_tag = ProvenanceTag.new(kind, origin, resolved_sensitivity)
       matches = [RiskFlowMatch.new(action, rule, provenance_tag)]
       # Returns only if allowed; otherwise raises.
-      resolve_risk_flow_matches(matches, name, risk, Set{authority}, filename, line)
+      resolve_risk_flow_matches(matches, name, risk, Set{authority}, filename, line, origin)
       label
     end
 
@@ -1758,11 +1779,11 @@ module Adjutant
     # host's answer to an Ask). Returns if allowed.
     private def resolve_risk_flow_matches(matches : Array(RiskFlowMatch), name : String, risk : RiskProfile,
                                           authorities : Set(Authority),
-                                          filename : String, line : Int32) : Nil
+                                          filename : String, line : Int32, subject : String? = nil) : Nil
       # Reject before Ask, then High before Elevated sensitivity.
       matches = matches.sort_by { |match| {-match.action.value, -match.tag.sensitivity.value} }
 
-      request = RiskFlowDecisionRequest.new(name, risk, authorities, matches, filename, line)
+      request = RiskFlowDecisionRequest.new(name, risk, authorities, matches, filename, line, subject)
 
       worst_action = matches.first.action
       if worst_action.reject?

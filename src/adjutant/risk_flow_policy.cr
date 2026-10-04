@@ -2,6 +2,7 @@ require "json"
 require "./authority"
 require "./risk_profile"
 require "./diagnostic"
+require "./risk_flow_label"
 
 module Adjutant
   # What a matched risk-flow rule does with a call:
@@ -17,10 +18,19 @@ module Adjutant
     Reject
   end
 
-  # How `SensitivityPattern#pattern` is matched.
+  # How a policy pattern is matched: `SensitivityPattern`'s, and a
+  # risk-flow exception's origin and subject.
   enum PatternType
     Exact
     Regex
+
+    # Whether `value` matches `pattern` read as this type.
+    def matches?(pattern : String, value : String) : Bool
+      case self
+      in .exact? then pattern == value
+      in .regex? then ::Regex.new(pattern).matches?(value)
+      end
+    end
   end
 
   # One rule assigning a sensitivity to subjects of a kind whose
@@ -42,10 +52,45 @@ module Adjutant
     end
 
     def matches?(origin : String) : Bool
-      case pattern_type
-      in .exact? then pattern == origin
-      in .regex? then Regex.new(pattern).matches?(origin)
-      end
+      pattern_type.matches?(pattern, origin)
+    end
+  end
+
+  # Where data must come from for a risk-flow exception to apply: an
+  # origin of `kind` matching `pattern`, such as the environment
+  # variable `STRIPE_KEY`.
+  struct RiskFlowOrigin
+    include JSON::Serializable
+
+    getter kind : ProvenanceKind
+    getter pattern_type : PatternType = PatternType::Exact
+    getter pattern : String
+
+    def initialize(@kind : ProvenanceKind, @pattern : String, @pattern_type : PatternType = PatternType::Exact)
+    end
+
+    def matches?(tag : ProvenanceTag) : Bool
+      tag.kind == kind && pattern_type.matches?(pattern, tag.origin)
+    end
+  end
+
+  # Where data must be going for a risk-flow exception to apply: the
+  # subject a call exercises its authority on, as `Broker#authorize`
+  # names it, such as `https://api.stripe.com:443` or a path.
+  struct RiskFlowSubject
+    include JSON::Serializable
+
+    getter pattern_type : PatternType = PatternType::Exact
+    getter pattern : String
+
+    def initialize(@pattern : String, @pattern_type : PatternType = PatternType::Exact)
+    end
+
+    # False for an unknown subject: an exception naming where data
+    # goes never applies where that can't be told.
+    def matches?(subject : String?) : Bool
+      return false unless subject
+      pattern_type.matches?(pattern, subject)
     end
   end
 
@@ -53,14 +98,48 @@ module Adjutant
   # `authority` to an action. `Sensitivity::None` always allows, so
   # rules only cover Elevated and High. Keyed on Authority, not
   # Effect: the question is what the call may do.
+  #
+  # A rule with neither `origin` nor `subject` is a base rule: one per
+  # pair, covering it. A rule with either is an exception, which
+  # overrides its pair's base rule for data from `origin` reaching
+  # `subject`, and needs a `priority` to rank it against other
+  # exceptions; it never covers a pair.
+  #
+  #   RiskFlowRule.new(Authority::Net, Sensitivity::High, RiskFlowAction::Allow,
+  #     origin: RiskFlowOrigin.new(ProvenanceKind::Env, "STRIPE_KEY"),
+  #     subject: RiskFlowSubject.new("https://api.stripe.com:443"), priority: 10)
   struct RiskFlowRule
     include JSON::Serializable
 
     getter authority : Authority
     getter sensitivity : Sensitivity
     getter action : RiskFlowAction
+    getter origin : RiskFlowOrigin? = nil
+    getter subject : RiskFlowSubject? = nil
+    getter priority : Int32? = nil
 
-    def initialize(@authority : Authority, @sensitivity : Sensitivity, @action : RiskFlowAction)
+    def initialize(@authority : Authority, @sensitivity : Sensitivity, @action : RiskFlowAction,
+                   @origin : RiskFlowOrigin? = nil, @subject : RiskFlowSubject? = nil,
+                   @priority : Int32? = nil)
+    end
+
+    def exception? : Bool
+      !origin.nil? || !subject.nil?
+    end
+
+    # Whether this rule governs `tag` reaching `subject` under
+    # `authority`. Every pattern given must match.
+    def applies?(authority : Authority, tag : ProvenanceTag, subject : String?) : Bool
+      return false unless authority == @authority && tag.sensitivity == sensitivity
+      @origin.try { |origin| return false unless origin.matches?(tag) }
+      @subject.try { |pattern| return false unless pattern.matches?(subject) }
+      true
+    end
+
+    def to_s(io : IO) : Nil
+      io << authority << '/' << sensitivity
+      @origin.try { |origin| io << " from " << origin.kind.to_s.downcase << ':' << origin.pattern }
+      @subject.try { |pattern| io << " to " << pattern.pattern }
     end
   end
 
@@ -142,22 +221,50 @@ module Adjutant
       end
     end
 
-    # Raises InvalidRiskFlowPolicyError for `default: Allow`, or for
-    # pairs neither a rule nor a default covers, naming every one.
+    # Raises InvalidRiskFlowPolicyError for `default: Allow`, for an
+    # exception without a priority or a base rule with one, for two
+    # base rules on one pair, or for pairs neither a base rule nor a
+    # default covers, naming every one.
     private def validate! : Nil
       return if @reject_all_flows
       if @default_action.try(&.allow?)
         raise InvalidRiskFlowPolicyError.new(
           "a risk-flow policy's default may be Ask or Reject, not Allow; write an Allow rule for each pair that should allow")
       end
+      validate_rules!
       return if @default_action
 
-      covered = @risk_flow_rules.map { |rule| {rule.authority, rule.sensitivity} }.to_set
+      covered = base_rules.map { |rule| {rule.authority, rule.sensitivity} }.to_set
       missing = RiskFlowPolicy.required_pairs.reject { |pair| covered.includes?(pair) }
       return if missing.empty?
       names = missing.map { |authority, sensitivity| "#{authority}/#{sensitivity}" }
       raise InvalidRiskFlowPolicyError.new(
         "a risk-flow policy needs a rule for each of #{names.join(", ")}, or a default (Ask or Reject)")
+    end
+
+    private def validate_rules! : Nil
+      @risk_flow_rules.each do |rule|
+        if rule.exception? && rule.priority.nil?
+          raise InvalidRiskFlowPolicyError.new(
+            "the risk-flow exception #{rule} needs a priority, to rank it against other exceptions")
+        end
+        if !rule.exception? && rule.priority
+          raise InvalidRiskFlowPolicyError.new(
+            "the risk-flow rule #{rule} has a priority but no origin or subject; only exceptions take one")
+        end
+      end
+
+      by_pair = base_rules.group_by { |rule| {rule.authority, rule.sensitivity} }
+      duplicates = by_pair.select { |_, rules| rules.size > 1 }
+      return if duplicates.empty?
+      names = duplicates.keys.map { |authority, sensitivity| "#{authority}/#{sensitivity}" }
+      raise InvalidRiskFlowPolicyError.new(
+        "a risk-flow policy has more than one rule without an origin or subject for #{names.join(", ")}; " \
+        "give the narrower one an origin or subject and a priority")
+    end
+
+    private def base_rules : Array(RiskFlowRule)
+      @risk_flow_rules.reject(&.exception?)
     end
 
     # A policy that rejects every flow of sensitive data, including
@@ -190,21 +297,50 @@ module Adjutant
       top.first.sensitivity
     end
 
-    # The action for `sensitivity` reaching a sink with `authority`,
-    # with the rule that decided it (nil for a default):
+    # The action for `sensitivity` reaching a sink with `authority`
+    # from no particular origin to no particular subject, with the
+    # rule that decided it (nil for a default):
     #
     #   1. None sensitivity: Allow, always.
     #   2. `reject_all_flows`: Reject.
-    #   3. A matching rule: its action.
-    #   4. Otherwise Allow: an authority with no rules is not governed
-    #      by the policy.
+    #   3. The pair's base rule: its action.
+    #   4. Otherwise the default, or Reject.
     def action_for(authority : Authority, sensitivity : Sensitivity) : {RiskFlowAction, RiskFlowRule?}
       return {RiskFlowAction::Allow, nil} if sensitivity.none?
       return {RiskFlowAction::Reject, nil} if reject_all_flows?
-      matched = risk_flow_rules.find { |rule| rule.authority == authority && rule.sensitivity == sensitivity }
+      matched = base_rules.find { |rule| rule.authority == authority && rule.sensitivity == sensitivity }
       # A valid policy covers every pair, so the last fallback is
       # unreachable; it fails closed all the same.
       {matched.try(&.action) || @default_action || RiskFlowAction::Reject, matched}
+    end
+
+    # The action for `tag`'s data reaching `subject` (nil when unknown)
+    # with `authority`: the highest-priority exception that applies,
+    # or else the base action as above. Raises
+    # AmbiguousRiskFlowPolicyError when exceptions tie at the top
+    # priority.
+    def action_for(authority : Authority, tag : ProvenanceTag, subject : String?) : {RiskFlowAction, RiskFlowRule?}
+      return {RiskFlowAction::Allow, nil} if tag.sensitivity.none?
+      return {RiskFlowAction::Reject, nil} if reject_all_flows?
+
+      exceptions = risk_flow_rules.select { |rule| rule.exception? && rule.applies?(authority, tag, subject) }
+      return action_for(authority, tag.sensitivity) if exceptions.empty?
+
+      top_priority = exceptions.max_of { |rule| rule.priority || 0 }
+      top = exceptions.select { |rule| rule.priority == top_priority }
+      if top.size > 1
+        raise AmbiguousRiskFlowPolicyError.new(
+          Diagnostic.new(
+            code: "H003",
+            data: {
+              "count"    => top.size.to_s,
+              "priority" => top_priority.to_s,
+              "target"   => "#{authority} data from #{tag} to #{subject || "an unknown subject"}",
+            }
+          )
+        )
+      end
+      {top.first.action, top.first}
     end
   end
 end

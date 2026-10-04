@@ -29,6 +29,8 @@ module Adjutant
             legate, interp, "log",
             RiskProfile.new(effects: Set{Effect::ExternalOutput}),
             authorities: Set{Authority::Log},
+            # The host's log has no subject to check at.
+            checks_flow_at_subject: false,
           ) do |args, _blk, ncc|
             message_val = args[1]?
             if message_val.nil?

@@ -122,9 +122,11 @@ module Adjutant
     # `define_native_method`.
     def define_native_singleton_method(sym_id : Int32, risk : RiskProfile, kwarg_names : Set(String) = Set(String).new,
                                        authorities : Set(Authority) = Set(Authority).new, arity : ArityLike = Arity.any,
+                                       checks_flow_at_subject : Bool = false,
                                        &block : Array(Value), ScriptProc?, NativeCallContext -> Value) : Nil
       func = NativeFunc.new { |args, blk, ncc| block.call(args, blk, ncc) }
-      @native_singleton_methods[sym_id] = NativeCallable.new(func, risk, kwarg_names, authorities, Arity.from(arity))
+      @native_singleton_methods[sym_id] = NativeCallable.new(func, risk, kwarg_names, authorities, Arity.from(arity),
+        checks_flow_at_subject)
     end
 
     # Finds a native singleton method: this class's own, then its

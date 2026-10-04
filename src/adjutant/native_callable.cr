@@ -27,10 +27,18 @@ module Adjutant
     # excluded; `VM#call_native` raises R046 for any other count.
     getter arity : Arity
 
+    # Whether the call checks its labelled arguments itself, at each
+    # subject it authorizes (`NativeCallContext#check_flow_at`), where
+    # a risk-flow exception can see where the data goes. The VM then
+    # skips its own check. Legate's verbs do; a host's functions,
+    # which name no subject, don't.
+    getter? checks_flow_at_subject : Bool
+
     def initialize(@func : NativeFunc, @risk : RiskProfile = RiskProfile.none,
                    @kwarg_names : Set(String) = Set(String).new,
                    @authorities : Set(Authority) = Set(Authority).new,
-                   @arity : Arity = Arity.any)
+                   @arity : Arity = Arity.any,
+                   @checks_flow_at_subject : Bool = false)
     end
 
     def call(args : Array(Value), blk : ScriptProc?, ctx : NativeCallContext) : Value

@@ -48,19 +48,27 @@ module Adjutant
       # `RubyClass#define_native_singleton_method` does. When `risk`
       # touches the filesystem, an operating-system failure inside the
       # verb raises `Legate::FilesystemError` (`FilesystemErrors`).
+      #
+      # A verb checks its labelled arguments at each subject it
+      # authorizes, so it must authorize every authority it declares.
+      # One that authorizes none, as `Legate.log` doesn't, passes
+      # `checks_flow_at_subject: false` and keeps the VM's check.
       def self.define_verb(legate : RubyClass, interp : Interpreter, name : String, risk : RiskProfile,
                            kwarg_names : Set(String) = Set(String).new,
                            authorities : Set(Authority) = Set(Authority).new, arity : ArityLike = Arity.any,
+                           checks_flow_at_subject : Bool = true,
                            &block : Array(Value), ScriptProc?, NativeCallContext -> Value) : Nil
         sym_id = interp.symbols.intern(name).value
         unless risk.effects.intersects?(FILE_EFFECTS)
-          legate.define_native_singleton_method(sym_id, risk, kwarg_names, authorities, arity, &block)
+          legate.define_native_singleton_method(sym_id, risk, kwarg_names, authorities, arity,
+            checks_flow_at_subject, &block)
           return
         end
 
         filesystem = fetch(legate, interp, "FilesystemError")
         verb = "Legate.#{name}"
-        legate.define_native_singleton_method(sym_id, risk, kwarg_names, authorities, arity) do |args, blk, ncc|
+        legate.define_native_singleton_method(sym_id, risk, kwarg_names, authorities, arity,
+          checks_flow_at_subject) do |args, blk, ncc|
           FilesystemErrors.new(filesystem, ncc, verb).guard { block.call(args, blk, ncc) }
         end
       end

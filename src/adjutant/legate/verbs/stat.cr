@@ -14,11 +14,11 @@ module Adjutant
         def self.bootstrap(interp : Interpreter, legate : RubyClass, broker : Broker) : Nil
           stat_cls = Helpers.fetch(legate, interp, "Stat")
 
-          # Both risk-flow checks apply: `authorities:` makes
-          # `VM#check_risk_flow` check an argument that arrives
-          # labelled, and `authorize_read` calls `declare_sensitivity`
-          # on the path's own text, labelled or not. `risk:` only
-          # feeds the static risk walk.
+          # Both risk-flow checks apply, in `authorize_read`:
+          # `authorities:` makes it check an argument that arrives
+          # labelled, and it calls `declare_sensitivity` on the path's
+          # own text, labelled or not. `risk:` only feeds the static
+          # risk walk.
           Helpers.define_verb(
             legate, interp, "stat",
             RiskProfile.new(effects: Set{Effect::ReadsFiles}),

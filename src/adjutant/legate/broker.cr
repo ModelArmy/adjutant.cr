@@ -196,11 +196,11 @@ module Adjutant
       # the net rules. Static only; `Legate.fetch` checks the resolved
       # addresses itself (§8.2). The audit subject and the sensitivity
       # origin are `scheme://host:port`, so a policy pattern can tell
-      # ports apart.
+      # ports apart. `flowing` is as for `Broker#authorize`.
       def authorize_net(scheme : String, host : String, port : Int32, method : String,
-                        ncc : NativeCallContext) : RiskFlowLabel?
+                        ncc : NativeCallContext, flowing : Array(RiskFlowLabel)? = nil) : RiskFlowLabel?
         subject = "#{scheme}://#{host}:#{port}"
-        @core.authorize(self, Authority::Net, "net", subject, ProvenanceKind::Host, ncc) do
+        @core.authorize(self, Authority::Net, "net", subject, ProvenanceKind::Host, ncc, flowing) do
           @grants.check_net(scheme, host, port, method)
         end
       end

@@ -32,9 +32,9 @@ module Adjutant
             legate, interp, "bytes",
             RiskProfile.new(effects: Set{Effect::ReadsFiles}),
             KWARG_NAMES,
-            # A Read sink, as `Legate.read` is, so `VM#check_risk_flow`
-            # checks labelled arguments; `declare_sensitivity` labels
-            # the path itself.
+            # A Read sink, as `Legate.read` is, so `authorize_read`
+            # checks labelled arguments at the path, then labels the
+            # path itself.
             authorities: Set{Authority::Read},
           ) do |args, _blk, ncc|
             # `chunk:` is validated before authorizing.

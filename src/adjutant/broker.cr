@@ -16,10 +16,12 @@ module Adjutant
   #      knows which of its predicates applies. A denial raises the
   #      unrescuable `FatalSignal(:denied)`, so a script can't swallow
   #      a denied grant.
-  #   3. The risk-flow policy, through `ncc.declare_sensitivity`, which
-  #      raises the rescuable RiskFlowRejectedError itself; this only
-  #      records it and re-raises. The label it returns is passed back
-  #      for the caller to tag the data it returns.
+  #   3. The risk-flow policy, through `ncc.check_flow_at` for the data
+  #      reaching the subject, then `ncc.declare_sensitivity` for the
+  #      subject's own. Each raises the rescuable RiskFlowRejectedError
+  #      itself; this only records it and re-raises. The label
+  #      `declare_sensitivity` returns is passed back for the caller to
+  #      tag the data it returns.
   #
   # Each outcome (denied, rejected, allowed) appends one AuditRecord
   # before returning or raising (LEGATE.md §8.7). Byte budgets are
@@ -46,12 +48,16 @@ module Adjutant
       @open_sources = OpenSources.new(limits.max_open_streams)
     end
 
-    # Runs the three checks for one call. `operation` and `subject`
-    # (the verb, the path or host) are descriptive only; `provider`
-    # names the error class a denial raises.
+    # Runs the three checks for one call. `operation` names the verb;
+    # `subject` (the path, or `scheme://host:port`) is where the
+    # risk-flow policy sees the data going; `provider` names the error
+    # class a denial raises. `flowing` holds the labels of the data
+    # sent to `subject`, when that isn't every argument, such as a
+    # redirect hop's surviving headers.
     def authorize(provider : EffectProvider, authority : Authority, operation : String,
                   subject : String, provenance_kind : ProvenanceKind,
-                  ncc : NativeCallContext, & : -> Grants::Decision) : RiskFlowLabel?
+                  ncc : NativeCallContext, flowing : Array(RiskFlowLabel)? = nil,
+                  & : -> Grants::Decision) : RiskFlowLabel?
       @budget.check_wall_clock!
 
       decision = yield
@@ -61,6 +67,7 @@ module Adjutant
       end
 
       label = begin
+        ncc.check_flow_at(authority, subject, flowing)
         ncc.declare_sensitivity(authority, provenance_kind, subject)
       rescue ex : RuntimeError
         @audit_log.append(AuditRecord.new(operation, subject, authority, :rejected, REJECTED_CLASS_NAME))

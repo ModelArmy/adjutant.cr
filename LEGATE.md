@@ -32,7 +32,7 @@ Section                                  |Status      |Notes
 §8.6 diagnostics for removed constructs  |Built       |Every row enforced                                                
 §8.7 audit log                           |Partial     |No bytes, duration or argument detail                             
 §8.8 risk-flow sink enforcement          |Built       |`read` `write` `delete` `net` `log`                               
-§9 exception taxonomy                    |Built       |`grep` raises `Exhausted`, not `TimeoutError`, on the wall clock       
+§9 exception taxonomy                    |Built       |`grep` raises `Exhausted`, not `TimeoutError`, on the wall clock  
 §10 static analyser                      |Not built   |See §10's note                                                    
 §11 surface count                        |Aspirational|Counts the specified surface, not the built one                   
 
@@ -466,12 +466,12 @@ Legate.mv!(from, to) -> Legate::Path
 
 The three partition the target space exactly, and every refusal is a `ConflictError` naming the verb that would have worked — a script that picks wrong is always one word from correct:
 
-Called on         |`rm`                |`rmdir`              |`rmdir!`             
-------------------|--------------------|---------------------|---------------------
-a file            |removes it, `true`  |`ConflictError` → `rm`    |`ConflictError` → `rm`    
-an empty directory|`ConflictError` → `rmdir`|removes it, `true`   |removes it, `1`      
-a non-empty tree  |`ConflictError` → `rmdir`|`ConflictError` → `rmdir!`|removes it, the count
-nothing           |`false`             |`false`              |`0`                  
+Called on         |`rm`                     |`rmdir`                   |`rmdir!`              
+------------------|-------------------------|--------------------------|----------------------
+a file            |removes it, `true`       |`ConflictError` → `rm`    |`ConflictError` → `rm`
+an empty directory|`ConflictError` → `rmdir`|removes it, `true`        |removes it, `1`       
+a non-empty tree  |`ConflictError` → `rmdir`|`ConflictError` → `rmdir!`|removes it, the count 
+nothing           |`false`                  |`false`                   |`0`                   
 
 `rm` returns a Bool rather than a count: a files-only verb can only ever remove one thing, and `if Legate.rm(p) > 0` is a clumsy spelling of a yes/no. The count survives on `rmdir!`, where "how many" is worth knowing. All three are idempotent on a missing path (§2.3).
 
@@ -781,9 +781,11 @@ Every verb call appends one structured record: timestamp, verb, arguments (paths
 
 ### 8.8 Risk-flow sink enforcement
 
-Every read/write/delete/net verb, and `Legate.log`, checks its own arguments against `RiskFlowPolicy` twice, for two genuinely different questions. The verb's own `authorize_*` call (§8.1–§8.2, `Broker#authorize`) asks whether the SUBJECT itself — the path, host, or env name a call names — is configured as sensitive; a script reading `/etc/shadow` gets asked or refused because that path is sensitive, independent of anything else in the script. Separately, and automatically, every native call whose declared `authorities` intersect a labeled argument's own provenance is checked again: a value carrying a `RiskFlowLabel` from an earlier `Legate.read`/`Legate.fetch`/`Legate.env` call — regardless of what it's now named or which variable holds it — is checked against policy at every SINK it subsequently reaches, not only at its original source. This is what actually prevents a script from reading something sensitive under one name and handing it to another verb under a different one; the first check alone cannot, since by the time the data reaches a second call it may be sitting in an ordinary-looking local variable with no textual trace of where it came from.
+Every read/write/delete/net verb, and `Legate.log`, checks its own arguments against `RiskFlowPolicy` twice, for two genuinely different questions. The verb's own `authorize_*` call (§8.1–§8.2, `Broker#authorize`) asks whether the SUBJECT itself — the path, host, or env name a call names — is configured as sensitive; a script reading `/etc/shadow` gets asked or refused because that path is sensitive, independent of anything else in the script. Separately, the same `authorize_*` call checks the call's labeled arguments against each authority the verb declares, at that subject: a value carrying a `RiskFlowLabel` from an earlier `Legate.read`/`Legate.fetch`/`Legate.env` call — regardless of what it's now named or which variable holds it — is checked against policy at every SINK it subsequently reaches, not only at its original source. This is what actually prevents a script from reading something sensitive under one name and handing it to another verb under a different one; the first check alone cannot, since by the time the data reaches a second call it may be sitting in an ordinary-looking local variable with no textual trace of where it came from.
 
-The read family (`read`/`lines`/`bytes`/`records`/`stat`/`list`/`grep`) declares `Authority::Read`; the write family (`write`/`write!`/`append`/`mkdir`/`cp`/`cp!`) declares `Authority::Write`; the delete family (`rm`/`rmdir`/`rmdir!`) declares `Authority::Delete`; `mv`/`mv!` declare both, matching their own two `authorize_*` calls exactly; `fetch` declares `Authority::Net`; `Legate.log` declares `Authority::Log` (§4.7), the one Authority with no matching `authorize_*` call at all — ambient verbs bypass that whole sequence, so this is the only enforcement `Legate.log` has. `scratch`/`fail`/`env`/`now`/`random` declare no sink authority: none sends data anywhere. `env` does go through `Broker#authorize`, against `Authority::Ambient`, but that names where sensitivity comes from, not where data goes.
+The read family (`read`/`lines`/`bytes`/`records`/`stat`/`list`/`grep`) declares `Authority::Read`; the write family (`write`/`write!`/`append`/`mkdir`/`cp`/`cp!`) declares `Authority::Write`; the delete family (`rm`/`rmdir`/`rmdir!`) declares `Authority::Delete`; `mv`/`mv!` declare both, matching their own two `authorize_*` calls exactly; `fetch` declares `Authority::Net`; `Legate.log` declares `Authority::Log` (§4.7), the one Authority with no matching `authorize_*` call at all — ambient verbs bypass that whole sequence, so this is the only enforcement `Legate.log` has. `scratch`/`fail`/`env`/`now`/`random` declare no sink authority: none sends data anywhere. `env` does go through `Broker#authorize`, against `Authority::Ambient`, but that names where sensitivity comes from, not where data goes. Arguments are checked only at a subject for an authority the verb declares, so `cp`'s source, authorized for `Read`, checks only its own sensitivity.
+
+Because the argument check runs inside `authorize_*`, it sees where the data is going, which is what lets a policy's exceptions name a subject (`RiskFlowRule`'s `origin` and `subject`; README, "Writing a policy"). `fetch` checks at every hop's host: the first hop is sent every argument, and a later one only the URL it was redirected to and the headers that survive the redirect (§8.2), so a key a redirect strips is never refused, and one it carries is never unchecked. Each provenance tag is judged on its own and the worst decides, so a value mixing an excepted origin with another is refused. Two consequences of the check's position: a verb validates its own arguments first, so a malformed call fails as malformed even when its data would also be refused; and `mv`, which authorizes `Delete` and `Write` separately, can ask twice. `Legate.log` has no subject, so its arguments are checked by the VM before the call, as a host's own functions are, and no exception naming a subject applies to it.
 
 ---
 
