@@ -379,7 +379,7 @@ flowchart LR
 
 ## 4. `Legate` — the verb module
 
-Signatures use Ruby keyword-argument syntax. `->` names the return type. **Raises** lists the recoverable exceptions specific to the verb; every verb may additionally raise the fatal tier (§9.2), which is not repeated below.
+Signatures use Ruby keyword-argument syntax. `->` names the return type. **Raises** lists the recoverable exceptions specific to the verb. Every verb may additionally raise the fatal tier (§9.2), and every verb that touches the filesystem `Filesystem` (§9.1); neither is repeated below.
 
 ### 4.1 Reading — grant `read`
 
@@ -393,7 +393,7 @@ Whole-file read. MUST check size before allocating, and MUST bound the read itse
 Legate.stat(path)  -> Legate::Stat | nil
 ```
 Returns `nil` for a non-existent path (§2.3). One call replaces `exist?`, `file?`, `directory?`, `size` and `mtime`, and gives a single consistent snapshot rather than five racing ones.
-**Raises** nothing recoverable.
+**Raises** nothing recoverable of its own.
 
 ```ruby
 Legate.list(pattern, limit: 100_000)  -> Array<Legate::Entry>
@@ -808,6 +808,7 @@ flowchart TB
         MF["Legate::Malformed<br/>bad JSON, CSV, encoding"]
         TO["Legate::Timeout<br/>per-call wall clock"]
         TR["Legate::Transport<br/>DNS, TLS, connection"]
+        FS["Legate::Filesystem<br/>OS refused: permission, full disk"]
         CF["Legate::Conflict<br/>exists, non-empty dir"]
         TL["Legate::TooLarge<br/>per-call cap — message names the streaming verb"]
         TM["Legate::TooMany<br/>per-call cardinality cap"]
@@ -850,16 +851,19 @@ flowchart TB
 
 Caught by an ordinary `rescue => e`. These are expected conditions a script should handle.
 
-Class              |Meaning                                        |Message MUST hint at                         
--------------------|-----------------------------------------------|---------------------------------------------
-`Legate::NotFound` |path or binary absent                          |—                                            
-`Legate::Malformed`|bad JSON, CSV, encoding, or path construction  |—                                            
-`Legate::TooLarge` |per-call byte or memory cap                    |the streaming verb or `each_slice`           
-`Legate::TooMany`  |per-call cardinality cap, or `max_open_streams`|`limit:`, `each_slice`, or finishing a stream
-`Legate::Timeout`  |per-call wall clock                            |—                                            
-`Legate::Transport`|DNS, TLS, connection, redirect loop            |—                                            
-`Legate::Redirect` |redirect on a request that carried a body      |`status`, `location`, and re-issuing it      
-`Legate::Conflict` |destination exists, non-empty directory        |`recursive:`                                 
+Class               |Meaning                                        |Message MUST hint at                         
+--------------------|-----------------------------------------------|---------------------------------------------
+`Legate::NotFound`  |path or binary absent                          |—                                            
+`Legate::Malformed` |bad JSON, CSV, encoding, or path construction  |—                                            
+`Legate::TooLarge`  |per-call byte or memory cap                    |the streaming verb or `each_slice`           
+`Legate::TooMany`   |per-call cardinality cap, or `max_open_streams`|`limit:`, `each_slice`, or finishing a stream
+`Legate::Timeout`   |per-call wall clock                            |—                                            
+`Legate::Transport` |DNS, TLS, connection, redirect loop            |—                                            
+`Legate::Filesystem`|OS refused: permission, full disk, not a dir   |the file standing where a directory should be
+`Legate::Redirect`  |redirect on a request that carried a body      |`status`, `location`, and re-issuing it      
+`Legate::Conflict`  |destination exists, non-empty directory        |`recursive:`                                 
+
+`Filesystem` is the filesystem's counterpart to `Transport`: the policy allowed the call and the operating system refused it. A verb raises `NotFound` or `Conflict` for the failures it foresees, checked before acting, with a message naming the remedy; `Filesystem` is everything else, so a file removed between that check and its use raises `Filesystem`, not `NotFound`. Its message names the verb, the path, the system's reason and errno, as in *"Legate.cp! — out/report.txt is a file, not a directory (ENOTDIR)"*.
 
 A `TooLarge` message MUST read like: *"config.json is 1.4 GB, over the 8 MiB read limit — use `Legate.lines(path)` to stream."* Models reliably read exception messages and unreliably read specifications; this is the cheapest documentation channel available.
 
