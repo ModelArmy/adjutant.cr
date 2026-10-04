@@ -3,19 +3,19 @@ require "../native_call_context"
 
 module Adjutant
   module Legate
-    # Raises `Legate::Filesystem` (LEGATE.md §9.1) for an
+    # Raises `Legate::FilesystemError` (LEGATE.md §9.1) for an
     # operating-system failure no verb foresaw: a file where a directory
     # should be, permission denied, a full disk. Foreseen failures, such
     # as a missing source or an occupied destination, are each verb's
-    # own `NotFound` or `Conflict`, raised before the call that could
-    # fail.
+    # own `NotFoundError` or `ConflictError`, raised before the call
+    # that could fail.
     struct FilesystemErrors
       # `verb` opens every message, as `Legate.cp!` does.
       def initialize(@filesystem : RubyClass, @ncc : NativeCallContext, @verb : String)
       end
 
       # The block's value. An `IO::Error` it raises becomes
-      # `Legate::Filesystem`; `path` names the file when the error
+      # `Legate::FilesystemError`; `path` names the file when the error
       # doesn't, as a read's doesn't.
       def guard(path : String? = nil, &)
         yield

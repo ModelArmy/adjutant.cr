@@ -95,10 +95,10 @@ module Adjutant
                              error_class : String = "RuntimeError") : NoReturn
 
     # Raises `error_class` with a computed `message`, for classes that
-    # `raise_error` cannot name, such as the nested `Legate::Malformed`.
-    # Each `attributes` entry becomes an ivar (key without `@`) that a
-    # script reads through a reader method the class must define;
-    # `Legate::Redirect` is the example.
+    # `raise_error` cannot name, such as the nested
+    # `Legate::MalformedError`. Each `attributes` entry becomes an ivar
+    # (key without `@`) that a script reads through a reader method the
+    # class must define; `Legate::RedirectError` is the example.
     abstract def raise_error_class(message : String, error_class : RubyClass,
                                    attributes : Hash(String, Value)? = nil) : NoReturn
   end

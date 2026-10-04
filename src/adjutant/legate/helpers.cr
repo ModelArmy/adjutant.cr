@@ -47,7 +47,7 @@ module Adjutant
       # Registers the verb `Legate.<name>`, taking the arguments
       # `RubyClass#define_native_singleton_method` does. When `risk`
       # touches the filesystem, an operating-system failure inside the
-      # verb raises `Legate::Filesystem` (`FilesystemErrors`).
+      # verb raises `Legate::FilesystemError` (`FilesystemErrors`).
       def self.define_verb(legate : RubyClass, interp : Interpreter, name : String, risk : RiskProfile,
                            kwarg_names : Set(String) = Set(String).new,
                            authorities : Set(Authority) = Set(Authority).new, arity : ArityLike = Arity.any,
@@ -58,7 +58,7 @@ module Adjutant
           return
         end
 
-        filesystem = fetch(legate, interp, "Filesystem")
+        filesystem = fetch(legate, interp, "FilesystemError")
         verb = "Legate.#{name}"
         legate.define_native_singleton_method(sym_id, risk, kwarg_names, authorities, arity) do |args, blk, ncc|
           FilesystemErrors.new(filesystem, ncc, verb).guard { block.call(args, blk, ncc) }
@@ -196,7 +196,7 @@ module Adjutant
       # write budget as it is written, so a large write can exhaust
       # the budget partway. `method` names the verb in errors.
       def self.write_io_data(io : IO, data_val : Value, ncc : NativeCallContext, broker : Broker,
-                             eof : RubyClass, method : String) : Int64
+                             consumed : RubyClass, method : String) : Int64
         if data_val.string?
           return write_io_piece(io, data_val, ncc, broker, method)
         end
@@ -209,7 +209,7 @@ module Adjutant
 
         if (robj = data_val.as_robject?) && robj.is_a?(StreamObject)
           total = 0_i64
-          Legate::Stream.walk(robj, ncc, eof) { |piece| total += write_io_piece(io, piece, ncc, broker, method) }
+          Legate::Stream.walk(robj, ncc, consumed) { |piece| total += write_io_piece(io, piece, ncc, broker, method) }
           return total
         end
 

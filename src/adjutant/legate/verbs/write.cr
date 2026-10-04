@@ -12,7 +12,7 @@ module Adjutant
       # `Legate.write(path, data) -> Integer` (bytes written) and
       # `Legate.write!` (LEGATE.md §4.3). `write` refuses an existing
       # destination; `write!` replaces a file. Both raise
-      # `Legate::Conflict` for a directory at the path.
+      # `Legate::ConflictError` for a directory at the path.
       #
       # Atomic, as §4.3 requires: a temp file in the same directory
       # (so the rename stays on one filesystem), fsync, rename. A crash
@@ -23,17 +23,17 @@ module Adjutant
       # (`Helpers.write_io_data`).
       module Write
         def self.bootstrap(interp : Interpreter, legate : RubyClass, broker : Broker) : Nil
-          conflict = Helpers.fetch(legate, interp, "Conflict")
-          eof = Helpers.fetch(legate, interp, "EOF")
+          conflict = Helpers.fetch(legate, interp, "ConflictError")
+          consumed = Helpers.fetch(legate, interp, "ConsumedError")
 
-          register(interp, legate, broker, conflict, eof, clobber: false)
-          register(interp, legate, broker, conflict, eof, clobber: true)
+          register(interp, legate, broker, conflict, consumed, clobber: false)
+          register(interp, legate, broker, conflict, consumed, clobber: true)
         end
 
         # One body for both verbs; `clobber` selects the name, the risk
         # profile and the destination rule.
         private def self.register(interp : Interpreter, legate : RubyClass, broker : Broker,
-                                  conflict : RubyClass, eof : RubyClass, clobber : Bool) : Nil
+                                  conflict : RubyClass, consumed : RubyClass, clobber : Bool) : Nil
           name = clobber ? "write!" : "write"
 
           profile = if clobber
@@ -78,7 +78,7 @@ module Adjutant
             bytes_written = 0_i64
             begin
               File.open(temp_path, "wb") do |io|
-                bytes_written = Helpers.write_io_data(io, data_val, ncc, broker, eof, "Legate.#{name}")
+                bytes_written = Helpers.write_io_data(io, data_val, ncc, broker, consumed, "Legate.#{name}")
                 io.flush
                 # §4.3 requires the fsync.
                 io.fsync
@@ -100,7 +100,7 @@ module Adjutant
         # directory. Symlinks aren't followed, so a dangling link at
         # the destination counts as occupied; a link pointing outside
         # the roots is denied earlier by the perimeter. A parent path
-        # component that is a file raises `Legate::Filesystem` from
+        # component that is a file raises `Legate::FilesystemError` from
         # `mkdir_p`.
         private def self.check_destination(raw : String, name : String, clobber : Bool,
                                            ncc : NativeCallContext, conflict : RubyClass) : Nil

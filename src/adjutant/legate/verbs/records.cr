@@ -22,11 +22,11 @@ module Adjutant
         KWARG_NAMES = Set{"format", "headers"}
 
         def self.bootstrap(interp : Interpreter, legate : RubyClass, broker : Broker) : Nil
-          not_found = Helpers.fetch(legate, interp, "NotFound")
-          too_many = Helpers.fetch(legate, interp, "TooMany")
-          malformed = Helpers.fetch(legate, interp, "Malformed")
-          too_large = Helpers.fetch(legate, interp, "TooLarge")
-          filesystem = Helpers.fetch(legate, interp, "Filesystem")
+          not_found = Helpers.fetch(legate, interp, "NotFoundError")
+          too_many = Helpers.fetch(legate, interp, "TooManyError")
+          malformed = Helpers.fetch(legate, interp, "MalformedError")
+          too_large = Helpers.fetch(legate, interp, "TooLargeError")
+          filesystem = Helpers.fetch(legate, interp, "FilesystemError")
           records_cls = Helpers.nest(legate, interp, "Records")
           stream_module = Helpers.fetch(legate, interp, "Stream")
           records_cls.include_module(stream_module)

@@ -163,7 +163,7 @@ module Adjutant
       # response limit never sees the request, and a query string is
       # an exfiltration channel. Checked before the broker call, so
       # an over-long URL is never authorized or audited; raises the
-      # recoverable `Legate::TooLarge`.
+      # recoverable `Legate::TooLargeError`.
       DEFAULT_URL_LIMIT = 2_048_i64 # 2 KiB
 
       # The cap on a streamed response body. `fetch_limit` caps what is
@@ -172,10 +172,10 @@ module Adjutant
       DEFAULT_STREAM_LIMIT = 1_073_741_824_i64 # 1 GiB
 
       # How many streams may be open at once, an addition to §7.
-      # `OpenSources` closes leftovers when the run ends, which bounds
-      # a leak in time but not in count. Recoverable
-      # (`Legate::TooMany`), unlike a per-run budget: it caps what is
-      # held, not what is consumed, and closing a stream frees it.
+      # `OpenSources` closes leftovers when the run ends, which bounds a
+      # leak in time but not in count. Recoverable
+      # (`Legate::TooManyError`), unlike a per-run budget: it caps what
+      # is held, not what is consumed, and closing a stream frees it.
 
       getter read_limit : Int64
       getter fetch_limit : Int64

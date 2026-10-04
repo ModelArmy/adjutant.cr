@@ -15,8 +15,8 @@ module Adjutant
       #
       # Three names rather than a `recursive:` flag, so the bang means
       # "the more destructive form" here as it does on `write!`, `cp!`
-      # and `mv!`. A wrong choice raises `Legate::Conflict` naming the
-      # verb that would work: `rm` on a directory points to `rmdir`,
+      # and `mv!`. A wrong choice raises `Legate::ConflictError` naming
+      # the verb that would work: `rm` on a directory points to `rmdir`,
       # `rmdir` on a file to `rm`, `rmdir` on a non-empty directory to
       # `rmdir!`.
       #
@@ -32,7 +32,7 @@ module Adjutant
       # verb declares its reversibility and severity explicitly.
       module Rm
         def self.bootstrap(interp : Interpreter, legate : RubyClass, broker : Broker) : Nil
-          conflict = Helpers.fetch(legate, interp, "Conflict")
+          conflict = Helpers.fetch(legate, interp, "ConflictError")
 
           register_rm(interp, legate, broker, conflict)
           register_rmdir(interp, legate, broker, conflict)
@@ -145,7 +145,7 @@ module Adjutant
           {raw, label}
         end
 
-        # Raises `Legate::Conflict` for a file given to a directory
+        # Raises `Legate::ConflictError` for a file given to a directory
         # verb, pointing to `rm`.
         private def self.refuse_file(raw : String, info : File::Info, name : String,
                                      ncc : NativeCallContext, conflict : RubyClass) : Nil

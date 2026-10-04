@@ -16,8 +16,8 @@ module Adjutant
       # temp-file rename to protect.
       module Append
         def self.bootstrap(interp : Interpreter, legate : RubyClass, broker : Broker) : Nil
-          conflict = Helpers.fetch(legate, interp, "Conflict")
-          eof = Helpers.fetch(legate, interp, "EOF")
+          conflict = Helpers.fetch(legate, interp, "ConflictError")
+          consumed = Helpers.fetch(legate, interp, "ConsumedError")
 
           # A Write sink; see write.cr.
           Helpers.define_verb(
@@ -33,10 +33,10 @@ module Adjutant
             # creates it.
             broker.authorize_write(raw, ncc, allow_missing: true)
 
-            # A directory at the path raises `Legate::Conflict`. This
-            # follows symlinks, and so does the open below: a dangling
-            # link at the path is written through to its target, which
-            # the perimeter has already checked.
+            # A directory at the path raises `Legate::ConflictError`.
+            # This follows symlinks, and so does the open below: a
+            # dangling link at the path is written through to its
+            # target, which the perimeter has already checked.
             if File.directory?(raw)
               ncc.raise_error_class("#{raw} is a directory; Legate.append can't write file content to it", conflict)
             end
@@ -48,7 +48,7 @@ module Adjutant
             # Mode "a" is `O_APPEND`: every write lands at the current
             # end of file, with no seek race.
             bytes_written = File.open(raw, "a") do |io|
-              Helpers.write_io_data(io, data_val, ncc, broker, eof, "Legate.append")
+              Helpers.write_io_data(io, data_val, ncc, broker, consumed, "Legate.append")
             end
 
             Value.int(bytes_written)

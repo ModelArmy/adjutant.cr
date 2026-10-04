@@ -125,8 +125,8 @@ module Adjutant
         configured + [dir]
       end
 
-      # Raises `too_many` (`Legate::TooMany`, passed in because nested
-      # Legate classes can't be looked up by name) when
+      # Raises `too_many` (`Legate::TooManyError`, passed in because
+      # nested Legate classes can't be looked up by name) when
       # `max_open_streams` are already open. Call before opening the
       # handle, so a refusal leaves nothing to close. Resource
       # accounting for a call already authorized: no grant, no audit
@@ -174,9 +174,9 @@ module Adjutant
         end
       end
 
-      # The `delete` grant (§4.4). Pass `allow_missing` where a
-      # missing path is a result, not an error: `rm` returns 0 for it,
-      # `mv` raises `Legate::NotFound`. Without it, a missing path is a
+      # The `delete` grant (§4.4). Pass `allow_missing` where a missing
+      # path is a result, not an error: `rm` returns 0 for it, `mv`
+      # raises `Legate::NotFoundError`. Without it, a missing path is a
       # fatal denial even inside a granted root.
       def authorize_delete(path : String, ncc : NativeCallContext, allow_missing : Bool = false) : RiskFlowLabel?
         roots = ambient_roots(@grants.delete_roots)

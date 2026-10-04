@@ -32,7 +32,7 @@ module Adjutant
 
       def self.bootstrap(interp : Interpreter, legate : RubyClass) : Nil
         cls = Helpers.nest(legate, interp, "Chunk")
-        malformed = Helpers.fetch(legate, interp, "Malformed")
+        malformed = Helpers.fetch(legate, interp, "MalformedError")
 
         Builtins.define(cls, interp, "size", arity: 0) { |args| Value.int(obj_of(args).bytes.size.to_i64) }
         Builtins.define(cls, interp, "empty?", arity: 0) { |args| Value.bool(obj_of(args).bytes.size == 0) }
