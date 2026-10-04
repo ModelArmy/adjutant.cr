@@ -31,7 +31,7 @@ assert_equal("original content", Legate.read(target))
 # other half of the split, checked here rather than left to the
 # Crystal-level spec, since this file is where a script author reads
 # what the two verbs do differently.
-assert_raise(Legate::Conflict) { Legate.write(target, "clobbered") }
+assert_raise(Legate::ConflictError) { Legate.write(target, "clobbered") }
 assert_equal("original content", Legate.read(target))
 
 # --- no .tmp file is ever left behind, success or failure ---
@@ -58,25 +58,25 @@ Legate.write(log, "start-")
 assert_raise(TypeError) { Legate.append(log, ["a", "b", 42, "d"]) }
 assert_equal("start-ab", Legate.read(log))
 
-# --- Legate::Conflict: mkdir where a FILE already exists ---
+# --- Legate::ConflictError: mkdir where a FILE already exists ---
 
 file_path = WORKSPACE / "just_a_file.txt"
 Legate.write(file_path, "hi")
-assert_raise(Legate::Conflict) { Legate.mkdir(file_path) }
+assert_raise(Legate::ConflictError) { Legate.mkdir(file_path) }
 
-# --- Legate::Conflict: write where a DIRECTORY already exists ---
+# --- Legate::ConflictError: write where a DIRECTORY already exists ---
 
 dir_path = WORKSPACE / "just_a_dir"
 Legate.mkdir(dir_path)
-assert_raise(Legate::Conflict) { Legate.write(dir_path, "hi") }
+assert_raise(Legate::ConflictError) { Legate.write(dir_path, "hi") }
 
-# --- Legate::NotFound: cp from a source that doesn't exist ---
+# --- Legate::NotFoundError: cp from a source that doesn't exist ---
 
-assert_raise(Legate::NotFound) { Legate.cp(WORKSPACE / "does-not-exist.txt", WORKSPACE / "dest.txt") }
+assert_raise(Legate::NotFoundError) { Legate.cp(WORKSPACE / "does-not-exist.txt", WORKSPACE / "dest.txt") }
 
-# --- Legate::Conflict: cp a directory without recursive: true ---
+# --- Legate::ConflictError: cp a directory without recursive: true ---
 #
 # `dir_path` is a real, existing directory (created above) — copying
 # it requires an explicit `recursive: true`, the same "opt in
 # deliberately, not by accident" reasoning cp.cr's own comment gives.
-assert_raise(Legate::Conflict) { Legate.cp(dir_path, WORKSPACE / "dir_copy") }
+assert_raise(Legate::ConflictError) { Legate.cp(dir_path, WORKSPACE / "dir_copy") }

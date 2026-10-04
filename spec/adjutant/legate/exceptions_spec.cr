@@ -31,49 +31,49 @@ module Adjutant
         eval("Legate.class.to_s").as_string.should eq "Class"
       end
 
-      it "Legate::NotFound is reachable via ConstPath and displays its fully-qualified name" do
-        eval("Legate::NotFound.to_s").as_string.should eq "Legate::NotFound"
+      it "Legate::NotFoundError is reachable via ConstPath and displays its fully-qualified name" do
+        eval("Legate::NotFoundError.to_s").as_string.should eq "Legate::NotFoundError"
       end
 
       it "each recoverable class is nested under Legate, not a flat global, and inherits Legate::Error" do
         eval(<<-RUBY).as_string.should eq "ok"
-        [Legate::NotFound, Legate::Malformed, Legate::TooLarge, Legate::TooMany,
-         Legate::Timeout, Legate::Transport, Legate::Filesystem, Legate::Conflict,
-         Legate::EOF, Legate::Redirect].each do |cls|
+        [Legate::NotFoundError, Legate::MalformedError, Legate::TooLargeError, Legate::TooManyError,
+         Legate::TimeoutError, Legate::TransportError, Legate::FilesystemError, Legate::ConflictError,
+         Legate::ConsumedError, Legate::RedirectError].each do |cls|
           raise "\#{cls} does not inherit Legate::Error" unless cls.superclass == Legate::Error
         end
         "ok"
         RUBY
       end
 
-      it "Legate::NotFound is NOT reachable as a bare, unqualified constant — only via Legate::" do
+      it "Legate::NotFoundError is NOT reachable as a bare, unqualified constant — only via Legate::" do
         expect_raises(Exception) do
-          eval("NotFound")
+          eval("NotFoundError")
         end
       end
 
-      it "raise Legate::NotFound, \"msg\" / rescue Legate::NotFound => e round-trips, same as any ordinary user-defined error" do
+      it "raise Legate::NotFoundError, \"msg\" / rescue Legate::NotFoundError => e round-trips, same as any ordinary user-defined error" do
         eval(<<-RUBY).as_string.should eq "config.json missing"
         begin
-          raise Legate::NotFound, "config.json missing"
-        rescue Legate::NotFound => e
+          raise Legate::NotFoundError, "config.json missing"
+        rescue Legate::NotFoundError => e
           e.message
         end
         RUBY
       end
 
-      it "an unrescued Legate::Malformed propagates all the way up, same as any StandardError subclass" do
+      it "an unrescued Legate::MalformedError propagates all the way up, same as any StandardError subclass" do
         expect_raises(Exception, /bad json/) do
           eval(<<-RUBY)
-          raise Legate::Malformed, "bad json"
+          raise Legate::MalformedError, "bad json"
           RUBY
         end
       end
 
-      it "a bare `rescue` (no class filter) catches Legate::TooLarge, since it's StandardError-rooted" do
+      it "a bare `rescue` (no class filter) catches Legate::TooLargeError, since it's StandardError-rooted" do
         eval(<<-RUBY).as_string.should eq "caught"
         begin
-          raise Legate::TooLarge, "too big"
+          raise Legate::TooLargeError, "too big"
         rescue
           "caught"
         end
@@ -83,7 +83,7 @@ module Adjutant
       it "rescue StandardError => e also catches a Legate error, via the real ancestor chain" do
         eval(<<-RUBY).as_string.should eq "caught"
         begin
-          raise Legate::Timeout, "slow"
+          raise Legate::TimeoutError, "slow"
         rescue StandardError => e
           "caught"
         end
@@ -94,8 +94,8 @@ module Adjutant
         expect_raises(Exception, /wrong host/) do
           eval(<<-RUBY)
           begin
-            raise Legate::Transport, "wrong host"
-          rescue Legate::NotFound
+            raise Legate::TransportError, "wrong host"
+          rescue Legate::NotFoundError
             "should not reach here"
           end
           RUBY

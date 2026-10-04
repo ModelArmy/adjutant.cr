@@ -8,18 +8,18 @@ require "assert"
 # in the same syntax a real embedder's script would use.
 FIXTURES = Legate::Path.new(__FILE__).parent / "fixtures"
 
-# --- Legate::TooLarge — Legate.lines' max_line: cap ---
+# --- Legate::TooLargeError — Legate.lines' max_line: cap ---
 #
 # `long_line.txt`'s one line is 71 bytes (see fixtures/long_line.txt);
 # `max_line: 20` makes even an ORDINARY line too long, raising mid-
 # iteration rather than only for pathological gigabyte-long input —
 # proving the cap is a real, reachable limit, not just a theoretical
 # safety valve.
-assert_raise(Legate::TooLarge) { Legate.lines(FIXTURES / "long_line.txt", max_line: 20).to_a }
+assert_raise(Legate::TooLargeError) { Legate.lines(FIXTURES / "long_line.txt", max_line: 20).to_a }
 
-# --- Legate::Malformed — scrub: false on invalid UTF-8 ---
+# --- Legate::MalformedError — scrub: false on invalid UTF-8 ---
 
-assert_raise(Legate::Malformed) { Legate.read(FIXTURES / "invalid_utf8.txt", scrub: false) }
+assert_raise(Legate::MalformedError) { Legate.read(FIXTURES / "invalid_utf8.txt", scrub: false) }
 
 # --- scrub: true (the default) — invalid bytes replaced, not raised ---
 #
@@ -33,16 +33,16 @@ assert_raise(Legate::Malformed) { Legate.read(FIXTURES / "invalid_utf8.txt", scr
 scrubbed = Legate.read(FIXTURES / "invalid_utf8.txt")
 assert_equal("hi\uFFFD\n", scrubbed)
 
-# --- Legate::TooMany — Legate.list's limit: cap ---
+# --- Legate::TooManyError — Legate.list's limit: cap ---
 #
 # `fixtures/many/` has 3 files; `limit: 2` makes even this small,
 # ordinary directory listing exceed the cap.
-assert_raise(Legate::TooMany) { Legate.list("#{FIXTURES}/many/*.txt", limit: 2) }
+assert_raise(Legate::TooManyError) { Legate.list("#{FIXTURES}/many/*.txt", limit: 2) }
 
-# --- Legate::TooMany — Legate.grep's limit: cap, same shape ---
+# --- Legate::TooManyError — Legate.grep's limit: cap, same shape ---
 #
 # Each of the 3 files in fixtures/many/ contains one line ("x"), all
 # three matching the pattern — `limit: 2` exceeds on the 3rd match,
 # proving grep's OWN limit: (independent of list's) is real too, not
 # just inherited/aliased from list's.
-assert_raise(Legate::TooMany) { Legate.grep("x", "#{FIXTURES}/many/*.txt", limit: 2) }
+assert_raise(Legate::TooManyError) { Legate.grep("x", "#{FIXTURES}/many/*.txt", limit: 2) }

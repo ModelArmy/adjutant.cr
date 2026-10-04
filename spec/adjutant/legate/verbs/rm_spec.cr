@@ -47,7 +47,7 @@ module Adjutant
 
     # The §4.4 reversal, from rm's side. The old verb removed an empty
     # directory itself; it now refuses and names the verb that does.
-    it "raises Legate::Conflict on a directory, empty or not, and names rmdir" do
+    it "raises Legate::ConflictError on a directory, empty or not, and names rmdir" do
       with_tmpdir do |dir|
         target = File.join(dir, "sub")
         Dir.mkdir(target)
@@ -56,7 +56,7 @@ module Adjutant
         begin
           Legate.rm(#{(target).inspect})
           "no error"
-        rescue Legate::Conflict => e
+        rescue Legate::ConflictError => e
           e.message
         end
         RUBY
@@ -178,7 +178,7 @@ module Adjutant
       end
     end
 
-    it "raises Legate::Conflict on a non-empty directory and names rmdir!" do
+    it "raises Legate::ConflictError on a non-empty directory and names rmdir!" do
       with_tmpdir do |dir|
         target = File.join(dir, "sub")
         Dir.mkdir(target)
@@ -188,7 +188,7 @@ module Adjutant
         begin
           Legate.rmdir(#{(target).inspect})
           "no error"
-        rescue Legate::Conflict => e
+        rescue Legate::ConflictError => e
           e.message
         end
         RUBY
@@ -197,7 +197,7 @@ module Adjutant
       end
     end
 
-    it "raises Legate::Conflict on a file and names rm" do
+    it "raises Legate::ConflictError on a file and names rm" do
       with_tmpdir do |dir|
         file = File.join(dir, "f.txt")
         File.write(file, "hi")
@@ -206,7 +206,7 @@ module Adjutant
         begin
           Legate.rmdir(#{(file).inspect})
           "no error"
-        rescue Legate::Conflict => e
+        rescue Legate::ConflictError => e
           e.message
         end
         RUBY
@@ -275,7 +275,7 @@ module Adjutant
       end
     end
 
-    it "raises Legate::Conflict on a file and names rm" do
+    it "raises Legate::ConflictError on a file and names rm" do
       with_tmpdir do |dir|
         file = File.join(dir, "f.txt")
         File.write(file, "hi")
@@ -284,7 +284,7 @@ module Adjutant
         begin
           Legate.rmdir!(#{(file).inspect})
           "no error"
-        rescue Legate::Conflict => e
+        rescue Legate::ConflictError => e
           e.message
         end
         RUBY

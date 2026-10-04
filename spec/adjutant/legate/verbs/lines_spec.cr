@@ -54,7 +54,7 @@ module Adjutant
       end
     end
 
-    it "raises Legate::TooLarge mid-iteration when a line exceeds max_line, without buffering the whole file" do
+    it "raises Legate::TooLargeError mid-iteration when a line exceeds max_line, without buffering the whole file" do
       with_tmpdir do |dir|
         file = File.join(dir, "f.txt")
         File.write(file, "short\n#{"y" * 1000}\n")
@@ -63,7 +63,7 @@ module Adjutant
         s = Legate.lines(#{(file).inspect}, max_line: 100)
         begin
           s.to_a
-        rescue Legate::TooLarge => e
+        rescue Legate::TooLargeError => e
           "caught: \#{e.message}"
         end
         RUBY
@@ -71,7 +71,7 @@ module Adjutant
       end
     end
 
-    it "raises Legate::TooLarge for a single line with no newline at all, exceeding max_line" do
+    it "raises Legate::TooLargeError for a single line with no newline at all, exceeding max_line" do
       with_tmpdir do |dir|
         file = File.join(dir, "f.txt")
         File.write(file, "z" * 1000) # no trailing newline
@@ -79,7 +79,7 @@ module Adjutant
         eval = interp.eval(<<-RUBY)
         begin
           Legate.lines(#{(file).inspect}, max_line: 100).to_a
-        rescue Legate::TooLarge => e
+        rescue Legate::TooLargeError => e
           "caught: \#{e.message}"
         end
         RUBY
@@ -98,7 +98,7 @@ module Adjutant
       end
     end
 
-    it "raises Legate::Malformed on invalid UTF-8 when scrub: false" do
+    it "raises Legate::MalformedError on invalid UTF-8 when scrub: false" do
       with_tmpdir do |dir|
         file = File.join(dir, "f.txt")
         raw = ::Bytes[0x68, 0x69, 0xFF, 0x0A]
@@ -108,7 +108,7 @@ module Adjutant
         begin
           Legate.lines(#{(file).inspect}, scrub: false).to_a
           "no error"
-        rescue Legate::Malformed
+        rescue Legate::MalformedError
           "caught"
         end
         RUBY
@@ -116,14 +116,14 @@ module Adjutant
       end
     end
 
-    it "raises Legate::NotFound eagerly, at construction, for a missing path under a granted root" do
+    it "raises Legate::NotFoundError eagerly, at construction, for a missing path under a granted root" do
       with_tmpdir do |dir|
         interp, _ = make_interp(grants: Legate::Grants.new(read_roots: [dir]))
         eval = interp.eval(<<-RUBY)
         begin
           Legate.lines(#{(File.join(dir, "nope.txt")).inspect})
           "no error"
-        rescue Legate::NotFound
+        rescue Legate::NotFoundError
           "caught"
         end
         RUBY
@@ -143,7 +143,7 @@ module Adjutant
       end
     end
 
-    it "raises Legate::EOF on a second full iteration (single-pass, §6.1)" do
+    it "raises Legate::ConsumedError on a second full iteration (single-pass, §6.1)" do
       with_tmpdir do |dir|
         file = File.join(dir, "f.txt")
         File.write(file, "one\ntwo\n")
@@ -154,7 +154,7 @@ module Adjutant
         begin
           s.to_a
           "no error"
-        rescue Legate::EOF
+        rescue Legate::ConsumedError
           "eof"
         end
         RUBY

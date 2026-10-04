@@ -51,7 +51,7 @@ module Adjutant
         end
       end
 
-      it "raises Legate::Malformed on a line that isn't valid JSON" do
+      it "raises Legate::MalformedError on a line that isn't valid JSON" do
         with_tmpdir do |dir|
           file = File.join(dir, "f.jsonl")
           File.write(file, %({"ok":true}\nnot json\n))
@@ -60,7 +60,7 @@ module Adjutant
           begin
             Legate.records(#{(file).inspect}, format: :jsonl).to_a
             "no error"
-          rescue Legate::Malformed
+          rescue Legate::MalformedError
             "caught"
           end
           RUBY
@@ -104,7 +104,7 @@ module Adjutant
         end
       end
 
-      it "raises Legate::Malformed when a row's column count doesn't match the headers" do
+      it "raises Legate::MalformedError when a row's column count doesn't match the headers" do
         with_tmpdir do |dir|
           file = File.join(dir, "f.csv")
           File.write(file, "a,b\n1,2,3\n")
@@ -113,7 +113,7 @@ module Adjutant
           begin
             Legate.records(#{(file).inspect}, format: :csv).to_a
             "no error"
-          rescue Legate::Malformed
+          rescue Legate::MalformedError
             "caught"
           end
           RUBY
@@ -123,7 +123,7 @@ module Adjutant
 
       # An unterminated quoted field would otherwise be held in memory
       # until the file or the read budget ran out.
-      it "raises Legate::TooLarge for a row over the row limit, without reading the rest" do
+      it "raises Legate::TooLargeError for a row over the row limit, without reading the rest" do
         with_tmpdir do |dir|
           file = File.join(dir, "f.csv")
           File.write(file, "a\n\"" + "x" * 3_000_000)
@@ -132,7 +132,7 @@ module Adjutant
           begin
             Legate.records(#{(file).inspect}, format: :csv, headers: false).to_a
             "no error"
-          rescue Legate::TooLarge => e
+          rescue Legate::TooLargeError => e
             e.message
           end
           RUBY
@@ -159,14 +159,14 @@ module Adjutant
       end
     end
 
-    it "raises Legate::NotFound eagerly, at construction, for a missing path under a granted root" do
+    it "raises Legate::NotFoundError eagerly, at construction, for a missing path under a granted root" do
       with_tmpdir do |dir|
         interp, _ = make_interp(grants: Legate::Grants.new(read_roots: [dir]))
         eval = interp.eval(<<-RUBY)
         begin
           Legate.records(#{(File.join(dir, "nope.jsonl")).inspect}, format: :jsonl)
           "no error"
-        rescue Legate::NotFound
+        rescue Legate::NotFoundError
           "caught"
         end
         RUBY
@@ -186,7 +186,7 @@ module Adjutant
       end
     end
 
-    it "raises Legate::EOF on a second full iteration (single-pass, §6.1)" do
+    it "raises Legate::ConsumedError on a second full iteration (single-pass, §6.1)" do
       with_tmpdir do |dir|
         file = File.join(dir, "f.jsonl")
         File.write(file, %({"a":1}\n))
@@ -197,7 +197,7 @@ module Adjutant
         begin
           s.to_a
           "no error"
-        rescue Legate::EOF
+        rescue Legate::ConsumedError
           "eof"
         end
         RUBY

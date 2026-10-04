@@ -18,7 +18,7 @@ module Adjutant
   # calls Broker#authorize_read and, if it doesn't raise, really
   # reads the file off disk and returns its labeled content. It is
   # deliberately NOT the polished verb step 5 will land (no
-  # Legate::TooLarge on overflow, no Legate::Path argument
+  # Legate::TooLargeError on overflow, no Legate::Path argument
   # conversion) — just enough real behavior to prove the broker
   # actually gates a real effect, honestly, without pre-building the
   # verb surface this step isn't responsible for. Once the real

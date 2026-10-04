@@ -12,9 +12,9 @@ Legate.mkdir(WORKSPACE)
 
 # --- The split that catches everyone: missing SOURCE, two answers ---
 #
-# A delete verb on a path that isn't there is not an error. `mv` from
-# a path that isn't there raises `Legate::NotFound`. The difference is
-# not an inconsistency: "make sure this isn't here" has already
+# A delete verb on a path that isn't there is not an error. `mv` from a
+# path that isn't there raises `Legate::NotFoundError`. The difference
+# is not an inconsistency: "make sure this isn't here" has already
 # succeeded if it was never here, whereas "move this thing" with no
 # thing to move is simply impossible.
 #
@@ -24,7 +24,7 @@ Legate.mkdir(WORKSPACE)
 assert_equal(false, Legate.rm(WORKSPACE / "never-existed.txt"))
 assert_equal(false, Legate.rmdir(WORKSPACE / "never-existed"))
 assert_equal(0, Legate.rmdir!(WORKSPACE / "never-existed"))
-assert_raise(Legate::NotFound) { Legate.mv(WORKSPACE / "never-existed.txt", WORKSPACE / "dest.txt") }
+assert_raise(Legate::NotFoundError) { Legate.mv(WORKSPACE / "never-existed.txt", WORKSPACE / "dest.txt") }
 
 # --- The three verbs partition the target space exactly ---
 #
@@ -34,15 +34,15 @@ assert_raise(Legate::NotFound) { Legate.mv(WORKSPACE / "never-existed.txt", WORK
 
 empty_dir = WORKSPACE / "empty"
 Legate.mkdir(empty_dir)
-assert_raise(Legate::Conflict) { Legate.rm(empty_dir) } # a directory, not a file
+assert_raise(Legate::ConflictError) { Legate.rm(empty_dir) } # a directory, not a file
 assert_equal(true, Legate.rmdir(empty_dir))
 
 full_dir = WORKSPACE / "full"
 Legate.mkdir(full_dir)
 Legate.write(full_dir / "a.txt", "a\n")
-assert_raise(Legate::Conflict) { Legate.rmdir(full_dir) } # not empty
+assert_raise(Legate::ConflictError) { Legate.rmdir(full_dir) } # not empty
 assert_equal("a\n", Legate.read(full_dir / "a.txt")) # refused, and nothing was removed
-assert_raise(Legate::Conflict) { Legate.rmdir!(full_dir / "a.txt") } # a file, not a directory
+assert_raise(Legate::ConflictError) { Legate.rmdir!(full_dir / "a.txt") } # a file, not a directory
 
 # --- What the returned count actually counts ---
 #
@@ -65,14 +65,14 @@ assert_equal(4, Legate.rmdir!(tree))
 # means one thing across the whole verb surface: "do the more
 # destructive thing you would otherwise refuse."
 #
-# Note what a REFUSED move leaves behind: nothing has happened at
-# all. The source is still at its original path, which is what makes
-# `Legate::Conflict` recoverable in practice — a script can rescue it
-# and pick another destination.
+# Note what a REFUSED move leaves behind: nothing has happened at all.
+# The source is still at its original path, which is what makes
+# `Legate::ConflictError` recoverable in practice — a script can rescue
+# it and pick another destination.
 
 Legate.write(WORKSPACE / "new.txt", "new\n")
 Legate.write(WORKSPACE / "old.txt", "old\n")
-assert_raise(Legate::Conflict) { Legate.mv(WORKSPACE / "new.txt", WORKSPACE / "old.txt") }
+assert_raise(Legate::ConflictError) { Legate.mv(WORKSPACE / "new.txt", WORKSPACE / "old.txt") }
 assert_equal("old\n", Legate.read(WORKSPACE / "old.txt"))
 assert_equal("new\n", Legate.read(WORKSPACE / "new.txt"))
 
@@ -82,19 +82,19 @@ assert_nil(Legate.stat(WORKSPACE / "new.txt"))
 
 # --- ...but mv REFUSES to replace one kind of thing with another ---
 #
-# A file over a directory, or a directory over a file, is never what
-# a caller meant, so both are `Legate::Conflict` rather than a silent
+# A file over a directory, or a directory over a file, is never what a
+# caller meant, so both are `Legate::ConflictError` rather than a silent
 # clobber.
 
 occupied_dir = WORKSPACE / "occupied"
 Legate.mkdir(occupied_dir)
 Legate.write(WORKSPACE / "loose.txt", "loose\n")
-assert_raise(Legate::Conflict) { Legate.mv(WORKSPACE / "loose.txt", occupied_dir) }
+assert_raise(Legate::ConflictError) { Legate.mv(WORKSPACE / "loose.txt", occupied_dir) }
 assert_equal("loose\n", Legate.read(WORKSPACE / "loose.txt")) # source survives a refused move
 
 other_dir = WORKSPACE / "other"
 Legate.mkdir(other_dir)
-assert_raise(Legate::Conflict) { Legate.mv(other_dir, WORKSPACE / "loose.txt") }
+assert_raise(Legate::ConflictError) { Legate.mv(other_dir, WORKSPACE / "loose.txt") }
 
 # --- ...and refuses to replace ANY directory, empty or not ---
 #
@@ -109,13 +109,13 @@ assert_raise(Legate::Conflict) { Legate.mv(other_dir, WORKSPACE / "loose.txt") }
 # remove the destination, then move.
 
 Legate.write(occupied_dir / "keep.txt", "keep\n")
-assert_raise(Legate::Conflict) { Legate.mv(other_dir, occupied_dir) }
-assert_raise(Legate::Conflict) { Legate.mv!(other_dir, occupied_dir) }
+assert_raise(Legate::ConflictError) { Legate.mv(other_dir, occupied_dir) }
+assert_raise(Legate::ConflictError) { Legate.mv!(other_dir, occupied_dir) }
 assert_equal("keep\n", Legate.read(occupied_dir / "keep.txt"))
 
 empty_dest = WORKSPACE / "empty-dest"
 Legate.mkdir(empty_dest)
-assert_raise(Legate::Conflict) { Legate.mv!(other_dir, empty_dest) }
+assert_raise(Legate::ConflictError) { Legate.mv!(other_dir, empty_dest) }
 assert_equal(true, Legate.rmdir(empty_dest))
 Legate.mv(other_dir, empty_dest)
 assert_nil(Legate.stat(other_dir))

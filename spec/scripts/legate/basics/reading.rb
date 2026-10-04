@@ -30,13 +30,13 @@ assert_nil(Legate.stat(FIXTURES / "does-not-exist.txt"))
 
 assert_equal("Hello, Legate!\n", Legate.read(FIXTURES / "hello.txt"))
 
-assert_raise(Legate::NotFound) { Legate.read(FIXTURES / "does-not-exist.txt") }
+assert_raise(Legate::NotFoundError) { Legate.read(FIXTURES / "does-not-exist.txt") }
 assert_nothing_raised { Legate.read(FIXTURES / "does-not-exist.txt", missing: "fallback") }
 assert_equal("fallback", Legate.read(FIXTURES / "does-not-exist.txt", missing: "fallback"))
 
 # A path outside every granted root (`fixtures/` is granted, its
 # PARENT is not) is a fatal Legate::Denied — LEGATE.md §2.3's own
-# distinction from `Legate::NotFound` above. Deliberately NOT
+# distinction from `Legate::NotFoundError` above. Deliberately NOT
 # demonstrated with `assert_raise` here: `Legate::Denied` is a plain
 # Crystal `Exception`, not `RuntimeError` (exceptions.cr's own
 # comment on `FatalSignal` — "deliberately unrescuable by any script

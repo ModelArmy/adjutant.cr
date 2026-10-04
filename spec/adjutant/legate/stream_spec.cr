@@ -175,7 +175,7 @@ module Adjutant
     end
 
     describe "single-pass (LEGATE.md §6.1)" do
-      it "iterating an already-exhausted stream again raises Legate::EOF (amended LEGATE.md §6.1) rather than silently returning nothing" do
+      it "iterating an already-exhausted stream again raises Legate::ConsumedError (amended LEGATE.md §6.1) rather than silently returning nothing" do
         interp = interp_with_test_stream
         eval = interp.eval(<<-RUBY)
         s = stream_of(1, 2, 3)
@@ -183,7 +183,7 @@ module Adjutant
         second_pass = begin
           s.to_a
           "no error raised"
-        rescue Legate::EOF => e
+        rescue Legate::ConsumedError => e
           "eof: \#{e.message}"
         end
         [first_pass, second_pass]
@@ -193,7 +193,7 @@ module Adjutant
         arr[1].as_string.should match(/^eof: /)
       end
 
-      it "raises Legate::EOF on .each too, not just .to_a, once the source is exhausted" do
+      it "raises Legate::ConsumedError on .each too, not just .to_a, once the source is exhausted" do
         interp = interp_with_test_stream
         eval = interp.eval(<<-RUBY)
         s = stream_of(1, 2)
@@ -201,7 +201,7 @@ module Adjutant
         begin
           s.each { |x| x }
           "no error raised"
-        rescue Legate::EOF
+        rescue Legate::ConsumedError
           "eof"
         end
         RUBY
@@ -222,12 +222,12 @@ module Adjutant
     end
 
     describe "to_a's materialization cap (LEGATE.md §6.4)" do
-      it "raises Legate::TooLarge over the cap" do
+      it "raises Legate::TooLargeError over the cap" do
         interp = interp_with_test_stream
         interp.eval(<<-RUBY).as_string.should eq "caught"
         begin
           big_stream_of_size(100_001).to_a
-        rescue Legate::TooLarge
+        rescue Legate::TooLargeError
           "caught"
         end
         RUBY

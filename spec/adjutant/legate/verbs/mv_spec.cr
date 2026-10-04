@@ -58,14 +58,14 @@ module Adjutant
         File.read(to).should eq "hi"
       end
     end
-    it "raises Legate::NotFound when the source doesn't exist" do
+    it "raises Legate::NotFoundError when the source doesn't exist" do
       with_tmpdir do |dir|
         interp, _ = make_interp(grants: move_grants(dir))
         eval = interp.eval(<<-RUBY)
         begin
           Legate.mv(#{(File.join(dir, "gone.txt")).inspect}, #{(File.join(dir, "b.txt")).inspect})
           "no error"
-        rescue Legate::NotFound
+        rescue Legate::NotFoundError
           "caught"
         end
         RUBY
@@ -73,7 +73,7 @@ module Adjutant
       end
     end
 
-    it "raises Legate::Conflict when the destination is a directory and the source is a file" do
+    it "raises Legate::ConflictError when the destination is a directory and the source is a file" do
       with_tmpdir do |dir|
         from = File.join(dir, "a.txt")
         to = File.join(dir, "d")
@@ -84,7 +84,7 @@ module Adjutant
         begin
           Legate.mv(#{(from).inspect}, #{(to).inspect})
           "no error"
-        rescue Legate::Conflict
+        rescue Legate::ConflictError
           "caught"
         end
         RUBY
@@ -93,7 +93,7 @@ module Adjutant
       end
     end
 
-    it "raises Legate::Conflict when the destination is a non-empty directory and the source is a directory" do
+    it "raises Legate::ConflictError when the destination is a non-empty directory and the source is a directory" do
       with_tmpdir do |dir|
         from = File.join(dir, "src")
         to = File.join(dir, "dest")
@@ -105,7 +105,7 @@ module Adjutant
         begin
           Legate.mv(#{(from).inspect}, #{(to).inspect})
           "no error"
-        rescue Legate::Conflict
+        rescue Legate::ConflictError
           "caught"
         end
         RUBY
@@ -216,7 +216,7 @@ module Adjutant
     # destination" test that used to sit here has moved to
     # `Legate.mv!` rather than being deleted — the behaviour it
     # described is still real, just no longer the default.
-    it "raises Legate::Conflict when the destination file already exists" do
+    it "raises Legate::ConflictError when the destination file already exists" do
       with_tmpdir do |dir|
         from = File.join(dir, "a.txt")
         to = File.join(dir, "b.txt")
@@ -227,7 +227,7 @@ module Adjutant
         begin
           Legate.mv(#{(from).inspect}, #{(to).inspect})
           "no error"
-        rescue Legate::Conflict
+        rescue Legate::ConflictError
           "caught"
         end
         RUBY
@@ -239,7 +239,7 @@ module Adjutant
       end
     end
 
-    it "names Legate.mv! in the Conflict message, per principle 6" do
+    it "names Legate.mv! in the ConflictError message, per principle 6" do
       with_tmpdir do |dir|
         from = File.join(dir, "a.txt")
         to = File.join(dir, "b.txt")
@@ -250,7 +250,7 @@ module Adjutant
         begin
           Legate.mv(#{(from).inspect}, #{(to).inspect})
           "no error"
-        rescue Legate::Conflict => e
+        rescue Legate::ConflictError => e
           e.message
         end
         RUBY
@@ -258,7 +258,7 @@ module Adjutant
       end
     end
 
-    it "raises Legate::Conflict when the destination is an EMPTY directory and the source is one too" do
+    it "raises Legate::ConflictError when the destination is an EMPTY directory and the source is one too" do
       with_tmpdir do |dir|
         from = File.join(dir, "src")
         Dir.mkdir(from)
@@ -270,7 +270,7 @@ module Adjutant
         begin
           Legate.mv(#{(from).inspect}, #{(to).inspect})
           "no error"
-        rescue Legate::Conflict
+        rescue Legate::ConflictError
           "caught"
         end
         RUBY
@@ -290,7 +290,7 @@ module Adjutant
         begin
           Legate.mv(#{(from).inspect}, #{(link).inspect})
           "no error"
-        rescue Legate::Conflict
+        rescue Legate::ConflictError
           "caught"
         end
         RUBY
@@ -332,7 +332,7 @@ module Adjutant
     # depending on whether the two paths share a filesystem, and a
     # verb whose behaviour turns on that is worse than one that
     # refuses.
-    it "still raises Legate::Conflict replacing a file with a directory" do
+    it "still raises Legate::ConflictError replacing a file with a directory" do
       with_tmpdir do |dir|
         from = File.join(dir, "src")
         Dir.mkdir(from)
@@ -343,7 +343,7 @@ module Adjutant
         begin
           Legate.mv!(#{(from).inspect}, #{(to).inspect})
           "no error"
-        rescue Legate::Conflict
+        rescue Legate::ConflictError
           "caught"
         end
         RUBY
@@ -352,7 +352,7 @@ module Adjutant
       end
     end
 
-    it "still raises Legate::Conflict replacing a non-empty destination directory" do
+    it "still raises Legate::ConflictError replacing a non-empty destination directory" do
       with_tmpdir do |dir|
         from = File.join(dir, "src")
         Dir.mkdir(from)
@@ -364,7 +364,7 @@ module Adjutant
         begin
           Legate.mv!(#{(from).inspect}, #{(to).inspect})
           "no error"
-        rescue Legate::Conflict
+        rescue Legate::ConflictError
           "caught"
         end
         RUBY
@@ -392,7 +392,7 @@ module Adjutant
         begin
           Legate.mv!(#{(from).inspect}, #{(to).inspect})
           "no error"
-        rescue Legate::Conflict => e
+        rescue Legate::ConflictError => e
           e.message
         end
         RUBY
