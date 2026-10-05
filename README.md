@@ -309,6 +309,8 @@ policy = Adjutant::RiskFlowPolicy.from_json(<<-JSON
 )
 ```
 
+Legate names a file by its real path: links followed, `.` and `..` removed, `/` as the separator (`C:/Users/…` on Windows). Labels, decision requests and audit records use it, and so does matching, so a script can't respell a path past a pattern. An `exact` File pattern, and an `exact` subject that is an absolute path, is resolved the same way when the policy is built, so `/etc/passwd` matches on macOS, where the file is `/private/etc/passwd`. A `regex` can't be resolved and is matched against real paths as written: on macOS the `^/etc/` above matches nothing, so anchor a path regex on a real directory.
+
 A rule may also name where the data came from (`origin`, with a `kind`) and where it is going (`subject`, as Legate names it: a path, or `scheme://host:port`), each by `exact` match or `regex`. Such a rule is an exception: it overrides the base rule for its pair, needs a `priority` to rank it against other exceptions, and never counts toward covering a pair. This lets a credential reach its own server and nowhere else:
 
 ```json

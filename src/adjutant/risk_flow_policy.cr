@@ -3,6 +3,7 @@ require "./authority"
 require "./risk_profile"
 require "./diagnostic"
 require "./risk_flow_label"
+require "./real_path"
 
 module Adjutant
   # What a matched risk-flow rule does with a call:
@@ -31,6 +32,15 @@ module Adjutant
       in .regex? then ::Regex.new(pattern).matches?(value)
       end
     end
+
+    # The form an exact path pattern is matched in: `RealPath.of`,
+    # since a File subject is judged as its real path
+    # (`Broker#authorize`). A regex can't be resolved, so it is
+    # matched as written, against real paths.
+    def path_pattern(pattern : String) : String
+      return pattern if regex?
+      RealPath.of(pattern) || pattern
+    end
   end
 
   # One rule assigning a sensitivity to subjects of a kind whose
@@ -47,12 +57,27 @@ module Adjutant
     getter priority : Int32
     getter sensitivity : Sensitivity
 
+    # `pattern` as matched; see `matched_pattern`.
+    @[JSON::Field(ignore: true)]
+    @matched : String = ""
+
     def initialize(@kind : ProvenanceKind, @pattern : String, @priority : Int32,
                    @sensitivity : Sensitivity, @pattern_type : PatternType = PatternType::Exact)
+      @matched = matched_pattern
+    end
+
+    protected def after_initialize
+      @matched = matched_pattern
     end
 
     def matches?(origin : String) : Bool
-      pattern_type.matches?(pattern, origin)
+      pattern_type.matches?(@matched, origin)
+    end
+
+    # A File pattern's path form (`PatternType#path_pattern`), resolved
+    # when the policy is built; any other kind's pattern as written.
+    private def matched_pattern : String
+      kind.file? ? pattern_type.path_pattern(pattern) : pattern
     end
   end
 
@@ -66,11 +91,26 @@ module Adjutant
     getter pattern_type : PatternType = PatternType::Exact
     getter pattern : String
 
+    # `pattern` as matched; see `matched_pattern`.
+    @[JSON::Field(ignore: true)]
+    @matched : String = ""
+
     def initialize(@kind : ProvenanceKind, @pattern : String, @pattern_type : PatternType = PatternType::Exact)
+      @matched = matched_pattern
+    end
+
+    protected def after_initialize
+      @matched = matched_pattern
     end
 
     def matches?(tag : ProvenanceTag) : Bool
-      tag.kind == kind && pattern_type.matches?(pattern, tag.origin)
+      tag.kind == kind && pattern_type.matches?(@matched, tag.origin)
+    end
+
+    # A File origin's path form (`PatternType#path_pattern`), resolved
+    # when the policy is built; any other kind's pattern as written.
+    private def matched_pattern : String
+      kind.file? ? pattern_type.path_pattern(pattern) : pattern
     end
   end
 
@@ -83,14 +123,31 @@ module Adjutant
     getter pattern_type : PatternType = PatternType::Exact
     getter pattern : String
 
+    # `pattern` as matched; see `matched_pattern`.
+    @[JSON::Field(ignore: true)]
+    @matched : String = ""
+
     def initialize(@pattern : String, @pattern_type : PatternType = PatternType::Exact)
+      @matched = matched_pattern
+    end
+
+    protected def after_initialize
+      @matched = matched_pattern
     end
 
     # False for an unknown subject: an exception naming where data
     # goes never applies where that can't be told.
     def matches?(subject : String?) : Bool
       return false unless subject
-      pattern_type.matches?(pattern, subject)
+      pattern_type.matches?(@matched, subject)
+    end
+
+    # A subject has no kind, so an exact pattern that is an absolute
+    # path is taken for a file and put in its path form
+    # (`PatternType#path_pattern`) when the policy is built; a host
+    # such as `https://api.stripe.com:443` is not absolute.
+    private def matched_pattern : String
+      ::Path.new(pattern).absolute? ? pattern_type.path_pattern(pattern) : pattern
     end
   end
 

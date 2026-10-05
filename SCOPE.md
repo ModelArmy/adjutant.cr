@@ -21,29 +21,21 @@ after 1.0. Ordered for working through: security and policy defects
 first, then the Ruby divergences, then design work on policy and
 configuration.
 
-- **Policy patterns match a path as the script spelled it.**
-  Grants resolve a path with `realpath` before checking containment
-  (`Grants#check_root`), but `Broker#authorize` hands the raw string
-  to `RiskFlowPolicy#sensitivity_for` and to each exception's
-  `RiskFlowSubject#matches?`, and a file label's origin carries the
-  same spelling to `RiskFlowOrigin`. So an Exact sensitivity pattern
-  for `/etc/shadow` misses `/etc//shadow`, `/etc/./shadow`, a
-  relative path and a symlink to it, and a Regex subject
-  `^/work/repo/` matches `/work/repo/../secrets/key`. The grant still
-  confines the read; the policy's judgement within it can be steered.
-  A recursive `cp` passes the root's spelling to every file it
-  reaches (`File.join`), and `grep` and `list` probably do the same
-  through `Dir.glob`, unconfirmed. Predicted by reading; the spec is a
-  sensitivity pattern refusing `Legate.read` of the file and failing
-  to refuse a respelling of it. The decision is what to match: the
-  resolved real path, which is what is actually read and agrees with
-  the grant, needing `check_root_maybe_missing`'s prospective path for
-  a target that doesn't exist yet; or a lexical normalisation, which
-  leaves symlinks open. Whichever it is, README's "Writing a policy"
-  should say what form a path subject takes. Hosts and env names
-  meet the same matching, so check their case-folding while there.
-  `Legate::Path#under?` (Will Fix, Legate) is the script-facing form
-  of the same flaw.
+- **Policy patterns match a host as the script spelled it.** The
+  net grant folds case and drops a trailing dot
+  (`NetRule#matches_host?`), but `Broker#authorize_net` builds its
+  subject, `scheme://host:port`, from the URL's host as written, and
+  that string is what Host sensitivity patterns, exception subjects
+  and a label's origin see. So a pattern marking `evil.example` High
+  misses `EVIL.example` and `evil.example.`, both of which the grant
+  allows and DNS treats as the same host. The path counterpart is
+  fixed by matching real paths; the host one is the same fix in
+  miniature: build the subject from the host as the grant compares
+  it, and fold an exact Host pattern the same way when the policy is
+  built. Predicted by reading; the spec is a Host pattern refusing a
+  `fetch` and failing to refuse a respelling of its host. Env names
+  are compared exactly by both the allowlist and the policy, so they
+  agree.
 
 - **A `RiskChoice` reports its worst branch, so effects reachable only
   on a losing branch vanish from the manifest.**

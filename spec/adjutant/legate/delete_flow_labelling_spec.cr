@@ -49,6 +49,7 @@ module Adjutant
       with_tmpdir do |dir|
         file = File.join(dir, "secret.txt")
         File.write(file, "shh")
+        real = ::Path.new(File.realpath(file)).to_posix.to_s
         policy = policy_for(file, Authority::Delete, RiskFlowAction::Allow)
         interp, _ = make_interp(grants: delete_grants(dir), risk_flow_policy: policy)
 
@@ -57,7 +58,7 @@ module Adjutant
         label = result.label.not_nil!
         label.sensitivity.should eq Sensitivity::High
         tag = label.tags.find! { |t| t.kind.file? }
-        tag.origin.should eq file
+        tag.origin.should eq real
       end
     end
 

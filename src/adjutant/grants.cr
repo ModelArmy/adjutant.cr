@@ -1,3 +1,5 @@
+require "./real_path"
+
 module Adjutant
   # The static perimeter: which filesystem roots a run may touch, and
   # the checks that a subject lies inside them. Core rather than
@@ -43,7 +45,7 @@ module Adjutant
     def check_root(path : String, roots : Array(String)) : Decision
       return Decision.deny("no roots granted for this operation") if roots.empty?
 
-      real_path = resolve(path)
+      real_path = RealPath.resolve(path)
       return Decision.deny("#{path} does not exist or could not be resolved") unless real_path
 
       under_root = roots.any? { |root| under?(real_path, root) }
@@ -62,22 +64,12 @@ module Adjutant
     def check_root_maybe_missing(path : String, roots : Array(String)) : Decision
       return Decision.deny("no roots granted for this operation") if roots.empty?
 
-      ancestor = deepest_existing_ancestor(path)
-      return Decision.deny("#{path} has no resolvable ancestor directory") unless ancestor
-      real_ancestor, trailing = ancestor
-      prospective = trailing.empty? ? real_ancestor : File.join(real_ancestor, File.join(trailing))
+      prospective = RealPath.prospective(path)
+      return Decision.deny("#{path} has no resolvable ancestor directory") unless prospective
 
       under_root = roots.any? { |root| under_maybe_missing?(prospective, root) }
 
       under_root ? Decision.allow : Decision.deny("#{path} (prospective: #{prospective}) is not under any granted root")
-    end
-
-    # `File.realpath`, or nil if the path can't be resolved for any
-    # reason.
-    private def resolve(path : String) : String?
-      File.realpath(path)
-    rescue
-      nil
     end
 
     # Whether `path` is `root` or inside it, by path algebra, so
@@ -93,7 +85,7 @@ module Adjutant
 
     # Whether the resolved `real_path` is `root` or inside it.
     private def under?(real_path : String, root : String) : Bool
-      real_root = resolve(root)
+      real_root = RealPath.resolve(root)
       return false unless real_root
 
       Grants.contains?(::Path.new(real_root), ::Path.new(real_path))
@@ -105,50 +97,10 @@ module Adjutant
     # resolves a path. `check_root` keeps requiring an existing root:
     # a read grant on a missing directory is a misconfiguration.
     private def under_maybe_missing?(prospective_path : String, root : String) : Bool
-      effective_root = resolve(root)
-      unless effective_root
-        root_ancestor = deepest_existing_ancestor(root)
-        return false unless root_ancestor
-        real_root_ancestor, root_trailing = root_ancestor
-        effective_root = root_trailing.empty? ? real_root_ancestor : File.join(real_root_ancestor, File.join(root_trailing))
-      end
+      effective_root = RealPath.prospective(root)
+      return false unless effective_root
 
       Grants.contains?(::Path.new(effective_root), ::Path.new(prospective_path))
-    end
-
-    # Dangling links followed while resolving one path before it is
-    # denied, as the kernel's own limit denies a loop.
-    MAX_LINK_HOPS = 40
-
-    # The realpath of `path`'s deepest existing ancestor, with the
-    # missing components below it in order. A dangling symlink on the
-    # way up is replaced by its target, resolved the same way, since
-    # anything created through the link lands there. Nil if no
-    # ancestor resolves, or after `MAX_LINK_HOPS` dangling links.
-    private def deepest_existing_ancestor(path : String, hops : Int32 = 0) : {String, Array(String)}?
-      trailing = [] of String
-      current = path
-      loop do
-        if real = resolve(current)
-          return {real, trailing}
-        end
-        if File.symlink?(current)
-          return if hops >= MAX_LINK_HOPS
-          # Joined, not normalized: a `..` in the target is left for
-          # `File.realpath` to apply after following links, as the
-          # kernel does.
-          return unless link = File.readlink?(current)
-          target = ::Path.new(link).absolute? ? link : File.join(File.dirname(current), link)
-          ancestor = deepest_existing_ancestor(target, hops + 1)
-          return unless ancestor
-          real_target, target_trailing = ancestor
-          return {real_target, target_trailing + trailing}
-        end
-        parent = File.dirname(current)
-        return if parent == current
-        trailing.unshift(File.basename(current))
-        current = parent
-      end
     end
   end
 end
