@@ -383,6 +383,38 @@ module Adjutant
       end
     end
 
+    # Each file is a subject of its own, so a policy exception naming
+    # one applies to it; the cost is an Ask per file.
+    it "checks a labelled source path at the root and again at each file" do
+      with_tmpdir do |dir|
+        from = File.join(dir, "repo")
+        Dir.mkdir(from)
+        File.write(File.join(from, "a.txt"), "a")
+        File.write(File.join(from, "b.txt"), "b")
+        requests = [] of RiskFlowDecisionRequest
+        on_decision = ->(request : RiskFlowDecisionRequest) : RiskFlowDecision {
+          requests << request
+          RiskFlowDecision::Allow
+        }
+        policy = RiskFlowPolicy.new(
+          risk_flow_rules: allow_unlisted([RiskFlowRule.new(Authority::Read, Sensitivity::Elevated, RiskFlowAction::Ask)]),
+        )
+        interp, _ = make_interp(
+          risk_flow_policy: policy,
+          on_risk_flow_decision: on_decision,
+          grants: Legate::Grants.new(read_roots: [dir], write_roots: [dir]),
+        )
+        interp.define_native("tainted_path") do |args|
+          Value.string(args.first.as_string, RiskFlowLabel.of(ProvenanceKind::UserInput, "cli-arg", Sensitivity::Elevated))
+        end
+
+        interp.eval(%(Legate.cp(tainted_path(#{from.inspect}), #{File.join(dir, "copy").inspect}, recursive: true)))
+
+        requests.map(&.authorities).uniq.should eq [Set{Authority::Read}]
+        requests.compact_map(&.subject).sort.should eq [from, File.join(from, "a.txt"), File.join(from, "b.txt")].sort
+      end
+    end
+
     # The Windows runner can't create symlinks; see
     # authorization_spec.cr's pending test.
     {% if flag?(:windows) %}

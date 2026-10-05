@@ -302,10 +302,11 @@ module Adjutant
       end
     end
 
-    # The streaming reads are the same sink; without the check, a policy
-    # that forbids the read above is bypassed by switching verbs.
-    {"lines", "bytes", "records"}.each do |verb|
-      it "rejects a tainted target path for Legate.#{verb} as for Legate.read" do
+    # The streaming reads, and `cp` and `cp!` at their source, are the
+    # same sink; without the check, a policy that forbids the read
+    # above is bypassed by switching verbs.
+    {"lines", "bytes", "records", "cp", "cp!"}.each do |verb|
+      it "rejects a tainted path to read for Legate.#{verb} as for Legate.read" do
         with_tmpdir do |dir|
           file = File.join(dir, "f.txt")
           File.write(file, "hi")
@@ -313,17 +314,24 @@ module Adjutant
           policy = RiskFlowPolicy.new(
             risk_flow_rules: allow_unlisted([RiskFlowRule.new(Authority::Read, Sensitivity::Elevated, RiskFlowAction::Reject)]),
           )
-          interp, _ = make_interp(risk_flow_policy: policy, grants: Legate::Grants.new(read_roots: [dir]))
+          grants = Legate::Grants.new(read_roots: [dir], write_roots: [dir])
+          interp, _ = make_interp(risk_flow_policy: policy, grants: grants)
           interp.define_native("tainted_path") do |args|
             Value.string(args.first.as_string, RiskFlowLabel.of(ProvenanceKind::UserInput, "cli-arg", Sensitivity::Elevated))
           end
 
-          # `records` validates its required `format:` before
-          # authorizing, so the call must be otherwise valid.
-          format = verb == "records" ? ", format: :jsonl" : ""
+          # Each call must be otherwise valid: `records` validates its
+          # required `format:` before authorizing, and `cp` needs a
+          # destination.
+          rest = case verb
+                 when "records"   then ", format: :jsonl"
+                 when "cp", "cp!" then ", #{File.join(dir, "copy.txt").inspect}"
+                 else                  ""
+                 end
           expect_raises(RuntimeError, /risk flow policy rejected/) do
-            interp.eval(%(Legate.#{verb}(tainted_path(#{file.inspect})#{format})))
+            interp.eval(%(Legate.#{verb}(tainted_path(#{file.inspect})#{rest})))
           end
+          File.exists?(File.join(dir, "copy.txt")).should be_false
         end
       end
     end
