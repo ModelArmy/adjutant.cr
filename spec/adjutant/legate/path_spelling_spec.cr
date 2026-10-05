@@ -50,6 +50,7 @@ module Adjutant
     # authorization_spec.cr's pending test.
     {% if flag?(:windows) %}
       pending "applies a sensitivity pattern through a symlink to its file (needs symlinks)" { }
+      pending "applies a sensitivity pattern written through a symlinked directory (needs symlinks)" { }
     {% else %}
       it "applies a sensitivity pattern through a symlink to its file" do
         with_real_tmpdir do |dir|
@@ -68,6 +69,26 @@ module Adjutant
           end
         end
       end
+
+      # As a pattern under macOS's `/var` or `/tmp` is.
+      it "applies a sensitivity pattern written through a symlinked directory" do
+        with_real_tmpdir do |dir|
+          real_dir = File.join(dir, "real")
+          Dir.mkdir(real_dir)
+          File.write(File.join(real_dir, "secret.txt"), "shh")
+          alias_dir = File.join(dir, "alias")
+          File.symlink(real_dir, alias_dir)
+          policy = RiskFlowPolicy.new(
+            sensitivity_patterns: [SensitivityPattern.new(ProvenanceKind::File, File.join(alias_dir, "secret.txt"), 10, Sensitivity::High)],
+            risk_flow_rules: allow_unlisted([RiskFlowRule.new(Authority::Read, Sensitivity::High, RiskFlowAction::Reject)]),
+          )
+          interp, _ = make_interp(risk_flow_policy: policy, grants: Legate::Grants.new(read_roots: [dir]))
+
+          expect_raises(RuntimeError, /risk flow policy rejected/) do
+            reads(interp, File.join(real_dir, "secret.txt"))
+          end
+        end
+      end
     {% end %}
 
     it "doesn't apply an exception's subject to a path that climbs out of it" do
@@ -81,7 +102,7 @@ module Adjutant
           risk_flow_rules: allow_unlisted([
             RiskFlowRule.new(Authority::Read, Sensitivity::High, RiskFlowAction::Reject),
             RiskFlowRule.new(Authority::Read, Sensitivity::High, RiskFlowAction::Allow,
-              subject: RiskFlowSubject.new("^#{Regex.escape(repo)}", PatternType::Regex), priority: 10),
+              subject: RiskFlowSubject.new("^#{Regex.escape(::Path.new(repo).to_posix.to_s)}/", PatternType::Regex), priority: 10),
           ]),
         )
         interp, _ = make_interp(risk_flow_policy: policy, grants: Legate::Grants.new(read_roots: [dir]))
