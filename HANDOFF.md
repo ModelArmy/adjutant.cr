@@ -2,7 +2,7 @@
 
 Working notes between development sessions, kept current by whoever ends a session. Not user documentation.
 
-Last updated at the end of the `fix-ruby-divergences` branch, before its merge to `main`.
+Last updated after the `risk-flow-exceptions` merge (#70) and the SCOPE commit that followed it, on `main`.
 
 ## How to use this document
 
@@ -33,7 +33,7 @@ Key documents: `SCOPE.md` (known defects and gaps: Must Fix, Will Fix), `LEGATE.
 9. **Never `git reset --hard` with uncommitted work in the tree.**
 10. **Markdown tables:** no literal `|` inside a cell; reword instead.
 11. **Spec first, when it can run.** A spec that compiles against the old code and fails there is its own commit, ahead of the fix. One that needs the fix's API, or would crash, hang or overflow the stack on the old code, goes in the same commit.
-12. **Lint as CI runs it.** Ameba accepts only `e` or `ex` for a rescued exception, rejects one-letter block parameters, `not_nil!`, `return nil` and `| Nil`, prefers `max_of?` to `map { }.max?`, and caps cyclomatic complexity at 12; split a method rather than disable the check. A new method goes above a method's doc comment, never between it and its `# ameba:disable` line. Crystal has no chained comparisons (`0 < x <= 9`), no trailing `while`, no variable defined in a modifier's condition, and reserves `responds_to?`, `is_a?`, `nil?`, `as` and `as?`.
+12. **Lint as CI runs it.** Ameba accepts only `e` or `ex` for a rescued exception, rejects one-letter block parameters, `not_nil!`, `return nil` and `| Nil`, prefers `max_of?` to `map { }.max?`, and caps cyclomatic complexity at 12; split a method rather than disable the check. A new method goes above a method's doc comment, never between it and its `# ameba:disable` line. Crystal has no chained comparisons (`0 < x <= 9`), no trailing `while`, no variable defined in a modifier's condition, and reserves `responds_to?`, `is_a?`, `nil?`, `as`, `as?` and `out` (a C-binding keyword, so `return out unless …` won't parse). Inside an `enum`, a member's name shadows a type of the same name: write `::Regex` in `PatternType`.
 
 ## 3. The evidence method [Retain]
 
@@ -61,37 +61,39 @@ Key documents: `SCOPE.md` (known defects and gaps: Must Fix, Will Fix), `LEGATE.
 11. **Two equalities, two methods.** `Value#==` is Ruby's `eql?`, which Hash keys and container `eql?` use (`5` and `5.0` differ); `ValueOps.equal?`, reached through `VM#values_equal?`, is Ruby's `==`. Code comparing Values must pick the one Ruby would.
 12. **A leak hides wrong tests.** While block-assigned names leaked as globals, several specs passed by reading a name a neighbouring test had set. Fixing a leak, expect tests that were wrong all along; fix them to Ruby's behaviour rather than restoring the leak.
 13. **Every place Ruby's grammar says `arg` stops before `and`/`or`.** Assignment's right-hand side, call arguments, ternary branches and `not`'s operand all use `PREC_AND_OR`; a new construct taking an argument should too.
+14. **A catch-all converts everything, including what must pass through.** `VM#call_native` wraps any non-`RuntimeError` as N001: it turned Legate's OS failures into "the host's fault", and turns a policy's H003 into something a script can rescue. An exception meant to stay out of a script's reach needs its own `rescue` clause there, as `FatalSignal` has.
+15. **Put a check where its inputs exist.** The risk-flow check ran in the VM before the call, where the subject isn't known; moving it into `Broker#authorize` is what let a rule name the destination. Check what actually travels, too: a redirect hop is judged on the headers it is sent, not on every argument the call received.
 
 ---
 
 ## 5. State
 
-The `fix-ruby-divergences` branch cleared Must Fix of Ruby divergences: all 27 it began with, and each one its fixes turned up. In outcome:
+Since the last handoff, `fix-ruby-divergences` merged (#66), then four more branches and two SCOPE commits:
 
-1. **Calls:** positional arity is checked as Ruby checks it, for script methods, lambdas and every builtin; parameters bind in Ruby's order; parameter lists Ruby rejects don't parse; receiver calls take arguments without parentheses; `and`/`or` stay out of call arguments.
-2. **Scope and syntax:** a block's new names are local to it, and a `for` loop's outlive it; operator precedence is Ruby's table; `rescue` takes class expressions, and `=> e` assigns like any assignment; Integer prefixes, octal, quoted and operator Symbols, several heredocs per line, and CRLF source all read as in Ruby; stray `break`/`next` and callback hooks are rejected.
-3. **Values:** Hash keys compare with `eql?`; indexing covers Ranges, start and length, padding and splicing; Strings are frozen, as under `# frozen_string_literal: true`.
-4. **Objects:** NoMethodError where Ruby raises it; `is_a?` through nested includes; identity `equal?`; `respond_to?` for universal methods and operators; copies that keep native state; Exception subclasses' `initialize`; Comparable as a module, the only source of derived `==` and ordering.
-5. **Builtins:** Ruby's `split`, `join`, `each_line("")`, `Hash#each` pairs, `reduce(:sym)`, Float `%`, Regexp edges; blockless iterators raise U022 (no Enumerator).
+1. **Assertion messages** (#67) print values through the script's own `inspect`, so a failing exam check shows what it got.
+2. **`Legate::FilesystemError`** (#68): an operating-system failure a verb didn't foresee, in a verb or mid-stream, raises a recoverable Legate error naming the verb, path and errno, instead of N001.
+3. **Error names** (#69): every recoverable Legate class ends in `Error`, and `EOF` is `ConsumedError`. The fatal tier (`Denied`, `Exhausted`, `Aborted`) stays bare, as LEGATE.md §9.2 explains.
+4. **Risk-flow exceptions** (#70): a rule may name a data `origin` and a sink `subject`, as a prioritised exception over the base rule for its pair. Legate's verbs check labelled arguments inside `Broker#authorize`, at each subject, and `fetch` at each redirect hop against what that hop is sent. Decision requests carry the subject.
+5. **SCOPE.md:** Must Fix holds four entries, in working order: `cp`'s undeclared `Read`, `RiskChoice` dropping effects, mid-run policy ties reaching scripts as N001, and the authorization configuration. Will Fix is still in the older dated style.
 
-Must Fix now holds only the two policy-design entries. Will Fix was checked against the code and holds 55 entries, still in the older dated style. `SKILL.md` was updated for slicing, `inject(:sym)`, Comparable and U022.
+Model           |Latest result|Notes                                           
+----------------|-------------|------------------------------------------------
+qwen3.8 (27B)   |10/10        |Last sat before `fix-ruby-divergences`          
+Muse Glimmer 30b|10/10        |Sat at `2bfa808`                                
+Ornith 1.5 (9B) |7/10         |Sat at `2bfa808`; 02, 06 and 08 are model errors
 
-Model           |Latest result|Notes                          
-----------------|-------------|-------------------------------
-qwen3.8 (27B)   |10/10        |At the exam's ceiling          
-Muse Glimmer 30b|10/10        |At the exam's ceiling          
-Ornith 1.5 (9B) |6/10         |03, 04, 08, 10 are model errors
-
-These sittings predate this branch, which changed what a model's code does (block scoping, precedence, error classes, arity) and edited the skill. A sitting is needed before trusting the table.
+All three predate #69, which renamed the classes the skill teaches, and #70. Recorded answers that rescue the old names now fail, so the next sitting is fresh, not a re-run.
 
 ## 6. Next
 
-1. **Merge `fix-ruby-divergences`** to `main`.
-2. **Sit the exam** on all three models, to confirm the skill after this branch.
-3. **Exam tasks 11 to 13** (`spec/skill/TODO.md` §1). Task 12 was meant to hit Array-keyed Hashes and slice assignment, both now fixed, so it becomes a regression check rather than evidence.
-4. **Will Fix, style pass**, by subsection, on its own branch: drop dates and history and bring the prose to the Must Fix style.
-5. **The two policy-design entries** before 1.0, since the configuration document changes an embedder-facing format.
-6. **§10, the static analyser.** It begins with a design question, what counts as the "effectful surface"; see Will Fix, Static risk assessment.
+1. **`cp` declares `Read`** (Must Fix). Small and fully specified; the spec extends `read_spec.cr`'s streaming-verb loop to `cp`.
+2. **Sit the exam fresh** on all three models, to confirm the renamed skill.
+3. **Policy ties** (Must Fix): first the spec showing a tie reached from `Legate.read` is rescuable, then the two decisions in the entry.
+4. **`RiskChoice` effects** (Must Fix): worst severity, union of effects; decide what `RiskSummary#path` says.
+5. **Exam tasks 11 to 13** (`spec/skill/TODO.md` §1). Its items 3 and 5 still call Array-keyed Hashes and slice assignment open divergences; both are fixed, so task 12 is a regression check. A credential-to-its-own-host task would now exercise risk-flow exceptions.
+6. **Will Fix, style pass**, by subsection, on its own branch.
+7. **Authorization configuration** (Must Fix) before 1.0, since it changes an embedder-facing format.
+8. **§10, the static analyser**; see Will Fix, Static risk assessment.
 
 ## 7. Open decisions
 
@@ -101,6 +103,7 @@ These sittings predate this branch, which changed what a model's code does (bloc
 - **LEGATE.md §1** says the core is "ordinary Ruby with mutation removed". It isn't: `<<` and `[]=` mutate Arrays and Hashes. Correct it at the next spec revision.
 - **`inspect` of deep data.** Printing an Array or Hash nested deeper than `call_depth_limit` (256) raises L002, since each level re-enters the VM. JSON from `fetch` may nest to 512. Make `inspect` walk built-in containers iteratively (safe, since scripts can't override their `inspect`, U003), or leave it?
 - **Default budgets.** `wall_clock` 300 s, `total_read` 4 GiB, `total_write` 1 GiB and `memory` 512 MiB (advice only) are LEGATE.md §7's example values. Revisit once a harness runs real workloads.
+- **A suffix mode for risk-flow subjects.** Subjects match exactly or by regex. Add a dot-boundary suffix mode, like `net.hosts`' `subdomains: true`, only if policy authors keep writing the same regex.
 
 ## 8. Deferred tests
 
