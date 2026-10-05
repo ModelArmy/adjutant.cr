@@ -21,9 +21,57 @@ after 1.0. Ordered for working through: security and policy defects
 first, then the Ruby divergences, then design work on policy and
 configuration.
 
-**The Ruby divergences follow**, Must Fix whatever their frequency.
-Where an entry lists two remedies, rejecting the construct is always
-acceptable, since it restores the subset.
+- **`cp` reads its source without checking labelled arguments
+  there.** `cp` and `cp!` declare only `Authority::Write`, but
+  authorize their source with `authorize_read`. Arguments are checked
+  only at subjects for a declared authority (LEGATE.md §8.8), so a
+  labelled source path that `Legate.read` would refuse passes as
+  `cp`'s source: the bypass-by-switching-verbs that
+  `read_spec.cr`'s streaming-verb loop exists to prevent. Declaring
+  `Read` as well, as `mv` declares both of its authorities, closes it;
+  LEGATE.md §8.8's authority list and `cp`'s decision requests change
+  with it. Predicted by reading; the spec should be that loop's case
+  for `cp`.
+
+- **A `RiskChoice` reports its worst branch, so effects reachable only
+  on a losing branch vanish from the manifest.**
+  `RiskAggregator.summarize_choice` (`risk_aggregator.cr`) takes
+  `max_by { rank }` across branches, and `rank` orders by severity and
+  reversibility alone. Reporting the worst severity is honest, since
+  one branch runs, but the effect set rides along with whichever
+  branch won, and a tie goes to the first in source order. Pinned in
+  `spec/adjutant/legate/risk_assessment_spec.cr`: a script whose
+  `else` calls `Legate.rmdir!` reports only `NetworkEgress`, because
+  the `if` branch's `Legate.fetch` ranks equal and comes first. The
+  static pass is advisory, but its value is what it tells a person
+  before the run, and here it hides a recursive delete. The likely fix
+  keeps the worst severity and reversibility and unions the effects.
+  `RiskSummary#path` names one winning branch and must say something
+  coherent about effects from elsewhere, which changes the manifest
+  hosts render; `summarize_deferred` already over-reports on the same
+  principle, and the two should be reconciled deliberately.
+
+- **A policy's priority ties surface mid-run, where a script can
+  rescue them.** Two sensitivity patterns, or two risk-flow
+  exceptions, matching at the same top priority raise H003
+  (`AmbiguousRiskFlowPolicyError`) when a subject first meets them,
+  not when the policy is built. The class is documented as not
+  script-visible, so a script can't rescue past a broken policy, but
+  every policy lookup runs inside a native call, and
+  `VM#call_native`'s catch-all wraps any non-`RuntimeError` as N001,
+  which `rescue => e` catches. The flow itself doesn't happen, so it
+  fails closed, but the host's configuration error becomes the
+  script's to swallow. Predicted by reading the rescue clauses; the
+  spec is a tie reached from `Legate.read` inside `begin`/`rescue`.
+  Exceptions make ties likelier. Fully eager validation is
+  impossible: two regexes can overlap on inputs nobody can enumerate,
+  so some ties only a real subject reveals. The decision has two
+  parts. What to catch at build time: identical patterns and identical
+  exceptions at least, since moving those to build time later would
+  stop loading policies that load today. And what a tie found mid-run
+  does: end the run, as the class intends (passing through
+  `call_native` as `FatalSignal` does), or reject the flow and let the
+  script carry on.
 
 - **Authorization is in core, but its configuration and the specified
   static analyser still assume one provider.** The perimeter
@@ -490,9 +538,11 @@ section).
 - **No structured audit-trail export beyond `RiskFlowLog` itself.**
   Nothing turns a `RiskFlowLog` into a saved/replayable session record.
 - **The approval cache** (avoid re-prompting for an already-approved
-  origin→sink flow within one script run) — still not designed.
-- **Eager vs. lazy ambiguous-priority policy validation** for
-  `RiskFlowPolicy` — still not decided.
+  origin→sink flow within one script run) — still not designed. More
+  pressing since risk-flow checks moved to each subject: `fetch` asks
+  per redirect hop, and `mv` per authority. If the cache's scope (per
+  run, per origin and subject) needs the host's say, it changes the
+  decision callback's contract, and belongs in Must Fix.
 
 ### Standard library surface
 
@@ -564,51 +614,6 @@ section).
   DOWN from the crashing spec, not building UP from a small program.
 
 ### Static risk assessment
-
-- **A `RiskChoice` reports its worst branch, so effects reachable only
-  on a losing branch vanish from the manifest entirely.** Found
-  2026-09-04, while writing the step 4c sweep — the first draft of its
-  end-to-end assertion assumed a union and failed, which is how the
-  behaviour surfaced. `RiskAggregator.summarize_choice`
-  (`risk_aggregator.cr`) takes `max_by { rank }` across branches: one
-  summary wins whole, and the others contribute nothing.
-
-  **The reasoning is sound for severity and does not obviously extend
-  to effects.** Exactly one branch of an `if` runs, so reporting the
-  worst `Severity`/`Reversibility` is honest where unioning them would
-  overstate how bad a single run can be. But `rank` orders by those
-  two fields alone, and both are CONCLUSIONS drawn from effects — so
-  the effect SET is carried along by whichever branch happened to win
-  on other grounds, rather than being reasoned about at all. Where two
-  branches rank equally the tie goes to the first, which makes the
-  reported effects a function of source order.
-
-  The concrete case, now pinned in
-  `spec/adjutant/legate/risk_assessment_spec.cr`: a script whose
-  `else` branch calls `Legate.rmdir!` reports `NetworkEgress` and
-  nothing else, because the `if` branch's `Legate.fetch` ranks equal
-  and comes first. A user reading that manifest before running the
-  script is not told a recursive delete is reachable.
-
-  **The likely shape of a fix is worst-rank-with-full-effect-union** —
-  keep the current severity and reversibility semantics exactly, union
-  the effects across branches. That answers both questions the
-  manifest is actually asked ("how bad can one run be" and "what could
-  this script touch") without conflating them. Two things to check
-  before assuming it is that easy: `RiskSummary#path` currently
-  describes a single winning branch and would need to say something
-  coherent about effects that came from elsewhere, and
-  `summarize_deferred`/`RiskUnresolved` already deliberately over-
-  report on the "can't confirm, surface loudly" principle — which
-  points the same way, and is worth reconciling explicitly rather than
-  by coincidence.
-
-  Related to the provider work in Must Fix's authorization entry,
-  whose `Vault` example is a manifest going silent while enforcement
-  keeps working; this is the same failure by a different route.
-  Not blocking anything today — the static pass is advisory, and
-  runtime enforcement is unaffected, since `VM#call_native` fires from
-  the call itself regardless of AST position.
 
 - **LEGATE.md §10's static analyser isn't built.** No grant
   inference, exception gate, inclusion ledger or raise-set inference
