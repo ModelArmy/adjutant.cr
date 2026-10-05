@@ -21,18 +21,6 @@ after 1.0. Ordered for working through: security and policy defects
 first, then the Ruby divergences, then design work on policy and
 configuration.
 
-- **`cp` reads its source without checking labelled arguments
-  there.** `cp` and `cp!` declare only `Authority::Write`, but
-  authorize their source with `authorize_read`. Arguments are checked
-  only at subjects for a declared authority (LEGATE.md §8.8), so a
-  labelled source path that `Legate.read` would refuse passes as
-  `cp`'s source: the bypass-by-switching-verbs that
-  `read_spec.cr`'s streaming-verb loop exists to prevent. Declaring
-  `Read` as well, as `mv` declares both of its authorities, closes it;
-  LEGATE.md §8.8's authority list and `cp`'s decision requests change
-  with it. Predicted by reading; the spec should be that loop's case
-  for `cp`.
-
 - **A `RiskChoice` reports its worst branch, so effects reachable only
   on a losing branch vanish from the manifest.**
   `RiskAggregator.summarize_choice` (`risk_aggregator.cr`) takes
