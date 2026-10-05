@@ -58,14 +58,16 @@ module Adjutant
                       RiskProfile.new(effects: Set{Effect::ReadsFiles, Effect::WritesFiles})
                     end
 
-          # A Write sink. Both arguments are paths: the copy goes
-          # file to file, so no content passes through the VM for a
-          # label to travel on.
+          # A Read sink at the source and at each file a tree walk
+          # reaches, and a Write sink at the destination, matching its
+          # `authorize_*` calls as `mv`'s two authorities do. Both
+          # arguments are paths: the copy goes file to file, so no
+          # content passes through the VM for a label to travel on.
           Helpers.define_verb(
             legate, interp, name,
             profile,
             Set{"recursive"},
-            authorities: Set{Authority::Write},
+            authorities: Set{Authority::Read, Authority::Write},
           ) do |args, _blk, ncc|
             recursive = recursive_flag(ncc, name)
 
