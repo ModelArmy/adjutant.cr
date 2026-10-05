@@ -5,6 +5,7 @@ require "./effect_provider"
 require "./fatal_signal"
 require "./grants"
 require "./open_sources"
+require "./real_path"
 require "./native_call_context"
 require "./risk_flow_label"
 
@@ -50,15 +51,17 @@ module Adjutant
 
     # Runs the three checks for one call. `operation` names the verb;
     # `subject` (the path, or `scheme://host:port`) is where the
-    # risk-flow policy sees the data going; `provider` names the error
-    # class a denial raises. `flowing` holds the labels of the data
-    # sent to `subject`, when that isn't every argument, such as a
-    # redirect hop's surviving headers.
+    # risk-flow policy sees the data going, and a File subject is
+    # judged and audited as its `RealPath.of`; `provider` names the
+    # error class a denial raises. `flowing` holds the labels of the
+    # data sent to `subject`, when that isn't every argument, such as
+    # a redirect hop's surviving headers.
     def authorize(provider : EffectProvider, authority : Authority, operation : String,
                   subject : String, provenance_kind : ProvenanceKind,
                   ncc : NativeCallContext, flowing : Array(RiskFlowLabel)? = nil,
                   & : -> Grants::Decision) : RiskFlowLabel?
       @budget.check_wall_clock!
+      subject = judged_subject(subject, provenance_kind)
 
       decision = yield
       unless decision.allowed?
@@ -85,6 +88,7 @@ module Adjutant
     # listing still makes one per call.
     def label_within(authority : Authority, operation : String, subject : String,
                      provenance_kind : ProvenanceKind, ncc : NativeCallContext) : RiskFlowLabel?
+      subject = judged_subject(subject, provenance_kind)
       ncc.declare_sensitivity(authority, provenance_kind, subject)
     rescue ex : RuntimeError
       @audit_log.append(AuditRecord.new(operation, subject, authority, :rejected, REJECTED_CLASS_NAME))
@@ -95,6 +99,17 @@ module Adjutant
     # provider, since the refusal is Adjutant's. A denial reports under
     # the provider's `denied_class_name`.
     REJECTED_CLASS_NAME = "RiskFlowRejectedError"
+
+    # A File subject as the policy matches it, `RealPath.of`, so a
+    # respelled or linked path meets the patterns of the file it
+    # reaches. A symlink is judged as its target even by a verb that
+    # acts on the link itself, which errs towards the stricter answer.
+    # A path that doesn't resolve keeps its spelling; the perimeter
+    # denies it first. Any other kind is returned as given.
+    private def judged_subject(subject : String, provenance_kind : ProvenanceKind) : String
+      return subject unless provenance_kind.file?
+      RealPath.of(subject) || subject
+    end
 
     private def deny!(provider : EffectProvider, operation : String,
                       decision : Grants::Decision) : NoReturn

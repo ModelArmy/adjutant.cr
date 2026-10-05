@@ -49,7 +49,7 @@ module Adjutant
         result = interp.eval(%(Legate.stat(#{file.inspect})))
         label = result.label.not_nil!
         tag = label.tags.find! { |t| t.kind.file? }
-        tag.origin.should eq file
+        tag.origin.should eq ::Path.new(File.realpath(file)).to_posix.to_s
         tag.sensitivity.should eq Sensitivity::High
       end
     end

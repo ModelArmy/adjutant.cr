@@ -1,5 +1,11 @@
 require "../spec_helper"
 
+# The form Legate names a file in, which an exact File pattern is
+# matched in: `/etc` is `/private/etc` on macOS.
+private def real(path : String) : String
+  Adjutant::RealPath.of(path) || path
+end
+
 module Adjutant
   describe SensitivityPattern do
     it "exact is the default pattern_type" do
@@ -9,9 +15,9 @@ module Adjutant
 
     it "exact matches only the literal origin" do
       p = SensitivityPattern.new(ProvenanceKind::File, "/etc/passwd", 10, Sensitivity::High)
-      p.matches?("/etc/passwd").should be_true
-      p.matches?("/etc/passwd2").should be_false
-      p.matches?("/etc/pass").should be_false
+      p.matches?(real("/etc/passwd")).should be_true
+      p.matches?(real("/etc/passwd2")).should be_false
+      p.matches?(real("/etc/pass")).should be_false
     end
 
     it "regex matches per the given pattern" do
@@ -32,7 +38,7 @@ module Adjutant
       json = %({"kind":"File","pattern":"/etc/hosts","priority":10,"sensitivity":"None"})
       parsed = SensitivityPattern.from_json(json)
       parsed.pattern_type.should eq PatternType::Exact
-      parsed.matches?("/etc/hosts").should be_true
+      parsed.matches?(real("/etc/hosts")).should be_true
     end
   end
 
@@ -47,8 +53,8 @@ module Adjutant
         policy = RiskFlowPolicy.new(default_action: RiskFlowAction::Reject, sensitivity_patterns: [
           SensitivityPattern.new(ProvenanceKind::File, "/etc/passwd", 10, Sensitivity::High),
         ])
-        policy.sensitivity_for(ProvenanceKind::File, "/etc/passwd").should eq Sensitivity::High
-        policy.sensitivity_for(ProvenanceKind::File, "/etc/hosts").should eq Sensitivity::None
+        policy.sensitivity_for(ProvenanceKind::File, real("/etc/passwd")).should eq Sensitivity::High
+        policy.sensitivity_for(ProvenanceKind::File, real("/etc/hosts")).should eq Sensitivity::None
       end
 
       it "does not cross-match a different ProvenanceKind with the same origin string" do
@@ -64,8 +70,8 @@ module Adjutant
           SensitivityPattern.new(ProvenanceKind::File, "/etc/passwd", 10, Sensitivity::High),
           SensitivityPattern.new(ProvenanceKind::File, "/etc/hosts", 10, Sensitivity::None),
         ])
-        policy.sensitivity_for(ProvenanceKind::File, "/etc/passwd").should eq Sensitivity::High
-        policy.sensitivity_for(ProvenanceKind::File, "/etc/hosts").should eq Sensitivity::None
+        policy.sensitivity_for(ProvenanceKind::File, real("/etc/passwd")).should eq Sensitivity::High
+        policy.sensitivity_for(ProvenanceKind::File, real("/etc/hosts")).should eq Sensitivity::None
         # Only the broad regex rule matches — nothing more specific for this path.
         policy.sensitivity_for(ProvenanceKind::File, "/etc/shadow").should eq Sensitivity::Elevated
       end
@@ -79,20 +85,20 @@ module Adjutant
           SensitivityPattern.new(ProvenanceKind::File, "/etc/hosts", 10, Sensitivity::None),
           SensitivityPattern.new(ProvenanceKind::File, "^/etc/", 0, Sensitivity::Elevated, PatternType::Regex),
         ])
-        policy.sensitivity_for(ProvenanceKind::File, "/etc/passwd").should eq Sensitivity::High
-        policy.sensitivity_for(ProvenanceKind::File, "/etc/hosts").should eq Sensitivity::None
+        policy.sensitivity_for(ProvenanceKind::File, real("/etc/passwd")).should eq Sensitivity::High
+        policy.sensitivity_for(ProvenanceKind::File, real("/etc/hosts")).should eq Sensitivity::None
       end
 
       it "raises AmbiguousRiskFlowPolicyError when two rules tie at the top priority" do
         policy = RiskFlowPolicy.new(default_action: RiskFlowAction::Reject, sensitivity_patterns: [
-          SensitivityPattern.new(ProvenanceKind::File, "^/etc/", 5, Sensitivity::Elevated, PatternType::Regex),
+          SensitivityPattern.new(ProvenanceKind::File, "/etc/", 5, Sensitivity::Elevated, PatternType::Regex),
           SensitivityPattern.new(ProvenanceKind::File, "/etc/passwd", 5, Sensitivity::High),
         ])
         # Keeps its own exception class rather than becoming a
         # HostArgumentError: an ambiguous policy is about configuration
         # state, not any one call's arguments.
         error = expect_raises(AmbiguousRiskFlowPolicyError) do
-          policy.sensitivity_for(ProvenanceKind::File, "/etc/passwd")
+          policy.sensitivity_for(ProvenanceKind::File, real("/etc/passwd"))
         end
         diag = error.diagnostic.not_nil!
         diag.code.should eq("H003")
@@ -102,7 +108,7 @@ module Adjutant
 
       it "does not raise for an origin that only hits the non-tied rule" do
         policy = RiskFlowPolicy.new(default_action: RiskFlowAction::Reject, sensitivity_patterns: [
-          SensitivityPattern.new(ProvenanceKind::File, "^/etc/", 5, Sensitivity::Elevated, PatternType::Regex),
+          SensitivityPattern.new(ProvenanceKind::File, "/etc/", 5, Sensitivity::Elevated, PatternType::Regex),
           SensitivityPattern.new(ProvenanceKind::File, "/etc/passwd", 5, Sensitivity::High),
         ])
         # /etc/hosts only matches the regex rule, not the exact one — no tie.
@@ -403,7 +409,7 @@ module Adjutant
         )
         parsed = RiskFlowPolicy.from_json(original.to_json)
         parsed.default_action.should eq RiskFlowAction::Ask
-        parsed.sensitivity_for(ProvenanceKind::File, "/etc/passwd").should eq Sensitivity::High
+        parsed.sensitivity_for(ProvenanceKind::File, real("/etc/passwd")).should eq Sensitivity::High
         parsed.sensitivity_for(ProvenanceKind::File, "/etc/shadow").should eq Sensitivity::Elevated
         parsed.action_for(Authority::Delete, Sensitivity::Elevated)[0].should eq RiskFlowAction::Ask
         parsed.action_for(Authority::Write, Sensitivity::High)[0].should eq RiskFlowAction::Reject
@@ -433,8 +439,8 @@ module Adjutant
           default_action: RiskFlowAction::Ask,
         )
         policy = RiskFlowPolicy.from_json(original.to_json)
-        policy.sensitivity_for(ProvenanceKind::File, "/etc/passwd").should eq Sensitivity::High
-        policy.sensitivity_for(ProvenanceKind::File, "/etc/hosts").should eq Sensitivity::None
+        policy.sensitivity_for(ProvenanceKind::File, real("/etc/passwd")).should eq Sensitivity::High
+        policy.sensitivity_for(ProvenanceKind::File, real("/etc/hosts")).should eq Sensitivity::None
         policy.sensitivity_for(ProvenanceKind::File, "/etc/shadow").should eq Sensitivity::Elevated
         policy.sensitivity_for(ProvenanceKind::Host, "mail.gmail.com").should eq Sensitivity::High
         policy.sensitivity_for(ProvenanceKind::Host, "mybiz.example.com").should eq Sensitivity::None
@@ -457,7 +463,7 @@ module Adjutant
         effect: ef,
       )
       interp.risk_flow_policy.should be policy
-      interp.risk_flow_policy.sensitivity_for(ProvenanceKind::File, "/etc/passwd").should eq Sensitivity::High
+      interp.risk_flow_policy.sensitivity_for(ProvenanceKind::File, real("/etc/passwd")).should eq Sensitivity::High
     end
 
     it "risk_flow_policy and on_risk_flow_decision are required (no bare Interpreter.new default)" do
