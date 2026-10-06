@@ -322,6 +322,8 @@ A rule may also name where the data came from (`origin`, with a `kind`) and wher
 
 Each origin a value carries is judged separately and the worst decides, so the key concatenated with another secret is still refused at `api.stripe.com`.
 
+Priorities must not tie. Two patterns, or two exceptions, that would both decide the same origin or flow at one priority leave no defined answer. Where that is certain from the policy alone (identical entries, or a regex matching an exact entry at its priority, with nothing higher deciding that value), the policy is refused when it is built with `InvalidRiskFlowPolicyError`. Where only a real value reveals it, as between two different regexes, the run that meets it ends with `AmbiguousRiskFlowPolicyError` (H003), which no `rescue` in the script can catch.
+
 ### Handling an Ask — the interactivity is yours to design
 
 `on_risk_flow_decision` is called synchronously with a `RiskFlowDecisionRequest` (the call name, its `RiskProfile`, and every `RiskFlowMatch` — the specific rule and tainted provenance that triggered the decision, sorted worst-first) whenever policy resolves to `Ask`; its `subject` says where the data is going, when the call has one. Adjutant never generates any end-user-facing text itself — an integration may need the prompt in any language, any format, any UI — it only supplies the structured data. Building the actual prompt (terminal, chat UI, whatever) is entirely up to you:

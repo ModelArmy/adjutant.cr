@@ -1680,6 +1680,11 @@ module Adjutant
       # `rescue Exception`. This clause only keeps the catch-all below
       # from wrapping it.
       raise ex
+    rescue ex : AmbiguousRiskFlowPolicyError
+      # A policy tie (H003) is the host's configuration error, so it
+      # passes through as a FatalSignal does: a script must not rescue
+      # past a broken policy.
+      raise ex
     rescue ex : RuntimeError
       raise ex
     rescue ex

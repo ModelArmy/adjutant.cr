@@ -34,6 +34,15 @@ module Adjutant
       end
     end
 
+    # Whether `pattern`, read as this type, matches the value an exact
+    # pattern names. An invalid regex matches nothing here; it raises
+    # where a real origin or subject meets it.
+    def covers?(pattern : String, exact : String) : Bool
+      matches?(pattern, exact)
+    rescue ArgumentError
+      false
+    end
+
     # The form an exact path pattern is matched in: `RealPath.of`,
     # since a File subject is judged as its real path
     # (`Broker#authorize`). A regex can't be resolved, so it is
@@ -67,7 +76,7 @@ module Adjutant
 
     # `pattern` as matched; see `matched_pattern`.
     @[JSON::Field(ignore: true)]
-    @matched : String = ""
+    protected getter matched : String = ""
 
     def initialize(@kind : ProvenanceKind, @pattern : String, @priority : Int32,
                    @sensitivity : Sensitivity, @pattern_type : PatternType = PatternType::Exact)
@@ -80,6 +89,30 @@ module Adjutant
 
     def matches?(origin : String) : Bool
       pattern_type.matches?(@matched, origin)
+    end
+
+    # Whether this and `other` say the same thing: one kind, type,
+    # priority and pattern, as matched.
+    def same_match?(other : SensitivityPattern) : Bool
+      {kind, pattern_type, priority, matched} == {other.kind, other.pattern_type, other.priority, other.matched}
+    end
+
+    # Whether this pattern matches the origin `exact`, an exact
+    # pattern, names.
+    def covers?(exact : SensitivityPattern) : Bool
+      kind == exact.kind && pattern_type.covers?(matched, exact.matched)
+    end
+
+    # The exact one of this and `other` when both match the origin it
+    # names, else nil.
+    def common_exact(other : SensitivityPattern) : SensitivityPattern?
+      return self if pattern_type.exact? && other.covers?(self)
+      other if other.pattern_type.exact? && covers?(other)
+    end
+
+    def to_s(io : IO) : Nil
+      io << kind.to_s.downcase << ':' << pattern
+      io << " (regex)" if pattern_type.regex?
     end
 
     # A File pattern's path form (`PatternType#path_pattern`) or a
@@ -106,7 +139,7 @@ module Adjutant
 
     # `pattern` as matched; see `matched_pattern`.
     @[JSON::Field(ignore: true)]
-    @matched : String = ""
+    protected getter matched : String = ""
 
     def initialize(@kind : ProvenanceKind, @pattern : String, @pattern_type : PatternType = PatternType::Exact)
       @matched = matched_pattern
@@ -118,6 +151,18 @@ module Adjutant
 
     def matches?(tag : ProvenanceTag) : Bool
       tag.kind == kind && pattern_type.matches?(@matched, tag.origin)
+    end
+
+    # Whether this and `other` name the same origins: one kind, type
+    # and pattern, as matched.
+    def same_match?(other : RiskFlowOrigin) : Bool
+      {kind, pattern_type, matched} == {other.kind, other.pattern_type, other.matched}
+    end
+
+    # Whether this pattern matches the origin `exact`, an exact
+    # pattern, names.
+    def covers?(exact : RiskFlowOrigin) : Bool
+      kind == exact.kind && pattern_type.covers?(matched, exact.matched)
     end
 
     # A File origin's path form (`PatternType#path_pattern`) or a Host
@@ -143,7 +188,7 @@ module Adjutant
 
     # `pattern` as matched; see `matched_pattern`.
     @[JSON::Field(ignore: true)]
-    @matched : String = ""
+    protected getter matched : String = ""
 
     def initialize(@pattern : String, @pattern_type : PatternType = PatternType::Exact)
       @matched = matched_pattern
@@ -158,6 +203,18 @@ module Adjutant
     def matches?(subject : String?) : Bool
       return false unless subject
       pattern_type.matches?(@matched, subject)
+    end
+
+    # Whether this and `other` name the same subjects: one type and
+    # pattern, as matched.
+    def same_match?(other : RiskFlowSubject) : Bool
+      {pattern_type, matched} == {other.pattern_type, other.matched}
+    end
+
+    # Whether this pattern matches the subject `exact`, an exact
+    # pattern, names.
+    def covers?(exact : RiskFlowSubject) : Bool
+      pattern_type.covers?(matched, exact.matched)
     end
 
     # A subject has no kind, so its form decides when the policy is
@@ -219,10 +276,76 @@ module Adjutant
       true
     end
 
+    # Whether this exception and `other` govern the same flows: one
+    # pair and priority, and the same origin and subject patterns.
+    def same_scope?(other : RiskFlowRule) : Bool
+      return false unless same_rank?(other)
+      same_side?(origin, other.origin) && same_side?(subject, other.subject)
+    end
+
+    # Whether this exception and `other` certainly both apply to some
+    # flow: one pair and priority, and on each side either no pattern
+    # on both or an exact one the other side matches or leaves open
+    # (`common_origin`, `common_subject`).
+    def certainly_overlaps?(other : RiskFlowRule) : Bool
+      return false unless same_rank?(other)
+      side_certain?(origin, other.origin) && side_certain?(subject, other.subject)
+    end
+
+    # The exact origin pattern whose value this exception and `other`
+    # both match, if there is one.
+    def common_origin(other : RiskFlowRule) : RiskFlowOrigin?
+      side_exact(origin, other.origin)
+    end
+
+    # The exact subject pattern whose value this exception and `other`
+    # both match, if there is one.
+    def common_subject(other : RiskFlowRule) : RiskFlowSubject?
+      side_exact(subject, other.subject)
+    end
+
+    # Whether this rule may apply to data from the value `origin` names
+    # reaching the value `subject` names, nil meaning any value. Errs
+    # towards yes where a pattern meets an unknown value.
+    def may_apply_to?(origin : RiskFlowOrigin?, subject : RiskFlowSubject?) : Bool
+      side_may_cover?(@origin, origin) && side_may_cover?(@subject, subject)
+    end
+
     def to_s(io : IO) : Nil
       io << authority << '/' << sensitivity
       @origin.try { |origin| io << " from " << origin.kind.to_s.downcase << ':' << origin.pattern }
       @subject.try { |pattern| io << " to " << pattern.pattern }
+    end
+
+    private def same_rank?(other : RiskFlowRule) : Bool
+      {authority, sensitivity, priority} == {other.authority, other.sensitivity, other.priority}
+    end
+
+    private def same_side?(pattern : T?, other : T?) : Bool forall T
+      return pattern.nil? && other.nil? unless pattern && other
+      pattern.same_match?(other)
+    end
+
+    private def side_certain?(pattern : T?, other : T?) : Bool forall T
+      return true unless pattern || other
+      !side_exact(pattern, other).nil?
+    end
+
+    # The exact pattern on one side whose value both sides match: one
+    # the other matches, or one the other leaves open.
+    private def side_exact(pattern : T?, other : T?) : T? forall T
+      if pattern && other
+        return pattern if pattern.pattern_type.exact? && other.covers?(pattern)
+        return other if other.pattern_type.exact? && pattern.covers?(other)
+        return
+      end
+      named = pattern || other
+      named if named && named.pattern_type.exact?
+    end
+
+    private def side_may_cover?(pattern : T?, exact : T?) : Bool forall T
+      return true unless pattern && exact
+      pattern.covers?(exact)
     end
   end
 
@@ -315,6 +438,8 @@ module Adjutant
           "a risk-flow policy's default may be Ask or Reject, not Allow; write an Allow rule for each pair that should allow")
       end
       validate_rules!
+      validate_pattern_ties!
+      validate_exception_ties!
       return if @default_action
 
       covered = base_rules.map { |rule| {rule.authority, rule.sensitivity} }.to_set
@@ -344,6 +469,56 @@ module Adjutant
       raise InvalidRiskFlowPolicyError.new(
         "a risk-flow policy has more than one rule without an origin or subject for #{names.join(", ")}; " \
         "give the narrower one an origin or subject and a priority")
+    end
+
+    # Raises InvalidRiskFlowPolicyError for two sensitivity patterns
+    # certain to tie (H003) on some origin: the same match at one
+    # priority, or an exact pattern another matches at its priority
+    # with no higher pattern deciding its origin. A tie only a real
+    # origin reveals, such as between two different regexes, is left
+    # to `sensitivity_for`.
+    private def validate_pattern_ties! : Nil
+      @sensitivity_patterns.each_combination(2, reuse: false) do |pair|
+        first, second = pair
+        next unless first.priority == second.priority && certain_pattern_tie?(first, second)
+        raise InvalidRiskFlowPolicyError.new(
+          "the sensitivity patterns #{first} and #{second} would tie at priority #{first.priority} (H003); " \
+          "give the intended one a higher priority, or remove one")
+      end
+    end
+
+    private def certain_pattern_tie?(first : SensitivityPattern, second : SensitivityPattern) : Bool
+      return true if first.same_match?(second)
+      witness = first.common_exact(second)
+      return false unless witness
+      @sensitivity_patterns.none? { |pattern| pattern.priority > witness.priority && pattern.covers?(witness) }
+    end
+
+    # Raises InvalidRiskFlowPolicyError for two exceptions certain to
+    # tie (H003) on some flow: the same scope at one priority, or a
+    # flow both certainly govern at their priority that no higher
+    # exception may decide. A tie only a real flow reveals is left to
+    # `action_for`.
+    private def validate_exception_ties! : Nil
+      exceptions = @risk_flow_rules.select(&.exception?)
+      exceptions.each_combination(2, reuse: false) do |pair|
+        first, second = pair
+        next unless certain_exception_tie?(first, second, exceptions)
+        raise InvalidRiskFlowPolicyError.new(
+          "the risk-flow exceptions #{first} and #{second} would tie at priority #{first.priority} (H003); " \
+          "give the intended one a higher priority, or remove one")
+      end
+    end
+
+    private def certain_exception_tie?(first : RiskFlowRule, second : RiskFlowRule, exceptions : Array(RiskFlowRule)) : Bool
+      return true if first.same_scope?(second)
+      return false unless first.certainly_overlaps?(second)
+      origin = first.common_origin(second)
+      subject = first.common_subject(second)
+      exceptions.none? do |rule|
+        rule.authority == first.authority && rule.sensitivity == first.sensitivity &&
+          (rule.priority || 0) > (first.priority || 0) && rule.may_apply_to?(origin, subject)
+      end
     end
 
     private def base_rules : Array(RiskFlowRule)
