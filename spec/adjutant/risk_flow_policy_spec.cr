@@ -316,6 +316,112 @@ module Adjutant
       end
     end
 
+    # A tie certain to arise is refused when the policy is built, where
+    # its author sees it. One only a real origin or subject reveals,
+    # such as between two different regexes, waits for H003.
+    describe "ties found when built" do
+      key = RiskFlowOrigin.new(ProvenanceKind::Env, "STRIPE_KEY")
+      stripe = RiskFlowSubject.new("https://api.stripe.com:443")
+      reject = RiskFlowRule.new(Authority::Net, Sensitivity::High, RiskFlowAction::Reject)
+
+      it "rejects two sensitivity patterns that say the same thing at one priority" do
+        expect_raises(InvalidRiskFlowPolicyError, /would tie/) do
+          RiskFlowPolicy.new(sensitivity_patterns: [
+            SensitivityPattern.new(ProvenanceKind::Env, "STRIPE_KEY", 10, Sensitivity::High),
+            SensitivityPattern.new(ProvenanceKind::Env, "STRIPE_KEY", 10, Sensitivity::Elevated),
+          ], default_action: RiskFlowAction::Reject)
+        end
+      end
+
+      it "rejects a regex matching an exact pattern at the same priority" do
+        expect_raises(InvalidRiskFlowPolicyError, /would tie/) do
+          RiskFlowPolicy.new(sensitivity_patterns: [
+            SensitivityPattern.new(ProvenanceKind::Env, "STRIPE_KEY", 10, Sensitivity::High),
+            SensitivityPattern.new(ProvenanceKind::Env, "_KEY$", 10, Sensitivity::Elevated, PatternType::Regex),
+          ], default_action: RiskFlowAction::Reject)
+        end
+      end
+
+      it "loads them when a higher-priority pattern decides the exact one's origin" do
+        RiskFlowPolicy.new(sensitivity_patterns: [
+          SensitivityPattern.new(ProvenanceKind::Env, "STRIPE_KEY", 10, Sensitivity::High),
+          SensitivityPattern.new(ProvenanceKind::Env, "_KEY$", 10, Sensitivity::Elevated, PatternType::Regex),
+          SensitivityPattern.new(ProvenanceKind::Env, "STRIPE_KEY", 20, Sensitivity::High),
+        ], default_action: RiskFlowAction::Reject)
+      end
+
+      it "loads two different regexes at one priority" do
+        RiskFlowPolicy.new(sensitivity_patterns: [
+          SensitivityPattern.new(ProvenanceKind::Env, "^STRIPE", 10, Sensitivity::High, PatternType::Regex),
+          SensitivityPattern.new(ProvenanceKind::Env, "_KEY$", 10, Sensitivity::Elevated, PatternType::Regex),
+        ], default_action: RiskFlowAction::Reject)
+      end
+
+      it "loads patterns of different kinds at one priority" do
+        RiskFlowPolicy.new(sensitivity_patterns: [
+          SensitivityPattern.new(ProvenanceKind::Env, "STRIPE_KEY", 10, Sensitivity::High),
+          SensitivityPattern.new(ProvenanceKind::UserInput, "STRIPE_KEY", 10, Sensitivity::Elevated),
+        ], default_action: RiskFlowAction::Reject)
+      end
+
+      it "rejects two exceptions with the same scope at one priority" do
+        expect_raises(InvalidRiskFlowPolicyError, /would tie/) do
+          RiskFlowPolicy.new(risk_flow_rules: [
+            reject,
+            RiskFlowRule.new(Authority::Net, Sensitivity::High, RiskFlowAction::Allow, origin: key, subject: stripe, priority: 10),
+            RiskFlowRule.new(Authority::Net, Sensitivity::High, RiskFlowAction::Ask, origin: key, subject: stripe, priority: 10),
+          ], default_action: RiskFlowAction::Reject)
+        end
+      end
+
+      it "rejects exceptions that certainly both apply to one flow at one priority" do
+        expect_raises(InvalidRiskFlowPolicyError, /would tie/) do
+          RiskFlowPolicy.new(risk_flow_rules: [
+            reject,
+            RiskFlowRule.new(Authority::Net, Sensitivity::High, RiskFlowAction::Allow, origin: key, subject: stripe, priority: 10),
+            RiskFlowRule.new(Authority::Net, Sensitivity::High, RiskFlowAction::Ask,
+              subject: RiskFlowSubject.new("stripe\\.com", PatternType::Regex), priority: 10),
+          ], default_action: RiskFlowAction::Reject)
+        end
+      end
+
+      it "loads them when a higher-priority exception decides that flow" do
+        RiskFlowPolicy.new(risk_flow_rules: [
+          reject,
+          RiskFlowRule.new(Authority::Net, Sensitivity::High, RiskFlowAction::Allow, origin: key, subject: stripe, priority: 10),
+          RiskFlowRule.new(Authority::Net, Sensitivity::High, RiskFlowAction::Ask,
+            subject: RiskFlowSubject.new("stripe\\.com", PatternType::Regex), priority: 10),
+          RiskFlowRule.new(Authority::Net, Sensitivity::High, RiskFlowAction::Allow, subject: stripe, priority: 20),
+        ], default_action: RiskFlowAction::Reject)
+      end
+
+      it "loads exceptions whose overlap only a real flow could show" do
+        RiskFlowPolicy.new(risk_flow_rules: [
+          reject,
+          RiskFlowRule.new(Authority::Net, Sensitivity::High, RiskFlowAction::Allow,
+            origin: RiskFlowOrigin.new(ProvenanceKind::Env, "^STRIPE", PatternType::Regex), priority: 10),
+          RiskFlowRule.new(Authority::Net, Sensitivity::High, RiskFlowAction::Ask,
+            origin: RiskFlowOrigin.new(ProvenanceKind::Env, "_KEY$", PatternType::Regex), priority: 10),
+        ], default_action: RiskFlowAction::Reject)
+      end
+
+      it "rejects a certain tie in a policy loaded from JSON" do
+        json = <<-JSON
+          {
+            "sensitivity_patterns": [
+              { "kind": "Env", "pattern": "STRIPE_KEY", "priority": 10, "sensitivity": "High" },
+              { "kind": "Env", "pattern": "STRIPE_KEY", "priority": 10, "sensitivity": "Elevated" }
+            ],
+            "risk_flow_rules": [],
+            "default": "reject"
+          }
+          JSON
+        expect_raises(InvalidRiskFlowPolicyError, /would tie/) do
+          RiskFlowPolicy.from_json(json)
+        end
+      end
+    end
+
     # A gap in a policy must reach its author when it is built, not an
     # unattended run when a flow first meets it.
     describe "completeness" do
