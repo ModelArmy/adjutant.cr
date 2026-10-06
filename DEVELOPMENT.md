@@ -356,7 +356,7 @@ A container's label is a mutable field on the container, so storing a labelled v
 
 **Enforcement.** Before a native call whose `NativeCallable` declares authorities, `VM#check_risk_flow` checks every labelled argument, keywords included, against each authority: `RiskFlowPolicy#action_for(authority, sensitivity)` gives Allow, Ask or Reject. Non-Allow results become `RiskFlowMatch`es, worst first, in a `RiskFlowDecisionRequest`; Reject raises RiskFlowRejectedError, which a script can rescue, and Ask goes to the host's `on_risk_flow_decision`. There is no default that skips assessment: the policy and callback are required, and `RiskFlowPolicy.reject_all` is the explicit "no flows" choice. A policy covers every pair of `Authority` and `Elevated`/`High`, by a rule or by a `default_action` of Ask or Reject, and is refused when built (`InvalidRiskFlowPolicyError`) otherwise; `action_for` never falls back to Allow. Specs written against the old no-rule Allow keep it through `allow_unlisted` in `spec_helper.cr`, which lists the Allow rules explicitly.
 
-**Literals.** Labels only exist where data passed through a labelling call, so `delete_file("/etc/passwd")` would carry none. `ncc.declare_sensitivity(authority, kind, origin)` makes a native function check its own subject: it looks the origin up in the policy and runs the same check. A File origin is taken as its real path (`RealPath.of`), as the broker takes a File subject, so a policy matches the file a path reaches, not its spelling; a host calling `RiskFlowPolicy#sensitivity_for` itself should pass `RealPath.of(path)` likewise. Call it before checking whether the subject exists, as the broker does, so a rejected sensitive path doesn't reveal whether it exists.
+**Literals.** Labels only exist where data passed through a labelling call, so `delete_file("/etc/passwd")` would carry none. `ncc.declare_sensitivity(authority, kind, origin)` makes a native function check its own subject: it looks the origin up in the policy and runs the same check. A File origin is taken as its real path (`RealPath.of`), and a Host origin with its host folded (`HostName.fold`), as the broker takes a subject, so a policy matches what a call reaches, not its spelling; a host calling `RiskFlowPolicy#sensitivity_for` itself should pass `RealPath.of(path)` or `HostName.fold(url)` likewise. Call it before checking whether the subject exists, as the broker does, so a rejected sensitive path doesn't reveal whether it exists.
 
 **The flow log.** `Interpreter.new(risk_flow_tracking: true)` records every join as a `RiskFlowEvent`, for audit and debugging; disabled, `record` is a no-op. Labels, tags and the log are JSON::Serializable.
 
@@ -386,7 +386,7 @@ A function that **produces data** labels what it returns, with sensitivity from 
 
 ```crystal
 interp.define_native("fetch_data") do |args|
-  url = args.first.as_string
+  url = Adjutant::HostName.fold(args.first.as_string)
   sensitivity = interp.risk_flow_policy.sensitivity_for(Adjutant::ProvenanceKind::Host, url)
   label = Adjutant::RiskFlowLabel.of(Adjutant::ProvenanceKind::Host, url, sensitivity)
   Adjutant::Value.string(http_get(url), label)

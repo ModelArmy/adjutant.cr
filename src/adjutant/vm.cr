@@ -1758,8 +1758,10 @@ module Adjutant
     def declare_sensitivity(authority : Authority, kind : ProvenanceKind, origin : String, name : String,
                             risk : RiskProfile, filename : String, line : Int32,
                             sensitivity : Sensitivity? = nil) : RiskFlowLabel?
-      # A File origin is matched, and labelled, as its real path.
+      # Matched, and labelled, as the broker judges a subject: a File
+      # origin as its real path, a Host origin folded.
       origin = RealPath.of(origin) || origin if kind.file?
+      origin = HostName.fold(origin) if kind.host?
       resolved_sensitivity = sensitivity || @risk_flow_policy.sensitivity_for(kind, origin)
       return if resolved_sensitivity.none?
 

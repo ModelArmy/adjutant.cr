@@ -82,8 +82,9 @@ module Adjutant
     # the argument that is itself the risky subject; a literal
     # carries no label for the automatic check to see. Pass
     # `sensitivity` to skip the policy lookup. A File `origin` is
-    # matched and labelled as its real path (`RealPath.of`), however
-    # the caller spells it.
+    # matched and labelled as its real path (`RealPath.of`), and a
+    # Host one with its host folded (`HostName.fold`), however the
+    # caller spells it.
     #
     # Returns the subject's label, or nil if policy doesn't consider
     # it sensitive. Tag the data the call returns with it.

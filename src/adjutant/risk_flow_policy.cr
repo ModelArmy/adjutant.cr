@@ -4,6 +4,7 @@ require "./risk_profile"
 require "./diagnostic"
 require "./risk_flow_label"
 require "./real_path"
+require "./host_name"
 
 module Adjutant
   # What a matched risk-flow rule does with a call:
@@ -41,6 +42,13 @@ module Adjutant
       return pattern if regex?
       RealPath.of(pattern) || pattern
     end
+
+    # The form an exact host pattern is matched in: `HostName.fold`,
+    # as a Host subject is judged. A regex is matched as written,
+    # against folded hosts.
+    def host_pattern(pattern : String) : String
+      regex? ? pattern : HostName.fold(pattern)
+    end
   end
 
   # One rule assigning a sensitivity to subjects of a kind whose
@@ -74,10 +82,15 @@ module Adjutant
       pattern_type.matches?(@matched, origin)
     end
 
-    # A File pattern's path form (`PatternType#path_pattern`), resolved
+    # A File pattern's path form (`PatternType#path_pattern`) or a
+    # Host pattern's folded form (`PatternType#host_pattern`), settled
     # when the policy is built; any other kind's pattern as written.
     private def matched_pattern : String
-      kind.file? ? pattern_type.path_pattern(pattern) : pattern
+      case kind
+      when .file? then pattern_type.path_pattern(pattern)
+      when .host? then pattern_type.host_pattern(pattern)
+      else             pattern
+      end
     end
   end
 
@@ -107,10 +120,15 @@ module Adjutant
       tag.kind == kind && pattern_type.matches?(@matched, tag.origin)
     end
 
-    # A File origin's path form (`PatternType#path_pattern`), resolved
-    # when the policy is built; any other kind's pattern as written.
+    # A File origin's path form (`PatternType#path_pattern`) or a Host
+    # origin's folded form (`PatternType#host_pattern`), settled when
+    # the policy is built; any other kind's pattern as written.
     private def matched_pattern : String
-      kind.file? ? pattern_type.path_pattern(pattern) : pattern
+      case kind
+      when .file? then pattern_type.path_pattern(pattern)
+      when .host? then pattern_type.host_pattern(pattern)
+      else             pattern
+      end
     end
   end
 
@@ -142,12 +160,20 @@ module Adjutant
       pattern_type.matches?(@matched, subject)
     end
 
-    # A subject has no kind, so an exact pattern that is an absolute
-    # path is taken for a file and put in its path form
-    # (`PatternType#path_pattern`) when the policy is built; a host
-    # such as `https://api.stripe.com:443` is not absolute.
+    # A subject has no kind, so its form decides when the policy is
+    # built: an absolute path is taken for a file
+    # (`PatternType#path_pattern`), a URL such as
+    # `https://api.stripe.com:443` for a host
+    # (`PatternType#host_pattern`), and anything else, such as an
+    # environment variable's name, is matched as written.
     private def matched_pattern : String
-      ::Path.new(pattern).absolute? ? pattern_type.path_pattern(pattern) : pattern
+      if ::Path.new(pattern).absolute?
+        pattern_type.path_pattern(pattern)
+      elsif pattern.includes?("://")
+        pattern_type.host_pattern(pattern)
+      else
+        pattern
+      end
     end
   end
 
