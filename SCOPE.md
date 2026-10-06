@@ -39,28 +39,6 @@ configuration.
   hosts render; `summarize_deferred` already over-reports on the same
   principle, and the two should be reconciled deliberately.
 
-- **A policy's priority ties surface mid-run, where a script can
-  rescue them.** Two sensitivity patterns, or two risk-flow
-  exceptions, matching at the same top priority raise H003
-  (`AmbiguousRiskFlowPolicyError`) when a subject first meets them,
-  not when the policy is built. The class is documented as not
-  script-visible, so a script can't rescue past a broken policy, but
-  every policy lookup runs inside a native call, and
-  `VM#call_native`'s catch-all wraps any non-`RuntimeError` as N001,
-  which `rescue => e` catches. The flow itself doesn't happen, so it
-  fails closed, but the host's configuration error becomes the
-  script's to swallow. Predicted by reading the rescue clauses; the
-  spec is a tie reached from `Legate.read` inside `begin`/`rescue`.
-  Exceptions make ties likelier. Fully eager validation is
-  impossible: two regexes can overlap on inputs nobody can enumerate,
-  so some ties only a real subject reveals. The decision has two
-  parts. What to catch at build time: identical patterns and identical
-  exceptions at least, since moving those to build time later would
-  stop loading policies that load today. And what a tie found mid-run
-  does: end the run, as the class intends (passing through
-  `call_native` as `FatalSignal` does), or reject the flow and let the
-  script carry on.
-
 - **Authorization is in core, but its configuration and the specified
   static analyser still assume one provider.** The perimeter
   (`grants.cr`), run accounting (`ResourceLimits`, `Budget`,

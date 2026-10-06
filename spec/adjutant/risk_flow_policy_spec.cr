@@ -94,10 +94,12 @@ module Adjutant
         policy.sensitivity_for(ProvenanceKind::File, real("/etc/hosts")).should eq Sensitivity::None
       end
 
+      # Two regexes, since a tie certain to arise is refused when the
+      # policy is built ("ties found when built").
       it "raises AmbiguousRiskFlowPolicyError when two rules tie at the top priority" do
         policy = RiskFlowPolicy.new(default_action: RiskFlowAction::Reject, sensitivity_patterns: [
           SensitivityPattern.new(ProvenanceKind::File, "/etc/", 5, Sensitivity::Elevated, PatternType::Regex),
-          SensitivityPattern.new(ProvenanceKind::File, "/etc/passwd", 5, Sensitivity::High),
+          SensitivityPattern.new(ProvenanceKind::File, "passwd$", 5, Sensitivity::High, PatternType::Regex),
         ])
         # Keeps its own exception class rather than becoming a
         # HostArgumentError: an ambiguous policy is about configuration
@@ -114,9 +116,9 @@ module Adjutant
       it "does not raise for an origin that only hits the non-tied rule" do
         policy = RiskFlowPolicy.new(default_action: RiskFlowAction::Reject, sensitivity_patterns: [
           SensitivityPattern.new(ProvenanceKind::File, "/etc/", 5, Sensitivity::Elevated, PatternType::Regex),
-          SensitivityPattern.new(ProvenanceKind::File, "/etc/passwd", 5, Sensitivity::High),
+          SensitivityPattern.new(ProvenanceKind::File, "passwd$", 5, Sensitivity::High, PatternType::Regex),
         ])
-        # /etc/hosts only matches the regex rule, not the exact one — no tie.
+        # /etc/hosts matches only the first regex: no tie.
         policy.sensitivity_for(ProvenanceKind::File, "/etc/hosts").should eq Sensitivity::Elevated
       end
     end
@@ -238,10 +240,16 @@ module Adjutant
         policy.action_for(Authority::Net, stripe_key, elsewhere)[0].should eq RiskFlowAction::Ask
       end
 
+      # Regexes on both sides, since a tie certain to arise is refused
+      # when the policy is built ("ties found when built").
       it "raises on matching exceptions tied at the top priority" do
+        key_pattern = RiskFlowRule.new(Authority::Net, Sensitivity::High, RiskFlowAction::Allow,
+          origin: RiskFlowOrigin.new(ProvenanceKind::Env, "^STRIPE", PatternType::Regex),
+          subject: RiskFlowSubject.new("stripe", PatternType::Regex), priority: 10)
         rival = RiskFlowRule.new(Authority::Net, Sensitivity::High, RiskFlowAction::Reject,
-          subject: RiskFlowSubject.new(stripe), priority: 10)
-        policy = RiskFlowPolicy.new(risk_flow_rules: [base, key_to_stripe, rival], default_action: RiskFlowAction::Reject)
+          origin: RiskFlowOrigin.new(ProvenanceKind::Env, "_KEY$", PatternType::Regex),
+          subject: RiskFlowSubject.new("api\\.", PatternType::Regex), priority: 10)
+        policy = RiskFlowPolicy.new(risk_flow_rules: [base, key_pattern, rival], default_action: RiskFlowAction::Reject)
         expect_raises(AmbiguousRiskFlowPolicyError) do
           policy.action_for(Authority::Net, stripe_key, stripe)
         end

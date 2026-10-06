@@ -320,6 +320,13 @@ which is an `ArgumentError`. H005 and H006 are
 because they are separate problems — bad arguments, wrong sequencing, and
 an ambiguous policy respectively.
 
+H003 arises mid-run, when a real origin or subject first meets rules
+that tie, and ends the run past any `rescue` in the script, since a
+broken policy is the host's to fix. A tie certain to arise, such as two
+identical patterns or a regex matching an exact pattern at its
+priority, is refused earlier, when the policy is built, with
+`InvalidRiskFlowPolicyError`.
+
 H004 arrives wrapped in an N001, because the only way to reach it is from
 inside a native function.
 
