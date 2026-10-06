@@ -27,6 +27,11 @@ module Adjutant
       p.matches?("/opt/etc/hosts").should be_false
     end
 
+    it "matches an exact Host pattern as hosts compare, whatever its case or trailing dot" do
+      p = SensitivityPattern.new(ProvenanceKind::Host, "https://EVIL.Example.:443", 10, Sensitivity::High)
+      p.matches?("https://evil.example:443").should be_true
+    end
+
     it "regex round-trips through JSON with pattern_type explicit" do
       original = SensitivityPattern.new(ProvenanceKind::Host, "\\.com$", 0, Sensitivity::Elevated, PatternType::Regex)
       parsed = SensitivityPattern.from_json(original.to_json)
@@ -187,6 +192,14 @@ module Adjutant
       it "leaves the base rule in force for its origin at another subject" do
         policy = RiskFlowPolicy.new(risk_flow_rules: [base, key_to_stripe], default_action: RiskFlowAction::Reject)
         policy.action_for(Authority::Net, stripe_key, elsewhere)[0].should eq RiskFlowAction::Reject
+      end
+
+      it "matches an exact URL subject as hosts compare, whatever its case or trailing dot" do
+        respelled = RiskFlowRule.new(Authority::Net, Sensitivity::High, RiskFlowAction::Allow,
+          origin: RiskFlowOrigin.new(ProvenanceKind::Env, "STRIPE_KEY"),
+          subject: RiskFlowSubject.new("https://API.Stripe.com.:443"), priority: 10)
+        policy = RiskFlowPolicy.new(risk_flow_rules: [base, respelled], default_action: RiskFlowAction::Reject)
+        policy.action_for(Authority::Net, stripe_key, stripe)[0].should eq RiskFlowAction::Allow
       end
 
       it "never applies a subject pattern where the subject is unknown" do

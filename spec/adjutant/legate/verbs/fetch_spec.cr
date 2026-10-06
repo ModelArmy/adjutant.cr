@@ -177,6 +177,26 @@ module Adjutant
           interp.eval(%(Legate.fetch("https://api.example.com/orders", method: :post, body: tainted_str("leak"))))
         end
       end
+
+      # A host is judged as the grant compares it, so a respelling the
+      # grant allows meets the same pattern. The resolver answers a
+      # private address, so a call the policy lets through stops at
+      # §8.2's address check rather than reaching the network.
+      it "applies a Host pattern to every spelling of its host" do
+        policy = RiskFlowPolicy.new(
+          sensitivity_patterns: [SensitivityPattern.new(ProvenanceKind::Host, "https://evil.example:443", 10, Sensitivity::High)],
+          risk_flow_rules: allow_unlisted([RiskFlowRule.new(Authority::Net, Sensitivity::High, RiskFlowAction::Reject)]),
+        )
+        interp, _ = make_interp(risk_flow_policy: policy, grants: net_grants("evil.example"))
+
+        with_resolver(["10.0.0.1"]) do
+          ["https://evil.example/", "https://EVIL.Example/", "https://evil.example./"].each do |url|
+            expect_raises(RuntimeError, /risk flow policy rejected/) do
+              interp.eval(%(Legate.fetch(#{url.inspect})))
+            end
+          end
+        end
+      end
     end
 
     describe "grant enforcement" do
