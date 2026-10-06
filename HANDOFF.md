@@ -2,7 +2,7 @@
 
 Working notes between development sessions, kept current by whoever ends a session. Not user documentation.
 
-Last updated after the `risk-flow-exceptions` merge (#70) and the SCOPE commit that followed it, on `main`.
+Last updated after the `policy-host-spelling` merge (#73), on `main`.
 
 ## How to use this document
 
@@ -63,18 +63,20 @@ Key documents: `SCOPE.md` (known defects and gaps: Must Fix, Will Fix), `LEGATE.
 13. **Every place Ruby's grammar says `arg` stops before `and`/`or`.** Assignment's right-hand side, call arguments, ternary branches and `not`'s operand all use `PREC_AND_OR`; a new construct taking an argument should too.
 14. **A catch-all converts everything, including what must pass through.** `VM#call_native` wraps any non-`RuntimeError` as N001: it turned Legate's OS failures into "the host's fault", and turns a policy's H003 into something a script can rescue. An exception meant to stay out of a script's reach needs its own `rescue` clause there, as `FatalSignal` has.
 15. **Put a check where its inputs exist.** The risk-flow check ran in the VM before the call, where the subject isn't known; moving it into `Broker#authorize` is what let a rule name the destination. Check what actually travels, too: a redirect hop is judged on the headers it is sent, not on every argument the call received.
+16. **The perimeter and the policy must judge the same thing.** Grants resolved paths and folded hosts; the policy matched what the script typed, so a respelling the grant allowed could steer the policy. Both now go through one function each (`RealPath`, `HostName`). A new kind of subject needs its normal form in that shared place, applied to subjects, origins and exact patterns alike.
+17. **Declare an authority for every `authorize_*` call.** Labelled arguments are checked only at a subject for an authority the verb declares; `cp` declared `Write` alone, so its source escaped the read policy.
 
 ---
 
 ## 5. State
 
-Since the last handoff, `fix-ruby-divergences` merged (#66), then four more branches and two SCOPE commits:
+Since the last handoff, three branches merged:
 
-1. **Assertion messages** (#67) print values through the script's own `inspect`, so a failing exam check shows what it got.
-2. **`Legate::FilesystemError`** (#68): an operating-system failure a verb didn't foresee, in a verb or mid-stream, raises a recoverable Legate error naming the verb, path and errno, instead of N001.
-3. **Error names** (#69): every recoverable Legate class ends in `Error`, and `EOF` is `ConsumedError`. The fatal tier (`Denied`, `Exhausted`, `Aborted`) stays bare, as LEGATE.md §9.2 explains.
-4. **Risk-flow exceptions** (#70): a rule may name a data `origin` and a sink `subject`, as a prioritised exception over the base rule for its pair. Legate's verbs check labelled arguments inside `Broker#authorize`, at each subject, and `fetch` at each redirect hop against what that hop is sent. Decision requests carry the subject.
-5. **SCOPE.md:** Must Fix holds four entries, in working order: `cp`'s undeclared `Read`, `RiskChoice` dropping effects, mid-run policy ties reaching scripts as N001, and the authorization configuration. Will Fix is still in the older dated style.
+1. **`cp` declares `Read`** (#71). Its source, and every file a recursive copy reaches, is checked against labelled arguments as `Legate.read` is. Under an Ask rule, a labelled source path asks once per file, since an exception may name any one of them.
+2. **Path spelling** (#72). A File subject, origin and exact pattern are matched as the real path in `/` form (`RealPath.of`), in the core broker and in `VM#declare_sensitivity`, so host natives are covered. Exact patterns resolve when the policy is built; regexes match real paths as written. A symlink is judged as its target, even by `rm`. Labels and audit records carry the real path.
+3. **Host spelling** (#73). Host subjects, origins and exact patterns are folded to lowercase without a trailing dot (`HostName`), the same function `NetRule` uses.
+
+`SCOPE.md` Must Fix holds three entries: `RiskChoice` dropping effects, mid-run policy ties reaching scripts as N001, and the authorization configuration. §6 takes the ties first, since their spec is smallest. Will Fix is still in the older dated style.
 
 Model           |Latest result|Notes                                           
 ----------------|-------------|------------------------------------------------
@@ -82,14 +84,14 @@ qwen3.8 (27B)   |10/10        |Last sat before `fix-ruby-divergences`
 Muse Glimmer 30b|10/10        |Sat at `2bfa808`                                
 Ornith 1.5 (9B) |7/10         |Sat at `2bfa808`; 02, 06 and 08 are model errors
 
-All three predate #69, which renamed the classes the skill teaches, and #70. Recorded answers that rescue the old names now fail, so the next sitting is fresh, not a re-run.
+All three predate #69, which renamed the classes the skill teaches. Recorded answers that rescue the old names now fail, so the next sitting is fresh, not a re-run. #71 to #73 changed nothing the skill teaches.
 
 ## 6. Next
 
-1. **`cp` declares `Read`** (Must Fix). Small and fully specified; the spec extends `read_spec.cr`'s streaming-verb loop to `cp`.
+1. **Policy ties** (Must Fix): first the spec showing a tie reached from `Legate.read` is rescuable, then the two decisions in the entry.
 2. **Sit the exam fresh** on all three models, to confirm the renamed skill.
-3. **Policy ties** (Must Fix): first the spec showing a tie reached from `Legate.read` is rescuable, then the two decisions in the entry.
-4. **`RiskChoice` effects** (Must Fix): worst severity, union of effects; decide what `RiskSummary#path` says.
+3. **`RiskChoice` effects** (Must Fix): worst severity, union of effects; decide what `RiskSummary#path` says.
+4. **`Legate::Path#under?`** (Will Fix, Legate): see §7.
 5. **Exam tasks 11 to 13** (`spec/skill/TODO.md` §1). Its items 3 and 5 still call Array-keyed Hashes and slice assignment open divergences; both are fixed, so task 12 is a regression check. A credential-to-its-own-host task would now exercise risk-flow exceptions.
 6. **Will Fix, style pass**, by subsection, on its own branch.
 7. **Authorization configuration** (Must Fix) before 1.0, since it changes an embedder-facing format.
@@ -98,7 +100,7 @@ All three predate #69, which renamed the classes the skill teaches, and #70. Rec
 ## 7. Open decisions
 
 - **D5. `Time.now`.** Core's ungated `Time.now` sits beside `Legate.now`, and `SKILL.md` both maps one to the other and whitelists `Time.now`. Keep it, fixing the skill, or bring it under U021?
-- **`Legate::Path#under?`.** It doesn't resolve `..`, so it misleads a script using it as a boundary check. Logged under Will Fix, Legate; promote to Must Fix?
+- **`Legate::Path#under?`.** It doesn't resolve `..`, so it misleads a script using it as a boundary check. Logged under Will Fix, Legate. #72 settled how Adjutant judges a path (`RealPath.of`), so the remaining question is only whether to promote it to Must Fix and answer by real path too.
 - **`Legate::Response` headers.** LEGATE.md §5.5 calls them frozen; Adjutant freezes only Strings. Correct §5.5, or add freezing to the backlog?
 - **LEGATE.md §1** says the core is "ordinary Ruby with mutation removed". It isn't: `<<` and `[]=` mutate Arrays and Hashes. Correct it at the next spec revision.
 - **`inspect` of deep data.** Printing an Array or Hash nested deeper than `call_depth_limit` (256) raises L002, since each level re-enters the VM. JSON from `fetch` may nest to 512. Make `inspect` walk built-in containers iteratively (safe, since scripts can't override their `inspect`, U003), or leave it?
@@ -107,4 +109,4 @@ All three predate #69, which renamed the classes the skill teaches, and #70. Rec
 
 ## 8. Deferred tests
 
-`authorization_spec.cr`'s symlinked-root test (Windows CI cannot create symlinks) and `verbs/fetch_stream_spec.cr`'s raise-mid-walk test (believed a Crystal runtime defect; investigation closed).
+`authorization_spec.cr`'s symlinked-root test and `path_spelling_spec.cr`'s two symlink tests (Windows CI cannot create symlinks), and `verbs/fetch_stream_spec.cr`'s raise-mid-walk test (believed a Crystal runtime defect; investigation closed).
