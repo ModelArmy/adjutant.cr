@@ -21,22 +21,6 @@ after 1.0. Ordered for working through: security and policy defects
 first, then the Ruby divergences, then design work on policy and
 configuration.
 
-- **Policy patterns match a host as the script spelled it.** The
-  net grant folds case and drops a trailing dot
-  (`NetRule#matches_host?`), but `Broker#authorize_net` builds its
-  subject, `scheme://host:port`, from the URL's host as written, and
-  that string is what Host sensitivity patterns, exception subjects
-  and a label's origin see. So a pattern marking `evil.example` High
-  misses `EVIL.example` and `evil.example.`, both of which the grant
-  allows and DNS treats as the same host. The path counterpart is
-  fixed by matching real paths; the host one is the same fix in
-  miniature: build the subject from the host as the grant compares
-  it, and fold an exact Host pattern the same way when the policy is
-  built. Predicted by reading; the spec is a Host pattern refusing a
-  `fetch` and failing to refuse a respelling of its host. Env names
-  are compared exactly by both the allowlist and the policy, so they
-  agree.
-
 - **A `RiskChoice` reports its worst branch, so effects reachable only
   on a losing branch vanish from the manifest.**
   `RiskAggregator.summarize_choice` (`risk_aggregator.cr`) takes

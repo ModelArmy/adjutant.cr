@@ -1,5 +1,6 @@
 require "uri"
 require "yaml"
+require "../host_name"
 
 module Adjutant
   module Legate
@@ -124,10 +125,9 @@ module Adjutant
         new(host: normalize_host(host), ports: [port])
       end
 
-      # Lowercased, with any trailing dot removed, as DNS compares
-      # names (RFC 4343).
+      # As DNS compares names; see `HostName`.
       private def self.normalize_host(host : String) : String
-        host.downcase.rstrip('.')
+        HostName.fold_host(host)
       end
 
       private def self.validate_scheme!(scheme : String) : Nil
@@ -141,7 +141,7 @@ module Adjutant
       end
 
       def matches_host?(candidate : String) : Bool
-        normalized = candidate.downcase.rstrip('.')
+        normalized = HostName.fold_host(candidate)
         return true if normalized == host
         # The suffix includes the dot, so a rule for `b.com` doesn't
         # match `evilb.com`.

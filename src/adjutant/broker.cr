@@ -6,6 +6,7 @@ require "./fatal_signal"
 require "./grants"
 require "./open_sources"
 require "./real_path"
+require "./host_name"
 require "./native_call_context"
 require "./risk_flow_label"
 
@@ -51,9 +52,9 @@ module Adjutant
 
     # Runs the three checks for one call. `operation` names the verb;
     # `subject` (the path, or `scheme://host:port`) is where the
-    # risk-flow policy sees the data going, and a File subject is
-    # judged and audited as its `RealPath.of`; `provider` names the
-    # error class a denial raises. `flowing` holds the labels of the
+    # risk-flow policy sees the data going, judged and audited in the
+    # form `judged_subject` gives; `provider` names the error class a
+    # denial raises. `flowing` holds the labels of the
     # data sent to `subject`, when that isn't every argument, such as
     # a redirect hop's surviving headers.
     def authorize(provider : EffectProvider, authority : Authority, operation : String,
@@ -100,15 +101,20 @@ module Adjutant
     # the provider's `denied_class_name`.
     REJECTED_CLASS_NAME = "RiskFlowRejectedError"
 
-    # A File subject as the policy matches it, `RealPath.of`, so a
-    # respelled or linked path meets the patterns of the file it
-    # reaches. A symlink is judged as its target even by a verb that
-    # acts on the link itself, which errs towards the stricter answer.
-    # A path that doesn't resolve keeps its spelling; the perimeter
-    # denies it first. Any other kind is returned as given.
+    # A subject as the policy matches it, so a respelling the
+    # perimeter allows meets the patterns of what it reaches. A File
+    # subject is its `RealPath.of`: a symlink is judged as its target
+    # even by a verb that acts on the link itself, which errs towards
+    # the stricter answer, and a path that doesn't resolve keeps its
+    # spelling, since the perimeter denies it first. A Host subject is
+    # folded as the net grant compares hosts (`HostName.fold`). Any
+    # other kind is returned as given.
     private def judged_subject(subject : String, provenance_kind : ProvenanceKind) : String
-      return subject unless provenance_kind.file?
-      RealPath.of(subject) || subject
+      case provenance_kind
+      when .file? then RealPath.of(subject) || subject
+      when .host? then HostName.fold(subject)
+      else             subject
+      end
     end
 
     private def deny!(provider : EffectProvider, operation : String,
