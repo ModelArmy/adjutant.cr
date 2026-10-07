@@ -100,21 +100,28 @@ module Adjutant
         end
       end
 
-      it "resolves a symlinked root and a symlinked path to the same target" do
-        with_tmpdir do |dir|
-          real_root = File.join(dir, "real_root")
-          Dir.mkdir(real_root)
-          file = File.join(real_root, "f.txt")
-          File.write(file, "hi")
+      # On Windows, `File.realpath` resolves only a path's final
+      # component, so a link in a parent directory survives; see
+      # SCOPE's "Windows resolves only a path's last link".
+      {% if flag?(:windows) %}
+        pending "resolves a symlinked root and a symlinked path to the same target (Windows realpath)" { }
+      {% else %}
+        it "resolves a symlinked root and a symlinked path to the same target" do
+          with_tmpdir do |dir|
+            real_root = File.join(dir, "real_root")
+            Dir.mkdir(real_root)
+            file = File.join(real_root, "f.txt")
+            File.write(file, "hi")
 
-          linked_root = File.join(dir, "linked_root")
-          File.symlink(real_root, linked_root)
-          linked_file = File.join(linked_root, "f.txt")
+            linked_root = File.join(dir, "linked_root")
+            File.symlink(real_root, linked_root)
+            linked_file = File.join(linked_root, "f.txt")
 
-          Legate::Grants.new.check_root(linked_file, [real_root]).allowed?.should be_true
-          Legate::Grants.new.check_root(file, [linked_root]).allowed?.should be_true
+            Legate::Grants.new.check_root(linked_file, [real_root]).allowed?.should be_true
+            Legate::Grants.new.check_root(file, [linked_root]).allowed?.should be_true
+          end
         end
-      end
+      {% end %}
     end
 
     describe "#check_root_maybe_missing" do
