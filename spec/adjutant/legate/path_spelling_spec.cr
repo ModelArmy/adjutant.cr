@@ -8,7 +8,7 @@ private def with_real_tmpdir(&)
   path = File.join(Dir.tempdir, "adjutant-spec-#{Random::Secure.hex(8)}")
   Dir.mkdir(path)
   begin
-    yield File.realpath(path)
+    yield Adjutant::RealPath.resolve(path) || path
   ensure
     FileUtils.rm_rf(path)
   end
@@ -64,31 +64,25 @@ module Adjutant
       end
     end
 
-    # On Windows, `File.realpath` resolves only a path's final
-    # component; see SCOPE's "Windows resolves only a path's last link".
-    {% if flag?(:windows) %}
-      pending "applies a sensitivity pattern written through a symlinked directory (Windows realpath)" { }
-    {% else %}
-      # As a pattern under macOS's `/var` or `/tmp` is.
-      it "applies a sensitivity pattern written through a symlinked directory" do
-        with_real_tmpdir do |dir|
-          real_dir = File.join(dir, "real")
-          Dir.mkdir(real_dir)
-          File.write(File.join(real_dir, "secret.txt"), "shh")
-          alias_dir = File.join(dir, "alias")
-          File.symlink(real_dir, alias_dir)
-          policy = RiskFlowPolicy.new(
-            sensitivity_patterns: [SensitivityPattern.new(ProvenanceKind::File, File.join(alias_dir, "secret.txt"), 10, Sensitivity::High)],
-            risk_flow_rules: allow_unlisted([RiskFlowRule.new(Authority::Read, Sensitivity::High, RiskFlowAction::Reject)]),
-          )
-          interp, _ = make_interp(risk_flow_policy: policy, grants: Legate::Grants.new(read_roots: [dir]))
+    # As a pattern under macOS's `/var` or `/tmp` is.
+    it "applies a sensitivity pattern written through a symlinked directory" do
+      with_real_tmpdir do |dir|
+        real_dir = File.join(dir, "real")
+        Dir.mkdir(real_dir)
+        File.write(File.join(real_dir, "secret.txt"), "shh")
+        alias_dir = File.join(dir, "alias")
+        File.symlink(real_dir, alias_dir)
+        policy = RiskFlowPolicy.new(
+          sensitivity_patterns: [SensitivityPattern.new(ProvenanceKind::File, File.join(alias_dir, "secret.txt"), 10, Sensitivity::High)],
+          risk_flow_rules: allow_unlisted([RiskFlowRule.new(Authority::Read, Sensitivity::High, RiskFlowAction::Reject)]),
+        )
+        interp, _ = make_interp(risk_flow_policy: policy, grants: Legate::Grants.new(read_roots: [dir]))
 
-          expect_raises(RuntimeError, /risk flow policy rejected/) do
-            reads(interp, File.join(real_dir, "secret.txt"))
-          end
+        expect_raises(RuntimeError, /risk flow policy rejected/) do
+          reads(interp, File.join(real_dir, "secret.txt"))
         end
       end
-    {% end %}
+    end
 
     it "doesn't apply an exception's subject to a path that climbs out of it" do
       with_real_tmpdir do |dir|

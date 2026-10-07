@@ -192,7 +192,7 @@ module Adjutant
         record.authority.should eq Authority::Read
         record.decision.should eq :allowed
         record.exception_class.should be_nil
-        record.subject.should eq ::Path.new(File.realpath(file)).to_posix.to_s
+        record.subject.should eq RealPath.of(file)
       end
     end
 
