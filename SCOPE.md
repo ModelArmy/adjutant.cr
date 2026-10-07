@@ -21,28 +21,6 @@ after 1.0. Ordered for working through: security and policy defects
 first, then the Ruby divergences, then design work on policy and
 configuration.
 
-- **Windows resolves only a path's last link, so a directory link
-  inside a granted root can lead outside it.** Crystal's Windows
-  `File.realpath` (`src/crystal/system/win32/file.cr`, unchanged on
-  `master`) normalises the path as text with `GetFullPathNameW`, then
-  follows a link only if the final component is one. A link in a
-  parent directory survives: `authorization_spec.cr`'s symlinked-root
-  test fails on the Windows runner because `linked_root\f.txt` comes
-  back unresolved. `RealPath.resolve` relies on it, so a root
-  `C:\work` holding a directory link `out` to `C:\secrets` would
-  allow reading `C:\work\out\key.txt`, which is lexically inside
-  the root; #72's policy matching has the same blind spot, and short
-  names (`RUNNER~1`) aren't expanded either. A script can't create a
-  link, but one already in a root escapes it. Linux and macOS resolve
-  every component and are unaffected. The escape is predicted from
-  the failing test and the source; its spec is that read being
-  denied. The fix is a Windows-only `RealPath.resolve` that opens the
-  path with `CreateFileW` (`FILE_FLAG_BACKUP_SEMANTICS`) and asks
-  `GetFinalPathNameByHandleW`, which Crystal doesn't bind, for the
-  path the kernel reached, stripping the `\\?\` prefix. Paths that
-  don't exist yet keep the deepest-existing-ancestor logic on top of
-  it. Worth reporting upstream.
-
 - **A `RiskChoice` reports its worst branch, so effects reachable only
   on a losing branch vanish from the manifest.**
   `RiskAggregator.summarize_choice` (`risk_aggregator.cr`) takes
