@@ -49,7 +49,7 @@ module Adjutant
       with_tmpdir do |dir|
         file = File.join(dir, "secret.txt")
         File.write(file, "shh")
-        real = ::Path.new(File.realpath(file)).to_posix.to_s
+        real = RealPath.of(file)
         policy = policy_for(file, Authority::Delete, RiskFlowAction::Allow)
         interp, _ = make_interp(grants: delete_grants(dir), risk_flow_policy: policy)
 

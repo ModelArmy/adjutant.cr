@@ -1,3 +1,9 @@
+{% if flag?(:windows) %}
+  lib LibC
+    fun GetFinalPathNameByHandleW(hFile : HANDLE, lpszFilePath : LPWSTR, cchFilePath : DWORD, dwFlags : DWORD) : DWORD
+  end
+{% end %}
+
 module Adjutant
   # Where a filesystem path leads: what `Grants` checks containment
   # on, and the form in which a risk-flow policy matches a path.
@@ -13,13 +19,53 @@ module Adjutant
       prospective(path).try { |full| ::Path.new(full).normalize.to_posix.to_s }
     end
 
-    # `File.realpath`, or nil if the path can't be resolved for any
-    # reason.
+    # The path `path` reaches, every link on the way followed, or nil
+    # if it can't be resolved for any reason. `File.realpath`, except
+    # on Windows, where Crystal's follows only a final link
+    # (`final_path`).
     def self.resolve(path : String) : String?
-      File.realpath(path)
+      {% if flag?(:windows) %}
+        final_path(path)
+      {% else %}
+        File.realpath(path)
+      {% end %}
     rescue
       nil
     end
+
+    {% if flag?(:windows) %}
+      # The path the kernel reaches opening `path`, as
+      # `GetFinalPathNameByHandleW` reports it: every link followed and
+      # short names (`RUNNER~1`) expanded. Nil when it can't be opened.
+      private def self.final_path(path : String) : String?
+        handle = LibC.CreateFileW(path.check_no_null_byte.to_utf16.to_unsafe, 0, LibC::DEFAULT_SHARE_MODE, nil,
+          LibC::OPEN_EXISTING, LibC::FILE_FLAG_BACKUP_SEMANTICS, LibC::HANDLE.null)
+        return if handle == LibC::INVALID_HANDLE_VALUE
+        begin
+          size = LibC.GetFinalPathNameByHandleW(handle, Pointer(LibC::WCHAR).null, 0, 0)
+          return if size == 0
+          buffer = Slice(LibC::WCHAR).new(size)
+          length = LibC.GetFinalPathNameByHandleW(handle, buffer, size, 0)
+          return if length == 0 || length >= size
+          without_verbatim_prefix(String.from_utf16(buffer[0, length]))
+        ensure
+          LibC.CloseHandle(handle)
+        end
+      end
+
+      # `path` without the `\\?\` prefix `GetFinalPathNameByHandleW`
+      # adds, so it compares with paths as written: `\\?\C:\x` is
+      # `C:\x`, and `\\?\UNC\host\share` is `\\host\share`.
+      private def self.without_verbatim_prefix(path : String) : String
+        if path.starts_with?("\\\\?\\UNC\\")
+          "\\\\" + path[8..]
+        elsif path.starts_with?("\\\\?\\")
+          path[4..]
+        else
+          path
+        end
+      end
+    {% end %}
 
     # The real path of `path` if it exists; otherwise the real path of
     # its deepest existing ancestor with the missing components
@@ -50,8 +96,8 @@ module Adjutant
         if File.symlink?(current)
           return if hops >= MAX_LINK_HOPS
           # Joined, not normalized: a `..` in the target is left for
-          # `File.realpath` to apply after following links, as the
-          # kernel does.
+          # `resolve` to apply after following links, as the kernel
+          # does.
           return unless link = File.readlink?(current)
           target = ::Path.new(link).absolute? ? link : File.join(File.dirname(current), link)
           ancestor = deepest_existing_ancestor(target, hops + 1)

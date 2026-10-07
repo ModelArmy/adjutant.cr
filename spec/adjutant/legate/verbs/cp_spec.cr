@@ -411,7 +411,7 @@ module Adjutant
         interp.eval(%(Legate.cp(tainted_path(#{from.inspect}), #{File.join(dir, "copy").inspect}, recursive: true)))
 
         requests.map(&.authorities).uniq.should eq [Set{Authority::Read}]
-        expected = [from, File.join(from, "a.txt"), File.join(from, "b.txt")].map { |path| posix(File.realpath(path)) }
+        expected = [from, File.join(from, "a.txt"), File.join(from, "b.txt")].map { |path| RealPath.of(path) || path }
         requests.compact_map(&.subject).sort.should eq expected.sort
       end
     end

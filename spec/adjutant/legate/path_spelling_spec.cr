@@ -8,7 +8,7 @@ private def with_real_tmpdir(&)
   path = File.join(Dir.tempdir, "adjutant-spec-#{Random::Secure.hex(8)}")
   Dir.mkdir(path)
   begin
-    yield File.realpath(path)
+    yield Adjutant::RealPath.resolve(path) || path
   ensure
     FileUtils.rm_rf(path)
   end
