@@ -21,23 +21,6 @@ after 1.0. Ordered for working through: security and policy defects
 first, then the Ruby divergences, then design work on policy and
 configuration.
 
-- **A malformed policy regex surfaces mid-run, where a script can
-  rescue it.** `PatternType#matches?` compiles a regex pattern with
-  `::Regex.new` each time a value meets it, so an invalid one (`"[a-"`)
-  in a sensitivity pattern, an exception's origin or its subject loads
-  without complaint. The first lookup raises `ArgumentError` inside a
-  native call, which `VM#call_native`'s catch-all wraps as N001, and
-  `rescue => e` catches. It fails closed, since the flow never
-  happens, but the host's configuration error becomes the script's to
-  swallow, as policy ties did. The build-time tie check treats an
-  invalid regex as matching nothing (`PatternType#covers?`), so it
-  neither catches nor trips over one. Predicted by reading; the spec
-  is a policy with an invalid regex failing to build, with
-  `InvalidRiskFlowPolicyError` naming the pattern. The fix is to
-  compile every regex when the policy is built, refusing one that
-  doesn't compile, and to match with the compiled form, which also
-  stops recompiling on every lookup.
-
 - **A `RiskChoice` reports its worst branch, so effects reachable only
   on a losing branch vanish from the manifest.**
   `RiskAggregator.summarize_choice` (`risk_aggregator.cr`) takes

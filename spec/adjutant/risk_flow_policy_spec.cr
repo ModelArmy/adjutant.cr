@@ -324,6 +324,48 @@ module Adjutant
       end
     end
 
+    # A regex that doesn't compile is the host's configuration error,
+    # so it is refused when the pattern is built, not when a value
+    # first meets it inside a native call a script might rescue.
+    describe "regex validity" do
+      it "rejects an invalid regex in a sensitivity pattern" do
+        expect_raises(InvalidRiskFlowPolicyError, /\[a-/) do
+          SensitivityPattern.new(ProvenanceKind::Env, "[a-", 10, Sensitivity::High, PatternType::Regex)
+        end
+      end
+
+      it "rejects an invalid regex in an exception's origin" do
+        expect_raises(InvalidRiskFlowPolicyError, /\[a-/) do
+          RiskFlowOrigin.new(ProvenanceKind::Env, "[a-", PatternType::Regex)
+        end
+      end
+
+      it "rejects an invalid regex in an exception's subject" do
+        expect_raises(InvalidRiskFlowPolicyError, /\[a-/) do
+          RiskFlowSubject.new("[a-", PatternType::Regex)
+        end
+      end
+
+      it "rejects an invalid regex in a policy loaded from JSON" do
+        json = <<-JSON
+          {
+            "sensitivity_patterns": [
+              { "kind": "Env", "pattern_type": "regex", "pattern": "[a-", "priority": 10, "sensitivity": "High" }
+            ],
+            "risk_flow_rules": [],
+            "default": "reject"
+          }
+          JSON
+        expect_raises(InvalidRiskFlowPolicyError, /\[a-/) do
+          RiskFlowPolicy.from_json(json)
+        end
+      end
+
+      it "accepts the same text as an exact pattern" do
+        SensitivityPattern.new(ProvenanceKind::Env, "[a-", 10, Sensitivity::High).matches?("[a-").should be_true
+      end
+    end
+
     # A tie certain to arise is refused when the policy is built, where
     # its author sees it. One only a real origin or subject reveals,
     # such as between two different regexes, waits for H003.
