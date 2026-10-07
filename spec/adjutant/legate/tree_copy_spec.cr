@@ -65,42 +65,41 @@ module Adjutant
       end
     end
 
-    # The Windows runner can't create symlinks or FIFOs; see
-    # authorization_spec.cr's pending test.
+    it "copies a symlink named as the root as a link, as a rename would move it" do
+      with_tmpdir do |dir|
+        with_tmpdir do |outside|
+          target = File.join(outside, "secret.txt")
+          File.write(target, "secret")
+          link = File.join(dir, "link")
+          File.symlink(target, link)
+          to = File.join(dir, "moved")
+          b = budget
+          Legate::TreeCopy.new(b) { |_file| raise "no file should be read" }.copy_entry(link, to)
+          File.readlink(to).should eq target
+          b.total_read.should eq 0
+        end
+      end
+    end
+
+    it "copies links inside the tree as links, including one to an ancestor" do
+      with_tmpdir do |dir|
+        with_tmpdir do |outside|
+          from = File.join(dir, "from")
+          Dir.mkdir(from)
+          File.symlink(outside, File.join(from, "out"))
+          File.symlink("..", File.join(from, "up"))
+          to = File.join(dir, "to")
+          Legate::TreeCopy.new(budget) { |_file| raise "no file should be read" }.copy_entry(from, to)
+          File.readlink(File.join(to, "out")).should eq outside
+          File.readlink(File.join(to, "up")).should eq ".."
+        end
+      end
+    end
+
+    # Windows has no FIFOs.
     {% if flag?(:windows) %}
-      pending "copies symlinks as links and refuses special files (needs symlinks)" { }
+      pending "raises SpecialFile for a FIFO instead of opening it (needs FIFOs)" { }
     {% else %}
-      it "copies a symlink named as the root as a link, as a rename would move it" do
-        with_tmpdir do |dir|
-          with_tmpdir do |outside|
-            target = File.join(outside, "secret.txt")
-            File.write(target, "secret")
-            link = File.join(dir, "link")
-            File.symlink(target, link)
-            to = File.join(dir, "moved")
-            b = budget
-            Legate::TreeCopy.new(b) { |_file| raise "no file should be read" }.copy_entry(link, to)
-            File.readlink(to).should eq target
-            b.total_read.should eq 0
-          end
-        end
-      end
-
-      it "copies links inside the tree as links, including one to an ancestor" do
-        with_tmpdir do |dir|
-          with_tmpdir do |outside|
-            from = File.join(dir, "from")
-            Dir.mkdir(from)
-            File.symlink(outside, File.join(from, "out"))
-            File.symlink("..", File.join(from, "up"))
-            to = File.join(dir, "to")
-            Legate::TreeCopy.new(budget) { |_file| raise "no file should be read" }.copy_entry(from, to)
-            File.readlink(File.join(to, "out")).should eq outside
-            File.readlink(File.join(to, "up")).should eq ".."
-          end
-        end
-      end
-
       it "raises SpecialFile for a FIFO instead of opening it" do
         with_tmpdir do |dir|
           from = File.join(dir, "from")

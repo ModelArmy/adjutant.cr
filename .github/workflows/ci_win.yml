@@ -38,6 +38,13 @@ jobs:
       - name: Install shards
         run: shards check || shards install
 
+      # Developer Mode lets a process create symlinks without
+      # SeCreateSymbolicLinkPrivilege, which the specs that build
+      # symlinked fixtures need.
+      - name: Allow unprivileged symlinks
+        shell: pwsh
+        run: reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock" /t REG_DWORD /f /v AllowDevelopmentWithoutDevLicense /d 1
+
       # `fetch_stream_spec.cr`'s raise-mid-walk case is `pending` under
       # `flag?(:windows)` — it hard-crashes the process there. See
       # SCOPE's "Streamed fetch on Windows".

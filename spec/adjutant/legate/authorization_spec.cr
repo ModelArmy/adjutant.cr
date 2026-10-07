@@ -100,25 +100,28 @@ module Adjutant
         end
       end
 
-      # Marked pending: Windows CI needs Developer Mode / admin
-      # privileges (SeCreateSymbolicLinkPrivilege) to create symlinks
-      # at all — this may be a runner-environment gap rather than a
-      # code bug, and needs investigating on its own before
-      # re-enabling here.
-      pending "resolves a symlinked root and a symlinked path to the same target" do
-        with_tmpdir do |dir|
-          real_root = File.join(dir, "real_root")
-          Dir.mkdir(real_root)
-          file = File.join(real_root, "f.txt")
-          File.write(file, "hi")
+      # On Windows, `File.realpath` resolves only a path's final
+      # component, so a link in a parent directory survives; see
+      # SCOPE's "Windows resolves only a path's last link".
+      {% if flag?(:windows) %}
+        pending "resolves a symlinked root and a symlinked path to the same target (Windows realpath)" { }
+      {% else %}
+        it "resolves a symlinked root and a symlinked path to the same target" do
+          with_tmpdir do |dir|
+            real_root = File.join(dir, "real_root")
+            Dir.mkdir(real_root)
+            file = File.join(real_root, "f.txt")
+            File.write(file, "hi")
 
-          linked_root = File.join(dir, "linked_root")
-          File.symlink(real_root, linked_root)
-          linked_file = File.join(linked_root, "f.txt")
+            linked_root = File.join(dir, "linked_root")
+            File.symlink(real_root, linked_root)
+            linked_file = File.join(linked_root, "f.txt")
 
-          Legate::Grants.new.check_root(linked_file, [real_root]).allowed?.should be_true
+            Legate::Grants.new.check_root(linked_file, [real_root]).allowed?.should be_true
+            Legate::Grants.new.check_root(file, [linked_root]).allowed?.should be_true
+          end
         end
-      end
+      {% end %}
     end
 
     describe "#check_root_maybe_missing" do
@@ -173,50 +176,45 @@ module Adjutant
 
       # A dangling link doesn't resolve, but it exists: whatever is
       # created through it lands at its target, so the target is what
-      # must be inside a root. The Windows runner can't create
-      # symlinks; see the pending test above.
-      {% if flag?(:windows) %}
-        pending "resolves dangling symlinks to their targets (needs symlinks)" { }
-      {% else %}
-        it "denies a dangling symlink whose target is outside every root" do
-          with_tmpdir do |dir|
-            with_tmpdir do |outside|
-              link = File.join(dir, "log")
-              File.symlink(File.join(outside, "job"), link)
-              Legate::Grants.new.check_root_maybe_missing(link, [dir]).allowed?.should be_false
-            end
-          end
-        end
-
-        it "denies a path beneath a dangling directory link whose target is outside every root" do
-          with_tmpdir do |dir|
-            with_tmpdir do |outside|
-              link = File.join(dir, "out")
-              File.symlink(File.join(outside, "not-yet"), link)
-              target = File.join(link, "file.txt")
-              Legate::Grants.new.check_root_maybe_missing(target, [dir]).allowed?.should be_false
-            end
-          end
-        end
-
-        it "allows a dangling symlink whose target is a missing path inside a root" do
-          with_tmpdir do |dir|
+      # must be inside a root.
+      it "denies a dangling symlink whose target is outside every root" do
+        with_tmpdir do |dir|
+          with_tmpdir do |outside|
             link = File.join(dir, "log")
-            File.symlink("real.log", link)
-            Legate::Grants.new.check_root_maybe_missing(link, [dir]).allowed?.should be_true
+            File.symlink(File.join(outside, "job"), link)
+            Legate::Grants.new.check_root_maybe_missing(link, [dir]).allowed?.should be_false
           end
         end
+      end
 
-        it "denies a symlink loop" do
-          with_tmpdir do |dir|
-            a = File.join(dir, "a")
-            b = File.join(dir, "b")
-            File.symlink(b, a)
-            File.symlink(a, b)
-            Legate::Grants.new.check_root_maybe_missing(a, [dir]).allowed?.should be_false
+      it "denies a path beneath a dangling directory link whose target is outside every root" do
+        with_tmpdir do |dir|
+          with_tmpdir do |outside|
+            link = File.join(dir, "out")
+            File.symlink(File.join(outside, "not-yet"), link)
+            target = File.join(link, "file.txt")
+            Legate::Grants.new.check_root_maybe_missing(target, [dir]).allowed?.should be_false
           end
         end
-      {% end %}
+      end
+
+      it "allows a dangling symlink whose target is a missing path inside a root" do
+        with_tmpdir do |dir|
+          link = File.join(dir, "log")
+          File.symlink("real.log", link)
+          Legate::Grants.new.check_root_maybe_missing(link, [dir]).allowed?.should be_true
+        end
+      end
+
+      it "denies a symlink loop" do
+        with_tmpdir do |dir|
+          a = File.join(dir, "a")
+          b = File.join(dir, "b")
+          File.symlink(b, a)
+          File.symlink(a, b)
+          Legate::Grants.new.check_root_maybe_missing(a, [dir]).allowed?.should be_false
+        end
+      end
 
       it "denies when no roots are granted" do
         decision = Legate::Grants.deny_all.check_root_maybe_missing(__FILE__, [] of String)

@@ -416,45 +416,39 @@ module Adjutant
       end
     end
 
-    # The Windows runner can't create symlinks; see
-    # authorization_spec.cr's pending test.
-    {% if flag?(:windows) %}
-      pending "recreates symlinks in the tree as links (needs symlinks)" { }
-    {% else %}
-      it "recreates a link pointing outside the read grant as a link, reading nothing through it" do
-        with_tmpdir do |dir|
-          with_tmpdir do |outside|
-            File.write(File.join(outside, "id_rsa"), "secret")
-            from = File.join(dir, "repo")
-            Dir.mkdir(from)
-            File.write(File.join(from, "README"), "hi")
-            File.symlink(outside, File.join(from, "keys"))
-            to = File.join(dir, "copy")
-            interp, _ = make_interp(grants: Legate::Grants.new(read_roots: [dir], write_roots: [dir]))
-            interp.eval(%(Legate.cp(#{from.inspect}, #{to.inspect}, recursive: true)))
-            copied = File.join(to, "keys")
-            File.symlink?(copied).should be_true
-            File.readlink(copied).should eq outside
-            File.read(File.join(to, "README")).should eq "hi"
-            interp.broker.budget.total_read.should eq 2
-          end
-        end
-      end
-
-      it "copies a link to an ancestor as a link instead of looping" do
-        with_tmpdir do |dir|
+    it "recreates a link pointing outside the read grant as a link, reading nothing through it" do
+      with_tmpdir do |dir|
+        with_tmpdir do |outside|
+          File.write(File.join(outside, "id_rsa"), "secret")
           from = File.join(dir, "repo")
           Dir.mkdir(from)
           File.write(File.join(from, "README"), "hi")
-          File.symlink("..", File.join(from, "up"))
+          File.symlink(outside, File.join(from, "keys"))
           to = File.join(dir, "copy")
           interp, _ = make_interp(grants: Legate::Grants.new(read_roots: [dir], write_roots: [dir]))
           interp.eval(%(Legate.cp(#{from.inspect}, #{to.inspect}, recursive: true)))
-          File.readlink(File.join(to, "up")).should eq ".."
-          Dir.children(to).to_set.should eq Set{"README", "up"}
+          copied = File.join(to, "keys")
+          File.symlink?(copied).should be_true
+          File.readlink(copied).should eq outside
+          File.read(File.join(to, "README")).should eq "hi"
+          interp.broker.budget.total_read.should eq 2
         end
       end
-    {% end %}
+    end
+
+    it "copies a link to an ancestor as a link instead of looping" do
+      with_tmpdir do |dir|
+        from = File.join(dir, "repo")
+        Dir.mkdir(from)
+        File.write(File.join(from, "README"), "hi")
+        File.symlink("..", File.join(from, "up"))
+        to = File.join(dir, "copy")
+        interp, _ = make_interp(grants: Legate::Grants.new(read_roots: [dir], write_roots: [dir]))
+        interp.eval(%(Legate.cp(#{from.inspect}, #{to.inspect}, recursive: true)))
+        File.readlink(File.join(to, "up")).should eq ".."
+        Dir.children(to).to_set.should eq Set{"README", "up"}
+      end
+    end
   end
 
   describe "Legate.cp!" do

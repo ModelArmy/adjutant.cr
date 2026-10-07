@@ -46,30 +46,29 @@ module Adjutant
       end
     end
 
-    # The Windows runner can't create symlinks; see
-    # authorization_spec.cr's pending test.
-    {% if flag?(:windows) %}
-      pending "applies a sensitivity pattern through a symlink to its file (needs symlinks)" { }
-      pending "applies a sensitivity pattern written through a symlinked directory (needs symlinks)" { }
-    {% else %}
-      it "applies a sensitivity pattern through a symlink to its file" do
-        with_real_tmpdir do |dir|
-          secret = File.join(dir, "secret.txt")
-          File.write(secret, "shh")
-          link = File.join(dir, "notes.txt")
-          File.symlink(secret, link)
-          policy = RiskFlowPolicy.new(
-            sensitivity_patterns: [SensitivityPattern.new(ProvenanceKind::File, secret, 10, Sensitivity::High)],
-            risk_flow_rules: allow_unlisted([RiskFlowRule.new(Authority::Read, Sensitivity::High, RiskFlowAction::Reject)]),
-          )
-          interp, _ = make_interp(risk_flow_policy: policy, grants: Legate::Grants.new(read_roots: [dir]))
+    it "applies a sensitivity pattern through a symlink to its file" do
+      with_real_tmpdir do |dir|
+        secret = File.join(dir, "secret.txt")
+        File.write(secret, "shh")
+        link = File.join(dir, "notes.txt")
+        File.symlink(secret, link)
+        policy = RiskFlowPolicy.new(
+          sensitivity_patterns: [SensitivityPattern.new(ProvenanceKind::File, secret, 10, Sensitivity::High)],
+          risk_flow_rules: allow_unlisted([RiskFlowRule.new(Authority::Read, Sensitivity::High, RiskFlowAction::Reject)]),
+        )
+        interp, _ = make_interp(risk_flow_policy: policy, grants: Legate::Grants.new(read_roots: [dir]))
 
-          expect_raises(RuntimeError, /risk flow policy rejected/) do
-            reads(interp, link)
-          end
+        expect_raises(RuntimeError, /risk flow policy rejected/) do
+          reads(interp, link)
         end
       end
+    end
 
+    # On Windows, `File.realpath` resolves only a path's final
+    # component; see SCOPE's "Windows resolves only a path's last link".
+    {% if flag?(:windows) %}
+      pending "applies a sensitivity pattern written through a symlinked directory (Windows realpath)" { }
+    {% else %}
       # As a pattern under macOS's `/var` or `/tmp` is.
       it "applies a sensitivity pattern written through a symlinked directory" do
         with_real_tmpdir do |dir|
