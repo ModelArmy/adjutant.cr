@@ -113,7 +113,7 @@ Every verb that takes a path accepts a String or a `Legate::Path`. Prefer paths:
 
 **Write** (grant `write`). Parent directories are created.
 - `Legate.write(path, data)` refuses an existing file; `Legate.write!` replaces it. `Legate.append(path, data)`. Each returns bytes written. `data` may be a String or a stream.
-- `Legate.mkdir(path)` succeeds if it exists. `Legate.cp(from, to)`, `Legate.cp!`; `recursive: true` for directories.
+- `Legate.mkdir(path)` succeeds if it exists. `Legate.cp(from, to)`, `Legate.cp!`; `recursive: true` for directories. They need `read` for `from` as well as `write`.
 
 **Delete** (grant `delete`)
 - `Legate.rm(path)` a file; `Legate.rmdir(path)` an empty directory; `Legate.rmdir!(path)` a whole tree. Missing is not an error.
@@ -143,4 +143,4 @@ What does not raise: `Legate.stat` on a missing path (nil), `Legate.rm`/`rmdir` 
 
 ## 6. Reading a diagnostic
 
-Each error starts `error[CODE]:` followed by a source excerpt, a `why:` and usually a `help:`. The letter says what to do: `P` fix the syntax; `U` use the alternative in `help:`; `R` fix the script; `F` the risk policy refused a data flow, so don't send that data there. Change only what the diagnostic points at.
+Each error starts `error[CODE]:` followed by a source excerpt, a `why:` and usually a `help:`. The letter says what to do: `P` fix the syntax; `U` use the alternative in `help:`; `R` fix the script; `F` the risk policy refused a data flow, so don't send that data there; `H` the host's setup is at fault, so no change to the script can fix it: report it. Change only what the diagnostic points at.
