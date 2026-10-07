@@ -100,25 +100,27 @@ module Adjutant
         end
       end
 
-      # Marked pending: Windows CI needs Developer Mode / admin
-      # privileges (SeCreateSymbolicLinkPrivilege) to create symlinks
-      # at all — this may be a runner-environment gap rather than a
-      # code bug, and needs investigating on its own before
-      # re-enabling here.
-      pending "resolves a symlinked root and a symlinked path to the same target" do
-        with_tmpdir do |dir|
-          real_root = File.join(dir, "real_root")
-          Dir.mkdir(real_root)
-          file = File.join(real_root, "f.txt")
-          File.write(file, "hi")
+      # The Windows runner can't create symlinks without Developer Mode
+      # or SeCreateSymbolicLinkPrivilege, so this runs everywhere else.
+      {% if flag?(:windows) %}
+        pending "resolves a symlinked root and a symlinked path to the same target (needs symlinks)" { }
+      {% else %}
+        it "resolves a symlinked root and a symlinked path to the same target" do
+          with_tmpdir do |dir|
+            real_root = File.join(dir, "real_root")
+            Dir.mkdir(real_root)
+            file = File.join(real_root, "f.txt")
+            File.write(file, "hi")
 
-          linked_root = File.join(dir, "linked_root")
-          File.symlink(real_root, linked_root)
-          linked_file = File.join(linked_root, "f.txt")
+            linked_root = File.join(dir, "linked_root")
+            File.symlink(real_root, linked_root)
+            linked_file = File.join(linked_root, "f.txt")
 
-          Legate::Grants.new.check_root(linked_file, [real_root]).allowed?.should be_true
+            Legate::Grants.new.check_root(linked_file, [real_root]).allowed?.should be_true
+            Legate::Grants.new.check_root(file, [linked_root]).allowed?.should be_true
+          end
         end
-      end
+      {% end %}
     end
 
     describe "#check_root_maybe_missing" do
@@ -174,7 +176,7 @@ module Adjutant
       # A dangling link doesn't resolve, but it exists: whatever is
       # created through it lands at its target, so the target is what
       # must be inside a root. The Windows runner can't create
-      # symlinks; see the pending test above.
+      # symlinks; see the symlinked-root test above.
       {% if flag?(:windows) %}
         pending "resolves dangling symlinks to their targets (needs symlinks)" { }
       {% else %}
