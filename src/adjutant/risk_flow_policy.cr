@@ -26,21 +26,21 @@ module Adjutant
     Exact
     Regex
 
-    # Whether `value` matches `pattern` read as this type.
-    def matches?(pattern : String, value : String) : Bool
-      case self
-      in .exact? then pattern == value
-      in .regex? then ::Regex.new(pattern).matches?(value)
-      end
+    # `pattern`, read as this type, compiled for matching: its regex,
+    # or nil for an exact pattern, which is compared as a string.
+    # Raises InvalidRiskFlowPolicyError, naming the pattern, for a regex
+    # that doesn't compile.
+    def compile(pattern : String) : ::Regex?
+      return unless regex?
+      ::Regex.new(pattern)
+    rescue ex : ArgumentError
+      raise InvalidRiskFlowPolicyError.new("invalid regex #{pattern.inspect} in a risk-flow policy: #{ex.message}")
     end
 
-    # Whether `pattern`, read as this type, matches the value an exact
-    # pattern names. An invalid regex matches nothing here; it raises
-    # where a real origin or subject meets it.
-    def covers?(pattern : String, exact : String) : Bool
-      matches?(pattern, exact)
-    rescue ArgumentError
-      false
+    # Whether `value` matches a pattern `compile` has prepared: `regex`
+    # when there is one, else the exact `pattern`.
+    def self.matches?(regex : ::Regex?, pattern : String, value : String) : Bool
+      regex ? regex.matches?(value) : pattern == value
     end
 
     # The form an exact path pattern is matched in: `RealPath.of`,
@@ -78,17 +78,21 @@ module Adjutant
     @[JSON::Field(ignore: true)]
     protected getter matched : String = ""
 
+    # `matched` compiled, when it is a regex (`PatternType#compile`).
+    @[JSON::Field(ignore: true)]
+    @regex : ::Regex? = nil
+
     def initialize(@kind : ProvenanceKind, @pattern : String, @priority : Int32,
                    @sensitivity : Sensitivity, @pattern_type : PatternType = PatternType::Exact)
-      @matched = matched_pattern
+      settle
     end
 
     protected def after_initialize
-      @matched = matched_pattern
+      settle
     end
 
     def matches?(origin : String) : Bool
-      pattern_type.matches?(@matched, origin)
+      PatternType.matches?(@regex, @matched, origin)
     end
 
     # Whether this and `other` say the same thing: one kind, type,
@@ -100,7 +104,7 @@ module Adjutant
     # Whether this pattern matches the origin `exact`, an exact
     # pattern, names.
     def covers?(exact : SensitivityPattern) : Bool
-      kind == exact.kind && pattern_type.covers?(matched, exact.matched)
+      kind == exact.kind && PatternType.matches?(@regex, @matched, exact.matched)
     end
 
     # The exact one of this and `other` when both match the origin it
@@ -113,6 +117,13 @@ module Adjutant
     def to_s(io : IO) : Nil
       io << kind.to_s.downcase << ':' << pattern
       io << " (regex)" if pattern_type.regex?
+    end
+
+    # Prepares the pattern for matching, once, when built:
+    # `matched_pattern`, then compiled (`PatternType#compile`).
+    private def settle : Nil
+      @matched = matched_pattern
+      @regex = pattern_type.compile(@matched)
     end
 
     # A File pattern's path form (`PatternType#path_pattern`) or a
@@ -141,16 +152,20 @@ module Adjutant
     @[JSON::Field(ignore: true)]
     protected getter matched : String = ""
 
+    # `matched` compiled, when it is a regex (`PatternType#compile`).
+    @[JSON::Field(ignore: true)]
+    @regex : ::Regex? = nil
+
     def initialize(@kind : ProvenanceKind, @pattern : String, @pattern_type : PatternType = PatternType::Exact)
-      @matched = matched_pattern
+      settle
     end
 
     protected def after_initialize
-      @matched = matched_pattern
+      settle
     end
 
     def matches?(tag : ProvenanceTag) : Bool
-      tag.kind == kind && pattern_type.matches?(@matched, tag.origin)
+      tag.kind == kind && PatternType.matches?(@regex, @matched, tag.origin)
     end
 
     # Whether this and `other` name the same origins: one kind, type
@@ -162,7 +177,14 @@ module Adjutant
     # Whether this pattern matches the origin `exact`, an exact
     # pattern, names.
     def covers?(exact : RiskFlowOrigin) : Bool
-      kind == exact.kind && pattern_type.covers?(matched, exact.matched)
+      kind == exact.kind && PatternType.matches?(@regex, @matched, exact.matched)
+    end
+
+    # Prepares the pattern for matching, once, when built:
+    # `matched_pattern`, then compiled (`PatternType#compile`).
+    private def settle : Nil
+      @matched = matched_pattern
+      @regex = pattern_type.compile(@matched)
     end
 
     # A File origin's path form (`PatternType#path_pattern`) or a Host
@@ -190,19 +212,23 @@ module Adjutant
     @[JSON::Field(ignore: true)]
     protected getter matched : String = ""
 
+    # `matched` compiled, when it is a regex (`PatternType#compile`).
+    @[JSON::Field(ignore: true)]
+    @regex : ::Regex? = nil
+
     def initialize(@pattern : String, @pattern_type : PatternType = PatternType::Exact)
-      @matched = matched_pattern
+      settle
     end
 
     protected def after_initialize
-      @matched = matched_pattern
+      settle
     end
 
     # False for an unknown subject: an exception naming where data
     # goes never applies where that can't be told.
     def matches?(subject : String?) : Bool
       return false unless subject
-      pattern_type.matches?(@matched, subject)
+      PatternType.matches?(@regex, @matched, subject)
     end
 
     # Whether this and `other` name the same subjects: one type and
@@ -214,7 +240,14 @@ module Adjutant
     # Whether this pattern matches the subject `exact`, an exact
     # pattern, names.
     def covers?(exact : RiskFlowSubject) : Bool
-      pattern_type.covers?(matched, exact.matched)
+      PatternType.matches?(@regex, @matched, exact.matched)
+    end
+
+    # Prepares the pattern for matching, once, when built:
+    # `matched_pattern`, then compiled (`PatternType#compile`).
+    private def settle : Nil
+      @matched = matched_pattern
+      @regex = pattern_type.compile(@matched)
     end
 
     # A subject has no kind, so its form decides when the policy is
