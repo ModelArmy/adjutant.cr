@@ -12,6 +12,18 @@ module Adjutant
     interp.modules.require(name, interp)
   end
 
+  private def self.walker_unresolved(tree : RiskNode) : Array(RiskFinding)
+    RiskAggregator.all_findings(tree).select(&.description.starts_with?("unresolved call: "))
+  end
+
+  private def self.walker_branch_labels(tree : RiskNode, effect : Effect) : Array(String)
+    RiskAggregator.all_findings(tree).select(&.profile.effects.includes?(effect)).flat_map(&.branch_path)
+  end
+
+  private def self.walker_deferred?(tree : RiskNode) : Bool
+    RiskAggregator.all_findings(tree).any? { |finding| finding.branch_path.any?(&.starts_with?("deferred:")) }
+  end
+
   describe RiskWalker do
     it "a receiverless call to a pure native function summarizes to none" do
       interp, _ = make_interp
@@ -37,9 +49,10 @@ module Adjutant
       interp, _ = make_interp
       walker = RiskWalker.new(interp)
       body = risk_walker_test_parse("nonexistent_fn()")
-      summary = RiskAggregator.summarize(walker.walk_body(body))
+      tree = walker.walk_body(body)
+      summary = RiskAggregator.summarize(tree)
       summary.severity.should eq Severity::Error
-      summary.path.first.should contain "unresolved"
+      walker_unresolved(tree).should_not be_empty
     end
 
     it "a call on a literal-receiver resolves via the builtin class" do
@@ -65,18 +78,20 @@ module Adjutant
       interp, _ = make_interp
       walker = RiskWalker.new(interp)
       body = risk_walker_test_parse("[1, 2, 3].each { |x| x }")
-      summary = RiskAggregator.summarize(walker.walk_body(body))
+      tree = walker.walk_body(body)
+      summary = RiskAggregator.summarize(tree)
       summary.severity.should eq Severity::Info
-      summary.path.first.should_not contain "unresolved"
+      walker_unresolved(tree).should be_empty
     end
 
     it "a call on a hash-literal receiver resolves via the builtin class, not as unresolved" do
       interp, _ = make_interp
       walker = RiskWalker.new(interp)
       body = risk_walker_test_parse(%({"a" => 1}.each { |k, v| k }))
-      summary = RiskAggregator.summarize(walker.walk_body(body))
+      tree = walker.walk_body(body)
+      summary = RiskAggregator.summarize(tree)
       summary.severity.should eq Severity::Info
-      summary.path.first.should_not contain "unresolved"
+      walker_unresolved(tree).should be_empty
     end
 
     it "a call through a var assigned from a known constructor resolves" do
@@ -93,10 +108,10 @@ module Adjutant
         w = Widget.new
         w.ping
       RUBY
-      summary = RiskAggregator.summarize(walker.walk_body(body))
+      tree = walker.walk_body(body)
       # ping's body is pure script code (no calls) — resolves cleanly,
       # not RiskUnresolved, proving receiver resolution worked.
-      summary.path.any? { |p| p.includes?("unresolved") }.should be_false
+      walker_unresolved(tree).should be_empty
     end
 
     it "a call through a var with unknowable type is RiskUnresolved" do
@@ -113,8 +128,8 @@ module Adjutant
         x = Widget.new
         use_it(x)
       RUBY
-      summary = RiskAggregator.summarize(walker.walk_body(body))
-      summary.path.any?(&.includes?("unresolved")).should be_true
+      tree = walker.walk_body(body)
+      walker_unresolved(tree).should_not be_empty
     end
 
     it "a risky call used as an assignment's value is not silently dropped" do
@@ -180,9 +195,10 @@ module Adjutant
         end
         cleanup(true)
       RUBY
-      summary = RiskAggregator.summarize(walker.walk_body(body))
+      tree = walker.walk_body(body)
+      summary = RiskAggregator.summarize(tree)
       summary.effects.should eq Set{Effect::DeletesFiles}
-      summary.path.none? { |p| p.includes?("unresolved") }.should be_true
+      walker_unresolved(tree).should be_empty
     end
 
     it "a call BEFORE its def in the same body is RiskUnresolved (matches runtime NameError)" do
@@ -194,8 +210,8 @@ module Adjutant
           42
         end
       RUBY
-      summary = RiskAggregator.summarize(walker.walk_body(body))
-      summary.path.any? { |p| p.includes?("unresolved") }.should be_true
+      tree = walker.walk_body(body)
+      walker_unresolved(tree).should_not be_empty
     end
 
     it "a class's own methods can call each other regardless of definition order" do
@@ -215,8 +231,8 @@ module Adjutant
         s = Svc.new
         s.first
       RUBY
-      summary = RiskAggregator.summarize(walker.walk_body(body))
-      summary.path.none? { |p| p.includes?("unresolved") }.should be_true
+      tree = walker.walk_body(body)
+      walker_unresolved(tree).should be_empty
     end
 
     # Found 2026-07-18: fixing walk_identifier (bare names) surfaced
@@ -288,10 +304,10 @@ module Adjutant
           Svc.new.helper
           helper
         RUBY
-        summary = RiskAggregator.summarize(walker.walk_body(body))
+        tree = walker.walk_body(body)
         # The top-level bare `helper` (no Svc instance in scope here)
         # must be unresolved — Svc#helper is NOT a top-level def.
-        summary.path.any? { |p| p.includes?("unresolved") }.should be_true
+        walker_unresolved(tree).should_not be_empty
       end
 
       it "works for def self.foo calling a sibling def self.bar bare (singleton methods, not just instance)" do
@@ -325,8 +341,8 @@ module Adjutant
           end
           Svc.new.first
         RUBY
-        summary = RiskAggregator.summarize(walker.walk_body(body))
-        summary.path.any? { |p| p.includes?("unresolved") }.should be_true
+        tree = walker.walk_body(body)
+        walker_unresolved(tree).should_not be_empty
       end
     end
 
@@ -341,11 +357,11 @@ module Adjutant
           end
         end
       RUBY
-      summary = RiskAggregator.summarize(walker.walk_body(body))
-      summary.path.any? { |p| p.includes?("unresolved") }.should be_true
+      tree = walker.walk_body(body)
+      walker_unresolved(tree).should_not be_empty
     end
 
-    it "an if/else with different-risk branches takes the worst branch, not a union" do
+    it "an if/else unions its branches' effects and names the branch each came from" do
       interp, _ = make_interp
       register_risky_module(interp, "safe_read", RiskProfile.new(effects: Set{Effect::ReadsFiles}, severity: Severity::Info))
       register_risky_module(interp, "dangerous_delete",
@@ -358,9 +374,10 @@ module Adjutant
           dangerous_delete()
         end
       RUBY
-      summary = RiskAggregator.summarize(walker.walk_body(body))
-      summary.effects.should eq Set{Effect::DeletesFiles}
-      summary.path.should contain "if branch"
+      tree = walker.walk_body(body)
+      summary = RiskAggregator.summarize(tree)
+      summary.effects.should eq Set{Effect::ReadsFiles, Effect::DeletesFiles}
+      walker_branch_labels(tree, Effect::DeletesFiles).should contain "if branch"
     end
 
     it "a while loop body's risk is marked iterated" do
@@ -388,9 +405,10 @@ module Adjutant
       RUBY
       walker = RiskWalker.new(interp)
       body = risk_walker_test_parse("go(1)")
-      summary = RiskAggregator.summarize(walker.walk_body(body))
+      tree = walker.walk_body(body)
+      summary = RiskAggregator.summarize(tree)
       summary.severity.should eq Severity::Info
-      summary.path.none? { |p| p.includes?("unresolved") }.should be_true
+      walker_unresolved(tree).should be_empty
     end
 
     it "a ScriptProc's risk is memoized (same object returned for repeated calls)" do
@@ -414,7 +432,7 @@ module Adjutant
       summary.effects.should eq Set{Effect::NetworkEgress}
     end
 
-    it "unless takes the worst branch, not a union" do
+    it "unless unions its branches' effects" do
       interp, _ = make_interp
       register_risky_module(interp, "safe_read", RiskProfile.new(effects: Set{Effect::ReadsFiles}, severity: Severity::Info))
       register_risky_module(interp, "dangerous_delete",
@@ -427,9 +445,10 @@ module Adjutant
           dangerous_delete()
         end
       RUBY
-      summary = RiskAggregator.summarize(walker.walk_body(body))
-      summary.effects.should eq Set{Effect::DeletesFiles}
-      summary.path.should contain "unless branch"
+      tree = walker.walk_body(body)
+      summary = RiskAggregator.summarize(tree)
+      summary.effects.should eq Set{Effect::ReadsFiles, Effect::DeletesFiles}
+      walker_branch_labels(tree, Effect::DeletesFiles).should contain "unless branch"
     end
 
     it "a risky call in a modifier-if is not silently dropped" do
@@ -452,7 +471,7 @@ module Adjutant
       summary.effects.should eq Set{Effect::WritesFiles}
     end
 
-    it "begin/rescue takes the worst of body vs rescue, not a union" do
+    it "begin/rescue unions the body's and the rescue clause's effects" do
       interp, _ = make_interp
       register_risky_module(interp, "safe_read", RiskProfile.new(effects: Set{Effect::ReadsFiles}, severity: Severity::Info))
       register_risky_module(interp, "dangerous_delete",
@@ -465,14 +484,13 @@ module Adjutant
           dangerous_delete()
         end
       RUBY
-      summary = RiskAggregator.summarize(walker.walk_body(body))
-      summary.effects.should eq Set{Effect::DeletesFiles}
-      summary.path.should contain "rescue branch"
+      tree = walker.walk_body(body)
+      summary = RiskAggregator.summarize(tree)
+      summary.effects.should eq Set{Effect::ReadsFiles, Effect::DeletesFiles}
+      walker_branch_labels(tree, Effect::DeletesFiles).should contain "rescue branch"
     end
 
-    it "multiple rescue clauses: takes the worst across ALL clauses, not just " \
-       "the last one — regression guard for RiskChoice generalizing from a " \
-       "fixed 2-way (body, rescue) choice to N clause branches" do
+    it "multiple rescue clauses: every clause contributes, not just the first or last" do
       interp, _ = make_interp
       register_risky_module(interp, "safe_read", RiskProfile.new(effects: Set{Effect::ReadsFiles}, severity: Severity::Info))
       register_risky_module(interp, "dangerous_delete",
@@ -490,12 +508,13 @@ module Adjutant
           log_fn()
         end
       RUBY
-      summary = RiskAggregator.summarize(walker.walk_body(body))
+      tree = walker.walk_body(body)
+      summary = RiskAggregator.summarize(tree)
       # The risky call sits in the MIDDLE clause, not the first or
       # last — confirms the walker isn't just checking the first and
       # last branches, but genuinely folding in every clause.
-      summary.effects.should eq Set{Effect::DeletesFiles}
-      summary.path.should contain "rescue branch"
+      summary.effects.should eq Set{Effect::ReadsFiles, Effect::DeletesFiles}
+      walker_branch_labels(tree, Effect::DeletesFiles).should contain "rescue branch"
     end
 
     it "a rescue A, B clause with multiple classes still contributes exactly " \
@@ -575,8 +594,7 @@ module Adjutant
       summary.severity.should eq Severity::Error
     end
 
-    it "takes the worst of (body + else) vs rescue, not a union — same " \
-       "worst-case-branch aggregation as the plain body-vs-rescue case" do
+    it "unions (body + else) with rescue, as the plain body-vs-rescue case does" do
       interp, _ = make_interp
       register_risky_module(interp, "safe_setup", RiskProfile.new(effects: Set{Effect::ReadsFiles}, severity: Severity::Info))
       register_risky_module(interp, "safe_cleanup", RiskProfile.new(effects: Set{Effect::ReadsFiles}, severity: Severity::Info))
@@ -592,13 +610,10 @@ module Adjutant
           safe_cleanup()
         end
       RUBY
-      summary = RiskAggregator.summarize(walker.walk_body(body))
-      # The rescue branch is worse (DeletesFiles/Error) than the
-      # body+else branch (ReadsFiles/Info only) — worst-of-all-
-      # branches picks rescue here, same "not a union" contract the
-      # existing plain body-vs-rescue test already asserts.
-      summary.effects.should eq Set{Effect::DeletesFiles}
-      summary.path.should contain "rescue branch"
+      tree = walker.walk_body(body)
+      summary = RiskAggregator.summarize(tree)
+      summary.effects.should eq Set{Effect::ReadsFiles, Effect::DeletesFiles}
+      walker_branch_labels(tree, Effect::DeletesFiles).should contain "rescue branch"
     end
 
     it "a local assigned in the body is visible to else's risk walk " \
@@ -767,8 +782,8 @@ module Adjutant
         b = Box.new
         b.value
       RUBY
-      summary = RiskAggregator.summarize(walker.walk_body(body))
-      summary.path.none? { |p| p.includes?("unresolved") }.should be_true
+      tree = walker.walk_body(body)
+      walker_unresolved(tree).should be_empty
     end
 
     it "attr_writer's generated setter is likewise registered (not just attr_reader's getter)" do
@@ -781,8 +796,8 @@ module Adjutant
         b = Box.new
         b.value = 1
       RUBY
-      summary = RiskAggregator.summarize(walker.walk_body(body))
-      summary.path.none? { |p| p.includes?("unresolved") }.should be_true
+      tree = walker.walk_body(body)
+      walker_unresolved(tree).should be_empty
     end
 
     # Piece D (SCOPE.md, 2026-07-18): Call#args were never walked at
@@ -883,9 +898,10 @@ module Adjutant
         body = risk_walker_test_parse(<<-RUBY)
           apply_fn(->() { delete_fn() })
         RUBY
-        summary = RiskAggregator.summarize(walker.walk_body(body))
+        tree = walker.walk_body(body)
+        summary = RiskAggregator.summarize(tree)
         summary.effects.should eq Set{Effect::DeletesFiles}
-        summary.path.any?(&.starts_with?("deferred:")).should be_true
+        walker_deferred?(tree).should be_true
       end
 
       it "a pure lambda literal argument stays clean" do
@@ -912,9 +928,10 @@ module Adjutant
           F1 = ->() { delete_fn() }
           F1.call
         RUBY
-        summary = RiskAggregator.summarize(walker.walk_body(body))
+        tree = walker.walk_body(body)
+        summary = RiskAggregator.summarize(tree)
         summary.effects.should eq Set{Effect::DeletesFiles}
-        summary.path.any?(&.starts_with?("deferred:")).should be_false
+        walker_deferred?(tree).should be_false
       end
 
       it "F1 passed as an argument gets the RiskDeferred treatment, same as a literal" do
@@ -926,9 +943,10 @@ module Adjutant
           F1 = ->() { delete_fn() }
           apply_fn(F1)
         RUBY
-        summary = RiskAggregator.summarize(walker.walk_body(body))
+        tree = walker.walk_body(body)
+        summary = RiskAggregator.summarize(tree)
         summary.effects.should eq Set{Effect::DeletesFiles}
-        summary.path.any?(&.starts_with?("deferred:")).should be_true
+        walker_deferred?(tree).should be_true
       end
 
       it "a lambda in an ordinary (non-constant) variable stays unresolved — real aliasing, out of scope" do
@@ -938,8 +956,8 @@ module Adjutant
           f1 = ->() { 1 }
           f1.call
         RUBY
-        summary = RiskAggregator.summarize(walker.walk_body(body))
-        summary.path.first.should contain "unresolved"
+        tree = walker.walk_body(body)
+        walker_unresolved(tree).should_not be_empty
       end
 
       it "a recursive constant-held lambda (F1 = ->() { F1.call }) doesn't infinite-loop the walker" do
@@ -1056,18 +1074,8 @@ module Adjutant
         body = risk_walker_test_parse(<<-RUBY)
           [1, 2, 3].each { |x| x }
         RUBY
-        summary = RiskAggregator.summarize(walker.walk_body(body))
-        # Originally written expecting exactly 1 "unresolved" entry —
-        # `.each` on an ArrayLiteral receiver was unresolved at the
-        # time (SCOPE.md's Will Fix item, since fixed 2026-07-21 — see
-        # type_inference_spec.cr/the "array-literal receiver resolves"
-        # spec above), plus zero false positives from the block param
-        # `x` itself. With the receiver now resolving cleanly, the
-        # correct count is 0, not 1 — updating the assertion to match
-        # is the right fix here, not a sign this spec's actual intent
-        # (a block param must never spuriously count as an unresolved
-        # call) has changed.
-        summary.path.count(&.includes?("unresolved")).should eq 0
+        tree = walker.walk_body(body)
+        walker_unresolved(tree).should be_empty
       end
     end
 
@@ -1277,9 +1285,10 @@ module Adjutant
           end
           B.new.only_here
         RUBY
-        summary = RiskAggregator.summarize(walker.walk_body(body))
+        tree = walker.walk_body(body)
+        summary = RiskAggregator.summarize(tree)
         summary.severity.should eq Severity::Error
-        summary.path.first.should contain "super"
+        walker_unresolved(tree).map(&.description).should contain "unresolved call: super"
       end
     end
 

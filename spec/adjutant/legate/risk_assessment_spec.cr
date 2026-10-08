@@ -228,8 +228,7 @@ module Adjutant
     # method name reaching the walker at all is new as of the verb
     # split.
     #
-    # Two statements in SEQUENCE, deliberately — see the next test for
-    # what a branch would have done instead.
+    # Two statements in sequence; the next test puts them on branches.
     it "surfaces verb effects through a real RiskWalker pass on ConstPath receivers" do
       interp, _ = make_interp
       walker = RiskWalker.new(interp)
@@ -244,30 +243,13 @@ module Adjutant
       summary.reversible.should eq Reversibility::No
     end
 
-    # ASSERTION 6 — what a BRANCH reports, which is not what a
-    # sequence reports.
+    # ASSERTION 6 — a branch's effects survive in the summary even
+    # when another branch ranks as high.
     #
-    # Pinned because the first draft of assertion 5 above got this
-    # wrong, and the mistake is an easy one to make twice:
-    # `summarize_choice` (risk_aggregator.cr) takes `max_by { rank }`
-    # — the single WORST branch — not the union across branches. A
-    # `RiskChoice` means exactly one branch runs, so unioning would
-    # claim a script does both things when it can only ever do one.
-    #
-    # The consequence is worth stating, since it is a real property of
-    # the manifest an embedder shows a user and not an implementation
-    # detail: **effects belonging only to a losing branch do not
-    # appear at all.** Below, the script can delete a whole tree, and
-    # the summary says `NetworkEgress`. Both branches rank equally
-    # (`No`/`Warning`), so the tie goes to the first.
-    #
-    # Whether that is the right trade is a live question — the ranking
-    # is by severity and reversibility, which are CONCLUSIONS, so
-    # effects get carried along by whichever branch won on other
-    # grounds rather than being reasoned about themselves. This test
-    # documents the behaviour rather than endorsing it; if it ever
-    # changes deliberately, this is where the change announces itself.
-    it "reports a branch's worst case, not the union across branches" do
+    # One branch runs, but the summary bounds every run, so it holds
+    # both. Both branches rank Warning/No, and the recursive delete in
+    # the second must not vanish behind the fetch in the first.
+    it "reports the effects of every branch" do
       interp, _ = make_interp
       walker = RiskWalker.new(interp)
       body = Parser.new(<<-RUBY).parse
@@ -279,7 +261,7 @@ module Adjutant
       RUBY
 
       summary = RiskAggregator.summarize(walker.walk_body(body))
-      summary.effects.should eq Set{Effect::NetworkEgress}
+      summary.effects.should eq Set{Effect::NetworkEgress, Effect::DeletesFiles, Effect::Recursive}
       summary.severity.should eq Severity::Warning
     end
   end
