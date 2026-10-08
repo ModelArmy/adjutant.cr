@@ -70,13 +70,14 @@ module Adjutant
         end
         cleanup(true)
       RUBY
-      summary = RiskAggregator.summarize(walker.walk_body(body))
+      tree = walker.walk_body(body)
+      summary = RiskAggregator.summarize(tree)
       # If DefSingleton still leaked into @top_level_procs under the
       # bare name "cleanup", this bare call would find it and surface
       # DeletesFiles — it must not; a bare, receiverless "cleanup"
       # was never defined at top level in this script.
       summary.severity.should eq Severity::Error
-      summary.path.first.should contain "unresolved"
+      RiskAggregator.all_findings(tree).any?(&.description.starts_with?("unresolved call: ")).should be_true
     end
 
     it "full risky_example_03 shape: fetch_url loop + A.cleanup(true) both surface" do
@@ -216,9 +217,10 @@ module Adjutant
       setup_risky_sample_fns(interp)
       walker = RiskWalker.new(interp)
       body = Parser.new("Ghost::Nested.method").parse
-      summary = RiskAggregator.summarize(walker.walk_body(body))
+      tree = walker.walk_body(body)
+      summary = RiskAggregator.summarize(tree)
       summary.severity.should eq Severity::Error
-      summary.path.first.should contain "unresolved"
+      RiskAggregator.all_findings(tree).any?(&.description.starts_with?("unresolved call: ")).should be_true
     end
 
     it "a defined module but undefined nested class is RiskUnresolved, not a crash" do

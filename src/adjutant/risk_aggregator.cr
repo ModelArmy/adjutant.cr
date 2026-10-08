@@ -3,21 +3,22 @@ require "./risk_profile"
 require "./diagnostic"
 
 module Adjutant
-  # The worst-case path through a RiskNode tree, as a trail of
-  # descriptions: "delete_file (inside if branch: ...)", so a report
-  # can say why, not just how bad.
+  # What a script could do on any run: every effect its RiskNode tree
+  # can reach, with the worst severity, reversibility and iteration
+  # found anywhere in it, each taken on its own. An upper bound, so no
+  # single run need match it; `RiskAggregator.all_findings` says which
+  # call contributes what.
   struct RiskSummary
     getter effects : Set(Effect)
     getter reversible : Reversibility
     getter severity : Severity
-    getter path : Array(String) # trail of descriptions/origins, root to leaf
-    getter? iterated : Bool     # true if any Sequence on the worst path was iterated
+    getter? iterated : Bool # true if any part of the tree is a loop body
 
-    def initialize(@effects, @reversible, @severity, @path, @iterated)
+    def initialize(@effects, @reversible, @severity, @iterated)
     end
 
     def self.none : RiskSummary
-      RiskSummary.new(Set(Effect).new, Reversibility::Yes, Severity::Info, [] of String, false)
+      RiskSummary.new(Set(Effect).new, Reversibility::Yes, Severity::Info, false)
     end
   end
 
@@ -36,21 +37,22 @@ module Adjutant
     end
   end
 
-  # Reduces a RiskNode tree to every finding (`all_findings`) or to
-  # the single worst path (`summarize`), which takes the worst branch
-  # of a Choice rather than a union of exclusive branches.
+  # Reduces a RiskNode tree to every finding (`all_findings`) or to a
+  # bound on every run (`summarize`).
   #
-  # Worse means higher Severity (Error, Warning, Info), then less
-  # reversible (No, Depends, Yes). Unresolved outranks everything.
+  # Worse means higher Severity (Error, Warning, Info), or less
+  # reversible (No, Depends, Yes). An unresolved call counts as
+  # ExecutesCode, Error and irreversible.
   module RiskAggregator
-    # Every leaf and unresolved call in the tree. Grouping, filtering
-    # and sorting are left to the presentation.
+    # Every leaf and unresolved call in the tree. An unresolved call's
+    # description starts "unresolved call: ". Grouping, filtering and
+    # sorting are left to the presentation.
     def self.all_findings(node : RiskNode, iterated : Bool = false, branch_path : Array(String) = [] of String) : Array(RiskFinding)
       case node
       when RiskLeaf
         [RiskFinding.new(node.description, node.profile, node.line, iterated, branch_path)]
       when RiskUnresolved
-        [RiskFinding.new(node.description, unresolved_profile, node.line, iterated, branch_path)]
+        [RiskFinding.new("unresolved call: #{node.description}", unresolved_profile, node.line, iterated, branch_path)]
       when RiskSequence
         node.children.flat_map { |child| all_findings(child, iterated || node.iterated?, branch_path) }
       when RiskChoice
@@ -71,21 +73,22 @@ module Adjutant
       RiskProfile.new(effects: Set{Effect::ExecutesCode}, reversible: Reversibility::No, severity: Severity::Error)
     end
 
+    # The bound on every run of the tree. A Sequence and a Choice
+    # combine their children alike, since a bound over branches of
+    # which one runs is a bound over all of them. A deferred risk
+    # counts in full.
     def self.summarize(node : RiskNode) : RiskSummary
       case node
       when RiskLeaf
-        RiskSummary.new(node.profile.effects, node.profile.reversible, node.profile.severity,
-          [node.description], false)
+        from_profile(node.profile)
       when RiskUnresolved
-        p = unresolved_profile
-        RiskSummary.new(p.effects, p.reversible, p.severity,
-          ["unresolved call: #{node.description}"], false)
+        from_profile(unresolved_profile)
       when RiskSequence
-        summarize_sequence(node)
+        combine(node.children, node.iterated?)
       when RiskChoice
-        summarize_choice(node)
+        combine(node.children, false)
       when RiskDeferred
-        summarize_deferred(node)
+        summarize(node.child)
       else
         raise InternalError.new(
           Diagnostic.new(code: "I007", data: {"node" => node.class.to_s})
@@ -93,54 +96,23 @@ module Adjutant
       end
     end
 
-    # Every child runs: effects are unioned, the worst severity and
-    # reversibility win, and the paths are concatenated.
-    private def self.summarize_sequence(node : RiskSequence) : RiskSummary
-      return RiskSummary.none if node.children.empty?
-      child_summaries = node.children.map { |child| summarize(child) }
+    private def self.from_profile(profile : RiskProfile) : RiskSummary
+      RiskSummary.new(profile.effects, profile.reversible, profile.severity, false)
+    end
+
+    # Unions the children's effects and takes the worst severity,
+    # reversibility and iteration, each from whichever child has it.
+    private def self.combine(children : Array(RiskNode), iterated : Bool) : RiskSummary
+      return RiskSummary.none if children.empty?
+      summaries = children.map { |child| summarize(child) }
       effects = Set(Effect).new
-      child_summaries.each { |summary| effects.concat(summary.effects) }
-      worst = child_summaries.max_by { |summary| rank(summary) }
+      summaries.each { |summary| effects.concat(summary.effects) }
       RiskSummary.new(
         effects,
-        worst.reversible,
-        worst.severity,
-        child_summaries.flat_map(&.path),
-        node.iterated? || child_summaries.any?(&.iterated?),
+        summaries.max_by { |summary| reversible_rank(summary.reversible) }.reversible,
+        summaries.max_by { |summary| severity_rank(summary.severity) }.severity,
+        iterated || summaries.any?(&.iterated?),
       )
-    end
-
-    # One child runs: the worst branch, tagged with which it was.
-    private def self.summarize_choice(node : RiskChoice) : RiskSummary
-      return RiskSummary.none if node.children.empty?
-      child_summaries = node.children.map { |child| summarize(child) }
-      worst = child_summaries.max_by { |summary| rank(summary) }
-      RiskSummary.new(
-        worst.effects,
-        worst.reversible,
-        worst.severity,
-        ["#{node.origin} branch"] + worst.path,
-        worst.iterated?,
-      )
-    end
-
-    # The child's risk counts in full; the path is prefixed
-    # "deferred: <reason>", since it runs only if a callee invokes
-    # what it was given.
-    private def self.summarize_deferred(node : RiskDeferred) : RiskSummary
-      child_summary = summarize(node.child)
-      RiskSummary.new(
-        child_summary.effects,
-        child_summary.reversible,
-        child_summary.severity,
-        ["deferred: #{node.reason}"] + child_summary.path,
-        child_summary.iterated?,
-      )
-    end
-
-    # Higher is worse. Severity dominates; reversibility breaks ties.
-    private def self.rank(s : RiskSummary) : Int32
-      severity_rank(s.severity) * 10 + reversible_rank(s.reversible)
     end
 
     private def self.severity_rank(sev : Severity) : Int32

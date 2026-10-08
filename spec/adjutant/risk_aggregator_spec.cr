@@ -45,31 +45,53 @@ module Adjutant
       RiskAggregator.summarize(seq).iterated?.should be_true
     end
 
-    it "a Choice takes the single worst branch, not a union of both" do
+    it "a Sequence takes severity and reversibility each from its own worst child" do
+      severe = leaf(Set{Effect::ExecutesCode}, Severity::Error, Reversibility::Yes)
+      irreversible = leaf(Set{Effect::DeletesFiles}, Severity::Warning, Reversibility::No)
+      summary = RiskAggregator.summarize(RiskSequence.new([severe, irreversible] of RiskNode, 1))
+      summary.severity.should eq Severity::Error
+      summary.reversible.should eq Reversibility::No
+    end
+
+    it "a Choice unions its branches' effects and takes the worst severity and reversibility" do
       read_branch = leaf(Set{Effect::ReadsFiles}, Severity::Info)
       delete_branch = leaf(Set{Effect::DeletesFiles}, Severity::Error, Reversibility::No)
       choice = RiskChoice.new([read_branch, delete_branch] of RiskNode, "if", 1)
       summary = RiskAggregator.summarize(choice)
-      # Only the worst branch's effects appear — NOT the union of both
-      # branches, since only one branch can execute in a given run.
-      summary.effects.should eq Set{Effect::DeletesFiles}
+      summary.effects.should eq Set{Effect::ReadsFiles, Effect::DeletesFiles}
       summary.severity.should eq Severity::Error
+      summary.reversible.should eq Reversibility::No
     end
 
-    it "a Choice's path records which branch caused the worst case" do
-      read_branch = leaf(Set{Effect::ReadsFiles}, Severity::Info, desc: "read_config")
-      delete_branch = leaf(Set{Effect::DeletesFiles}, Severity::Error, Reversibility::No, desc: "delete_all")
-      choice = RiskChoice.new([read_branch, delete_branch] of RiskNode, "if", 1)
-      summary = RiskAggregator.summarize(choice)
-      summary.path.should eq ["if branch", "delete_all"]
+    it "a Choice keeps the effects of a branch that ties with an earlier one" do
+      fetch_branch = leaf(Set{Effect::NetworkEgress}, Severity::Warning, Reversibility::No)
+      rmdir_branch = leaf(Set{Effect::DeletesFiles, Effect::Recursive}, Severity::Warning, Reversibility::No)
+      choice = RiskChoice.new([fetch_branch, rmdir_branch] of RiskNode, "if", 1)
+      RiskAggregator.summarize(choice).effects.should eq Set{Effect::NetworkEgress, Effect::DeletesFiles, Effect::Recursive}
     end
 
-    it "RiskUnresolved always outranks any resolved leaf" do
-      resolved = leaf(Set{Effect::DeletesFiles}, Severity::Error, Reversibility::No)
+    it "a Choice takes severity and reversibility each from its own worst branch" do
+      severe = leaf(Set{Effect::ExecutesCode}, Severity::Error, Reversibility::Yes)
+      irreversible = leaf(Set{Effect::DeletesFiles}, Severity::Warning, Reversibility::No)
+      summary = RiskAggregator.summarize(RiskChoice.new([severe, irreversible] of RiskNode, "case", 1))
+      summary.severity.should eq Severity::Error
+      summary.reversible.should eq Reversibility::No
+    end
+
+    it "a Choice is iterated when any branch is" do
+      once = leaf(Set{Effect::DeletesFiles}, Severity::Error, Reversibility::No)
+      looped = RiskSequence.new([leaf(Set{Effect::WritesFiles}, Severity::Warning)] of RiskNode, 1, iterated: true)
+      choice = RiskChoice.new([once, looped] of RiskNode, "if", 1)
+      RiskAggregator.summarize(choice).iterated?.should be_true
+    end
+
+    it "an unresolved call adds ExecutesCode at Error, irreversible" do
+      resolved = leaf(Set{Effect::DeletesFiles}, Severity::Warning)
       unresolved = RiskUnresolved.new("dynamic_call", 1)
-      seq = RiskSequence.new([resolved, unresolved] of RiskNode, 1)
-      summary = RiskAggregator.summarize(seq)
-      summary.path.should contain "unresolved call: dynamic_call"
+      summary = RiskAggregator.summarize(RiskSequence.new([resolved, unresolved] of RiskNode, 1))
+      summary.effects.should eq Set{Effect::DeletesFiles, Effect::ExecutesCode}
+      summary.severity.should eq Severity::Error
+      summary.reversible.should eq Reversibility::No
     end
 
     it "nested Choice inside Sequence composes correctly" do
@@ -81,7 +103,7 @@ module Adjutant
       seq = RiskSequence.new([pre, inner_choice] of RiskNode, 1)
       summary = RiskAggregator.summarize(seq)
       summary.severity.should eq Severity::Error
-      summary.effects.should eq Set{Effect::ExecutesCode}
+      summary.effects.should eq Set{Effect::NetworkEgress, Effect::ExecutesCode}
     end
   end
 
@@ -129,6 +151,11 @@ module Adjutant
       findings.first.profile.severity.should eq Severity::Error
     end
 
+    it "an unresolved call's finding says so in its description" do
+      findings = RiskAggregator.all_findings(RiskUnresolved.new("dynamic_call", 1))
+      findings.map(&.description).should eq ["unresolved call: dynamic_call"]
+    end
+
     it "nested Choice branch_path accumulates outer-to-inner" do
       inner = RiskChoice.new([leaf(Set{Effect::NetworkEgress}, Severity::Warning, desc: "fetch")] of RiskNode, "case", 1)
       outer = RiskChoice.new([inner] of RiskNode, "if", 1)
@@ -152,14 +179,6 @@ module Adjutant
         summary.effects.should eq Set{Effect::DeletesFiles}
         summary.severity.should eq Severity::Error
         summary.reversible.should eq Reversibility::No
-      end
-
-      it "summarize's path is prefixed with the deferred reason" do
-        risky = leaf(Set{Effect::DeletesFiles}, Severity::Error, desc: "delete_all")
-        deferred = RiskDeferred.new(risky, "lambda literal passed as argument", 1)
-        summary = RiskAggregator.summarize(deferred)
-        summary.path.first.should eq "deferred: lambda literal passed as argument"
-        summary.path.should contain "delete_all"
       end
 
       it "all_findings still surfaces the child's finding, at full severity" do

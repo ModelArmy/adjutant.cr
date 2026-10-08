@@ -21,24 +21,6 @@ after 1.0. Ordered for working through: security and policy defects
 first, then the Ruby divergences, then design work on policy and
 configuration.
 
-- **A `RiskChoice` reports its worst branch, so effects reachable only
-  on a losing branch vanish from the manifest.**
-  `RiskAggregator.summarize_choice` (`risk_aggregator.cr`) takes
-  `max_by { rank }` across branches, and `rank` orders by severity and
-  reversibility alone. Reporting the worst severity is honest, since
-  one branch runs, but the effect set rides along with whichever
-  branch won, and a tie goes to the first in source order. Pinned in
-  `spec/adjutant/legate/risk_assessment_spec.cr`: a script whose
-  `else` calls `Legate.rmdir!` reports only `NetworkEgress`, because
-  the `if` branch's `Legate.fetch` ranks equal and comes first. The
-  static pass is advisory, but its value is what it tells a person
-  before the run, and here it hides a recursive delete. The likely fix
-  keeps the worst severity and reversibility and unions the effects.
-  `RiskSummary#path` names one winning branch and must say something
-  coherent about effects from elsewhere, which changes the manifest
-  hosts render; `summarize_deferred` already over-reports on the same
-  principle, and the two should be reconciled deliberately.
-
 - **Authorization is in core, but its configuration and the specified
   static analyser still assume one provider.** The perimeter
   (`grants.cr`), run accounting (`ResourceLimits`, `Budget`,

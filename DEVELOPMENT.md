@@ -459,7 +459,7 @@ Symlinks: a symlink named directly is resolved by the perimeter (`check_root_may
 
 #### Structured risk: RiskNode and RiskAggregator
 
-A flat union of profiles would merge an `if`'s safe branch and destructive branch as if both ran. `RiskNode` keeps the control-flow shape:
+A flat list of profiles would lose which calls exclude each other. `RiskNode` keeps the control-flow shape, which the findings report:
 
 ```mermaid
 ---
@@ -475,15 +475,15 @@ flowchart TD
     Choice["RiskChoice: exactly one child occurs"] --> Agg
     Deferred["RiskDeferred: handed off, invocation not confirmed"] --> Agg
     Unresolved["RiskUnresolved: worst-case, always"] --> Agg
-    Agg --> Sum[RiskSummary: tags + reversible + severity + path]
+    Agg --> Sum[RiskSummary: effects + reversible + severity + iterated]
 ```
 
-- `RiskSequence`: children that all run; `iterated: true` for a loop body. Effects union; the worst severity and reversibility win.
-- `RiskChoice`: exactly one child runs (`if`, `case`, rescue clauses). The worst branch wins, and its origin is kept for the path.
+- `RiskSequence`: children that all run; `iterated: true` for a loop body. Effects union; severity and reversibility each take their own worst.
+- `RiskChoice`: exactly one child runs (`if`, `case`, rescue clauses). Summarized as a Sequence is, since the summary bounds every run: effects union, and severity, reversibility and iteration each take their own worst. Taking the top-ranked branch whole would drop a tied or milder branch's effects, such as a recursive delete behind a fetch.
 - `RiskDeferred`: a lambda passed as an argument, which the callee may or may not call. Counted in full, as unresolved calls are.
 - `RiskUnresolved`: a call the walker couldn't resolve, counted as Error. Adjutant has no dynamic dispatch, so these should be rare; a common one means the walker needs work.
 
-`RiskAggregator.summarize` returns the single worst path; `all_findings` returns every leaf with its branch path and whether it's iterated, leaving grouping and filtering to the host.
+`RiskAggregator.summarize` returns the bound on every run; `all_findings` returns every leaf with its branch path and whether it's iterated, leaving grouping and filtering to the host. The summary names no calls: the findings are the evidence for it.
 
 #### TypeInference
 

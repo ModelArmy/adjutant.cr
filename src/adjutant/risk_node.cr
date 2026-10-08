@@ -1,16 +1,17 @@
 require "./risk_profile"
 
 module Adjutant
-  # A script's static risk, in the shape of its control flow, so that
-  # exclusive branches aren't merged as if both ran. Built from the
-  # AST, which keeps `if` and `case` apart for presentation.
+  # A script's static risk, in the shape of its control flow, so a
+  # report can tell exclusive branches apart. Built from the AST, which
+  # keeps `if` and `case` apart for presentation.
   #
   #   Leaf:       one resolved call's RiskProfile.
   #   Sequence:   children that all run; `iterated` marks a loop body,
   #               which may repeat any number of times.
   #   Choice:     children of which exactly one runs (branches, `when`
-  #               arms, rescue clauses against the body); aggregated as
-  #               the worst member, naming which.
+  #               arms, rescue clauses against the body). Summarized
+  #               like a Sequence, as a bound over every branch; the
+  #               findings keep which branch each call is on.
   #   Unresolved: a call the walker couldn't resolve, counted as
   #               Severity::Error. Adjutant has no dynamic dispatch, so
   #               these should be rare; frequent ones mean the walker

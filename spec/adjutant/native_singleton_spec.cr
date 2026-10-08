@@ -185,9 +185,10 @@ module Adjutant
       interp, _ = make_interp
       walker = RiskWalker.new(interp)
       body = Parser.new("Ghost.new").parse
-      summary = RiskAggregator.summarize(walker.walk_body(body))
+      tree = walker.walk_body(body)
+      summary = RiskAggregator.summarize(tree)
       summary.severity.should eq Severity::Error
-      summary.path.first.should contain "unresolved"
+      RiskAggregator.all_findings(tree).any?(&.description.starts_with?("unresolved call: ")).should be_true
     end
 
     it "risky construction via a var is not silently dropped downstream" do

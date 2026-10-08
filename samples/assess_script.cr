@@ -98,7 +98,6 @@ puts "=== Risk assessment: #{script_file} ==="
 puts
 puts "Worst case: #{summary.severity} / reversible=#{summary.reversible}"
 puts "Effects: #{summary.effects.empty? ? "none" : summary.effects.join(", ")}"
-puts "Path: #{summary.path.join(" -> ")}" unless summary.path.empty?
 puts
 
 puts "All findings (#{findings.size}):"
