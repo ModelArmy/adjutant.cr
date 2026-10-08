@@ -152,12 +152,26 @@ class SampleModule < Adjutant::ScriptModule
   end
 end
 
-# A real IFC policy, loaded via RiskFlowPolicy.from_json — the same way
-# an embedding agent would load one from a config file. Written inline
-# here (rather than a separate file on disk) purely so the whole policy
-# is visible as part of this sample; Adjutant itself never reads a
-# policy path off disk (see DEVELOPMENT.md).
-SAMPLE_POLICY_JSON = <<-JSON
+# A policy document (POLICY.md), loaded with Policy.from_yaml as an
+# embedding agent would load one from a config file. Inline so the
+# whole policy is visible here; Adjutant never reads a policy off disk.
+SAMPLE_POLICY_YAML = <<-YAML
+  risk_flow:
+    patterns:
+      - { kind: file, pattern: /etc/passwd, priority: 10, sensitivity: high }
+      - { kind: file, type: regex, pattern: "^/etc/", priority: 0, sensitivity: elevated }
+      - { kind: file, pattern: /tmp/scratch.txt, priority: 10, sensitivity: none }
+      - { kind: host, type: regex, pattern: "internal$", priority: 0, sensitivity: none }
+      - { kind: host, type: regex, pattern: ".*", priority: -10, sensitivity: elevated }
+    rules:
+      - { authority: delete, sensitivity: elevated, action: ask }
+      - { authority: delete, sensitivity: high, action: reject }
+      - { authority: net, sensitivity: elevated, action: ask }
+      - { authority: net, sensitivity: high, action: ask }
+      - { authority: read, sensitivity: elevated, action: allow }
+      - { authority: read, sensitivity: high, action: allow }
+    default: ask
+  YAML
 {
   "sensitivity_patterns": [
     { "kind": "File", "pattern": "/etc/passwd", "priority": 10, "sensitivity": "High" },
@@ -241,11 +255,11 @@ limits = Adjutant::ExecutionLimits.new(
   call_depth_limit: 256
 )
 
-# Both risk_flow_policy and on_risk_flow_decision are required — there
+# Both policy and on_risk_flow_decision are required — there
 # is no default that means "skip risk assessment." See
 # DEVELOPMENT.md's "Information flow control (risk flow)" section.
 interp = Adjutant::Interpreter.new(
-  risk_flow_policy: Adjutant::RiskFlowPolicy.from_json(SAMPLE_POLICY_JSON),
+  policy: Adjutant::Policy.from_yaml(SAMPLE_POLICY_YAML),
   on_risk_flow_decision: ->(req : Adjutant::RiskFlowDecisionRequest) { prompt_for_risk_flow_decision(req) },
   effect: effect,
   limits: limits,

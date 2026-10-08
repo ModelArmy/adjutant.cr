@@ -144,7 +144,7 @@ module Adjutant
       # itself got diagnostics with a position but no snippet — the
       # feature silently not working rather than visibly failing.
       interp = Interpreter.new(
-        risk_flow_policy: TEST_REJECT_ALL_POLICY,
+        policy: Policy.new(TEST_REJECT_ALL_POLICY),
         on_risk_flow_decision: TEST_UNEXPECTED_ASK_CALLBACK,
       )
       body = interp.parse("def foo(&blk)\nend", "script.rb")
@@ -166,7 +166,7 @@ module Adjutant
       # Lets a host fall back on `message` instead of tracking which
       # raise sites have been converted.
       interp = Interpreter.new(
-        risk_flow_policy: TEST_REJECT_ALL_POLICY,
+        policy: Policy.new(TEST_REJECT_ALL_POLICY),
         on_risk_flow_decision: TEST_UNEXPECTED_ASK_CALLBACK,
       )
       legacy = CompileError.new("something old", 1, 1)
@@ -209,7 +209,7 @@ module Adjutant
 
     it "is reachable through the interpreter's own property" do
       interp = Interpreter.new(
-        risk_flow_policy: TEST_REJECT_ALL_POLICY,
+        policy: Policy.new(TEST_REJECT_ALL_POLICY),
         on_risk_flow_decision: TEST_UNEXPECTED_ASK_CALLBACK,
       )
       interp.report_url.should eq(DiagnosticRenderer::DEFAULT_REPORT_URL)
@@ -227,7 +227,7 @@ module Adjutant
     # for, and the thing most likely to be "tidied away" by someone
     # finishing what looks like an incomplete migration.
     interp = Interpreter.new(
-      risk_flow_policy: TEST_REJECT_ALL_POLICY,
+      policy: Policy.new(TEST_REJECT_ALL_POLICY),
       on_risk_flow_decision: TEST_UNEXPECTED_ASK_CALLBACK,
     )
 

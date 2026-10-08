@@ -150,9 +150,10 @@ module Adjutant
       end
     end
 
-    describe "parsing through Grants.from_yaml" do
+    describe "parsing through Policy.from_yaml" do
       it "builds rules for a mixed list of scalar and mapping entries" do
-        grants = Legate::Grants.from_yaml(<<-YAML)
+        grants = Policy.from_yaml(<<-YAML).grants
+        risk_flow: none
         grants:
           net:
             methods: [get, post]
@@ -176,7 +177,8 @@ module Adjutant
       # time — same posture SizeLiteral/DurationLiteral already take.
       it "raises at load time on a malformed entry rather than denying quietly" do
         expect_raises(ArgumentError) do
-          Legate::Grants.from_yaml(<<-YAML)
+          Policy.from_yaml(<<-YAML)
+          risk_flow: none
           grants:
             net:
               hosts: ["ftp://files.example.com"]

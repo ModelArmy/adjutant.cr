@@ -1,6 +1,4 @@
-require "yaml"
 require "../grants"
-require "../policy_yaml"
 require "../resource_limits"
 require "./net_rule"
 
@@ -82,17 +80,6 @@ module Adjutant
       # at all.
       def self.deny_all : Grants
         new
-      end
-
-      # Parses `grants:` and `limits:` strictly, as `Policy.from_yaml`
-      # does; a missing or empty section is all-denied or all-default,
-      # as is an empty document.
-      def self.from_yaml(source : String) : Grants
-        doc = YAML.parse(source)
-        return deny_all if doc.raw.nil?
-
-        top = YamlPolicy.mapping(doc, "the document", {"grants", "limits"})
-        Policy.grants_from(top, Policy.default_sections)
       end
     end
   end

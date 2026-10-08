@@ -128,6 +128,7 @@ module Adjutant
             "risk_flow:\n  patterns:\n    - { kind: env, pattern: K, priority: 0, sensitivity: high, typ: regex }\n  default: reject\n"                                                     => /risk_flow.patterns\[0\] has an unknown key "typ"/,
             "risk_flow:\n  rules:\n    - { authority: net, sensitivity: high, action: allow, priority: 1, origin: { kind: env, pattern: K }, subjct: { pattern: x } }\n  default: reject\n" => /risk_flow.rules\[0\] has an unknown key "subjct"/,
             "risk_flow:\n  rules:\n    - { authority: net, sensitivity: high, action: allow, priority: 1, origin: { kind: env, pattern: K, host: x } }\n  default: reject\n"                => /risk_flow.rules\[0\].origin has an unknown key "host"/,
+            "risk_flow:\n  rules:\n    - { authority: net, sensitivity: high, action: allow, priority: 1, subject: { pattern: x, host: y } }\n  default: reject\n"                         => /risk_flow.rules\[0\].subject has an unknown key "host"/,
           }.each do |source, message|
             expect_raises(InvalidPolicyError, message) { Policy.from_yaml(source) }
           end

@@ -48,7 +48,7 @@ module Adjutant
 
     # The `grants:` and `limits:` sections of the mapping `top`, each
     # key parsed by the section that claims it, as Legate's Grants.
-    def self.grants_from(top : YamlPolicy::Mapping?, sections : Array(PolicySection)) : Legate::Grants
+    private def self.grants_from(top : YamlPolicy::Mapping?, sections : Array(PolicySection)) : Legate::Grants
       grants = YamlPolicy.section(top, "grants", "grants", sections.flat_map(&.grant_keys))
       limits = YamlPolicy.section(top, "limits", "limits", sections.flat_map(&.limit_keys))
       shares = sections.map do |section|

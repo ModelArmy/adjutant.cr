@@ -55,11 +55,10 @@ module Adjutant
   ) : {Interpreter, TestEffectHandler}
     ef = TestEffectHandler.new
     interp = Interpreter.new(
-      risk_flow_policy: risk_flow_policy,
+      policy: Policy.new(risk_flow_policy, grants),
       on_risk_flow_decision: on_risk_flow_decision,
       effect: ef,
       limits: limits,
-      grants: grants,
       log: log,
     )
     {interp, ef}

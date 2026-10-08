@@ -6,3 +6,4 @@
 # step is ever reached, so this suite never needs `ambient.env`
 # populated the way `ambient_basics/_policy.yaml` does.
 grants: {}
+risk_flow: none

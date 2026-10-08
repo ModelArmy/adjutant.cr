@@ -71,8 +71,7 @@ module Testing
 
       interp = begin
         Adjutant::Interpreter.new(
-          risk_flow_policy: Adjutant::RiskFlowPolicy.reject_all,
-          grants: grants_for(path),
+          policy: policy_for(path),
           on_risk_flow_decision: ->(_req : Adjutant::RiskFlowDecisionRequest) { Adjutant::RiskFlowDecision::Reject },
           effect: ef,
           limits: limits,
@@ -124,25 +123,28 @@ module Testing
       FileResult.new(short, mod, error, cause)
     end
 
-    private def grants_for(script_path : String) : Adjutant::Legate::Grants
+    # The policy beside the script, or nothing granted and no flows
+    # judged when there is none.
+    private def policy_for(script_path : String) : Adjutant::Policy
       dir = File.expand_path(File.dirname(script_path))
       policy_path = File.join(dir, POLICY_FILE_NAME)
-      return Adjutant::Legate::Grants.deny_all unless File.exists?(policy_path)
+      return Adjutant::Policy.new(Adjutant::RiskFlowPolicy.reject_all) unless File.exists?(policy_path)
 
-      raw = Adjutant::Legate::Grants.from_yaml(File.read(policy_path))
+      raw = Adjutant::Policy.from_yaml(File.read(policy_path))
+      grants = raw.grants
       # Relative roots are expanded against the policy file's own
       # directory, not the process's working directory. Hosts and
       # environment names aren't paths, so are left as written.
-      Adjutant::Legate::Grants.new(
-        read_roots: raw.read_roots.map { |root| File.expand_path(root, dir) },
-        write_roots: raw.write_roots.map { |root| File.expand_path(root, dir) },
-        delete_roots: raw.delete_roots.map { |root| File.expand_path(root, dir) },
-        net_rules: raw.net_rules,
-        net_methods: raw.net_methods,
-        net_redirect_headers: raw.net_redirect_headers,
-        ambient_env: raw.ambient_env,
-        limits: raw.limits,
-      )
+      Adjutant::Policy.new(raw.risk_flow, Adjutant::Legate::Grants.new(
+        read_roots: grants.read_roots.map { |root| File.expand_path(root, dir) },
+        write_roots: grants.write_roots.map { |root| File.expand_path(root, dir) },
+        delete_roots: grants.delete_roots.map { |root| File.expand_path(root, dir) },
+        net_rules: grants.net_rules,
+        net_methods: grants.net_methods,
+        net_redirect_headers: grants.net_redirect_headers,
+        ambient_env: grants.ambient_env,
+        limits: grants.limits,
+      ))
     end
 
     # Describes an unexpected error.

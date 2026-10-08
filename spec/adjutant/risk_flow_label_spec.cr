@@ -161,7 +161,7 @@ module Adjutant
     it "risk_flow_tracking: true enables the risk_flow_log" do
       ef = TestEffectHandler.new
       interp = Interpreter.new(
-        risk_flow_policy: RiskFlowPolicy.reject_all,
+        policy: Policy.new(RiskFlowPolicy.reject_all),
         on_risk_flow_decision: TEST_UNEXPECTED_ASK_CALLBACK,
         effect: ef,
         risk_flow_tracking: true,
@@ -172,7 +172,7 @@ module Adjutant
     it "flow_log persists across multiple eval calls on the same interpreter" do
       ef = TestEffectHandler.new
       interp = Interpreter.new(
-        risk_flow_policy: RiskFlowPolicy.reject_all,
+        policy: Policy.new(RiskFlowPolicy.reject_all),
         on_risk_flow_decision: TEST_UNEXPECTED_ASK_CALLBACK,
         effect: ef,
         risk_flow_tracking: true,

@@ -10,3 +10,4 @@ grants:
   ambient:
     env:
       - ADJUTANT_AMBIENT_TEST_UNSET_VAR
+risk_flow: none
