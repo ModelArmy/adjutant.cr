@@ -1,48 +1,48 @@
 require "../../spec_helper"
 
 module Adjutant
-  describe Legate::SizeLiteral do
+  describe SizeLiteral do
     it "parses a bare byte count" do
-      Legate::SizeLiteral.bytes("1024").should eq 1024_i64
+      SizeLiteral.bytes("1024").should eq 1024_i64
     end
 
     it "parses KiB/MiB/GiB as binary (1024-based) units" do
-      Legate::SizeLiteral.bytes("8MiB").should eq 8_388_608_i64
-      Legate::SizeLiteral.bytes("1KiB").should eq 1024_i64
-      Legate::SizeLiteral.bytes("4GiB").should eq 4_294_967_296_i64
+      SizeLiteral.bytes("8MiB").should eq 8_388_608_i64
+      SizeLiteral.bytes("1KiB").should eq 1024_i64
+      SizeLiteral.bytes("4GiB").should eq 4_294_967_296_i64
     end
 
     it "tolerates a space between the number and unit" do
-      Legate::SizeLiteral.bytes("512 MiB").should eq 536_870_912_i64
+      SizeLiteral.bytes("512 MiB").should eq 536_870_912_i64
     end
 
     it "raises on garbage" do
       expect_raises(ArgumentError, /invalid size literal/) do
-        Legate::SizeLiteral.bytes("lots")
+        SizeLiteral.bytes("lots")
       end
     end
 
     it "raises on an unrecognised unit" do
       expect_raises(ArgumentError, /invalid size literal/) do
-        Legate::SizeLiteral.bytes("8TiB")
+        SizeLiteral.bytes("8TiB")
       end
     end
   end
 
-  describe Legate::DurationLiteral do
+  describe DurationLiteral do
     it "parses seconds" do
-      Legate::DurationLiteral.seconds("300s").should eq 300
+      DurationLiteral.seconds("300s").should eq 300
     end
 
     it "raises on garbage" do
       expect_raises(ArgumentError, /invalid duration literal/) do
-        Legate::DurationLiteral.seconds("5m")
+        DurationLiteral.seconds("5m")
       end
     end
 
     it "raises on a bare number with no unit" do
       expect_raises(ArgumentError, /invalid duration literal/) do
-        Legate::DurationLiteral.seconds("300")
+        DurationLiteral.seconds("300")
       end
     end
   end
