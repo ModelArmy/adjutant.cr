@@ -29,7 +29,7 @@ module Adjutant
   ) : {Interpreter, TestEffectHandler}
     ef = TestEffectHandler.new
     interp = Interpreter.new(
-      risk_flow_policy: risk_flow_policy,
+      policy: Policy.new(risk_flow_policy),
       on_risk_flow_decision: on_risk_flow_decision,
       effect: ef,
     )
@@ -63,7 +63,7 @@ module Adjutant
         policy = RiskFlowPolicy.new(risk_flow_rules: allow_unlisted([
           RiskFlowRule.new(Authority::Delete, Sensitivity::High, RiskFlowAction::Reject),
         ]))
-        interp = Interpreter.new(risk_flow_policy: policy, on_risk_flow_decision: TEST_UNEXPECTED_ASK_CALLBACK, effect: ef)
+        interp = Interpreter.new(policy: Policy.new(policy), on_risk_flow_decision: TEST_UNEXPECTED_ASK_CALLBACK, effect: ef)
         interp.define_native("delete_file", risk: RiskProfile.new(effects: Set{Effect::DeletesFiles}, reversible: Reversibility::No, severity: Severity::Error),
       authorities: Set{Authority::Delete}) do |args|
           Value.bool(true)
@@ -274,7 +274,7 @@ module Adjutant
       it "never triggers a risk flow check regardless of policy" do
         ef = TestEffectHandler.new
         interp = Interpreter.new(
-          risk_flow_policy: RiskFlowPolicy.reject_all,
+          policy: Policy.new(RiskFlowPolicy.reject_all),
           on_risk_flow_decision: TEST_UNEXPECTED_ASK_CALLBACK,
           effect: ef,
         )

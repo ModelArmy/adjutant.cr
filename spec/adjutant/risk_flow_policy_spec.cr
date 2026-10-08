@@ -32,19 +32,6 @@ module Adjutant
       p.matches?("https://evil.example:443").should be_true
     end
 
-    it "regex round-trips through JSON with pattern_type explicit" do
-      original = SensitivityPattern.new(ProvenanceKind::Host, "\\.com$", 0, Sensitivity::Elevated, PatternType::Regex)
-      parsed = SensitivityPattern.from_json(original.to_json)
-      parsed.pattern_type.should eq PatternType::Regex
-      parsed.matches?("example.com").should be_true
-    end
-
-    it "exact round-trips through JSON when pattern_type is omitted" do
-      json = %({"kind":"File","pattern":"/etc/hosts","priority":10,"sensitivity":"None"})
-      parsed = SensitivityPattern.from_json(json)
-      parsed.pattern_type.should eq PatternType::Exact
-      parsed.matches?(real("/etc/hosts")).should be_true
-    end
   end
 
   describe RiskFlowPolicy do
@@ -310,14 +297,19 @@ module Adjutant
         end
       end
 
-      it "round-trips an exception through JSON" do
-        original = RiskFlowPolicy.new(risk_flow_rules: [
-          RiskFlowRule.new(Authority::Net, Sensitivity::High, RiskFlowAction::Reject),
-          RiskFlowRule.new(Authority::Net, Sensitivity::High, RiskFlowAction::Allow,
-            origin: RiskFlowOrigin.new(ProvenanceKind::Env, "STRIPE_KEY"),
-            subject: RiskFlowSubject.new("https://api.stripe.com:443"), priority: 10),
-        ], default_action: RiskFlowAction::Reject)
-        parsed = RiskFlowPolicy.from_json(original.to_json)
+      it "loads an exception from a policy document that matches as built" do
+        parsed = Policy.from_yaml(<<-YAML).risk_flow
+          risk_flow:
+            rules:
+              - { authority: net, sensitivity: high, action: reject }
+              - authority: net
+                sensitivity: high
+                action: allow
+                priority: 10
+                origin: { kind: env, pattern: STRIPE_KEY }
+                subject: { pattern: "https://api.stripe.com:443" }
+            default: reject
+          YAML
         key = ProvenanceTag.new(ProvenanceKind::Env, "STRIPE_KEY", Sensitivity::High)
         parsed.action_for(Authority::Net, key, "https://api.stripe.com:443")[0].should eq RiskFlowAction::Allow
         parsed.action_for(Authority::Net, key, "https://example.com:443")[0].should eq RiskFlowAction::Reject
@@ -346,101 +338,19 @@ module Adjutant
         end
       end
 
-      it "rejects an invalid regex in a policy loaded from JSON" do
-        json = <<-JSON
-          {
-            "sensitivity_patterns": [
-              { "kind": "Env", "pattern_type": "regex", "pattern": "[a-", "priority": 10, "sensitivity": "High" }
-            ],
-            "risk_flow_rules": [],
-            "default": "reject"
-          }
-          JSON
-        expect_raises(InvalidRiskFlowPolicyError, /\[a-/) do
-          RiskFlowPolicy.from_json(json)
+      it "rejects an invalid regex in a policy document" do
+        expect_raises(InvalidPolicyError, /\[a-/) do
+          Policy.from_yaml(<<-YAML)
+            risk_flow:
+              patterns:
+                - { kind: env, type: regex, pattern: "[a-", priority: 10, sensitivity: high }
+              default: reject
+            YAML
         end
       end
 
       it "accepts the same text as an exact pattern" do
         SensitivityPattern.new(ProvenanceKind::Env, "[a-", 10, Sensitivity::High).matches?("[a-").should be_true
-      end
-    end
-
-    # A misspelled key is refused, not dropped: an optional key that
-    # narrows a rule widens it when it goes missing.
-    describe "unknown keys" do
-      it "rejects a misspelled subject, which would otherwise allow the flow to every host" do
-        json = <<-JSON
-          {
-            "sensitivity_patterns": [],
-            "risk_flow_rules": [
-              { "authority": "Net", "sensitivity": "High", "action": "Allow",
-                "origin": { "kind": "Env", "pattern": "STRIPE_KEY" },
-                "subjct": { "pattern": "https://api.stripe.com:443" },
-                "priority": 10 }
-            ],
-            "default": "reject"
-          }
-          JSON
-        expect_raises(JSON::SerializableError, /subjct/) do
-          RiskFlowPolicy.from_json(json)
-        end
-      end
-
-      it "rejects an unknown key in an origin" do
-        json = <<-JSON
-          {
-            "sensitivity_patterns": [],
-            "risk_flow_rules": [
-              { "authority": "Net", "sensitivity": "High", "action": "Allow",
-                "origin": { "kind": "Env", "pattern": "^STRIPE_", "patern_type": "regex" },
-                "priority": 10 }
-            ],
-            "default": "reject"
-          }
-          JSON
-        expect_raises(JSON::SerializableError, /patern_type/) do
-          RiskFlowPolicy.from_json(json)
-        end
-      end
-
-      it "rejects an unknown key in a subject" do
-        json = <<-JSON
-          {
-            "sensitivity_patterns": [],
-            "risk_flow_rules": [
-              { "authority": "Net", "sensitivity": "High", "action": "Allow",
-                "subject": { "pattern": "https://api.stripe.com:443", "host": "api.stripe.com" },
-                "priority": 10 }
-            ],
-            "default": "reject"
-          }
-          JSON
-        expect_raises(JSON::SerializableError, /host/) do
-          RiskFlowPolicy.from_json(json)
-        end
-      end
-
-      it "rejects an unknown key in a sensitivity pattern" do
-        json = <<-JSON
-          {
-            "sensitivity_patterns": [
-              { "kind": "Env", "pattern": "STRIPE_KEY", "priorty": 10, "priority": 0, "sensitivity": "High" }
-            ],
-            "risk_flow_rules": [],
-            "default": "reject"
-          }
-          JSON
-        expect_raises(JSON::SerializableError, /priorty/) do
-          RiskFlowPolicy.from_json(json)
-        end
-      end
-
-      it "rejects an unknown key at the top level" do
-        json = %({"sensitivity_patterns": [], "risk_flow_rules": [], "default": "reject", "defualt": "ask"})
-        expect_raises(JSON::SerializableError, /defualt/) do
-          RiskFlowPolicy.from_json(json)
-        end
       end
     end
 
@@ -533,19 +443,15 @@ module Adjutant
         ], default_action: RiskFlowAction::Reject)
       end
 
-      it "rejects a certain tie in a policy loaded from JSON" do
-        json = <<-JSON
-          {
-            "sensitivity_patterns": [
-              { "kind": "Env", "pattern": "STRIPE_KEY", "priority": 10, "sensitivity": "High" },
-              { "kind": "Env", "pattern": "STRIPE_KEY", "priority": 10, "sensitivity": "Elevated" }
-            ],
-            "risk_flow_rules": [],
-            "default": "reject"
-          }
-          JSON
-        expect_raises(InvalidRiskFlowPolicyError, /would tie/) do
-          RiskFlowPolicy.from_json(json)
+      it "rejects a certain tie in a policy document" do
+        expect_raises(InvalidPolicyError, /would tie/) do
+          Policy.from_yaml(<<-YAML)
+            risk_flow:
+              patterns:
+                - { kind: env, pattern: STRIPE_KEY, priority: 10, sensitivity: high }
+                - { kind: env, pattern: STRIPE_KEY, priority: 10, sensitivity: elevated }
+              default: reject
+            YAML
         end
       end
     end
@@ -585,19 +491,6 @@ module Adjutant
         end
       end
 
-      it "checks a policy loaded from JSON the same way" do
-        expect_raises(InvalidRiskFlowPolicyError, /Read\/Elevated/) do
-          RiskFlowPolicy.from_json(%({"sensitivity_patterns": [], "risk_flow_rules": []}))
-        end
-        expect_raises(InvalidRiskFlowPolicyError, /not Allow/) do
-          RiskFlowPolicy.from_json(%({"sensitivity_patterns": [], "risk_flow_rules": [], "default": "allow"}))
-        end
-      end
-
-      it "reads the default from JSON" do
-        policy = RiskFlowPolicy.from_json(%({"sensitivity_patterns": [], "risk_flow_rules": [], "default": "ask"}))
-        policy.action_for(Authority::Write, Sensitivity::High)[0].should eq RiskFlowAction::Ask
-      end
     end
 
     describe ".reject_all" do
@@ -626,35 +519,30 @@ module Adjutant
         rule.should be_nil
       end
 
-      it "reject_all_flows is not part of the JSON representation" do
-        policy = RiskFlowPolicy.reject_all
-        policy.to_json.should_not contain("reject_all")
-      end
-
-      it "a loaded policy JSON (never containing reject_all_flows) does not accidentally reject everything" do
-        policy = RiskFlowPolicy.new(risk_flow_rules: [
-          RiskFlowRule.new(Authority::Delete, Sensitivity::High, RiskFlowAction::Ask),
-        ], default_action: RiskFlowAction::Ask)
-        parsed = RiskFlowPolicy.from_json(policy.to_json)
-        parsed.reject_all_flows?.should be_false
-        parsed.action_for(Authority::Net, Sensitivity::High)[0].should eq RiskFlowAction::Ask
+      it "is never what a policy document's rules load as" do
+        policy = Policy.from_yaml(<<-YAML).risk_flow
+          risk_flow:
+            rules:
+              - { authority: delete, sensitivity: high, action: ask }
+            default: ask
+          YAML
+        policy.reject_all_flows?.should be_false
+        policy.action_for(Authority::Net, Sensitivity::High)[0].should eq RiskFlowAction::Ask
       end
     end
 
-    describe "JSON round-trip" do
-      it "round-trips a full policy" do
-        original = RiskFlowPolicy.new(
-          sensitivity_patterns: [
-            SensitivityPattern.new(ProvenanceKind::File, "/etc/passwd", 10, Sensitivity::High),
-            SensitivityPattern.new(ProvenanceKind::File, "^/etc/", 0, Sensitivity::Elevated, PatternType::Regex),
-          ],
-          risk_flow_rules: [
-            RiskFlowRule.new(Authority::Delete, Sensitivity::Elevated, RiskFlowAction::Ask),
-            RiskFlowRule.new(Authority::Write, Sensitivity::High, RiskFlowAction::Reject),
-          ],
-          default_action: RiskFlowAction::Ask,
-        )
-        parsed = RiskFlowPolicy.from_json(original.to_json)
+    describe "loaded from a policy document" do
+      it "loads patterns, rules and a default" do
+        parsed = Policy.from_yaml(<<-YAML).risk_flow
+          risk_flow:
+            patterns:
+              - { kind: file, pattern: /etc/passwd, priority: 10, sensitivity: high }
+              - { kind: file, type: regex, pattern: "^/etc/", priority: 0, sensitivity: elevated }
+            rules:
+              - { authority: delete, sensitivity: elevated, action: ask }
+              - { authority: write, sensitivity: high, action: reject }
+            default: ask
+          YAML
         parsed.default_action.should eq RiskFlowAction::Ask
         parsed.sensitivity_for(ProvenanceKind::File, real("/etc/passwd")).should eq Sensitivity::High
         parsed.sensitivity_for(ProvenanceKind::File, "/etc/shadow").should eq Sensitivity::Elevated
@@ -662,30 +550,23 @@ module Adjutant
         parsed.action_for(Authority::Write, Sensitivity::High)[0].should eq RiskFlowAction::Reject
       end
 
-      it "parses the design doc's worked example" do
-        # Built via RiskFlowPolicy.new + to_json rather than a literal JSON
-        # heredoc, to avoid backslash-escaping ambiguity (heredoc source
-        # -> Crystal string -> JSON text -> regex engine is four layers
-        # of escaping to get right by hand) while still exercising the
-        # same JSON round-trip path as loading a real policy file would.
-        original = RiskFlowPolicy.new(
-          sensitivity_patterns: [
-            SensitivityPattern.new(ProvenanceKind::File, "/etc/passwd", 10, Sensitivity::High),
-            SensitivityPattern.new(ProvenanceKind::File, "/etc/hosts", 10, Sensitivity::None),
-            SensitivityPattern.new(ProvenanceKind::File, "^/etc/", 0, Sensitivity::Elevated, PatternType::Regex),
-            SensitivityPattern.new(ProvenanceKind::Host, "\\.com$", 0, Sensitivity::Elevated, PatternType::Regex),
-            SensitivityPattern.new(ProvenanceKind::Host, "\\.gmail\\.com$", 5, Sensitivity::High, PatternType::Regex),
-            SensitivityPattern.new(ProvenanceKind::Host, "mybiz.example.com", 10, Sensitivity::None),
-          ],
-          risk_flow_rules: [
-            RiskFlowRule.new(Authority::Delete, Sensitivity::Elevated, RiskFlowAction::Ask),
-            RiskFlowRule.new(Authority::Delete, Sensitivity::High, RiskFlowAction::Ask),
-            RiskFlowRule.new(Authority::Net, Sensitivity::High, RiskFlowAction::Ask),
-            RiskFlowRule.new(Authority::Write, Sensitivity::High, RiskFlowAction::Reject),
-          ],
-          default_action: RiskFlowAction::Ask,
-        )
-        policy = RiskFlowPolicy.from_json(original.to_json)
+      it "loads the design doc's worked example" do
+        policy = Policy.from_yaml(<<-'YAML').risk_flow
+          risk_flow:
+            patterns:
+              - { kind: file, pattern: /etc/passwd, priority: 10, sensitivity: high }
+              - { kind: file, pattern: /etc/hosts, priority: 10, sensitivity: none }
+              - { kind: file, type: regex, pattern: '^/etc/', priority: 0, sensitivity: elevated }
+              - { kind: host, type: regex, pattern: '\.com$', priority: 0, sensitivity: elevated }
+              - { kind: host, type: regex, pattern: '\.gmail\.com$', priority: 5, sensitivity: high }
+              - { kind: host, pattern: mybiz.example.com, priority: 10, sensitivity: none }
+            rules:
+              - { authority: delete, sensitivity: elevated, action: ask }
+              - { authority: delete, sensitivity: high, action: ask }
+              - { authority: net, sensitivity: high, action: ask }
+              - { authority: write, sensitivity: high, action: reject }
+            default: ask
+          YAML
         policy.sensitivity_for(ProvenanceKind::File, real("/etc/passwd")).should eq Sensitivity::High
         policy.sensitivity_for(ProvenanceKind::File, real("/etc/hosts")).should eq Sensitivity::None
         policy.sensitivity_for(ProvenanceKind::File, "/etc/shadow").should eq Sensitivity::Elevated
@@ -705,7 +586,7 @@ module Adjutant
         SensitivityPattern.new(ProvenanceKind::File, "/etc/passwd", 10, Sensitivity::High),
       ])
       interp = Interpreter.new(
-        risk_flow_policy: policy,
+        policy: Policy.new(policy),
         on_risk_flow_decision: TEST_UNEXPECTED_ASK_CALLBACK,
         effect: ef,
       )
@@ -713,7 +594,7 @@ module Adjutant
       interp.risk_flow_policy.sensitivity_for(ProvenanceKind::File, real("/etc/passwd")).should eq Sensitivity::High
     end
 
-    it "risk_flow_policy and on_risk_flow_decision are required (no bare Interpreter.new default)" do
+    it "policy and on_risk_flow_decision are required (no bare Interpreter.new default)" do
       # make_interp supplies both explicitly via spec_helper's shared
       # TEST_REJECT_ALL_POLICY/TEST_UNEXPECTED_ASK_CALLBACK defaults —
       # there is no Interpreter.new() with zero args, by design.

@@ -1,4 +1,3 @@
-require "json"
 require "./authority"
 require "./risk_profile"
 require "./diagnostic"
@@ -66,9 +65,6 @@ module Adjutant
   # pattern or its position: hosts get more specific leftwards, paths
   # rightwards.
   struct SensitivityPattern
-    include JSON::Serializable
-    include JSON::Serializable::Strict
-
     getter kind : ProvenanceKind
     getter pattern_type : PatternType = PatternType::Exact
     getter pattern : String
@@ -76,19 +72,13 @@ module Adjutant
     getter sensitivity : Sensitivity
 
     # `pattern` as matched; see `matched_pattern`.
-    @[JSON::Field(ignore: true)]
     protected getter matched : String = ""
 
     # `matched` compiled, when it is a regex (`PatternType#compile`).
-    @[JSON::Field(ignore: true)]
     @regex : ::Regex? = nil
 
     def initialize(@kind : ProvenanceKind, @pattern : String, @priority : Int32,
                    @sensitivity : Sensitivity, @pattern_type : PatternType = PatternType::Exact)
-      settle
-    end
-
-    protected def after_initialize
       settle
     end
 
@@ -143,26 +133,17 @@ module Adjutant
   # origin of `kind` matching `pattern`, such as the environment
   # variable `STRIPE_KEY`.
   struct RiskFlowOrigin
-    include JSON::Serializable
-    include JSON::Serializable::Strict
-
     getter kind : ProvenanceKind
     getter pattern_type : PatternType = PatternType::Exact
     getter pattern : String
 
     # `pattern` as matched; see `matched_pattern`.
-    @[JSON::Field(ignore: true)]
     protected getter matched : String = ""
 
     # `matched` compiled, when it is a regex (`PatternType#compile`).
-    @[JSON::Field(ignore: true)]
     @regex : ::Regex? = nil
 
     def initialize(@kind : ProvenanceKind, @pattern : String, @pattern_type : PatternType = PatternType::Exact)
-      settle
-    end
-
-    protected def after_initialize
       settle
     end
 
@@ -205,25 +186,16 @@ module Adjutant
   # subject a call exercises its authority on, as `Broker#authorize`
   # names it, such as `https://api.stripe.com:443` or a path.
   struct RiskFlowSubject
-    include JSON::Serializable
-    include JSON::Serializable::Strict
-
     getter pattern_type : PatternType = PatternType::Exact
     getter pattern : String
 
     # `pattern` as matched; see `matched_pattern`.
-    @[JSON::Field(ignore: true)]
     protected getter matched : String = ""
 
     # `matched` compiled, when it is a regex (`PatternType#compile`).
-    @[JSON::Field(ignore: true)]
     @regex : ::Regex? = nil
 
     def initialize(@pattern : String, @pattern_type : PatternType = PatternType::Exact)
-      settle
-    end
-
-    protected def after_initialize
       settle
     end
 
@@ -285,9 +257,6 @@ module Adjutant
   #     origin: RiskFlowOrigin.new(ProvenanceKind::Env, "STRIPE_KEY"),
   #     subject: RiskFlowSubject.new("https://api.stripe.com:443"), priority: 10)
   struct RiskFlowRule
-    include JSON::Serializable
-    include JSON::Serializable::Strict
-
     getter authority : Authority
     getter sensitivity : Sensitivity
     getter action : RiskFlowAction
@@ -426,36 +395,23 @@ module Adjutant
   #     default_action: RiskFlowAction::Ask,
   #   )
   #
-  # In JSON the default is `"default"`, such as `"default": "ask"`. An
-  # unknown key at any level raises `JSON::SerializableError`, since a
-  # misspelled key that narrows a rule would otherwise widen it.
+  # A policy document's `risk_flow` section builds one (POLICY.md §4).
   class RiskFlowPolicy
-    include JSON::Serializable
-    include JSON::Serializable::Strict
-
     getter sensitivity_patterns : Array(SensitivityPattern)
     getter risk_flow_rules : Array(RiskFlowRule)
 
     # Rejects every non-None sensitivity whatever the rules say; see
-    # `.reject_all`. Never loaded from JSON.
-    @[JSON::Field(ignore: true)]
+    # `.reject_all`.
     getter? reject_all_flows : Bool = false
 
     # The action for a pair no rule names: Ask, Reject, or nil when
     # the rules name every pair.
-    @[JSON::Field(key: "default")]
     getter default_action : RiskFlowAction? = nil
 
     def initialize(@sensitivity_patterns : Array(SensitivityPattern) = [] of SensitivityPattern,
                    @risk_flow_rules : Array(RiskFlowRule) = [] of RiskFlowRule,
                    @reject_all_flows : Bool = false,
                    @default_action : RiskFlowAction? = nil)
-      validate!
-    end
-
-    # Called by `JSON::Serializable` after `from_json`, which doesn't
-    # run `initialize`.
-    protected def after_initialize
       validate!
     end
 

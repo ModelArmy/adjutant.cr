@@ -8,6 +8,7 @@ require "./vm"
 require "./effect_handler"
 require "./risk_profile"
 require "./risk_flow_policy"
+require "./policy"
 require "./risk_flow_decision"
 require "./native_callable"
 require "./native_call_context"
@@ -19,17 +20,17 @@ module Adjutant
   # The host's entry point. Owns the symbol table, the module registry,
   # the grants and the run's broker; builds a fresh VM for each `eval`.
   #
-  # `risk_flow_policy` and `on_risk_flow_decision` are required: there
-  # is no default that skips risk assessment. A host that wants none
-  # passes `RiskFlowPolicy.reject_all`, and still supplies the callback,
-  # so the constructor's shape doesn't depend on the policy's contents.
-  # `grants` defaults to `Grants.deny_all`.
+  # `policy` and `on_risk_flow_decision` are required: there is no
+  # default that skips risk assessment. A host that wants none says so
+  # in its policy (`risk_flow: none`, or `RiskFlowPolicy.reject_all` in
+  # code), and still supplies the callback, so the constructor's shape
+  # doesn't depend on the policy's contents.
   #
   # Usage:
   #   effect  = TestEffectHandler.new
   #   interp  = Interpreter.new(
   #     effect: effect,
-  #     risk_flow_policy: RiskFlowPolicy.reject_all,
+  #     policy: Policy.from_yaml("risk_flow: none"),
   #     on_risk_flow_decision: ->(req : RiskFlowDecisionRequest) { RiskFlowDecision::Reject },
   #   )
   #   interp.modules.register("agent/io") { |i| ... }
@@ -40,10 +41,11 @@ module Adjutant
     getter effect : EffectHandler?
     getter limits : ExecutionLimits
     getter risk_flow_log : RiskFlowLog
+    getter policy : Policy
     getter risk_flow_policy : RiskFlowPolicy
     getter on_risk_flow_decision : RiskFlowDecisionRequest -> RiskFlowDecision
 
-    # Legate's grants, fixed at construction (LEGATE.md §7), and the
+    # The policy's grants, fixed at construction (POLICY.md §2), and the
     # Legate broker every verb uses, so budget and audit state build up
     # across the run.
     getter grants : Legate::Grants
@@ -71,14 +73,15 @@ module Adjutant
     getter main : RubyObject
 
     def initialize(
-      @risk_flow_policy : RiskFlowPolicy,
+      @policy : Policy,
       @on_risk_flow_decision : RiskFlowDecisionRequest -> RiskFlowDecision,
       @effect : EffectHandler? = nil,
       @limits : ExecutionLimits = ExecutionLimits.new,
       risk_flow_tracking : Bool = false,
-      @grants : Legate::Grants = Legate::Grants.deny_all,
       log : ::Log = Legate::Broker::DEFAULT_LOG,
     )
+      @risk_flow_policy = @policy.risk_flow
+      @grants = @policy.grants
       @symbols = SymbolTable.new
       @modules = ModuleRegistry.new
       # VFS files `require` has run, so each runs once per Interpreter,

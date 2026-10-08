@@ -9,7 +9,7 @@ module Adjutant
   private def self.make_tainted_interp : {Interpreter, TestEffectHandler}
     ef = TestEffectHandler.new
     interp = Interpreter.new(
-      risk_flow_policy: RiskFlowPolicy.reject_all,
+      policy: Policy.new(RiskFlowPolicy.reject_all),
       on_risk_flow_decision: TEST_UNEXPECTED_ASK_CALLBACK,
       effect: ef,
       risk_flow_tracking: true,
@@ -462,7 +462,7 @@ module Adjutant
       it "records nothing when flow_tracking is not enabled" do
         ef = TestEffectHandler.new
         interp = Interpreter.new(
-          risk_flow_policy: RiskFlowPolicy.reject_all,
+          policy: Policy.new(RiskFlowPolicy.reject_all),
           on_risk_flow_decision: TEST_UNEXPECTED_ASK_CALLBACK,
           effect: ef,
         )

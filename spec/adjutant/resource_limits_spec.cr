@@ -42,7 +42,7 @@ module Adjutant
       end
 
       # A policy that names no budget still bounds the run, with
-      # LEGATE.md §7's values. Nil, passed from code, still means not
+      # POLICY.md §3's values. Nil, passed from code, still means not
       # enforced.
       it "gives every per-run budget a default" do
         limits = ResourceLimits.new

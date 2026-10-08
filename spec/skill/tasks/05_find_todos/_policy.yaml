@@ -2,3 +2,4 @@ grants:
   read:
     roots:
       - fixtures
+risk_flow: none

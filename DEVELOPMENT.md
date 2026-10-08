@@ -217,6 +217,12 @@ flowchart LR
 
 A script touches the outside world three ways. `EffectHandler`, supplied by the host, carries stdout and the virtual filesystem `require` reads. `ModuleRegistry` holds the modules a script can `require`, the manifest of what it can load. Legate's verbs reach files, the network and the environment, each through `Legate::Broker`, which checks the wall-clock budget, the grants (the perimeter) and the risk-flow policy, and writes an audit record. Ruby's own effectful classes (`File`, `ENV`, `system`, ...) aren't provided (U021).
 
+#### The policy document
+
+A host passes one YAML document to `Policy.from_yaml` (POLICY.md), which yields the `Policy` an `Interpreter` is built with: Legate's `Grants` and a `RiskFlowPolicy`. Keys under `grants:` and `limits:` belong to whichever `PolicySection` claims them. `CorePolicySection` claims the filesystem roots and per-run budgets; `Legate::PolicySection` claims `net`, `ambient` and the per-call limits. Each section's `load` receives only its own keys and returns a `PolicyShare`. A key no section claims is refused, and two sections claiming one key raise `ArgumentError` before the document is read. `risk_flow` is parsed by core alone (`RiskFlowYaml`).
+
+The sections are known by name: `Policy.default_sections` lists both, `Policy.grants_from` assembles their shares into a `Legate::Grants`, and the `Interpreter` builds the one broker. A second provider would add its section to that list and, until providers are loaded generically (SCOPE.md), its share to that assembly.
+
 #### Stream sources and `OpenSources`
 
 A stream verb's iterator holds an OS resource (a file, an HTTP connection) for the length of a walk. It closes itself when the source is exhausted, but three ordinary cases never get there: `first(n)` and `take(n)` break out of the walk, which is what makes them lazy; an exception propagates out of it; or the script stops referring to the stream. So every stream source registers with the run's `OpenSources`, and `Interpreter#eval` closes whatever is left in an `ensure`, so the next script on the same Interpreter starts clean. Scope is the run, not the process: the process is the host application.

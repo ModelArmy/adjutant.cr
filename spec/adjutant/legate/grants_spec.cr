@@ -1,48 +1,54 @@
 require "../../spec_helper"
 
+# Legate's grants from a policy document's `grants:` and `limits:`,
+# with `risk_flow: none` supplied.
+private def grants_from_yaml(source : String) : Adjutant::Legate::Grants
+  Adjutant::Policy.from_yaml("#{source}\nrisk_flow: none\n").grants
+end
+
 module Adjutant
-  describe Legate::SizeLiteral do
+  describe SizeLiteral do
     it "parses a bare byte count" do
-      Legate::SizeLiteral.bytes("1024").should eq 1024_i64
+      SizeLiteral.bytes("1024").should eq 1024_i64
     end
 
     it "parses KiB/MiB/GiB as binary (1024-based) units" do
-      Legate::SizeLiteral.bytes("8MiB").should eq 8_388_608_i64
-      Legate::SizeLiteral.bytes("1KiB").should eq 1024_i64
-      Legate::SizeLiteral.bytes("4GiB").should eq 4_294_967_296_i64
+      SizeLiteral.bytes("8MiB").should eq 8_388_608_i64
+      SizeLiteral.bytes("1KiB").should eq 1024_i64
+      SizeLiteral.bytes("4GiB").should eq 4_294_967_296_i64
     end
 
     it "tolerates a space between the number and unit" do
-      Legate::SizeLiteral.bytes("512 MiB").should eq 536_870_912_i64
+      SizeLiteral.bytes("512 MiB").should eq 536_870_912_i64
     end
 
     it "raises on garbage" do
       expect_raises(ArgumentError, /invalid size literal/) do
-        Legate::SizeLiteral.bytes("lots")
+        SizeLiteral.bytes("lots")
       end
     end
 
     it "raises on an unrecognised unit" do
       expect_raises(ArgumentError, /invalid size literal/) do
-        Legate::SizeLiteral.bytes("8TiB")
+        SizeLiteral.bytes("8TiB")
       end
     end
   end
 
-  describe Legate::DurationLiteral do
+  describe DurationLiteral do
     it "parses seconds" do
-      Legate::DurationLiteral.seconds("300s").should eq 300
+      DurationLiteral.seconds("300s").should eq 300
     end
 
     it "raises on garbage" do
       expect_raises(ArgumentError, /invalid duration literal/) do
-        Legate::DurationLiteral.seconds("5m")
+        DurationLiteral.seconds("5m")
       end
     end
 
     it "raises on a bare number with no unit" do
       expect_raises(ArgumentError, /invalid duration literal/) do
-        Legate::DurationLiteral.seconds("300")
+        DurationLiteral.seconds("300")
       end
     end
   end
@@ -75,9 +81,9 @@ module Adjutant
       end
     end
 
-    describe ".from_yaml" do
-      # The full example from LEGATE.md §7 itself, so this spec breaks
-      # loudly if the doc and the parser ever drift apart.
+    describe "from a policy document" do
+      # Every key POLICY.md §2–§3 and LEGATE.md §7 show, so this spec
+      # breaks loudly if the docs and the parser drift apart.
       full_example = <<-YAML
         grants:
           read:
@@ -100,14 +106,14 @@ module Adjutant
           total_write: 1GiB
         YAML
 
-      it "parses every roots/hosts/binaries/env category from §7's own example" do
-        grants = Legate::Grants.from_yaml(full_example)
+      it "parses every roots/hosts/env category from the docs' example" do
+        grants = grants_from_yaml(full_example)
         grants.read_roots.should eq ["/work/input", "/work/logs"]
         grants.write_roots.should eq ["/work/output"]
         grants.delete_roots.should eq ["/work/output/tmp"]
         grants.net_rules.size.should eq 1
         grants.net_rules.first.host.should eq "api.example.com"
-        # §7's plain-string form still means what it always meant —
+        # The plain-string form still means what it always meant —
         # but its scheme and port are now PINNED to the fail-closed
         # defaults rather than being unconstrained. That change of
         # meaning is the whole point of net_rule.cr; see its own
@@ -119,21 +125,21 @@ module Adjutant
         grants.ambient_env.should eq ["TZ", "LANG"]
       end
 
-      it "parses every limit from §7's own example" do
-        limits = Legate::Grants.from_yaml(full_example).limits
+      it "parses every limit from the docs' example" do
+        limits = grants_from_yaml(full_example).limits
         limits.read_limit.should eq 8_388_608_i64
         limits.fetch_limit.should eq 33_554_432_i64
         limits.memory.should eq 536_870_912_i64
         limits.wall_clock.should eq 300
         limits.total_read.should eq 4_294_967_296_i64
         limits.total_write.should eq 1_073_741_824_i64
-        # §7's own example names no `url_limit`, so it falls back to
+        # The example names no `url_limit`, so it falls back to
         # the 2 KiB default rather than being unbounded.
         limits.url_limit.should eq Legate::Limits::DEFAULT_URL_LIMIT
       end
 
       it "parses an explicit url_limit" do
-        limits = Legate::Grants.from_yaml(<<-YAML).limits
+        limits = grants_from_yaml(<<-YAML).limits
         limits:
           url_limit: 4KiB
         YAML
@@ -141,15 +147,15 @@ module Adjutant
       end
 
       it "denies everything and applies the default budgets when both top-level keys are absent" do
-        grants = Legate::Grants.from_yaml("{}")
+        grants = Policy.from_yaml("{risk_flow: none}").grants
         grants.read_roots.should be_empty
         grants.limits.wall_clock.should eq Legate::Limits::DEFAULT_WALL_CLOCK
         grants.limits.total_write.should eq Legate::Limits::DEFAULT_TOTAL_WRITE
       end
 
-      it "denies everything for a blank document, rather than raising YAML's own error" do
+      it "denies everything when nothing but risk_flow is given" do
         ["", "   ", "\n", "# only a comment\n"].each do |source|
-          grants = Legate::Grants.from_yaml(source)
+          grants = grants_from_yaml(source)
           grants.read_roots.should be_empty
           grants.ambient_env.should be_empty
         end
@@ -157,12 +163,12 @@ module Adjutant
 
       it "rejects a document that is neither empty nor a mapping" do
         expect_raises(ArgumentError, /the document must be a mapping/) do
-          Legate::Grants.from_yaml("just a string")
+          Policy.from_yaml("just a string")
         end
       end
 
       it "treats a key with no value as not given" do
-        grants = Legate::Grants.from_yaml(<<-YAML)
+        grants = grants_from_yaml(<<-YAML)
           grants:
             read:
           limits:
@@ -172,7 +178,7 @@ module Adjutant
       end
 
       it "reads budgets written as YAML integers, as bytes and seconds" do
-        limits = Legate::Grants.from_yaml(<<-YAML).limits
+        limits = grants_from_yaml(<<-YAML).limits
           limits:
             total_read: 1048576
             wall_clock: 300
@@ -184,7 +190,7 @@ module Adjutant
       end
 
       it "treats a present-but-empty category the same as an absent one" do
-        grants = Legate::Grants.from_yaml(<<-YAML)
+        grants = grants_from_yaml(<<-YAML)
           grants:
             read:
               roots: []
@@ -193,7 +199,7 @@ module Adjutant
       end
 
       it "denies a category missing from an otherwise-populated grants block" do
-        grants = Legate::Grants.from_yaml(<<-YAML)
+        grants = grants_from_yaml(<<-YAML)
           grants:
             read:
               roots: ["/work/input"]
@@ -203,7 +209,7 @@ module Adjutant
       end
 
       it "downcases net methods" do
-        grants = Legate::Grants.from_yaml(<<-YAML)
+        grants = grants_from_yaml(<<-YAML)
           grants:
             net:
               hosts: ["api.example.com"]
@@ -213,7 +219,7 @@ module Adjutant
       end
 
       it "reads net.redirect_headers, downcased, and defaults it to none" do
-        grants = Legate::Grants.from_yaml(<<-YAML)
+        grants = grants_from_yaml(<<-YAML)
           grants:
             net:
               hosts: ["api.example.com"]
@@ -228,19 +234,19 @@ module Adjutant
       describe "strictness" do
         it "rejects a misspelt key at any level, naming where" do
           expect_raises(ArgumentError, /limits has an unknown key "total_raed"/) do
-            Legate::Grants.from_yaml("limits:\n  total_raed: 4GiB\n")
+            grants_from_yaml("limits:\n  total_raed: 4GiB\n")
           end
           expect_raises(ArgumentError, /the document has an unknown key "limts"/) do
-            Legate::Grants.from_yaml("limts:\n  total_read: 4GiB\n")
+            grants_from_yaml("limts:\n  total_read: 4GiB\n")
           end
           expect_raises(ArgumentError, /grants.read has an unknown key "root"/) do
-            Legate::Grants.from_yaml("grants:\n  read:\n    root: [/work]\n")
+            grants_from_yaml("grants:\n  read:\n    root: [/work]\n")
           end
         end
 
         it "rejects a net.hosts mapping whose methods are misspelt or a scalar" do
           expect_raises(ArgumentError, /unknown key "method"/) do
-            Legate::Grants.from_yaml(<<-YAML)
+            grants_from_yaml(<<-YAML)
               grants:
                 net:
                   methods: [get, post]
@@ -250,7 +256,7 @@ module Adjutant
               YAML
           end
           expect_raises(ArgumentError, /methods must be a list/) do
-            Legate::Grants.from_yaml(<<-YAML)
+            grants_from_yaml(<<-YAML)
               grants:
                 net:
                   methods: [get, post]
@@ -263,10 +269,10 @@ module Adjutant
 
         it "rejects an empty methods or ports list in a net.hosts mapping" do
           expect_raises(ArgumentError, /methods is empty/) do
-            Legate::Grants.from_yaml("grants:\n  net:\n    hosts:\n      - host: a.example.com\n        methods: []\n")
+            grants_from_yaml("grants:\n  net:\n    hosts:\n      - host: a.example.com\n        methods: []\n")
           end
           expect_raises(ArgumentError, /ports is empty/) do
-            Legate::Grants.from_yaml("grants:\n  net:\n    hosts:\n      - host: a.example.com\n        ports: []\n")
+            grants_from_yaml("grants:\n  net:\n    hosts:\n      - host: a.example.com\n        ports: []\n")
           end
         end
 
@@ -280,19 +286,19 @@ module Adjutant
             "grants:\n  ambient:\n    env: [1]\n"                                               => /grants.ambient.env must list strings/,
             "limits:\n  max_open_streams: many\n"                                               => /max_open_streams must be a whole number/,
           }.each do |source, message|
-            expect_raises(ArgumentError, message) { Legate::Grants.from_yaml(source) }
+            expect_raises(ArgumentError, message) { grants_from_yaml(source) }
           end
         end
 
         it "rejects zero and negative limits" do
           {"limits:\n  total_read: 0\n", "limits:\n  wall_clock: -5\n", "limits:\n  max_open_streams: 0\n"}.each do |source|
-            expect_raises(ArgumentError, /must be positive/) { Legate::Grants.from_yaml(source) }
+            expect_raises(ArgumentError, /must be positive/) { grants_from_yaml(source) }
           end
         end
       end
 
       it "fills in spec-defaulted per-call limits when limits: is absent entirely" do
-        grants = Legate::Grants.from_yaml(<<-YAML)
+        grants = grants_from_yaml(<<-YAML)
           grants:
             read:
               roots: ["/work/input"]

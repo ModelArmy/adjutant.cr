@@ -5,3 +5,4 @@ grants:
   write:
     roots:
       - workspace
+risk_flow: none

@@ -18,3 +18,4 @@ grants:
   delete:
     roots:
       - workspace
+risk_flow: none

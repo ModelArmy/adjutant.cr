@@ -1,6 +1,7 @@
 require "uri"
 require "yaml"
 require "../host_name"
+require "../policy_yaml"
 
 module Adjutant
   module Legate

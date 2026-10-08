@@ -56,13 +56,13 @@ abort(USAGE) if script_file.nil? || script_file.blank?
 
 effect = Adjutant::TestEffectHandler.new
 # This tool never executes the script (static analysis only), so the
-# risk_flow_policy/on_risk_flow_decision required by Interpreter.new
+# policy/on_risk_flow_decision required by Interpreter.new
 # are never actually consulted — reject_all with a callback that should
 # never be called is the right choice here, not a real policy. See
 # run_script.cr for a sample that actually exercises risk flow
 # enforcement by running a script.
 interp = Adjutant::Interpreter.new(
-  risk_flow_policy: Adjutant::RiskFlowPolicy.reject_all,
+  policy: Adjutant::Policy.new(Adjutant::RiskFlowPolicy.reject_all),
   on_risk_flow_decision: ->(req : Adjutant::RiskFlowDecisionRequest) {
     raise "unexpected risk flow decision request during static analysis: #{req.call_name}"
   },

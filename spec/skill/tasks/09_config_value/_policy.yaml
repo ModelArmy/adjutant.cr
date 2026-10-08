@@ -3,3 +3,4 @@ grants:
     env:
       - PATH
       - ADJUTANT_EXAM_UNSET
+risk_flow: none
