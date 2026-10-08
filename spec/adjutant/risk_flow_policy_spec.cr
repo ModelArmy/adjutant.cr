@@ -366,6 +366,84 @@ module Adjutant
       end
     end
 
+    # A misspelled key is refused, not dropped: an optional key that
+    # narrows a rule widens it when it goes missing.
+    describe "unknown keys" do
+      it "rejects a misspelled subject, which would otherwise allow the flow to every host" do
+        json = <<-JSON
+          {
+            "sensitivity_patterns": [],
+            "risk_flow_rules": [
+              { "authority": "Net", "sensitivity": "High", "action": "Allow",
+                "origin": { "kind": "Env", "pattern": "STRIPE_KEY" },
+                "subjct": { "pattern": "https://api.stripe.com:443" },
+                "priority": 10 }
+            ],
+            "default": "reject"
+          }
+          JSON
+        expect_raises(JSON::SerializableError, /subjct/) do
+          RiskFlowPolicy.from_json(json)
+        end
+      end
+
+      it "rejects an unknown key in an origin" do
+        json = <<-JSON
+          {
+            "sensitivity_patterns": [],
+            "risk_flow_rules": [
+              { "authority": "Net", "sensitivity": "High", "action": "Allow",
+                "origin": { "kind": "Env", "pattern": "^STRIPE_", "patern_type": "regex" },
+                "priority": 10 }
+            ],
+            "default": "reject"
+          }
+          JSON
+        expect_raises(JSON::SerializableError, /patern_type/) do
+          RiskFlowPolicy.from_json(json)
+        end
+      end
+
+      it "rejects an unknown key in a subject" do
+        json = <<-JSON
+          {
+            "sensitivity_patterns": [],
+            "risk_flow_rules": [
+              { "authority": "Net", "sensitivity": "High", "action": "Allow",
+                "subject": { "pattern": "https://api.stripe.com:443", "host": "api.stripe.com" },
+                "priority": 10 }
+            ],
+            "default": "reject"
+          }
+          JSON
+        expect_raises(JSON::SerializableError, /host/) do
+          RiskFlowPolicy.from_json(json)
+        end
+      end
+
+      it "rejects an unknown key in a sensitivity pattern" do
+        json = <<-JSON
+          {
+            "sensitivity_patterns": [
+              { "kind": "Env", "pattern": "STRIPE_KEY", "priorty": 10, "priority": 0, "sensitivity": "High" }
+            ],
+            "risk_flow_rules": [],
+            "default": "reject"
+          }
+          JSON
+        expect_raises(JSON::SerializableError, /priorty/) do
+          RiskFlowPolicy.from_json(json)
+        end
+      end
+
+      it "rejects an unknown key at the top level" do
+        json = %({"sensitivity_patterns": [], "risk_flow_rules": [], "default": "reject", "defualt": "ask"})
+        expect_raises(JSON::SerializableError, /defualt/) do
+          RiskFlowPolicy.from_json(json)
+        end
+      end
+    end
+
     # A tie certain to arise is refused when the policy is built, where
     # its author sees it. One only a real origin or subject reveals,
     # such as between two different regexes, waits for H003.
