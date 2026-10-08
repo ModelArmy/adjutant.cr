@@ -21,50 +21,7 @@ after 1.0. Ordered for working through: security and policy defects
 first, then the Ruby divergences, then design work on policy and
 configuration.
 
-- **Authorization is in core, but its configuration and the specified
-  static analyser still assume one provider.** The perimeter
-  (`grants.cr`), run accounting (`ResourceLimits`, `Budget`,
-  `OpenSources`, `FatalSignal`) and the checks every call passes
-  (`Broker#authorize`, `broker.cr`) are core, and `Legate::Broker` is
-  the one `EffectProvider`. What remains needs a registry of providers,
-  which doesn't exist: core never routes a call, so dispatch doesn't
-  need one, but anything that iterates providers does.
-
-  1. **One configuration document.** Grants are YAML
-     (`Legate::Grants.from_yaml`) and the risk-flow policy is JSON
-     (`RiskFlowPolicy.from_json`), though a host writes them as one
-     policy. Each provider should contribute and parse its own
-     section. The merge must keep three properties: no permissive
-     default (a document with grants and no risk section means
-     `reject_all`, and the reverse likewise); Adjutant reads no policy
-     from disk, the host passes it; and every `Authority` stays
-     covered, since a larger document has more places to omit one.
-     This is the one piece that changes an embedder-facing format,
-     which is why it is Must Fix before 1.0.
-  2. **LEGATE.md §10.1 keyed on providers.** Its grant inference
-     collects `Legate.*` calls. Built as written, a second provider
-     would be enforced at runtime and missing from the manifest.
-     Suppose a `Vault` provider and this script:
-
-         key = Vault.secret("stripe/live")
-         Legate.fetch("https://api.example.com", body: key)
-
-     At runtime it is fully checked, since `Vault` goes through the
-     same `Broker`. Statically, the inferred policy mentions only
-     `net`, the offered `vault:` grant looks like an over-grant, and
-     the manifest reports a network request but not the credential
-     read before it. The spec should say the walk collects calls to
-     every registered provider, each mapping its verbs to the
-     authorities it declares (`EffectProvider#authorities`).
-  3. **LEGATE.md §7's ownership.** It specifies the policy file, most
-     of which is now core. Either move it to a core document or state
-     that it describes Legate's surface over a core mechanism.
-
-  `Authority` stays a closed enum: it keys `RiskFlowRule`,
-  `RiskFlowPolicy.reject_all` must cover every member, and the
-  manifest's vocabulary must not depend on which providers are loaded.
-  There is no second provider today, so this generalises on the
-  argument rather than on evidence.
+None open.
 
 ## Will Fix
 
@@ -561,6 +518,21 @@ section).
   currently worth. To pick it up, the route that worked was cutting
   DOWN from the crashing spec, not building UP from a small program.
 
+### Providers
+
+- **Effect providers are named, not loaded.** Each provider claims
+  and parses its own keys in the policy document, but
+  `Policy.default_sections` lists core's and Legate's,
+  `Policy.grants_from` assembles their shares into a
+  `Legate::Grants`, and the `Interpreter` builds Legate's broker
+  itself. A second provider would edit all three. Loading providers
+  generically would hand each its `PolicyShare` and let it build its
+  own broker. There is no second provider to design that against.
+  `Authority` stays a closed enum whatever is loaded: it keys
+  `RiskFlowRule`, `RiskFlowPolicy.reject_all` must cover every
+  member, and the manifest's vocabulary must not depend on which
+  providers are present.
+
 ### Static risk assessment
 
 - **LEGATE.md §10's static analyser isn't built.** No grant
@@ -570,9 +542,8 @@ section).
   whatever the analyser does. Building it starts with a design
   question, what the "effectful surface" is. §10.4 counts 19 verbs
   (§4.1 to §4.5); 16 declare an `Authority`; 25 exist. The answer sets
-  what grant inference and raise-set inference cover. Key §10.1 on
-  registered providers from the start (see Must Fix's authorization
-  entry).
+  what grant inference and raise-set inference cover. §10.1 keys
+  inference on registered providers, not on Legate alone.
 
 ### Legate
 

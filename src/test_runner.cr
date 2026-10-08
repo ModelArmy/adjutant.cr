@@ -22,10 +22,10 @@ module Testing
 
     def initialize(@scripts_dir); end
 
-    # A script directory that needs Legate access holds a policy file
-    # of this name, in LEGATE.md §7's format, beside its scripts;
-    # applies to that directory only. Scripts elsewhere run under
-    # `Grants.deny_all`.
+    # A script directory that needs Legate access holds a policy
+    # document (POLICY.md) of this name beside its scripts; it applies
+    # to that directory only. Scripts elsewhere run with nothing
+    # granted and no flows judged.
     POLICY_FILE_NAME = "_policy.yaml"
 
     def run : Int32

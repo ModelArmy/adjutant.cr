@@ -4,7 +4,7 @@ require "./net_rule"
 
 module Adjutant
   module Legate
-    # The per-call caps of LEGATE.md §7's `limits:` block, added to
+    # The per-call caps of the policy's `limits:` (LEGATE.md §7), added to
     # core's per-run budgets (`ResourceLimits`). Every per-call cap
     # has a default; an omitted per-run budget is nil, which means not
     # enforced.
@@ -45,7 +45,7 @@ module Adjutant
       end
     end
 
-    # LEGATE.md §7's grants: which roots, hosts, methods and
+    # A run's grants (POLICY.md §2): which roots, hosts, methods and
     # environment variables a script may touch, fixed before it runs.
     # Host configuration, never visible to a script. Adds network
     # rules, the method ceiling, the environment allowlist and the

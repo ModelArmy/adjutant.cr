@@ -31,7 +31,7 @@ Scripts reach files, the network and the environment only through **Legate**, Ad
 
 ## Quick start
 
-The fastest path to a running interpreter. `RiskFlowPolicy.reject_all` means every risk flow decision is a hard Reject with no prompting — the safest possible default, and the right choice until you're ready to write a real policy (see "Risk flow" below).
+The fastest path to a running interpreter. Its policy grants nothing and judges no flows, the right choice until you're ready to write a real one (see "Writing a policy" below).
 
 ```crystal
 require "adjutant"
@@ -39,7 +39,7 @@ require "adjutant"
 effect = Adjutant::TestEffectHandler.new # or your own EffectHandler subclass
 
 interp = Adjutant::Interpreter.new(
-  risk_flow_policy: Adjutant::RiskFlowPolicy.reject_all,
+  policy: Adjutant::Policy.from_yaml("risk_flow: none"),
   on_risk_flow_decision: ->(req : Adjutant::RiskFlowDecisionRequest) { Adjutant::RiskFlowDecision::Reject },
   effect: effect,
 )
@@ -53,7 +53,7 @@ result = interp.eval(%(puts("hello, " + read_input())))
 puts effect.stdout
 ```
 
-`risk_flow_policy` and `on_risk_flow_decision` are always required — there is no default that silently means "skip risk assessment." An integration that wants no risk assessment has to say so explicitly via `RiskFlowPolicy.reject_all`, not by omission. See "Risk flow" below for what these actually do once you're ready to move past the quick-start default.
+`policy` and `on_risk_flow_decision` are always required, and a policy document must contain `risk_flow`: there is no default that silently means "skip risk assessment." An integration that wants none writes `risk_flow: none`, so the choice is on the page rather than made by omission. See "Risk flow" below for what these do once you're past the quick start.
 
 `Adjutant::Interpreter` is meant to last a whole agent session: classes, constants and top-level methods defined by one `eval` are visible to the next. Top-level local variables are not; each `eval` starts with none.
 
@@ -289,40 +289,40 @@ This closes the gap for both a bare literal and a misleadingly-named variable ho
 
 ### Writing a policy
 
-A `RiskFlowPolicy` has two tables: `sensitivity_patterns` (origin → sensitivity, by `exact` match or `regex`, highest explicit `priority` wins) and `risk_flow_rules` (`Authority` × `Sensitivity` → `Allow`/`Ask`/`Reject`). `Sensitivity::None` always allows, regardless of the rule table. Every other pair — six authorities (`Read`, `Write`, `Delete`, `Net`, `Ambient`, `Log`) by `Elevated` and `High` — needs an action: a rule for each, or a `"default"` of `Ask` or `Reject` for the pairs no rule names. A policy that leaves a pair uncovered, or sets `"default": "allow"`, is refused when it is built with `InvalidRiskFlowPolicyError`, naming every missing pair, so a gap never lets data through, even one a later version opens by adding an authority. Load one from JSON — the same way you'd load it from a config file in a real deployment:
+A policy is one YAML document with three sections: `grants`, `limits` and `risk_flow` ([POLICY.md](./POLICY.md)). `risk_flow` has `patterns` (origin → sensitivity, by `exact` match or `regex`, highest explicit `priority` wins) and `rules` (authority × sensitivity → `allow`, `ask` or `reject`). Sensitivity `none` always allows, regardless of the rules. Every other pair, six authorities (`read`, `write`, `delete`, `net`, `ambient`, `log`) by `elevated` and `high`, needs an action: a rule for each, or a `default` of `ask` or `reject` for the pairs no rule names. A gap, `default: allow`, an unknown key, a regex that doesn't compile, or a certain tie is refused when the policy is loaded, with `InvalidPolicyError` naming where, so a mistake never lets data through, even a gap a later version opens by adding an authority.
 
 ```crystal
-policy = Adjutant::RiskFlowPolicy.from_json(<<-JSON
-  {
-    "sensitivity_patterns": [
-      { "kind": "File", "pattern": "/etc/passwd", "priority": 10, "sensitivity": "High" },
-      { "kind": "File", "pattern_type": "regex", "pattern": "^/etc/", "priority": 0, "sensitivity": "Elevated" }
-    ],
-    "risk_flow_rules": [
-      { "authority": "Read", "sensitivity": "Elevated", "action": "Allow" },
-      { "authority": "Read", "sensitivity": "High", "action": "Allow" },
-      { "authority": "Delete", "sensitivity": "High", "action": "Reject" }
-    ],
-    "default": "ask"
-  }
-  JSON
-)
+policy = Adjutant::Policy.from_yaml(<<-YAML)
+  risk_flow:
+    patterns:
+      - { kind: file, pattern: /etc/passwd, priority: 10, sensitivity: high }
+      - { kind: file, type: regex, pattern: "^/etc/", priority: 0, sensitivity: elevated }
+    rules:
+      - { authority: read, sensitivity: elevated, action: allow }
+      - { authority: read, sensitivity: high, action: allow }
+      - { authority: delete, sensitivity: high, action: reject }
+    default: ask
+  YAML
 ```
 
-Legate names a file by its real path: links followed, `.` and `..` removed, `/` as the separator (`C:/Users/…` on Windows). Labels, decision requests and audit records use it, and so does matching, so a script can't respell a path past a pattern. An `exact` File pattern, and an `exact` subject that is an absolute path, is resolved the same way when the policy is built, so `/etc/passwd` matches on macOS, where the file is `/private/etc/passwd`. A `regex` can't be resolved and is matched against real paths as written: on macOS the `^/etc/` above matches nothing, so anchor a path regex on a real directory. A host is compared as the net grant compares it, lowercase and without a trailing dot, so `EVIL.example.` meets a pattern for `evil.example`; an `exact` Host pattern, and an `exact` subject that is a URL, is folded the same way when the policy is built, and a `regex` is matched against the folded form. Every `regex` is compiled when the policy is built, and one that doesn't compile is refused there with `InvalidRiskFlowPolicyError`. An unknown key anywhere in the JSON is refused with `JSON::SerializableError`, so a misspelled `subject` can't drop out of a rule and widen it to every destination.
+Legate names a file by its real path: links followed, `.` and `..` removed, `/` as the separator (`C:/Users/…` on Windows). Labels, decision requests and audit records use it, and so does matching, so a script can't respell a path past a pattern. An `exact` File pattern, and an `exact` subject that is an absolute path, is resolved the same way when the policy is built, so `/etc/passwd` matches on macOS, where the file is `/private/etc/passwd`. A `regex` can't be resolved and is matched against real paths as written: on macOS the `^/etc/` above matches nothing, so anchor a path regex on a real directory. A host is compared as the net grant compares it, lowercase and without a trailing dot, so `EVIL.example.` meets a pattern for `evil.example`; an `exact` Host pattern, and an `exact` subject that is a URL, is folded the same way when the policy is built, and a `regex` is matched against the folded form.
 
 A rule may also name where the data came from (`origin`, with a `kind`) and where it is going (`subject`, as Legate names it: a path, or `scheme://host:port`), each by `exact` match or `regex`. Such a rule is an exception: it overrides the base rule for its pair, needs a `priority` to rank it against other exceptions, and never counts toward covering a pair. This lets a credential reach its own server and nowhere else:
 
-```json
-{ "authority": "Net", "sensitivity": "High", "action": "Reject" },
-{ "authority": "Net", "sensitivity": "High", "action": "Allow", "priority": 10,
-  "origin": { "kind": "Env", "pattern": "STRIPE_KEY" },
-  "subject": { "pattern": "https://api.stripe.com:443" } }
+```yaml
+rules:
+  - { authority: net, sensitivity: high, action: reject }
+  - authority: net
+    sensitivity: high
+    action: allow
+    priority: 10
+    origin: { kind: env, pattern: STRIPE_KEY }
+    subject: { pattern: "https://api.stripe.com:443" }
 ```
 
 Each origin a value carries is judged separately and the worst decides, so the key concatenated with another secret is still refused at `api.stripe.com`.
 
-Priorities must not tie. Two patterns, or two exceptions, that would both decide the same origin or flow at one priority leave no defined answer. Where that is certain from the policy alone (identical entries, or a regex matching an exact entry at its priority, with nothing higher deciding that value), the policy is refused when it is built with `InvalidRiskFlowPolicyError`. Where only a real value reveals it, as between two different regexes, the run that meets it ends with `AmbiguousRiskFlowPolicyError` (H003), which no `rescue` in the script can catch.
+Priorities must not tie. Two patterns, or two exceptions, that would both decide the same origin or flow at one priority leave no defined answer. Where that is certain from the policy alone (identical entries, or a regex matching an exact entry at its priority, with nothing higher deciding that value), the policy is refused when it is loaded. Where only a real value reveals it, as between two different regexes, the run that meets it ends with `AmbiguousRiskFlowPolicyError` (H003), which no `rescue` in the script can catch.
 
 ### Handling an Ask — the interactivity is yours to design
 
@@ -348,17 +348,16 @@ Risk flow tracks explicit data flow only (assignment, arithmetic, string/array/h
 Legate is the only way a script touches the world outside the VM: `Legate.read`, `Legate.write`, `Legate.fetch`, `Legate.env` and the rest. The host fixes what each run may reach before it starts, with grants (which roots, hosts, methods and environment variables) and limits (per call and per run). Every call is authorized against the grants, checked against the risk-flow policy, and recorded in an audit log the host can read.
 
 ```crystal
-grants = Adjutant::Legate::Grants.from_yaml(File.read("policy.yaml"))
+policy = Adjutant::Policy.from_yaml(File.read("policy.yaml"))
 interp = Adjutant::Interpreter.new(
-  risk_flow_policy: policy,
+  policy: policy,
   on_risk_flow_decision: decide,
   effect: effect,
-  grants: grants,
 )
 interp.eval(%(Legate.write("out/report.txt", Legate.read("in/data.csv").upcase)))
 ```
 
-A call outside the grants ends the run with an error no script can rescue; a script can rescue the recoverable ones, such as a missing file. See [LEGATE.md](./LEGATE.md) for the verbs, value types, grant format and error model.
+A call outside the grants ends the run with an error no script can rescue; a script can rescue the recoverable ones, such as a missing file. See [POLICY.md](./POLICY.md) for the policy document, and [LEGATE.md](./LEGATE.md) for the verbs, value types, Legate's own grants and error model.
 
 ## Unsupported language features
 

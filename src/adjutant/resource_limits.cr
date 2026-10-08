@@ -3,7 +3,7 @@ module Adjutant
   # and written, seconds elapsed, streams held open. Breaching a budget
   # raises an unrescuable FatalSignal, unlike ExecutionLimits (vm.cr),
   # whose instruction and depth limits raise a catchable RuntimeError.
-  # Every budget has a default (LEGATE.md §7), so a policy that names
+  # Every budget has a default (POLICY.md §3), so a policy that names
   # none still bounds a run. Nil, which only code can pass, means not
   # enforced.
   class ResourceLimits

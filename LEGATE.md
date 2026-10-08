@@ -23,7 +23,7 @@ Section                                  |Status      |Notes
 §4.7 ambient                             |Built       |`scratch` `log` `fail` `env` `now` `random`                       
 §5 value types                           |Built       |All six; `Response` headers aren't frozen                         
 §6 stream protocol                       |Partial     |`map` `select` `reject` `take` `first` `each` `count` `sum` `to_a`
-§7 grants and policy                     |Built       |The loader doesn't yet reject malformed input; see SCOPE.md       
+§7 grants and policy                     |Built       |Legate's keys in the policy document (POLICY.md)                  
 §8.1 path resolution / TOCTOU            |Built       |                                                                  
 §8.2 network hardening                   |Built       |Resolved-address checks in `fetch.cr`                             
 §8.3 execution sandboxing                |Retired     |No `exec` grant to sandbox                                        
@@ -237,7 +237,7 @@ Every verb is available fully qualified, always, with no setup:
 Legate.read("config.json")
 ```
 
-`Legate` is additionally partitioned into submodules that mirror the grants one-for-one (§7). A script MAY include them to drop the prefix:
+`Legate` is additionally partitioned into submodules that mirror the grants one-for-one (§7, POLICY.md §2). A script MAY include them to drop the prefix:
 
 ```ruby
 include Legate::Read
@@ -658,16 +658,10 @@ Legate.write "clean.jsonl",
 
 ## 7. Grants and policy
 
-A script runs under a policy fixed before the first line executes. Grants cannot be acquired, escalated or delegated at runtime.
+A script runs under a policy fixed before the first line executes. Grants cannot be acquired, escalated or delegated at runtime. The host writes the policy as one document, specified in [POLICY.md](./POLICY.md): its filesystem roots, per-run budgets and `risk_flow` section are core's. This section specifies the keys Legate claims in it.
 
 ```yaml
 grants:
-  read:
-    roots: ["/work/input", "/work/logs"]
-  write:
-    roots: ["/work/output"]
-  delete:
-    roots: ["/work/output/tmp"]     # narrower than write, deliberately
   net:
     methods: [get, post]           # ceiling for every rule below
     redirect_headers: [X-Api-Version] # added to those always sent past a cross-origin redirect
@@ -687,14 +681,9 @@ limits:
   fetch_limit: 32MiB       # per call — recoverable (response body)
   url_limit: 2KiB          # per call — recoverable (request URL)
   stream_limit: 1GiB       # per call — recoverable (streamed response body)
-  max_open_streams: 64     # per run  — recoverable (streams held open at once)
-  memory: 512MiB           # per run  — fatal
-  wall_clock: 300s         # per run  — fatal
-  total_read: 4GiB         # per run  — fatal
-  total_write: 1GiB        # per run  — fatal
 ```
 
-The policy is read strictly, so a mistake fails when it is loaded rather than granting more, or enforcing less, than written. An unknown key at any level, a value of the wrong type, an empty `methods:` or `ports:` list in a `net.hosts` mapping, and a zero or negative limit each raise `ArgumentError` naming where. A key with no value counts as absent. Sizes may be written as literals (`8MiB`) or plain byte counts (`1048576`), and `wall_clock` as `300s` or `300`.
+These keys are read as strictly as the rest of the document (POLICY.md §1). An empty `methods:` or `ports:` list in a `net.hosts` mapping is refused too, since it would grant nothing while reading as the default. The values above are the per-call defaults.
 
 A `net.hosts` entry is either a plain string or a mapping. Every default fails closed, and each field narrows rather than widens: a host is not a service, so an entry grants one scheme on one set of ports for one set of methods. There is no wildcard syntax — `subdomains: true` is the only widening lever, and it admits only names for which the rule's own host is a dot-boundary suffix (`x.y.com` admits `a.x.y.com`, never `a.y.com`).
 
@@ -704,11 +693,7 @@ A `net.hosts` entry is either a plain string or a mapping. Every default fails c
 
 `stream_limit` caps a streamed response body, as `fetch_limit` caps a buffered one. The two are separate because they guard different things: `fetch_limit` is a memory cap, and nothing is held in memory when streaming, so the only remaining danger is a server that never sends EOF. That is a runaway guard, and it can be far larger.
 
-`max_open_streams` caps how many streams a script may hold open **at once**. A stream's source is released when it is walked to exhaustion, and anything still open is closed when the run ends — but a script opening streams in a loop without consuming them holds every descriptor until then, and without a cap that fails as an opaque exhaustion error from inside the operating system rather than as something a script can act on.
-
-It is the one limit that is **per run and recoverable**, and deliberately so: it caps simultaneous holdings rather than cumulative consumption, so a script that hits it and then finishes walking one stream has genuinely freed the resource and may legitimately open another. That is unlike `total_read`, where catching and retrying past the budget would reinstate the exhaustion the budget exists to prevent.
-
-Every limit has a default, and the values above are those defaults, so a policy that names no limit still bounds a run. A run is one `Interpreter#eval`: the per-run budgets start afresh with each, as `Legate.scratch` does. `wall_clock` is checked before every effectful call and, every 1,024 instructions, by the VM itself, so a loop that makes no calls meets it too. `memory` is not enforced by Adjutant; its value is advice to whatever enforces memory at the OS tier (cgroups, rlimit).
+`max_open_streams`, a core limit, caps how many streams a script may hold open **at once**. A stream's source is released when it is walked to exhaustion, and anything still open is closed when the run ends — but a script opening streams in a loop without consuming them holds every descriptor until then, and without a cap that fails as an opaque exhaustion error from inside the operating system rather than as something a script can act on.
 
 Absent grants are denied. **Per-call limits are recoverable; per-run budgets are fatal.** Hitting the 8 MiB read limit is advice — the script should switch to `Legate.lines`. Hitting the 4 GiB total-read budget is exhaustion, and permitting a script to catch and retry past it reinstates exactly the denial-of-service the budget existed to prevent.
 
@@ -903,7 +888,7 @@ The specification is shaped to make these checks cheap. An implementation SHOULD
 
 ### 10.1 Dataflow
 
-1. **Grant inference.** Walk the call graph, collect every `Legate.*` call, and emit the minimum policy the script requires. Compare against the offered policy and refuse over-granted runs.
+1. **Grant inference.** Walk the call graph, collect every call to a registered effect provider (`Legate.*`, and any provider added later), map each to the authorities its provider declares (`EffectProvider#authorities`), and emit the minimum policy the script requires. Compare against the offered policy and refuse over-granted runs. Keying on providers rather than on Legate keeps a second provider in the manifest: a credential read through it would otherwise be enforced at runtime yet missing statically, and its grant would look like an over-grant.
 2. **Taint to path.** A value derived from `read`, `fetch`, `lines`, `records` or `env` reaching a path argument requires an intervening `Path#under?` check or construction via `Path#/`.
 3. **Unbounded materialisation.** Flag any stream reaching a §6.4 terminal without an explicit bound.
 4. **Double consumption.** Flag a stream iterated twice; legal, but almost always a mistake.

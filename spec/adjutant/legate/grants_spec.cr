@@ -82,8 +82,8 @@ module Adjutant
     end
 
     describe "from a policy document" do
-      # The full example from LEGATE.md §7 itself, so this spec breaks
-      # loudly if the doc and the parser ever drift apart.
+      # Every key POLICY.md §2–§3 and LEGATE.md §7 show, so this spec
+      # breaks loudly if the docs and the parser drift apart.
       full_example = <<-YAML
         grants:
           read:
@@ -106,14 +106,14 @@ module Adjutant
           total_write: 1GiB
         YAML
 
-      it "parses every roots/hosts/binaries/env category from §7's own example" do
+      it "parses every roots/hosts/env category from the docs' example" do
         grants = grants_from_yaml(full_example)
         grants.read_roots.should eq ["/work/input", "/work/logs"]
         grants.write_roots.should eq ["/work/output"]
         grants.delete_roots.should eq ["/work/output/tmp"]
         grants.net_rules.size.should eq 1
         grants.net_rules.first.host.should eq "api.example.com"
-        # §7's plain-string form still means what it always meant —
+        # The plain-string form still means what it always meant —
         # but its scheme and port are now PINNED to the fail-closed
         # defaults rather than being unconstrained. That change of
         # meaning is the whole point of net_rule.cr; see its own
@@ -125,7 +125,7 @@ module Adjutant
         grants.ambient_env.should eq ["TZ", "LANG"]
       end
 
-      it "parses every limit from §7's own example" do
+      it "parses every limit from the docs' example" do
         limits = grants_from_yaml(full_example).limits
         limits.read_limit.should eq 8_388_608_i64
         limits.fetch_limit.should eq 33_554_432_i64
@@ -133,7 +133,7 @@ module Adjutant
         limits.wall_clock.should eq 300
         limits.total_read.should eq 4_294_967_296_i64
         limits.total_write.should eq 1_073_741_824_i64
-        # §7's own example names no `url_limit`, so it falls back to
+        # The example names no `url_limit`, so it falls back to
         # the 2 KiB default rather than being unbounded.
         limits.url_limit.should eq Legate::Limits::DEFAULT_URL_LIMIT
       end
