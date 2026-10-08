@@ -67,6 +67,7 @@ module Adjutant
   # rightwards.
   struct SensitivityPattern
     include JSON::Serializable
+    include JSON::Serializable::Strict
 
     getter kind : ProvenanceKind
     getter pattern_type : PatternType = PatternType::Exact
@@ -143,6 +144,7 @@ module Adjutant
   # variable `STRIPE_KEY`.
   struct RiskFlowOrigin
     include JSON::Serializable
+    include JSON::Serializable::Strict
 
     getter kind : ProvenanceKind
     getter pattern_type : PatternType = PatternType::Exact
@@ -204,6 +206,7 @@ module Adjutant
   # names it, such as `https://api.stripe.com:443` or a path.
   struct RiskFlowSubject
     include JSON::Serializable
+    include JSON::Serializable::Strict
 
     getter pattern_type : PatternType = PatternType::Exact
     getter pattern : String
@@ -283,6 +286,7 @@ module Adjutant
   #     subject: RiskFlowSubject.new("https://api.stripe.com:443"), priority: 10)
   struct RiskFlowRule
     include JSON::Serializable
+    include JSON::Serializable::Strict
 
     getter authority : Authority
     getter sensitivity : Sensitivity
@@ -422,9 +426,12 @@ module Adjutant
   #     default_action: RiskFlowAction::Ask,
   #   )
   #
-  # In JSON the default is `"default"`, such as `"default": "ask"`.
+  # In JSON the default is `"default"`, such as `"default": "ask"`. An
+  # unknown key at any level raises `JSON::SerializableError`, since a
+  # misspelled key that narrows a rule would otherwise widen it.
   class RiskFlowPolicy
     include JSON::Serializable
+    include JSON::Serializable::Strict
 
     getter sensitivity_patterns : Array(SensitivityPattern)
     getter risk_flow_rules : Array(RiskFlowRule)
