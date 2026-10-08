@@ -4,3 +4,4 @@ grants:
       - fixtures
 limits:
   read_limit: 1KiB
+risk_flow: none

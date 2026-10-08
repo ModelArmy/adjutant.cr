@@ -4,3 +4,4 @@ grants:
       - httpbin.org
     methods:
       - get
+risk_flow: none
