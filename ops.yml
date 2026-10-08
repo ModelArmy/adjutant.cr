@@ -33,11 +33,12 @@ actions:
     command: crystal spec
     description: Run all test specs
   test_scripts:
-    command: SHARDS_BIN_PATH=bin/debug shards run --debug test_runner
+    command: |
+      # make sure the cleanup runs even if tests fail
+      find spec/scripts/legate -mindepth 2 -maxdepth 2 -type d -name workspace -exec rm -rf {} +
+      SHARDS_BIN_PATH=bin/debug shards run --debug test_runner
     description: Run all test scripts
   test:
     command: |
       ops test_specs && ops test_scripts && ops build && ops lint;
-      # make sure the cleanup runs even if tests fail
-      find spec/scripts/legate -mindepth 2 -maxdepth 2 -type d -name workspace -exec rm -rf {} +
     description: Run all tests, including linting
