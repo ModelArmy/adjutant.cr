@@ -2,7 +2,7 @@
 
 Working notes between development sessions, kept current by whoever ends a session. Not user documentation.
 
-Last updated after the `windows-realpath` merge (#78), on `main`.
+Last updated after the `single-policy-document` merge (#81), on `main`.
 
 ## How to use this document
 
@@ -67,20 +67,22 @@ Key documents: `SCOPE.md` (known defects and gaps: Must Fix, Will Fix), `LEGATE.
 16. **The perimeter and the policy must judge the same thing.** Grants resolved paths and folded hosts; the policy matched what the script typed, so a respelling the grant allowed could steer the policy. Both now go through one function each (`RealPath`, `HostName`). A new kind of subject needs its normal form in that shared place, applied to subjects, origins and exact patterns alike.
 17. **Declare an authority for every `authorize_*` call.** Labelled arguments are checked only at a subject for an authority the verb declares; `cp` declared `Write` alone, so its source escaped the read policy.
 18. **One name, two behaviours.** Crystal's `File.realpath` resolves every link on POSIX and only a final one on Windows, which left a way out of a granted root there. A test compiled out on one platform hid it, under a reason nobody had checked. Before gating a test on a platform, confirm the reason; when lifting a gate, expect it to find something.
+19. **An unread key is a dropped restriction.** `JSON::Serializable` ignores unknown keys, so an Allow exception with `subject` misspelled loaded cleanly and allowed its secret to every host. Every format a host writes is parsed strictly; give each one a spec with a misspelled key that narrows something.
+20. **A bound over alternatives must hold for each.** `RiskChoice` summarized its top-ranked branch whole, so a tied branch's recursive delete vanished, and severity and reversibility were copied from one child, so a sequence reported an irreversible call as reversible. Each field of a summary is its own worst case.
+21. **A default named for safety must deliver it.** `reject_all` has no sensitivity patterns, so nothing Legate reads is sensitive and nothing is rejected: in practice it means grants only. A policy document must now say `risk_flow: none` to get it. Before making something a default, check what it does with the inputs it will actually see.
+22. **Crystal's `raise` takes the arguments that follow it.** `x || raise needs(...)` inside an argument list swallowed the next named argument. Parenthesize a `raise` anywhere but at the end of a statement.
 
 ---
 
 ## 5. State
 
-Since the last handoff, four branches merged and one commit went straight to `main`:
+Since the last handoff, three branches merged:
 
-1. **Policy ties** (#75). A tie found mid-run (H003) ends the run past any `rescue`. A tie certain from the policy alone (identical entries, or an exact entry another matches at its priority with nothing higher deciding it) is refused when the policy is built, with `InvalidRiskFlowPolicyError`.
-2. **Policy regexes** (#76). Every pattern compiles its regex when built, refusing one that doesn't compile, and matches with the compiled form.
-3. **Skill** (on `main`). `SKILL.md` says `cp` needs `read` for its source, and gives the `H` letter: the host's setup is at fault, so report it.
-4. **Pending tests** (#77). The Windows runner enables Developer Mode, so it can create symlinks, and the symlink tests run there; the two that failed led to #78.
-5. **Windows realpath** (#78). On Windows, `RealPath.resolve` asks `GetFinalPathNameByHandleW`, bound in a Windows-only `lib LibC` block, instead of Crystal's `File.realpath`, which followed only a final link. Specs take expected paths from `RealPath`, since on Windows the two now differ.
+1. **Risk choice resolution** (#79). A `RiskSummary` is an upper bound on every run: effects union across branches, and severity, reversibility and iteration each take their own worst, in a `RiskSequence` as in a `RiskChoice`. `RiskSummary#path` is gone; `all_findings` is the evidence, and an unresolved call's finding description starts `unresolved call: `.
+2. **Strict policy JSON** (#80). Unknown keys were refused, closing a typo that widened an exception. #81 then removed the JSON format entirely.
+3. **Single policy document** (#81). A host passes one YAML document (`grants`, `limits`, `risk_flow`) to `Policy.from_yaml`, and `Interpreter.new` takes `policy:`. `risk_flow` is required, with `none` the only opt-out, and a mapping with neither patterns nor rules is refused. Every load-time error is `InvalidPolicyError < ArgumentError`, naming a dotted path. `CorePolicySection` and `Legate::PolicySection` each claim and parse their own keys. POLICY.md specifies the document; LEGATE.md §7 now covers only Legate's keys, and §10.1 keys grant inference on providers. `ops test_scripts` clears `workspace/` before running.
 
-`SCOPE.md` Must Fix holds two entries: `RiskChoice` dropping effects, and the authorization configuration. Will Fix is still in the older dated style.
+`SCOPE.md` Must Fix is empty. Will Fix gained "Providers" (generic provider loading, waiting for a second provider) and is still in the older dated style. `spec/skill/TODO.md` §1 items 3 and 5 still call Array-keyed Hashes and slice assignment open divergences; both are fixed.
 
 Model           |Latest result|Notes                                           
 ----------------|-------------|------------------------------------------------
@@ -88,17 +90,16 @@ qwen3.8 (27B)   |10/10        |Last sat before `fix-ruby-divergences`
 Muse Glimmer 30b|10/10        |Sat at `2bfa808`                                
 Ornith 1.5 (9B) |7/10         |Sat at `2bfa808`; 02, 06 and 08 are model errors
 
-All three predate #69, which renamed the classes the skill teaches, and the skill's `cp` and `H` lines. The next sitting is fresh, not a re-run. No current task produces an H code.
+All three predate #69, which renamed the classes the skill teaches, and the skill's `cp` and `H` lines. The task policies now carry `risk_flow: none`, and the runner loads them as full policies. The next sitting is fresh, not a re-run. No current task produces an H code.
 
 ## 6. Next
 
-1. **Sit the exam fresh** on all three models, to confirm the renamed skill.
-2. **`RiskChoice` effects** (Must Fix): worst severity, union of effects; decide what `RiskSummary#path` says.
-3. **`Legate::Path#under?`** (Will Fix, Legate): see §7.
-4. **Exam tasks 11 to 13** (`spec/skill/TODO.md` §1). Its items 3 and 5 still call Array-keyed Hashes and slice assignment open divergences; both are fixed, so task 12 is a regression check. A credential-to-its-own-host task would now exercise risk-flow exceptions.
-5. **Will Fix, style pass**, by subsection, on its own branch.
-6. **Authorization configuration** (Must Fix) before 1.0, since it changes an embedder-facing format.
-7. **§10, the static analyser**; see Will Fix, Static risk assessment.
+1. **Sit the exam fresh** on all three models, to confirm the renamed skill and the task policies' new format.
+2. **`Legate::Path#under?`** (Will Fix, Legate): see §7.
+3. **Exam tasks 11 to 13** (`spec/skill/TODO.md` §1), correcting its stale items 3 and 5 first; task 12 is a regression check. A credential-to-its-own-host task would exercise risk-flow exceptions.
+4. **Will Fix, style pass**, by subsection, on its own branch.
+5. **§10, the static analyser**, keyed on providers from the start (LEGATE.md §10.1; Will Fix, Static risk assessment).
+6. **Generic provider loading** (Will Fix, Providers), only once a second provider exists to design it against.
 
 ## 7. Open decisions
 
@@ -107,9 +108,10 @@ All three predate #69, which renamed the classes the skill teaches, and the skil
 - **`Legate::Response` headers.** LEGATE.md §5.5 calls them frozen; Adjutant freezes only Strings. Correct §5.5, or add freezing to the backlog?
 - **LEGATE.md §1** says the core is "ordinary Ruby with mutation removed". It isn't: `<<` and `[]=` mutate Arrays and Hashes. Correct it at the next spec revision.
 - **`inspect` of deep data.** Printing an Array or Hash nested deeper than `call_depth_limit` (256) raises L002, since each level re-enters the VM. JSON from `fetch` may nest to 512. Make `inspect` walk built-in containers iteratively (safe, since scripts can't override their `inspect`, U003), or leave it?
-- **Default budgets.** `wall_clock` 300 s, `total_read` 4 GiB, `total_write` 1 GiB and `memory` 512 MiB (advice only) are LEGATE.md §7's example values. Revisit once a harness runs real workloads.
+- **Default budgets.** `wall_clock` 300 s, `total_read` 4 GiB, `total_write` 1 GiB and `memory` 512 MiB (advice only) are POLICY.md §3's defaults, first chosen as examples. Revisit once a harness runs real workloads.
 - **Crystal's Windows `File.realpath`.** It follows only a path's final link, on `master` as in 1.20 (`src/crystal/system/win32/file.cr`). Adjutant no longer relies on it; report it upstream?
 - **A suffix mode for risk-flow subjects.** Subjects match exactly or by regex. Add a dot-boundary suffix mode, like `net.hosts`' `subdomains: true`, only if policy authors keep writing the same regex.
+- **`ExecutionLimits` stays out of the document.** Instruction and call-depth limits raise catchable errors and guard the host process, so they remain a constructor argument. Revisit if hosts want one place to bound a run.
 
 ## 8. Deferred tests
 
