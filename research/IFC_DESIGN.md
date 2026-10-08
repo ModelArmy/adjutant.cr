@@ -142,7 +142,7 @@ Powerset lattice over `ProvenanceTag`, ordered by set inclusion (⊆).
 - **Sensitivity ordering within a join**: worst wins — `High > Elevated >
   None` — mirroring the existing `RiskAggregator` pattern of ranking
   severity/reversibility and always taking the worse outcome on join
-  (`summarize_sequence`'s `max_by` over `rank`). A value built from one
+  (`RiskAggregator.combine`). A value built from one
   sensitive source and one non-sensitive source stays sensitive.
 - No meet operation is needed yet — nothing currently requires computing a
   greatest lower bound; only join (accumulation during execution) and the

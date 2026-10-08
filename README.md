@@ -140,11 +140,11 @@ Use `interp.parse` rather than constructing an `Adjutant::Parser` yourself. Both
 walker = Adjutant::RiskWalker.new(interp)
 tree = walker.walk_body(body)
 
-summary = Adjutant::RiskAggregator.summarize(tree)   # single worst-case path
+summary = Adjutant::RiskAggregator.summarize(tree)   # bound on every run
 findings = Adjutant::RiskAggregator.all_findings(tree) # every individual finding
 ```
 
-`summary` gives a `RiskSummary` — `tags`, `reversible`, `severity`, and the `path` of branches that led to the worst case, plus `iterated?` if it's inside a loop or recursion. `findings` gives every `RiskFinding` in the script, each with its own `branch_path` and `iterated?`, for a host UX that wants to show more than just the worst case (group repeated calls, filter by severity, and so on). Neither makes any UI decision — that's left entirely to the host application. See [`samples/assess_script.cr`](./samples/assess_script.cr) for a worked example that prints both.
+`summary` gives a `RiskSummary`: the `effects` any run could have, the worst `severity` and `reversible` found anywhere, and `iterated?` if any of it sits in a loop. It is an upper bound, so an `if` whose branches fetch and delete reports both, though one run does only one. `findings` gives every `RiskFinding` in the script, each with its own `branch_path` and `iterated?`, which is where a host looks for which call, on which branch, contributes what (group repeated calls, filter by severity, and so on). An unresolved call's description starts `unresolved call: `. Neither makes any UI decision — that's left entirely to the host application. See [`samples/assess_script.cr`](./samples/assess_script.cr) for a worked example that prints both.
 
 ### 4. Decide, then execute
 
