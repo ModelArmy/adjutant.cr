@@ -302,7 +302,15 @@ module Adjutant
     end
 
     private def make_vm : VM
-      VM.new(@symbols, @limits, @effect, self, @globals, @risk_flow_log, @risk_flow_policy, @on_risk_flow_decision)
+      VM.new(@symbols, @limits, @effect, self, @globals, @risk_flow_log, @risk_flow_policy, decide_off_clock)
+    end
+
+    # `on_risk_flow_decision`, with the time the host takes kept off
+    # the run's wall clock.
+    private def decide_off_clock : RiskFlowDecisionRequest -> RiskFlowDecision
+      budget = @effect_broker.budget
+      decide = @on_risk_flow_decision
+      ->(req : RiskFlowDecisionRequest) { budget.off_clock { decide.call(req) } }
     end
 
     # Builds Object, Class and Module, whose links are circular

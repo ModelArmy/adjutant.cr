@@ -30,11 +30,11 @@ A key with no value counts as absent. An empty document is refused, since it has
 
 Absent sections fail closed:
 
-Section    |When absent                                  
------------|---------------------------------------------
-`grants`   |Nothing granted                              
-`limits`   |Every limit at its default (§3)              
-`risk_flow`|Refused; write `risk_flow: none` to opt out  
+Section    |When absent                                
+-----------|-------------------------------------------
+`grants`   |Nothing granted                            
+`limits`   |Every limit at its default (§3)            
+`risk_flow`|Refused; write `risk_flow: none` to opt out
 
 ## 2. Grants
 
@@ -79,7 +79,7 @@ Key               |Owner |Scope   |Breach     |Default
 
 A per-run budget is fatal because a script allowed to catch it and retry would reinstate the exhaustion it exists to prevent. `max_open_streams` caps what is held at once, not what is consumed, so closing a stream frees a slot and the breach is recoverable.
 
-A run is one `Interpreter#eval`, and the per-run budgets start afresh with each. `wall_clock` is checked before every effectful call and, every 1,024 instructions, by the VM itself, so a loop that makes no calls meets it too. `memory` is advice to whatever enforces memory at the OS tier (cgroups, rlimit); Adjutant does not track it.
+A run is one `Interpreter#eval`, and the per-run budgets start afresh with each. `wall_clock` is checked before every effectful call and, every 1,024 instructions, by the VM itself, so a loop that makes no calls meets it too. Time the host spends deciding a risk-flow Ask doesn't count, since the script can do nothing while it waits. `memory` is advice to whatever enforces memory at the OS tier (cgroups, rlimit); Adjutant does not track it.
 
 ## 4. Risk flow
 
@@ -140,10 +140,10 @@ Two patterns, or two exceptions, deciding the same origin or flow at one priorit
 
 Each key under `grants` and `limits` is parsed by the section that claims it, and a key no section claims is refused (§1). Core and each effect provider register a `PolicySection`; two claiming one key raise `ArgumentError` before any document is read, since that is a provider's bug, not the author's. `risk_flow` is core's alone: its authorities are a closed set, so what a policy means doesn't depend on which providers are loaded.
 
-Key                                |Owner 
------------------------------------|------
-`grants.read`, `.write`, `.delete` |Core  
-`grants.net`, `grants.ambient`     |Legate
-Per-run limits, `max_open_streams` |Core  
-Per-call limits                    |Legate
-`risk_flow`                        |Core  
+Key                               |Owner 
+----------------------------------|------
+`grants.read`, `.write`, `.delete`|Core  
+`grants.net`, `grants.ambient`    |Legate
+Per-run limits, `max_open_streams`|Core  
+Per-call limits                   |Legate
+`risk_flow`                       |Core  

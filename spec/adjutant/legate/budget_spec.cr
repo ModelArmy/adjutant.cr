@@ -107,6 +107,38 @@ module Adjutant
       end
     end
 
+    describe "#off_clock" do
+      it "doesn't count the time its block takes" do
+        budget = Legate::Budget.new(Legate::Limits.new(wall_clock: 1))
+        budget.off_clock { sleep 1.1.seconds }
+        budget.check_wall_clock!
+      end
+
+      it "counts the time after its block" do
+        budget = Legate::Budget.new(Legate::Limits.new(wall_clock: 0))
+        budget.off_clock { sleep 10.milliseconds }
+        sleep 10.milliseconds
+        expect_raises(Legate::FatalSignal, /wall_clock budget exceeded/) do
+          budget.check_wall_clock!
+        end
+      end
+
+      it "doesn't count the time of a block that raises" do
+        budget = Legate::Budget.new(Legate::Limits.new(wall_clock: 1))
+        expect_raises(Exception, "decided") do
+          budget.off_clock do
+            sleep 1.1.seconds
+            raise "decided"
+          end
+        end
+        budget.check_wall_clock!
+      end
+
+      it "returns its block's value" do
+        Legate::Budget.new(Legate::Limits.new).off_clock { 42 }.should eq 42
+      end
+    end
+
     describe "#start_run!" do
       it "zeroes the counts and restarts the clock" do
         budget = Legate::Budget.new(Legate::Limits.new(wall_clock: 1))

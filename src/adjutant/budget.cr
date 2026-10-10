@@ -3,11 +3,12 @@ require "./fatal_signal"
 
 module Adjutant
   # Per-run cumulative budgets: bytes read and written, and elapsed
-  # time. The middle of three tiers: per-call limits live with each
-  # call, and memory, CPU and descriptors with the OS. `memory` isn't
-  # tracked here. The counts and the wall clock start when the Budget
-  # is built, and again at each `start_run!`, which `Interpreter#eval`
-  # calls, so each run gets the whole budget.
+  # time less any spent `off_clock`. The middle of three tiers:
+  # per-call limits live with each call, and memory, CPU and
+  # descriptors with the OS. `memory` isn't tracked here. The counts
+  # and the wall clock start when the Budget is built, and again at
+  # each `start_run!`, which `Interpreter#eval` calls, so each run
+  # gets the whole budget.
   class Budget
     getter total_read : Int64
     getter total_write : Int64
@@ -46,6 +47,18 @@ module Adjutant
       return unless limit = @limits.wall_clock
       elapsed = (Time.instant - @started_at).total_seconds
       exhausted!("wall_clock", elapsed.round(1), limit, "s") if elapsed > limit
+    end
+
+    # Runs the block with the wall clock stopped, so the time it takes
+    # doesn't count against `wall_clock`: for waits the script can't
+    # act during, such as its host deciding a risk-flow Ask.
+    def off_clock(& : -> T) : T forall T
+      stopped_at = Time.instant
+      begin
+        yield
+      ensure
+        @started_at += Time.instant - stopped_at
+      end
     end
 
     private def exhausted!(name : String, actual, limit, unit : String) : NoReturn

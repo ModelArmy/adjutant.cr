@@ -21,23 +21,13 @@ after 1.0. Ordered for working through: security and policy defects
 first, then the Ruby divergences, then design work on policy and
 configuration.
 
-- **`wall_clock` counts time spent waiting for a risk-flow decision.**
-  `Budget#check_wall_clock!` measures from the start of the run, and
-  `VM#resolve_risk_flow_matches` blocks in `on_risk_flow_decision` while the
-  host asks its user, so a user who takes five minutes to answer
-  exhausts the default 300 s budget. The script can do nothing while
-  it waits, so the wait isn't the script's time. Fix: exclude the
-  callback's duration from `wall_clock`. Predicted by reading the
-  code. The Supervisor's deadline depends on it
-  (research/WORKER_DESIGN.md, Clocks and caps).
-
 - **Nothing bounds how many decisions a run asks for.** A script can
   trigger an Ask on every iteration of a loop, betting that a user
-  approves by reflex; once waiting stops counting against
-  `wall_clock`, nothing else ends it. Fix: a policy limit on Asks per
-  run, beside `total_read`, raising `Exhausted` when spent. Predicted
-  by reading the code; research/WORKER_DESIGN.md backstops it in the
-  Supervisor.
+  approves by reflex, and waiting for the answers doesn't count
+  against `wall_clock`, so nothing ends it. Fix: a policy limit on
+  Asks per run, beside `total_read`, raising `Exhausted` when spent.
+  Predicted by reading the code; research/WORKER_DESIGN.md backstops
+  it in the Supervisor.
 
 ## Will Fix
 
