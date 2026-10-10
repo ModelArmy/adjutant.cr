@@ -32,6 +32,15 @@ module Adjutant
     interp
   end
 
+  # A policy that asks before `path` is read, and allows everything
+  # else.
+  private def self.ask_on_reading(path : String) : RiskFlowPolicy
+    RiskFlowPolicy.new(
+      sensitivity_patterns: [SensitivityPattern.new(ProvenanceKind::File, path, 10, Sensitivity::High)],
+      risk_flow_rules: allow_unlisted([RiskFlowRule.new(Authority::Read, Sensitivity::High, RiskFlowAction::Ask)]),
+    )
+  end
+
   describe Legate::Budget do
     describe "#record_read / #record_write" do
       it "accumulates across calls" do
@@ -160,6 +169,28 @@ module Adjutant
         interp, _ = make_interp(grants: grants)
         expect_raises(Legate::FatalSignal, /wall_clock budget exceeded/) do
           interp.eval("x = 0\nwhile true\n  x += 1\nend")
+        end
+      end
+    end
+
+    # The script can do nothing while its host decides an Ask, so the
+    # wait isn't the run's time.
+    describe "wall_clock and risk-flow decisions" do
+      it "doesn't count the time the host takes to decide" do
+        with_tmpdir do |dir|
+          secret = File.join(dir, "secret.txt")
+          plain = File.join(dir, "plain.txt")
+          File.write(secret, "shh")
+          File.write(plain, "ok")
+          decide = ->(_req : RiskFlowDecisionRequest) : RiskFlowDecision {
+            sleep 1.2.seconds
+            RiskFlowDecision::Allow
+          }
+          grants = Legate::Grants.new(read_roots: [dir], limits: Legate::Limits.new(wall_clock: 1))
+          interp, _ = make_interp(
+            grants: grants, risk_flow_policy: ask_on_reading(secret), on_risk_flow_decision: decide,
+          )
+          interp.eval(%(Legate.read(#{secret.inspect})\nLegate.read(#{plain.inspect}))).as_string.should eq "ok"
         end
       end
     end
