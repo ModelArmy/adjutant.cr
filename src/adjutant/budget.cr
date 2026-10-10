@@ -2,8 +2,8 @@ require "./resource_limits"
 require "./fatal_signal"
 
 module Adjutant
-  # Per-run cumulative budgets: bytes read and written, and elapsed
-  # time less any spent `off_clock`. The middle of three tiers:
+  # Per-run cumulative budgets: bytes read and written, risk-flow
+  # decisions asked, and elapsed time less any spent `off_clock`. The middle of three tiers:
   # per-call limits live with each call, and memory, CPU and
   # descriptors with the OS. `memory` isn't tracked here. The counts
   # and the wall clock start when the Budget is built, and again at
@@ -12,10 +12,12 @@ module Adjutant
   class Budget
     getter total_read : Int64
     getter total_write : Int64
+    getter asks : Int32
 
     def initialize(@limits : ResourceLimits)
       @total_read = 0_i64
       @total_write = 0_i64
+      @asks = 0
       @started_at = Time.instant
     end
 
@@ -23,6 +25,7 @@ module Adjutant
     def start_run! : Nil
       @total_read = 0_i64
       @total_write = 0_i64
+      @asks = 0
       @started_at = Time.instant
     end
 
@@ -38,6 +41,14 @@ module Adjutant
       @total_write += n
       return unless limit = @limits.total_write
       exhausted!("total_write", @total_write, limit, "bytes") if @total_write > limit
+    end
+
+    # Counts a risk-flow Ask before it reaches the host, so the Ask past
+    # `max_asks` raises instead of asking.
+    def record_ask : Nil
+      @asks += 1
+      return unless limit = @limits.max_asks
+      exhausted!("max_asks", @asks, limit, "") if @asks > limit
     end
 
     # Checked at the start of each authorization and, every

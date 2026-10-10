@@ -21,13 +21,7 @@ after 1.0. Ordered for working through: security and policy defects
 first, then the Ruby divergences, then design work on policy and
 configuration.
 
-- **Nothing bounds how many decisions a run asks for.** A script can
-  trigger an Ask on every iteration of a loop, betting that a user
-  approves by reflex, and waiting for the answers doesn't count
-  against `wall_clock`, so nothing ends it. Fix: a policy limit on
-  Asks per run, beside `total_read`, raising `Exhausted` when spent.
-  Predicted by reading the code; research/WORKER_DESIGN.md backstops
-  it in the Supervisor.
+None open.
 
 ## Will Fix
 

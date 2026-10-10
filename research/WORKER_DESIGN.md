@@ -252,9 +252,8 @@ outcome but doesn't replace it.
 A run has three clocks.
 
 1. **`wall_clock`** (worker, from the policy). Measures the run,
-   minus time spent waiting for an `answer`. Expiry raises the fatal
-   `Exhausted`, as today. Pausing it during an `ask` is a change to
-   `Budget` (SCOPE.md, Must Fix).
+   minus time spent waiting for an `answer` (`Budget#off_clock`).
+   Expiry raises the fatal `Exhausted`.
 2. **The deadline** (Supervisor). `wall_clock` plus a grace period,
    paused while an `Ask` is with the host. Expiry kills the worker:
    `TimedOut(:deadline)`.
@@ -267,9 +266,9 @@ A run has three clocks.
 Caps, enforced in the worker and backstopped by the Supervisor:
 
 - **Asks per run.** A script that asks hundreds of times is betting on
-  a reflexive approval. A new policy limit bounds it; the worker
-  raises `Exhausted` past it, the Supervisor kills a worker that asks
-  once more than that. (SCOPE.md, Must Fix.)
+  a reflexive approval. The policy's `max_asks` bounds it: the worker
+  raises `Exhausted` at the Ask past it, and the Supervisor kills a
+  worker that sends that Ask anyway.
 - **Output.** Standard output isn't a budget today. The Supervisor
   caps the total it accepts; whether the worker gets a matching budget
   is open.
@@ -280,12 +279,10 @@ pipe.
 
 ## Changes elsewhere in Adjutant
 
-1. `Budget`: exclude time spent in `on_risk_flow_decision` from
-   `wall_clock`, and count asks against the new limit.
-2. Serialisation for what crosses the pipe: `RiskFlowDecisionRequest`
+1. Serialisation for what crosses the pipe: `RiskFlowDecisionRequest`
    and what it holds, `Diagnostic`, `RiskSummary`, `RiskFinding`,
    `AuditRecord`, `RiskFlowEvent`.
-3. A `::Log` backend in the worker that writes `log` messages.
+2. A `::Log` backend in the worker that writes `log` messages.
 
 The VM writes to `STDOUT` only when an `Interpreter` has no
 `EffectHandler`; the worker always installs one.

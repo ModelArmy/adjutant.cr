@@ -40,8 +40,9 @@ module Adjutant
                      @stream_limit = DEFAULT_STREAM_LIMIT,
                      max_open_streams = DEFAULT_MAX_OPEN_STREAMS,
                      memory : Int64? = DEFAULT_MEMORY, wall_clock : Int32? = DEFAULT_WALL_CLOCK,
-                     total_read : Int64? = DEFAULT_TOTAL_READ, total_write : Int64? = DEFAULT_TOTAL_WRITE)
-        super(max_open_streams, memory, wall_clock, total_read, total_write)
+                     total_read : Int64? = DEFAULT_TOTAL_READ, total_write : Int64? = DEFAULT_TOTAL_WRITE,
+                     max_asks : Int32? = DEFAULT_MAX_ASKS)
+        super(max_open_streams, memory, wall_clock, total_read, total_write, max_asks)
       end
     end
 

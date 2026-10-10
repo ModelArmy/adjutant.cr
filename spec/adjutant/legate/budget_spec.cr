@@ -129,6 +129,22 @@ module Adjutant
       end
     end
 
+    describe "#record_ask" do
+      it "raises FatalSignal :exhausted at the Ask past max_asks" do
+        budget = Legate::Budget.new(Legate::Limits.new(max_asks: 2))
+        2.times { budget.record_ask }
+        expect_raises(Legate::FatalSignal, /max_asks budget exceeded \(3 > 2\)/) do
+          budget.record_ask
+        end
+      end
+
+      it "does not raise when max_asks is not enforced" do
+        budget = Legate::Budget.new(Legate::Limits.new(max_asks: nil))
+        100.times { budget.record_ask }
+        budget.asks.should eq 100
+      end
+    end
+
     describe "#off_clock" do
       it "doesn't count the time its block takes" do
         budget = Legate::Budget.new(Legate::Limits.new(wall_clock: 1))
@@ -166,10 +182,12 @@ module Adjutant
         budget = Legate::Budget.new(Legate::Limits.new(wall_clock: 1))
         budget.record_read(5_i64)
         budget.record_write(7_i64)
+        budget.record_ask
         sleep 1.1.seconds
         budget.start_run!
         budget.total_read.should eq 0
         budget.total_write.should eq 0
+        budget.asks.should eq 0
         budget.check_wall_clock!
       end
     end

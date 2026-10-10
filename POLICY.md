@@ -70,6 +70,7 @@ Key               |Owner |Scope   |Breach     |Default
 `wall_clock`      |Core  |Per run |Fatal      |300s   
 `total_read`      |Core  |Per run |Fatal      |4GiB   
 `total_write`     |Core  |Per run |Fatal      |1GiB   
+`max_asks`        |Core  |Per run |Fatal      |20     
 `memory`          |Core  |Per run |Advice only|512MiB 
 `max_open_streams`|Core  |At once |Recoverable|64     
 `read_limit`      |Legate|Per call|Recoverable|8MiB   
@@ -79,7 +80,7 @@ Key               |Owner |Scope   |Breach     |Default
 
 A per-run budget is fatal because a script allowed to catch it and retry would reinstate the exhaustion it exists to prevent. `max_open_streams` caps what is held at once, not what is consumed, so closing a stream frees a slot and the breach is recoverable.
 
-A run is one `Interpreter#eval`, and the per-run budgets start afresh with each. `wall_clock` is checked before every effectful call and, every 1,024 instructions, by the VM itself, so a loop that makes no calls meets it too. Time the host spends deciding a risk-flow Ask doesn't count, since the script can do nothing while it waits. `memory` is advice to whatever enforces memory at the OS tier (cgroups, rlimit); Adjutant does not track it.
+A run is one `Interpreter#eval`, and the per-run budgets start afresh with each. `wall_clock` is checked before every effectful call and, every 1,024 instructions, by the VM itself, so a loop that makes no calls meets it too. Time the host spends deciding a risk-flow Ask doesn't count, since the script can do nothing while it waits. `max_asks` counts the Asks a run puts to its host (§4.3), so a script can't ask until a user approves by reflex; the Ask past it ends the run without reaching the host. `memory` is advice to whatever enforces memory at the OS tier (cgroups, rlimit); Adjutant does not track it.
 
 ## 4. Risk flow
 

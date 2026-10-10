@@ -45,7 +45,7 @@ module Adjutant
     end
 
     def limit_keys : Array(String)
-      %w[max_open_streams memory wall_clock total_read total_write]
+      %w[max_open_streams memory wall_clock total_read total_write max_asks]
     end
 
     def load(grants : YamlPolicy::Mapping?, limits : YamlPolicy::Mapping?) : PolicyShare
@@ -57,6 +57,7 @@ module Adjutant
           wall_clock: YamlPolicy.seconds(limits, "wall_clock") || ResourceLimits::DEFAULT_WALL_CLOCK,
           total_read: YamlPolicy.size(limits, "total_read") || ResourceLimits::DEFAULT_TOTAL_READ,
           total_write: YamlPolicy.size(limits, "total_write") || ResourceLimits::DEFAULT_TOTAL_WRITE,
+          max_asks: YamlPolicy.count(limits, "max_asks") || ResourceLimits::DEFAULT_MAX_ASKS,
         ),
       )
     end
