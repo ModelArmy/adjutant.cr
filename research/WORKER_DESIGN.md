@@ -1,0 +1,335 @@
+# Worker and Supervisor design
+
+Status: proposed. Nothing here is built yet.
+
+## Purpose
+
+A host runs Adjutant in a child process, so that a defect in Adjutant
+costs a run, not the host. A crash, a hang, exhaustion or heap
+corruption in the child ends the child; the host gets an outcome
+saying so and carries on.
+
+The child is the host's own executable started with a reserved
+argument, so a host that ships one binary still ships one binary. The
+same protocol serves a standalone `adjutant` executable, so a host
+that would rather ship a package changes the path it starts and
+nothing else.
+
+Two types, both in Adjutant:
+
+- **`Adjutant::Worker`** runs in the child: it reads one request,
+  runs it through an `Interpreter`, and reports back.
+- **`Adjutant::Supervisor`** runs in the host: it owns the pipes, the
+  framing, the clocks and the caps, and yields events to the host.
+
+The host never reads or writes a byte of the protocol.
+
+## Principles
+
+1. **One request per worker.** A worker serves one assessment or one
+   run, then exits. Nothing outlives a run, as "per run means per
+   `eval`" (HANDOFF.md §4.10) already requires in-process.
+2. **The worker enforces; the Supervisor backstops.** Every limit a
+   script can meet is enforced in the worker, where it becomes a
+   diagnostic the script's author can read. The Supervisor enforces
+   the same limits again, more loosely, and kills the worker when one
+   is crossed; only a misbehaving worker crosses them.
+3. **Once a request is sent, the worker is untrusted.** Isolation
+   assumes a script might take over the worker through an Adjutant
+   defect. Everything the Supervisor reads is therefore parsed
+   strictly and bounded before it is parsed, and no message from the
+   worker can stop a clock the Supervisor can't restart.
+4. **Every violation ends the run.** The Supervisor never skips,
+   repairs or guesses at a message it doesn't accept. It kills the
+   worker and reports why (HANDOFF.md §3.5).
+
+## Shape
+
+```mermaid
+sequenceDiagram
+  participant H as Host
+  participant S as Supervisor
+  participant W as Worker
+
+  H->>S: run(source, policy, ...)
+  S->>W: (worker started by the host)
+  W-->>S: hello
+  S->>W: run request
+  loop until the script ends
+    W-->>S: output / log
+    S-->>H: yield Output / Log
+    W-->>S: ask
+    S-->>H: yield Ask
+    H->>S: ask.answer(decision)
+    S->>W: answer
+  end
+  W-->>S: finished
+  S-->>H: Outcome
+```
+
+An assessment has the same shape without the loop.
+
+## The host's side
+
+### Starting a worker
+
+The host's `main` begins with:
+
+```crystal
+Adjutant::Worker.main(ARGV) { |interp| register_natives(interp) }
+```
+
+`Worker.main` returns at once unless `ARGV.first?` is
+`Worker::ARGUMENT` (`"__adjutant-worker"`). Otherwise it serves one
+request and exits, never returning. Its block runs against each
+`Interpreter` the worker builds, before any script code, and is where
+the host registers its natives and modules. It runs for assessments
+too, since `RiskWalker` needs each native's `RiskProfile`.
+
+A native registered there runs in the worker. One that needs the
+host's state (a conversation, a credential store) can't reach it;
+it needs a request/response round trip like `ask`, which this design
+does not yet provide (see Open decisions).
+
+A native must not write to `STDOUT`, which is the protocol pipe;
+script output goes through the worker's `EffectHandler`.
+
+### Handing over a process
+
+```crystal
+process = Process.new(Process.executable_path.not_nil!, [Adjutant::Worker::ARGUMENT],
+  input: :pipe, output: :pipe, error: :pipe)
+supervisor = Adjutant::Supervisor.new(process)
+```
+
+`Supervisor.new` raises `ArgumentError` unless the process's input,
+output and error are all pipes (`Process#input?` and its siblings are
+non-nil). The host chooses how the worker starts: directly, under an
+OS sandbox launcher, or as the standalone `adjutant` executable.
+`Supervisor.spawn` covers the common case: the current executable,
+`Worker::ARGUMENT`, three pipes. It raises when
+`Process.executable_path` is nil.
+
+After an upgrade replaces the executable on disk,
+`Process.executable_path` may name the new binary; the handshake
+refuses a worker speaking another protocol version.
+
+A Supervisor serves one request, as its worker does.
+
+### Requests
+
+```crystal
+outcome = supervisor.run(source, policy_yaml, filename: "task.rb",
+  files: {"helpers.rb" => helpers}, limits: Adjutant::ExecutionLimits.new,
+  ceiling: 15.minutes) do |event|
+  case event
+  in Adjutant::Supervisor::Output then ui.append(event.text)
+  in Adjutant::Supervisor::Log    then log.info { event.message }
+  in Adjutant::Supervisor::Ask    then event.answer(ui.approve?(event.request))
+  end
+end
+```
+
+`assess(source, policy_yaml, filename:)` takes the same block and
+returns an `Assessment`: the `RiskSummary`, the findings, and any parse
+diagnostics. An assessment yields `Log` events only.
+
+`files` is the virtual filesystem `require` reads; it travels with the
+request, so the worker never asks the host for a file mid-run. `limits`
+is `ExecutionLimits`, which stays out of the policy document. `ceiling`
+is required: see Clocks.
+
+### Events
+
+`event` is the union `Output | Log | Ask`, so a `case … in` over it
+must name every member; a host misses a new event at compile time,
+not in production.
+
+- **`Output`**: `text`, a chunk of the script's standard output, in
+  order. Chunks don't align with `puts` calls.
+- **`Log`**: `severity`, `source` and `message`, from the worker's
+  `::Log` (the Broker's, among others).
+- **`Ask`**: `request`, a `RiskFlowDecisionRequest` rebuilt from the
+  message, and `answer(decision : RiskFlowDecision)`. The host must
+  call `answer` exactly once before the block returns. If it returns
+  without answering, the Supervisor kills the worker and raises
+  `Supervisor::UnansweredAskError`; defaulting to `Reject` would hide
+  a host defect. Answering twice raises too.
+
+The block runs in the Supervisor's reading fiber. While it runs, the
+worker can't make progress past its next message, which is the
+back-pressure on output. While an `Ask` is with the host, the worker
+is blocked waiting for the answer, so nothing else arrives.
+
+### Outcomes
+
+`run` returns one of these, a union for the same reason as the events:
+
+Outcome    |From      |Carries                                                                  
+-----------|----------|-------------------------------------------------------------------------
+`Completed`|worker    |the result's `inspect`, audit records, risk-flow events                  
+`Raised`   |worker    |a `Diagnostic`, its plain-text rendering, audit records, risk-flow events
+`Fatal`    |worker    |a `FatalSignal`'s kind, message and data, audit records                  
+`Crashed`  |Supervisor|exit status, the tail of stderr                                          
+`TimedOut` |Supervisor|which clock expired, the tail of stderr                                  
+`Violated` |Supervisor|what the worker did wrong, the tail of stderr                            
+
+`Raised` covers everything the worker can render: parse, compile and
+runtime errors, an uncaught script exception, and the host-facing
+errors `Interpreter#render_error` accepts. The worker renders it,
+because only the worker has the source map, `require`d files
+included.
+
+`Crashed` is any exit without a `finished` message. Crystal's own
+reports (a stack overflow, a segfault's backtrace) go to stderr, which
+is why the last part of it travels with every Supervisor outcome.
+
+## The protocol
+
+### Framing
+
+Newline-delimited JSON: one message per line, UTF-8. JSON escapes
+control characters inside strings, so a newline can only end a
+message.
+
+Each side reads with `IO#gets('\n', limit)`, whose limit is in bytes.
+A line that reaches the limit without a newline is a violation; so is
+a line that isn't a JSON object, has an unknown or missing key, or has
+an unknown `type`. Messages are `JSON::Serializable::Strict`, with
+`use_json_discriminator` on `type` (HANDOFF.md §4.19). Crystal's JSON
+pull parser stops at 512 levels of nesting with a `ParseException`,
+so a deeply nested message is a violation, not a stack overflow.
+
+Limit                             |Default|Why                                                 
+----------------------------------|-------|----------------------------------------------------
+Worker line, as read by Supervisor|1 MiB  |the host's exposure to a hostile worker             
+Supervisor line, as read by worker|64 MiB |a request carries the source and every `files` entry
+`output` chunk                    |64 KiB |worker splits larger writes                         
+`finished` result `inspect`       |256 KiB|worker truncates and says so                        
+
+### Messages
+
+Worker to Supervisor:
+
+Type      |Fields                                         |When                          
+----------|-----------------------------------------------|------------------------------
+`hello`   |`protocol` (Int32), `adjutant` (version string)|first, before reading anything
+`output`  |`text`                                         |during a run                  
+`log`     |`severity`, `source`, `message`                |any time after `hello`        
+`ask`     |`id` (Int32), `request`                        |during a run                  
+`assessed`|`summary`, `findings`, `diagnostics`           |last, for an assessment       
+`finished`|`outcome`, `audit`, `risk_flow`                |last, for a run               
+
+Supervisor to worker:
+
+Type    |Fields                                                                 |When            
+--------|-----------------------------------------------------------------------|----------------
+`assess`|`source`, `filename`, `policy`                                         |after `hello`   
+`run`   |`source`, `filename`, `policy`, `files`, `limits`, `risk_flow_tracking`|after `hello`   
+`answer`|`id`, `decision` (`allow` or `reject`)                                 |after each `ask`
+
+`policy` is the YAML document, as `Policy.from_yaml` takes it; the
+worker parses it, so an invalid policy is a `Raised` outcome naming
+the dotted path, as in-process.
+
+### Ordering
+
+The Supervisor accepts, and the worker sends, exactly this:
+
+1. `hello`, whose `protocol` equals the Supervisor's.
+2. Any number of `output`, `log` and `ask`, with nothing after an
+   `ask` until its `answer`. An `answer` whose `id` isn't the pending
+   `ask`'s is a violation on the worker's side.
+3. One `assessed` or `finished`, matching the request.
+4. End of stream and exit. Anything after the last message is a
+   violation.
+
+An exit status other than 0 after `finished` is reported on the
+outcome but doesn't replace it.
+
+## Clocks and caps
+
+A run has three clocks.
+
+1. **`wall_clock`** (worker, from the policy). Measures the run,
+   minus time spent waiting for an `answer`. Expiry raises the fatal
+   `Exhausted`, as today. Pausing it during an `ask` is a change to
+   `Budget` (SCOPE.md, Must Fix).
+2. **The deadline** (Supervisor). `wall_clock` plus a grace period,
+   paused while an `Ask` is with the host. Expiry kills the worker:
+   `TimedOut(:deadline)`.
+3. **The ceiling** (Supervisor, the `ceiling:` argument). Never
+   pauses. It bounds everything a misbehaving worker could stretch:
+   `ask` after `ask`, or a host that never answers. Expiry kills the
+   worker: `TimedOut(:ceiling)`. It has no default, because only the
+   host knows how long a user may take to decide.
+
+Caps, enforced in the worker and backstopped by the Supervisor:
+
+- **Asks per run.** A script that asks hundreds of times is betting on
+  a reflexive approval. A new policy limit bounds it; the worker
+  raises `Exhausted` past it, the Supervisor kills a worker that asks
+  once more than that. (SCOPE.md, Must Fix.)
+- **Output.** Standard output isn't a budget today. The Supervisor
+  caps the total it accepts; whether the worker gets a matching budget
+  is open.
+
+The Supervisor drains stderr in its own fiber from the start, keeping
+the last 64 KiB, so a worker writing to stderr can't block on a full
+pipe.
+
+## Changes elsewhere in Adjutant
+
+1. `Budget`: exclude time spent in `on_risk_flow_decision` from
+   `wall_clock`, and count asks against the new limit.
+2. Serialisation for what crosses the pipe: `RiskFlowDecisionRequest`
+   and what it holds, `Diagnostic`, `RiskSummary`, `RiskFinding`,
+   `AuditRecord`, `RiskFlowEvent`.
+3. A `::Log` backend in the worker that writes `log` messages.
+
+The VM writes to `STDOUT` only when an `Interpreter` has no
+`EffectHandler`; the worker always installs one.
+
+## Testing
+
+The protocol code works over a reader and a writer, with `Process`
+only at the edges, so specs run a worker in a fiber over `IO.pipe`s
+without starting a process. A few specs start the real thing.
+
+Each check gets a case it must reject (HANDOFF.md §4.7): a line one
+byte over the limit, an unknown key, an unknown type, a wrong protocol
+version, an `answer` for another `id`, a message after `finished`, a
+`log` while an `ask` is pending, an exit without `finished`, an `ask`
+past the cap, and a block that returns without answering.
+
+## Later
+
+- **OS sandboxing.** The worker, after reading its request and before
+  parsing the script, restricts itself to what the policy grants:
+  Landlock and seccomp on Linux, Seatbelt on macOS, a Job Object and
+  AppContainer on Windows. A defect in the Broker then meets the
+  kernel's limit. The request is read first because the grants decide
+  the rules.
+- **The `adjutant` executable**: `Worker.main` compiled on its own, as
+  a shard target.
+
+## Open decisions
+
+- **Framing.** Newline-delimited JSON is readable when a contributor
+  tees the pipe. Length-prefixed frames bound a message before
+  reading a byte of it, and don't depend on `gets` stopping at a byte
+  count.
+- **Stray writes to `STDOUT`.** Today a native that prints corrupts
+  the protocol and ends the run as `Violated`. The worker could keep
+  the pipe on a duplicate descriptor and point `STDOUT` at stderr
+  (`IO::FileDescriptor#reopen` exists; a duplicate needs `LibC.dup`),
+  turning stray output into crash-report noise.
+- **Host round trips.** A native needing host state would need a
+  general request/response message, of which `ask` is the first case.
+  Wait for a native that needs it.
+- **Structured results.** `Completed` carries `inspect` text. A host
+  wanting data back would need a JSON form of `Value`, bounded by
+  nesting depth.
+- **Approval cache.** research/IFC_DESIGN.md's open question, not yet
+  built, matters more once asks are capped: a cache keeps a repeated,
+  already-approved flow from spending the cap.
