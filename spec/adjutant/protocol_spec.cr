@@ -14,6 +14,27 @@ module Adjutant
     end
   end
 
+  # The names of `T`'s instance variables, sorted.
+  private def self.protocol_field_names(klass : T.class) : Array(String) forall T
+    {{ T.instance_vars.map(&.name.stringify).sort }}
+  end
+
+  private def self.protocol_decision_request : RiskFlowDecisionRequest
+    rule = RiskFlowRule.new(Authority::Net, Sensitivity::High, RiskFlowAction::Ask,
+      origin: RiskFlowOrigin.new(ProvenanceKind::Env, "_KEY$", PatternType::Regex),
+      subject: RiskFlowSubject.new("https://api.example.com:443"), priority: 10)
+    tag = ProvenanceTag.new(ProvenanceKind::Env, "API_KEY", Sensitivity::High)
+    risk = RiskProfile.new(Set{Effect::NetworkEgress}, Reversibility::No, Severity::Warning)
+    RiskFlowDecisionRequest.new("Legate.fetch", risk, Set{Authority::Net},
+      [RiskFlowMatch.new(RiskFlowAction::Ask, rule, tag), RiskFlowMatch.new(RiskFlowAction::Ask, nil, tag)],
+      "task.rb", 3, "https://api.example.com:443")
+  end
+
+  # An Ask as a worker would write it, with `risk` in place.
+  private def self.protocol_ask_line(risk : String) : String
+    %({"type":"ask","id":1,"request":{"call_name":"c","risk":#{risk},"authorities":["net"],"matches":[],"filename":"f","line":1}}\n)
+  end
+
   describe Protocol do
     describe "round trips" do
       it "a Hello, carrying this build's protocol and version" do
@@ -33,6 +54,20 @@ module Adjutant
         entry.severity.should eq ::Log::Severity::Warn
         entry.source.should eq "adjutant.legate"
         entry.message.should eq "denied"
+      end
+
+      it "an Ask, describing every part of the decision request" do
+        view = Protocol::DecisionRequest.from(protocol_decision_request)
+        ask = protocol_round_trip(Protocol::Ask.new(7, view), Protocol::WorkerMessage).should be_a(Protocol::Ask)
+        ask.id.should eq 7
+        ask.request.should eq view
+        rule = ask.request.matches.first.rule.should be_a(Protocol::Rule)
+        rule.origin.should eq Protocol::OriginPattern.new(ProvenanceKind::Env, PatternType::Regex, "_KEY$")
+        rule.subject.should eq Protocol::SubjectPattern.new(PatternType::Exact, "https://api.example.com:443")
+        rule.priority.should eq 10
+        ask.request.matches.last.rule.should be_nil
+        ask.request.risk.effects.should eq Set{Effect::NetworkEgress}
+        ask.request.subject.should eq "https://api.example.com:443"
       end
 
       it "an Assess" do
@@ -57,6 +92,20 @@ module Adjutant
         answer = protocol_round_trip(Protocol::Answer.new(3, :reject), Protocol::SupervisorMessage).should be_a(Protocol::Answer)
         answer.id.should eq 3
         answer.decision.should eq RiskFlowDecision::Reject
+      end
+    end
+
+    # A field added to a core type must be added to its description,
+    # or excluded here as derived.
+    describe "payloads" do
+      it "describe every field of their core type, bar what's derived" do
+        protocol_field_names(Protocol::Tag).should eq protocol_field_names(ProvenanceTag)
+        protocol_field_names(Protocol::OriginPattern).should eq protocol_field_names(RiskFlowOrigin) - %w[matched regex]
+        protocol_field_names(Protocol::SubjectPattern).should eq protocol_field_names(RiskFlowSubject) - %w[matched regex]
+        protocol_field_names(Protocol::Rule).should eq protocol_field_names(RiskFlowRule)
+        protocol_field_names(Protocol::Match).should eq protocol_field_names(RiskFlowMatch)
+        protocol_field_names(Protocol::Risk).should eq protocol_field_names(RiskProfile)
+        protocol_field_names(Protocol::DecisionRequest).should eq protocol_field_names(RiskFlowDecisionRequest)
       end
     end
 
@@ -133,6 +182,18 @@ module Adjutant
       it "a decision by any name but its own" do
         protocol_refuses(%({"type":"answer","id":1,"decision":"Allow"}\n), Protocol::SupervisorMessage, /malformed message/)
         protocol_refuses(%({"type":"answer","id":1,"decision":"maybe"}\n), Protocol::SupervisorMessage, /malformed message/)
+      end
+
+      it "a payload with an enum member listed twice, misnamed, or an unknown key" do
+        valid = %({"effects":["network_egress"],"reversible":"no","severity":"warning"})
+        Protocol.read(IO::Memory.new(protocol_ask_line(valid)), Protocol::WorkerMessage, limit: 1024).should be_a(Protocol::Ask)
+        {
+          %({"effects":["network_egress","network_egress"],"reversible":"no","severity":"warning"}) => /network_egress listed twice/,
+          %({"effects":["NetworkEgress"],"reversible":"no","severity":"warning"})                   => /unknown Adjutant::Effect/,
+          %({"effects":[],"reversible":"no","severity":"warning","colour":"red"})                   => /Unknown JSON attribute: colour/,
+        }.each do |risk, message|
+          protocol_refuses(protocol_ask_line(risk), Protocol::WorkerMessage, message)
+        end
       end
 
       it "deep nesting, without overflowing the stack" do

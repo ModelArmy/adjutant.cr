@@ -1,5 +1,6 @@
 require "json"
 require "log"
+require "./protocol_payloads"
 
 module Adjutant
   # What a Worker and its Supervisor say to each other over the
@@ -74,7 +75,7 @@ module Adjutant
 
     # What a Worker sends.
     abstract class WorkerMessage < Message
-      use_json_discriminator "type", {hello: Hello, output: Output, log: LogEntry}
+      use_json_discriminator "type", {hello: Hello, output: Output, log: LogEntry, ask: Ask}
     end
 
     # What a Supervisor sends.
@@ -114,6 +115,18 @@ module Adjutant
       getter message : String
 
       def initialize(@severity : ::Log::Severity, @source : String, @message : String)
+      end
+    end
+
+    # A risk-flow decision for the host, which must `Answer` it before
+    # the worker sends anything else.
+    class Ask < WorkerMessage
+      @[JSON::Field(key: "type")]
+      getter kind : String = "ask"
+      getter id : Int32
+      getter request : DecisionRequest
+
+      def initialize(@id : Int32, @request : DecisionRequest)
       end
     end
 

@@ -1,9 +1,9 @@
 # Worker and Supervisor design
 
 Status: partly built. Built: the run limits it relies on
-(`max_asks`, decisions off the wall clock) and the framing with the
-messages that carry no payload types (`src/adjutant/protocol.cr`).
-The rest is proposed.
+(`max_asks`, decisions off the wall clock), the framing, and every
+message but `assessed` and `finished` (`src/adjutant/protocol.cr`,
+`src/adjutant/protocol_payloads.cr`). The rest is proposed.
 
 ## Purpose
 
@@ -152,8 +152,8 @@ not in production.
   order. Chunks don't align with `puts` calls.
 - **`Log`**: `severity`, `source` and `message`, from the worker's
   `::Log` (the Broker's, among others).
-- **`Ask`**: `request`, a `RiskFlowDecisionRequest` rebuilt from the
-  message, and `answer(decision : RiskFlowDecision)`. The host must
+- **`Ask`**: `request`, a `Protocol::DecisionRequest` (see Payloads),
+  and `answer(decision : RiskFlowDecision)`. The host must
   call `answer` exactly once before the block returns. If it returns
   without answering, the Supervisor kills the worker and raises
   `Supervisor::UnansweredAskError`; defaulting to `Reject` would hide
@@ -244,6 +244,24 @@ Type    |Fields                                                                 
 worker parses it, so an invalid policy is a `Raised` outcome naming
 the dotted path, as in-process.
 
+### Payloads
+
+A message carrying a core value (`request`, `summary`, `audit` and
+the rest) carries a description of it: a `Protocol::Payload` built
+with `from`, never turned back into the core type. The reading side
+gets data to show, not objects to use. Rebuilding the core types
+would run untrusted input through their constructors, or around them:
+`RiskProfile`'s constructor enforces invariants that
+`JSON::Serializable` skips, and a `RiskFlowOrigin` resolves real paths
+and compiles regexes as it settles. A host that wants one prompt for
+both kinds of run builds the same description in-process
+(`DecisionRequest.from`).
+
+A description names its fields as its core type does. A spec compares
+the two sets of instance variables, so a field added to a core type
+fails until its description gains it or the spec names it as derived
+(`RiskFlowOrigin`'s compiled regex).
+
 ### Ordering
 
 The Supervisor accepts, and the worker sends, exactly this:
@@ -291,9 +309,8 @@ pipe.
 
 ## Changes elsewhere in Adjutant
 
-1. Serialisation for what crosses the pipe: `RiskFlowDecisionRequest`
-   and what it holds, `Diagnostic`, `RiskSummary`, `RiskFinding`,
-   `AuditRecord`, `RiskFlowEvent`.
+1. Payloads for what `assessed` and `finished` carry: `Diagnostic`,
+   `RiskSummary`, `RiskFinding`, `AuditRecord`, `RiskFlowEvent`.
 2. A `::Log` backend in the worker that writes `log` messages.
 
 The VM writes to `STDOUT` only when an `Interpreter` has no
