@@ -38,10 +38,14 @@ The host never reads or writes a byte of the protocol.
    the same limits again, more loosely, and kills the worker when one
    is crossed; only a misbehaving worker crosses them.
 3. **Once a request is sent, the worker is untrusted.** Isolation
-   assumes a script might take over the worker through an Adjutant
-   defect. Everything the Supervisor reads is therefore parsed
-   strictly and bounded before it is parsed, and no message from the
-   worker can stop a clock the Supervisor can't restart.
+   assumes a script might take over the worker process through an
+   Adjutant defect while it runs. The binary stays honest, and so
+   does the host, which runs the same code but never ran the script.
+   Everything the Supervisor reads is therefore parsed strictly and
+   bounded before it is parsed, and no message from the worker can
+   stop a clock the Supervisor can't restart. A tampered binary is a
+   different compromise, of both sides at once, and nothing at run
+   time defends against it.
 4. **Every violation ends the run.** The Supervisor never skips,
    repairs or guesses at a message it doesn't accept. It kills the
    worker and reports why (HANDOFF.md §3.5).
@@ -186,6 +190,34 @@ included.
 `Crashed` is any exit without a `finished` message. Crystal's own
 reports (a stack overflow, a segfault's backtrace) go to stderr, which
 is why the last part of it travels with every Supervisor outcome.
+
+### What a host can trust
+
+What the Supervisor observes for itself is fact: the exit status, how
+long the run took, when each message arrived, how many Asks it
+answered, how much output it accepted, and which of its limits it
+enforced. Everything the worker says is testimony: its output, logs,
+Ask descriptions, outcome, audit records, risk-flow events and stderr.
+Testimony is accurate while the worker is honest, and is whatever a
+script wants once it has taken the worker over.
+
+A lying Ask does no harm by itself. An approval grants something only
+inside the worker, a taken-over worker needs no permission, and what
+bounds it then is the OS sandbox (Later). Testimony becomes dangerous
+when it outlives the worker or steers the host:
+
+1. **Audit trails.** A host keeps the worker's audit records and
+   risk-flow events marked as reported by the worker, beside the
+   Supervisor's own observations, and never presents them alone as
+   evidence of what a run did.
+2. **Remembered decisions.** Nothing a worker says carries into
+   another run. An approval may last the rest of its own run at most;
+   a decision kept across runs records what the host decided and
+   observed, never a worker's description of a flow.
+3. **Automatic decisions.** A host that answers Asks by rule (allow
+   anything whose `risk` has no effects, say) lets the worker choose
+   the rule's input. That is safe only while the answer's effect stays
+   inside the worker.
 
 ## The protocol
 
@@ -354,4 +386,6 @@ past the cap, and a block that returns without answering.
   nesting depth.
 - **Approval cache.** research/IFC_DESIGN.md's open question, not yet
   built, matters more once asks are capped: a cache keeps a repeated,
-  already-approved flow from spending the cap.
+  already-approved flow from spending the cap. Kept in the worker, it
+  lasts one run; kept in the host across runs, it must follow What a
+  host can trust, point 2.
