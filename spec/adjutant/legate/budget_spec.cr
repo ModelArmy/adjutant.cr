@@ -41,6 +41,28 @@ module Adjutant
     )
   end
 
+  # An Interpreter whose policy asks before `secret` is read, at most
+  # `max_asks` times a run, counting each Ask in `asked`.
+  private def self.interp_asking(dir : String, secret : String, max_asks : Int32, asked : Array(String)) : Interpreter
+    yaml = <<-YAML
+      grants:
+        read: { roots: [#{dir.inspect}] }
+      limits:
+        max_asks: #{max_asks}
+      risk_flow:
+        patterns:
+          - { kind: file, pattern: #{secret.inspect}, priority: 10, sensitivity: high }
+        rules:
+          - { authority: read, sensitivity: high, action: ask }
+        default: reject
+      YAML
+    decide = ->(req : RiskFlowDecisionRequest) : RiskFlowDecision {
+      asked << req.call_name
+      RiskFlowDecision::Allow
+    }
+    Interpreter.new(policy: Policy.from_yaml(yaml), on_risk_flow_decision: decide, effect: TestEffectHandler.new)
+  end
+
   describe Legate::Budget do
     describe "#record_read / #record_write" do
       it "accumulates across calls" do
@@ -201,6 +223,32 @@ module Adjutant
         interp, _ = make_interp(grants: grants)
         expect_raises(Legate::FatalSignal, /wall_clock budget exceeded/) do
           interp.eval("x = 0\nwhile true\n  x += 1\nend")
+        end
+      end
+    end
+
+    describe "max_asks" do
+      it "ends the run at the first Ask past the budget, without asking" do
+        with_tmpdir do |dir|
+          secret = File.join(dir, "secret.txt")
+          File.write(secret, "shh")
+          asked = [] of String
+          interp = interp_asking(dir, secret, 2, asked)
+          expect_raises(Legate::FatalSignal, /max_asks budget exceeded/) do
+            interp.eval(%(3.times { Legate.read(#{secret.inspect}) }))
+          end
+          asked.size.should eq 2
+        end
+      end
+
+      it "gives each eval the whole budget" do
+        with_tmpdir do |dir|
+          secret = File.join(dir, "secret.txt")
+          File.write(secret, "shh")
+          asked = [] of String
+          interp = interp_asking(dir, secret, 2, asked)
+          2.times { interp.eval(%(2.times { Legate.read(#{secret.inspect}) })) }
+          asked.size.should eq 4
         end
       end
     end
