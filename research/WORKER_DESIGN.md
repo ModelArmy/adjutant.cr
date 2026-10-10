@@ -1,6 +1,9 @@
 # Worker and Supervisor design
 
-Status: proposed. Nothing here is built yet.
+Status: partly built. Built: the run limits it relies on
+(`max_asks`, decisions off the wall clock) and the framing with the
+messages that carry no payload types (`src/adjutant/protocol.cr`).
+The rest is proposed.
 
 ## Purpose
 
@@ -192,13 +195,22 @@ Newline-delimited JSON: one message per line, UTF-8. JSON escapes
 control characters inside strings, so a newline can only end a
 message.
 
-Each side reads with `IO#gets('\n', limit)`, whose limit is in bytes.
-A line that reaches the limit without a newline is a violation; so is
-a line that isn't a JSON object, has an unknown or missing key, or has
-an unknown `type`. Messages are `JSON::Serializable::Strict`, with
-`use_json_discriminator` on `type` (HANDOFF.md §4.19). Crystal's JSON
-pull parser stops at 512 levels of nesting with a `ParseException`,
-so a deeply nested message is a violation, not a stack overflow.
+Each side reads with `IO#gets('\n', limit)`, whose limit is in bytes,
+the newline included. A line that reaches the limit without a newline
+is a violation; so is a stream that ends inside a line, a line that
+isn't valid UTF-8, and a line that isn't exactly one JSON object with
+a known `type` and its keys, no more and no fewer. Messages are
+`JSON::Serializable::Strict`, with `use_json_discriminator` on `type`,
+and enum values are read only by the name they're written as
+(HANDOFF.md §4.19). Crystal's JSON parser refuses anything after the
+object, and the discriminator copies each message through a
+`JSON::Builder`, which stops past 99 levels of nesting; both raise a
+`JSON::Error`, so a deeply nested message is a violation, not a stack
+overflow.
+
+Newline-delimited JSON was chosen over length-prefixed frames because
+a contributor can read the pipe with `tee`; `gets` stopping at its
+byte limit gives the same bound.
 
 Limit                             |Default|Why                                                 
 ----------------------------------|-------|----------------------------------------------------
@@ -312,10 +324,6 @@ past the cap, and a block that returns without answering.
 
 ## Open decisions
 
-- **Framing.** Newline-delimited JSON is readable when a contributor
-  tees the pipe. Length-prefixed frames bound a message before
-  reading a byte of it, and don't depend on `gets` stopping at a byte
-  count.
 - **Stray writes to `STDOUT`.** Today a native that prints corrupts
   the protocol and ends the run as `Violated`. The worker could keep
   the pipe on a duplicate descriptor and point `STDOUT` at stderr
