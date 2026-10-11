@@ -338,7 +338,14 @@ module Adjutant
     # 4. Refuse anything after the last message, then wait for the
     #    worker to end, killing it first unless it finished. The clocks
     #    run until it has ended.
+    # 5. Re-raise anything the host's block raised.
     # Returns the last message, if it came, and what was observed.
+    #
+    # Rescue bodies only record what happened; the cleanup, which waits
+    # on other fibers, runs after them. On Windows an exception still
+    # being handled lives in per-thread state, and another fiber
+    # raising while this one waits inside a `rescue` or `ensure`
+    # corrupts it, which kills the process.
     private def converse(request : Protocol::SupervisorMessage, ceiling : Time::Span, deadline : Time::Span?,
                          max_asks : Int32?, & : Event ->) : {Protocol::WorkerMessage?, Observed}
       raise ArgumentError.new("a Supervisor serves one request") if @used
@@ -347,26 +354,28 @@ module Adjutant
       stderr_done = drain_stderr
       watch(started, ceiling, deadline)
       last = nil
+      failure = nil
       begin
         last = exchange(request, max_asks) { |event| yield event }
         @finished = !last.nil?
         refuse_more if last
       rescue ex : Protocol::Violation
-        violate(ex.message || "protocol violation")
+        @violation ||= ex.message || "protocol violation"
       rescue IO::Error
         # The worker went away; `ended_early` decides how.
-      ensure
-        @link.kill unless @finished
-        close_input
-        select
-        when stderr_done.receive
-        when timeout(STDERR_WAIT)
-        end
-        status = @link.wait
-        @done = true
+      rescue ex
+        failure = ex
       end
-      observed = Observed.new(status, Time.instant - started, @asks, @output_bytes, stderr_tail)
-      {last, observed}
+      @link.kill unless @finished && @violation.nil?
+      close_input
+      select
+      when stderr_done.receive
+      when timeout(STDERR_WAIT)
+      end
+      status = @link.wait
+      @done = true
+      raise failure if failure
+      {last, Observed.new(status, Time.instant - started, @asks, @output_bytes, stderr_tail)}
     end
 
     private def exchange(request : Protocol::SupervisorMessage, max_asks : Int32?, & : Event ->) : Protocol::WorkerMessage?
@@ -425,8 +434,8 @@ module Adjutant
     # 1. Count the Ask; one past `max_asks` means the worker ignored
     #    its own budget.
     # 2. Pause the deadline, and let the host decide.
-    # 3. Kill the worker and raise if the host didn't answer;
-    #    otherwise send the answer.
+    # 3. Raise if the host didn't answer, and `converse` kills the
+    #    worker; otherwise send the answer.
     private def decide(message : Protocol::Ask, max_asks : Int32?, & : Event ->) : Nil
       @asks += 1
       if (limit = max_asks) && @asks > limit
@@ -444,10 +453,7 @@ module Adjutant
         @paused_at = nil
       end
       decision = ask.decision
-      unless decision
-        @link.kill
-        raise UnansweredAskError.new("the host's block returned without answering ask #{@asks}")
-      end
+      raise UnansweredAskError.new("the host's block returned without answering ask #{@asks}") unless decision
       Protocol.write(@link.input, Protocol::Answer.new(@asks, decision))
     end
 
@@ -459,11 +465,6 @@ module Adjutant
 
     private def out_of_order(message : Protocol::WorkerMessage) : NoReturn
       raise Protocol::Violation.new("#{message.kind} out of order")
-    end
-
-    private def violate(reason : String) : Nil
-      @violation ||= reason
-      @link.kill
     end
 
     private def receive : Protocol::WorkerMessage?

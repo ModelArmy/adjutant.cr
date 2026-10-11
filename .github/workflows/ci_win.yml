@@ -54,8 +54,16 @@ jobs:
           mkdir bin\debug -ErrorAction SilentlyContinue
           shards build worker_host
 
+      # Built and run directly, not through `crystal spec`, which
+      # reports any crash as "terminated abnormally" and drops the
+      # exit code. The code (0xC0000409 is a fail-fast, 0xC0000005 an
+      # access violation) says what kind of crash it was.
       - name: Run supervisor tests, verbose
-        run: crystal spec -v --order 10 spec/adjutant/supervisor_spec.cr
+        shell: pwsh
+        run: |
+          crystal build -o supervisor_spec.exe spec/adjutant/supervisor_spec.cr
+          ./supervisor_spec.exe -v --order 10
+          if ($LASTEXITCODE -ne 0) { Write-Host ("exit code 0x{0:X8}" -f $LASTEXITCODE); exit 1 }
 
       # `fetch_stream_spec.cr`'s raise-mid-walk case is `pending` under
       # `flag?(:windows)` — it hard-crashes the process there. See
