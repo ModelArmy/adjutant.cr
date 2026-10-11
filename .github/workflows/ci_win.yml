@@ -58,9 +58,9 @@ jobs:
       # `flag?(:windows)` — it hard-crashes the process there. See
       # SCOPE's "Streamed fetch on Windows".
       - name: Run tests, verbose
-        if: ${{ matrix.crystal == "1.20" }}
+        if: ${{ matrix.crystal == '1.20' }}
         run: crystal spec -v
 
       - name: Run tests
-        if: ${{ matrix.crystal != "1.20" }}
+        if: ${{ matrix.crystal != '1.20' }}
         run: crystal spec
