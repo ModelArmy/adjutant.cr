@@ -3,7 +3,8 @@ require "file_utils"
 
 module Adjutant
   # A Supervisor::Link over pipes, with the worker's ends exposed for a
-  # spec to drive. Killing it closes the worker's output ends.
+  # spec to drive. Killing it closes the worker's ends, as a process's
+  # death would, and leaves the Supervisor's alone.
   private class SupervisorSpecLink < Supervisor::Link
     getter input : IO
     getter output : IO
@@ -22,7 +23,6 @@ module Adjutant
     def kill : Nil
       @killed = true
       close_worker
-      @output.close
     end
 
     def wait : Process::Status?

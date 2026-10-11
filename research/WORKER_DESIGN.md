@@ -420,6 +420,14 @@ past the cap, and a block that returns without answering.
   AppContainer on Windows. A defect in the Broker then meets the
   kernel's limit. The request is read first because the grants decide
   the rules.
+- **Killing the worker's process tree.** A kill stops the worker and
+  lets the Supervisor's reads end as the pipes close; the Supervisor
+  never closes a pipe it may be reading, since on Windows that can
+  bring the host down. A process the worker starts inherits its
+  stdout, though, so a worker a script has taken over could leave one
+  behind that holds the Supervisor past its ceiling. A Job Object on
+  Windows, or a process group on Unix, lets the kill take the whole
+  tree; it belongs with the sandboxing.
 - **The `adjutant` executable**: `Worker.main` compiled on its own, as
   a shard target.
 

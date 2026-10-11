@@ -198,7 +198,10 @@ module Adjutant
       # The worker's stderr.
       abstract def error : IO
 
-      # Stops the worker at once, and unblocks any read of `output`.
+      # Stops the worker at once. The Supervisor's reads then end as the
+      # worker's ends of the pipes close. Must not close `output` or
+      # `error` itself: a fiber may be reading them, and on Windows
+      # closing a pipe mid-read can bring the whole process down.
       abstract def kill : Nil
 
       # Waits for the worker to end; its exit status, if it has one.
@@ -223,12 +226,9 @@ module Adjutant
       end
 
       def kill : Nil
-        begin
-          @process.terminate(graceful: false)
-        rescue
-          # Already gone.
-        end
-        @process.output.close
+        @process.terminate(graceful: false)
+      rescue
+        # Already gone.
       end
 
       def wait : Process::Status?
