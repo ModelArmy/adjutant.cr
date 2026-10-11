@@ -13,7 +13,7 @@ jobs:
       matrix:
         include:
           - { os: windows-latest, crystal: "1.20" }
-          - { os: windows-latest, crystal: "1.21.0" }
+          - { os: windows-latest, crystal: "1.21" }
 
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
@@ -57,5 +57,10 @@ jobs:
       # `fetch_stream_spec.cr`'s raise-mid-walk case is `pending` under
       # `flag?(:windows)` — it hard-crashes the process there. See
       # SCOPE's "Streamed fetch on Windows".
+      - name: Run tests, verbose
+        if: ${{ matrix.crystal == "1.20" }}
+        run: crystal spec -v
+
       - name: Run tests
+        if: ${{ matrix.crystal != "1.20" }}
         run: crystal spec
