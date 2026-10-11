@@ -45,6 +45,13 @@ jobs:
         shell: pwsh
         run: reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock" /t REG_DWORD /f /v AllowDevelopmentWithoutDevLicense /d 1
 
+      - name: Build worker_host needed by test specs
+        shell: powershell
+        env:
+          SHARDS_BIN_PATH: "bin/debug"
+        run: |
+          shards build worker_host
+
       # `fetch_stream_spec.cr`'s raise-mid-walk case is `pending` under
       # `flag?(:windows)` — it hard-crashes the process there. See
       # SCOPE's "Streamed fetch on Windows".
