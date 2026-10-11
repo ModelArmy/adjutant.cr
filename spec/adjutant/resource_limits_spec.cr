@@ -50,6 +50,7 @@ module Adjutant
         limits.total_read.should eq 4_294_967_296_i64
         limits.total_write.should eq 1_073_741_824_i64
         limits.memory.should eq 536_870_912_i64
+        limits.max_asks.should eq 20
         ResourceLimits.new(wall_clock: nil).wall_clock.should be_nil
       end
 

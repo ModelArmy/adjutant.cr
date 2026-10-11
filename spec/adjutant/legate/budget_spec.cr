@@ -32,6 +32,37 @@ module Adjutant
     interp
   end
 
+  # A policy that asks before `path` is read, and allows everything
+  # else.
+  private def self.ask_on_reading(path : String) : RiskFlowPolicy
+    RiskFlowPolicy.new(
+      sensitivity_patterns: [SensitivityPattern.new(ProvenanceKind::File, path, 10, Sensitivity::High)],
+      risk_flow_rules: allow_unlisted([RiskFlowRule.new(Authority::Read, Sensitivity::High, RiskFlowAction::Ask)]),
+    )
+  end
+
+  # An Interpreter whose policy asks before `secret` is read, at most
+  # `max_asks` times a run, counting each Ask in `asked`.
+  private def self.interp_asking(dir : String, secret : String, max_asks : Int32, asked : Array(String)) : Interpreter
+    yaml = <<-YAML
+      grants:
+        read: { roots: [#{dir.inspect}] }
+      limits:
+        max_asks: #{max_asks}
+      risk_flow:
+        patterns:
+          - { kind: file, pattern: #{secret.inspect}, priority: 10, sensitivity: high }
+        rules:
+          - { authority: read, sensitivity: high, action: ask }
+        default: reject
+      YAML
+    decide = ->(req : RiskFlowDecisionRequest) : RiskFlowDecision {
+      asked << req.call_name
+      RiskFlowDecision::Allow
+    }
+    Interpreter.new(policy: Policy.from_yaml(yaml), on_risk_flow_decision: decide, effect: TestEffectHandler.new)
+  end
+
   describe Legate::Budget do
     describe "#record_read / #record_write" do
       it "accumulates across calls" do
@@ -98,15 +129,65 @@ module Adjutant
       end
     end
 
+    describe "#record_ask" do
+      it "raises FatalSignal :exhausted at the Ask past max_asks" do
+        budget = Legate::Budget.new(Legate::Limits.new(max_asks: 2))
+        2.times { budget.record_ask }
+        expect_raises(Legate::FatalSignal, /max_asks budget exceeded \(3 > 2\)/) do
+          budget.record_ask
+        end
+      end
+
+      it "does not raise when max_asks is not enforced" do
+        budget = Legate::Budget.new(Legate::Limits.new(max_asks: nil))
+        100.times { budget.record_ask }
+        budget.asks.should eq 100
+      end
+    end
+
+    describe "#off_clock" do
+      it "doesn't count the time its block takes" do
+        budget = Legate::Budget.new(Legate::Limits.new(wall_clock: 1))
+        budget.off_clock { sleep 1.1.seconds }
+        budget.check_wall_clock!
+      end
+
+      it "counts the time after its block" do
+        budget = Legate::Budget.new(Legate::Limits.new(wall_clock: 0))
+        budget.off_clock { sleep 10.milliseconds }
+        sleep 10.milliseconds
+        expect_raises(Legate::FatalSignal, /wall_clock budget exceeded/) do
+          budget.check_wall_clock!
+        end
+      end
+
+      it "doesn't count the time of a block that raises" do
+        budget = Legate::Budget.new(Legate::Limits.new(wall_clock: 1))
+        expect_raises(Exception, "decided") do
+          budget.off_clock do
+            sleep 1.1.seconds
+            raise "decided"
+          end
+        end
+        budget.check_wall_clock!
+      end
+
+      it "returns its block's value" do
+        Legate::Budget.new(Legate::Limits.new).off_clock { 42 }.should eq 42
+      end
+    end
+
     describe "#start_run!" do
       it "zeroes the counts and restarts the clock" do
         budget = Legate::Budget.new(Legate::Limits.new(wall_clock: 1))
         budget.record_read(5_i64)
         budget.record_write(7_i64)
+        budget.record_ask
         sleep 1.1.seconds
         budget.start_run!
         budget.total_read.should eq 0
         budget.total_write.should eq 0
+        budget.asks.should eq 0
         budget.check_wall_clock!
       end
     end
@@ -160,6 +241,54 @@ module Adjutant
         interp, _ = make_interp(grants: grants)
         expect_raises(Legate::FatalSignal, /wall_clock budget exceeded/) do
           interp.eval("x = 0\nwhile true\n  x += 1\nend")
+        end
+      end
+    end
+
+    describe "max_asks" do
+      it "ends the run at the first Ask past the budget, without asking" do
+        with_tmpdir do |dir|
+          secret = File.join(dir, "secret.txt")
+          File.write(secret, "shh")
+          asked = [] of String
+          interp = interp_asking(dir, secret, 2, asked)
+          expect_raises(Legate::FatalSignal, /max_asks budget exceeded/) do
+            interp.eval(%(3.times { Legate.read(#{secret.inspect}) }))
+          end
+          asked.size.should eq 2
+        end
+      end
+
+      it "gives each eval the whole budget" do
+        with_tmpdir do |dir|
+          secret = File.join(dir, "secret.txt")
+          File.write(secret, "shh")
+          asked = [] of String
+          interp = interp_asking(dir, secret, 2, asked)
+          2.times { interp.eval(%(2.times { Legate.read(#{secret.inspect}) })) }
+          asked.size.should eq 4
+        end
+      end
+    end
+
+    # The script can do nothing while its host decides an Ask, so the
+    # wait isn't the run's time.
+    describe "wall_clock and risk-flow decisions" do
+      it "doesn't count the time the host takes to decide" do
+        with_tmpdir do |dir|
+          secret = File.join(dir, "secret.txt")
+          plain = File.join(dir, "plain.txt")
+          File.write(secret, "shh")
+          File.write(plain, "ok")
+          decide = ->(_req : RiskFlowDecisionRequest) : RiskFlowDecision {
+            sleep 1.2.seconds
+            RiskFlowDecision::Allow
+          }
+          grants = Legate::Grants.new(read_roots: [dir], limits: Legate::Limits.new(wall_clock: 1))
+          interp, _ = make_interp(
+            grants: grants, risk_flow_policy: ask_on_reading(secret), on_risk_flow_decision: decide,
+          )
+          interp.eval(%(Legate.read(#{secret.inspect})\nLegate.read(#{plain.inspect}))).as_string.should eq "ok"
         end
       end
     end
