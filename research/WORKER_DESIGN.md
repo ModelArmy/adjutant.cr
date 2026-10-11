@@ -3,8 +3,10 @@
 Status: partly built. Built: the run limits it relies on
 (`max_asks`, decisions off the wall clock) and the protocol: its
 framing, messages and payloads (`src/adjutant/protocol.cr`,
-`src/adjutant/protocol_payloads.cr`), and `Worker`
-(`src/adjutant/worker.cr`). `Supervisor` is proposed.
+`src/adjutant/protocol_payloads.cr`), `Worker`
+(`src/adjutant/worker.cr`) and `Supervisor`
+(`src/adjutant/supervisor.cr`). Specs that start a real worker
+process are proposed.
 
 ## Purpose
 
@@ -124,10 +126,15 @@ refuses a worker speaking another protocol version.
 
 A Supervisor serves one request, as its worker does.
 
+Underneath, a Supervisor talks to a `Supervisor::Link`: the worker's
+stdin, stdout and stderr, a way to kill it, and a way to wait for it.
+`ProcessLink` wraps a `Process`; specs use a link over `IO.pipe`s with
+a worker in a fiber, and another transport can stand in the same way.
+
 ### Requests
 
 ```crystal
-outcome = supervisor.run(source, policy_yaml, filename: "task.rb",
+report = supervisor.run(source, policy_yaml, filename: "task.rb",
   files: {"helpers.rb" => helpers}, limits: Adjutant::ExecutionLimits.new,
   ceiling: 15.minutes) do |event|
   case event
@@ -138,9 +145,12 @@ outcome = supervisor.run(source, policy_yaml, filename: "task.rb",
 end
 ```
 
-`assess(source, policy_yaml, filename:)` takes the same block and
-returns an `Assessment`: the `RiskSummary`, the findings, and any parse
-diagnostics. An assessment yields `Log` events only.
+`assess(source, policy_yaml, filename:, ceiling:)` takes the same
+block, yields `Log` events only, and returns an `AssessReport`.
+
+Both parse the policy first, to read `wall_clock` and `max_asks` for
+the clocks and caps, so a policy that doesn't load raises
+`InvalidPolicyError` before the conversation starts.
 
 `files` is the virtual filesystem `require` reads; it travels with the
 request, so the worker never asks the host for a file mid-run. `limits`
@@ -171,16 +181,30 @@ is blocked waiting for the answer, so nothing else arrives.
 
 ### Outcomes
 
-`run` returns one of these, a union for the same reason as the events:
+`run` returns a `RunReport`: the outcome, the audit records and
+risk-flow events the worker reported, and an `Observed`. `assess`
+returns an `AssessReport`: the outcome and an `Observed`. Each outcome
+is its own struct, with no common parent, so `RunOutcome` and
+`AssessOutcome` stay unions a `case … in` must cover; types sharing a
+parent would merge into it.
 
-Outcome    |From      |Carries                                                                  
------------|----------|-------------------------------------------------------------------------
-`Completed`|worker    |the result's `inspect`, audit records, risk-flow events                  
-`Raised`   |worker    |a `Diagnostic`, its plain-text rendering, audit records, risk-flow events
-`Fatal`    |worker    |a `FatalSignal`'s kind, message and data, audit records                  
-`Crashed`  |Supervisor|exit status, the tail of stderr                                          
-`TimedOut` |Supervisor|which clock expired, the tail of stderr                                  
-`Violated` |Supervisor|what the worker did wrong, the tail of stderr                            
+Outcome    |From      |Carries                                       |Ends      
+-----------|----------|----------------------------------------------|----------
+`Completed`|worker    |the result's `inspect`, and whether it's cut  |run       
+`Assessed` |worker    |the summary and the findings                  |assessment
+`Raised`   |worker    |a `DiagnosticReport`, its plain-text rendering|either    
+`Fatal`    |worker    |a `FatalSignal`'s kind, message and data      |run       
+`Crashed`  |Supervisor|nothing; see `Observed`                       |either    
+`TimedOut` |Supervisor|which clock expired                           |either    
+`Violated` |Supervisor|what the worker did wrong                     |either    
+
+`Observed` holds what the Supervisor saw for itself (see What a host
+can trust): the exit status, the time taken, the Asks answered, the
+output accepted, and the last 64 KiB of stderr.
+
+A clock that expires before the last message makes the outcome
+`TimedOut`, even if killing the worker also cut a line short; one
+that expires after it changes nothing.
 
 `Raised` covers everything the worker can render: parse, compile and
 runtime errors, an uncaught script exception, and the host-facing
@@ -188,9 +212,9 @@ errors `Interpreter#render_error` accepts. The worker renders it,
 because only the worker has the source map, `require`d files
 included.
 
-`Crashed` is any exit without a `finished` message. Crystal's own
-reports (a stack overflow, a segfault's backtrace) go to stderr, which
-is why the last part of it travels with every Supervisor outcome.
+`Crashed` is any exit without a last message. Crystal's own reports
+(a stack overflow, a segfault's backtrace) go to stderr, which is why
+`Observed` keeps the end of it.
 
 ### What a host can trust
 

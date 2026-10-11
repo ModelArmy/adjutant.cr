@@ -31,6 +31,7 @@ require "./adjutant/risk_walker"
 require "./adjutant/utils/http_response_stream"
 require "./adjutant/protocol"
 require "./adjutant/worker"
+require "./adjutant/supervisor"
 
 module Adjutant
   VERSION    = {{ `shards version #{__DIR__}`.chomp.stringify }}
