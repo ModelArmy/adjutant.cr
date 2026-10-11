@@ -172,25 +172,6 @@ SAMPLE_POLICY_YAML = <<-YAML
       - { authority: read, sensitivity: high, action: allow }
     default: ask
   YAML
-{
-  "sensitivity_patterns": [
-    { "kind": "File", "pattern": "/etc/passwd", "priority": 10, "sensitivity": "High" },
-    { "kind": "File", "pattern_type": "regex", "pattern": "^/etc/", "priority": 0, "sensitivity": "Elevated" },
-    { "kind": "File", "pattern": "/tmp/scratch.txt", "priority": 10, "sensitivity": "None" },
-    { "kind": "Host", "pattern_type": "regex", "pattern": "internal$", "priority": 0, "sensitivity": "None" },
-    { "kind": "Host", "pattern_type": "regex", "pattern": ".*", "priority": -10, "sensitivity": "Elevated" }
-  ],
-  "risk_flow_rules": [
-    { "authority": "Delete", "sensitivity": "Elevated", "action": "Ask" },
-    { "authority": "Delete", "sensitivity": "High", "action": "Reject" },
-    { "authority": "Net", "sensitivity": "Elevated", "action": "Ask" },
-    { "authority": "Net", "sensitivity": "High", "action": "Ask" },
-    { "authority": "Read", "sensitivity": "Elevated", "action": "Allow" },
-    { "authority": "Read", "sensitivity": "High", "action": "Allow" }
-  ],
-  "default": "ask"
-}
-JSON
 
 # Builds a human-readable prompt from a RiskFlowDecisionRequest and asks
 # the user via STDIN. This is deliberately NOT part of Adjutant's own
