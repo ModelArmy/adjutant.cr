@@ -530,6 +530,18 @@ section).
   currently worth. To pick it up, the route that worked was cutting
   DOWN from the crashing spec, not building UP from a small program.
 
+  **Leading lead, unverified.** The Supervisor's specs died the same
+  way on Windows, and were fixed by not waiting on other fibers inside
+  a Crystal `rescue` or `ensure` (DEVELOPMENT.md, "Crystal's own
+  `rescue` and `ensure` on Windows"). `Interpreter#eval`'s `ensure`
+  closes every open stream source while a script's error propagates,
+  and closing a socket-backed stream can wait on the event loop. That
+  fits two of the ingredients above: the raise supplies the exception
+  in flight, the socket the wait. What supplies a fiber that raises
+  during the wait is the open question, and may be what the small
+  programs lacked. To test it: rescue into a variable in `eval`, close
+  the sources after the handler, re-raise, and un-pend the spec.
+
 ### Providers
 
 - **Effect providers are named, not loaded.** Each provider claims

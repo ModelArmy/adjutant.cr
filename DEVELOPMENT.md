@@ -190,6 +190,8 @@ A script raise builds an error object of a real class (`Exception`, StandardErro
 
 **Fatal signals.** `FatalSignal` (a denied grant, an exhausted budget, `Legate.fail`) is a plain Exception, not a RuntimeError: the dispatch loop never tries to match it against a `rescue`, and `call_native` re-raises it before its catch-all turns anything else into N001. That is what makes it unrescuable even by `rescue Exception`. An enforcer's fatal error must be a FatalSignal.
 
+**Crystal's own `rescue` and `ensure` on Windows.** MSVC's exception handling keeps the exception being handled in per-thread state until its handler finishes. A fiber that waits inside a Crystal `rescue` body, or inside an `ensure` reached by an exception, lets another fiber on the same thread raise and rescue meanwhile, and the state is then unwound out of order: the process dies with a fail-fast (`0xC0000409`), before any handler runs. Waiting means anything that can switch fibers: IO on an evented descriptor (pipes and sockets), `sleep`, a channel, `select`, `Process#wait`. Whether it crashes depends on which fiber the event loop resumes first, so a crash can pass now and then. In a handler, record what happened; do the waiting after it, and re-raise if needed, as `Supervisor#converse` does. macOS and Linux are unaffected, so only Windows CI catches a breach.
+
 ### The effect boundary
 
 ```mermaid
