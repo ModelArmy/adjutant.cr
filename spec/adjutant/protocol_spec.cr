@@ -191,6 +191,23 @@ module Adjutant
         Protocol.read(io, Protocol::WorkerMessage, limit: 1024).should be_nil
       end
 
+      it "refuses to write a line over the limit, writing nothing" do
+        io = IO::Memory.new
+        expect_raises(Protocol::Violation, /message of 38 bytes over the 37-byte limit/) do
+          Protocol.write(io, Protocol::Output.new("x" * 10), 37)
+        end
+        io.size.should eq 0
+        Protocol.write(io, Protocol::Output.new("x" * 10), 38)
+        io.size.should eq 38
+      end
+
+      it "writes invalid UTF-8 replaced, so the reading side accepts it" do
+        io = IO::Memory.new
+        Protocol.write(io, Protocol::Output.new("a\xFFb"))
+        io.rewind
+        Protocol.read(io, Protocol::WorkerMessage, limit: 1024).as(Protocol::Output).text.should eq "a\uFFFDb"
+      end
+
       it "accepts a line exactly at the limit, its newline included" do
         line = %({"type":"output","text":""}\n)
         Protocol.read(IO::Memory.new(line), Protocol::WorkerMessage, limit: line.bytesize).should be_a(Protocol::Output)

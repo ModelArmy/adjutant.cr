@@ -3,8 +3,8 @@
 Status: partly built. Built: the run limits it relies on
 (`max_asks`, decisions off the wall clock) and the protocol: its
 framing, messages and payloads (`src/adjutant/protocol.cr`,
-`src/adjutant/protocol_payloads.cr`). `Worker` and `Supervisor` are
-proposed.
+`src/adjutant/protocol_payloads.cr`), and `Worker`
+(`src/adjutant/worker.cr`). `Supervisor` is proposed.
 
 ## Purpose
 
@@ -250,7 +250,17 @@ Limit                             |Default|Why
 Worker line, as read by Supervisor|1 MiB  |the host's exposure to a hostile worker             
 Supervisor line, as read by worker|64 MiB |a request carries the source and every `files` entry
 `output` chunk                    |64 KiB |worker splits larger writes                         
-`finished` result `inspect`       |256 KiB|worker truncates and says so                        
+`completed` result `inspect`      |128 KiB|worker truncates and says so                        
+`raised` rendering                |64 KiB |worker truncates and marks the cut                  
+
+The worker's limits leave room for JSON escaping, which writes a
+control character in six bytes, inside the 1 MiB line. `Protocol.write`
+also replaces invalid UTF-8, so a script printing raw bytes can't make
+the Supervisor refuse an honest worker's line, and checks each line
+against the reading side's limit before writing it. A line an honest
+worker can't fit (an `ask` naming an enormous path, say) ends the
+worker with an error on stderr, so the run is `Crashed`, not
+`Violated`.
 
 ### Messages
 
@@ -318,6 +328,13 @@ The Supervisor accepts, and the worker sends, exactly this:
 An exit status other than 0 after `finished` is reported on the
 outcome but doesn't replace it.
 
+A worker that can no longer follow the protocol mid-run (a write
+fails, or an `answer` names another `ask`) raises `Worker::Broken`, a
+`FatalSignal`, from inside the callback. It unwinds the run past every
+script `rescue`, as other fatal signals do, so streams and scratch
+space are cleaned up; the worker then exits with the error and sends
+no `finished`.
+
 ## Clocks and caps
 
 A run has three clocks.
@@ -350,7 +367,8 @@ pipe.
 
 ## Changes elsewhere in Adjutant
 
-1. A `::Log` backend in the worker that writes `log` messages.
+None outstanding. The worker forwards the Broker's `::Log` entries,
+from `info` up, as `log` messages through a backend of its own.
 
 The VM writes to `STDOUT` only when an `Interpreter` has no
 `EffectHandler`; the worker always installs one.

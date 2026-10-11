@@ -16,16 +16,29 @@ module Adjutant
     # in `Hello`.
     VERSION = 1
 
+    # The longest line a Supervisor reads from a worker, its newline
+    # included: the host's exposure to a worker a script has taken over.
+    WORKER_LINE_LIMIT = 1024 * 1024
+
+    # The longest line a worker reads from its Supervisor. A request
+    # carries the source and every file `require` may read.
+    SUPERVISOR_LINE_LIMIT = 64 * 1024 * 1024
+
     # A line the reading side doesn't accept: over the limit, cut off,
     # not UTF-8, not one JSON object, or not a message that side
     # expects. Either side ends the run on it.
     class Violation < Exception
     end
 
-    # Writes `message` as one line and flushes it.
-    def self.write(io : IO, message : Message) : Nil
-      message.to_json(io)
-      io << '\n'
+    # Writes `message` as one line and flushes it, with any invalid
+    # UTF-8 replaced. Raises Violation, writing nothing, for a line over
+    # `limit` bytes with its newline: the reading side would refuse it.
+    def self.write(io : IO, message : Message, limit : Int32? = nil) : Nil
+      line = message.to_json.scrub
+      if limit && line.bytesize >= limit
+        raise Violation.new("message of #{line.bytesize + 1} bytes over the #{limit}-byte limit")
+      end
+      io << line << '\n'
       io.flush
     end
 
@@ -71,6 +84,9 @@ module Adjutant
     abstract class Message
       include JSON::Serializable
       include JSON::Serializable::Strict
+
+      # The message's name on the wire.
+      abstract def kind : String
     end
 
     # What a Worker sends.
