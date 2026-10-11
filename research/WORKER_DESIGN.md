@@ -1,9 +1,10 @@
 # Worker and Supervisor design
 
 Status: partly built. Built: the run limits it relies on
-(`max_asks`, decisions off the wall clock), the framing, and every
-message but `assessed` and `finished` (`src/adjutant/protocol.cr`,
-`src/adjutant/protocol_payloads.cr`). The rest is proposed.
+(`max_asks`, decisions off the wall clock) and the protocol: its
+framing, messages and payloads (`src/adjutant/protocol.cr`,
+`src/adjutant/protocol_payloads.cr`). `Worker` and `Supervisor` are
+proposed.
 
 ## Purpose
 
@@ -255,14 +256,16 @@ Supervisor line, as read by worker|64 MiB |a request carries the source and ever
 
 Worker to Supervisor:
 
-Type      |Fields                                         |When                          
-----------|-----------------------------------------------|------------------------------
-`hello`   |`protocol` (Int32), `adjutant` (version string)|first, before reading anything
-`output`  |`text`                                         |during a run                  
-`log`     |`severity`, `source`, `message`                |any time after `hello`        
-`ask`     |`id` (Int32), `request`                        |during a run                  
-`assessed`|`summary`, `findings`, `diagnostics`           |last, for an assessment       
-`finished`|`outcome`, `audit`, `risk_flow`                |last, for a run               
+Type       |Fields                                         |When                                
+-----------|-----------------------------------------------|------------------------------------
+`hello`    |`protocol` (Int32), `adjutant` (version string)|first, before reading anything      
+`output`   |`text`                                         |during a run                        
+`log`      |`severity`, `source`, `message`                |any time after `hello`              
+`ask`      |`id` (Int32), `request`                        |during a run                        
+`audit`    |`record`                                       |after a run, one per audit record   
+`risk_flow`|`event`                                        |after a run, one per risk-flow event
+`assessed` |`outcome`: `assessment` or `raised`            |last, for an assessment             
+`finished` |`outcome`: `completed`, `raised` or `fatal`    |last, for a run                     
 
 Supervisor to worker:
 
@@ -289,6 +292,10 @@ and compiles regexes as it settles. A host that wants one prompt for
 both kinds of run builds the same description in-process
 (`DecisionRequest.from`).
 
+Audit records and risk-flow events travel one per message, after the
+run, so a long run's logs never make one line too long. An audit
+timestamp keeps its nanoseconds, which `Time#to_json` would drop.
+
 A description names its fields as its core type does. A spec compares
 the two sets of instance variables, so a field added to a core type
 fails until its description gains it or the spec names it as derived
@@ -302,7 +309,9 @@ The Supervisor accepts, and the worker sends, exactly this:
 2. Any number of `output`, `log` and `ask`, with nothing after an
    `ask` until its `answer`. An `answer` whose `id` isn't the pending
    `ask`'s is a violation on the worker's side.
-3. One `assessed` or `finished`, matching the request.
+3. For a run, any number of `audit` and `risk_flow`; then one
+   `assessed` or `finished`, matching the request, with an outcome
+   that request can end in.
 4. End of stream and exit. Anything after the last message is a
    violation.
 
@@ -341,9 +350,7 @@ pipe.
 
 ## Changes elsewhere in Adjutant
 
-1. Payloads for what `assessed` and `finished` carry: `Diagnostic`,
-   `RiskSummary`, `RiskFinding`, `AuditRecord`, `RiskFlowEvent`.
-2. A `::Log` backend in the worker that writes `log` messages.
+1. A `::Log` backend in the worker that writes `log` messages.
 
 The VM writes to `STDOUT` only when an `Interpreter` has no
 `EffectHandler`; the worker always installs one.

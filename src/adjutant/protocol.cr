@@ -75,7 +75,10 @@ module Adjutant
 
     # What a Worker sends.
     abstract class WorkerMessage < Message
-      use_json_discriminator "type", {hello: Hello, output: Output, log: LogEntry, ask: Ask}
+      use_json_discriminator "type", {
+        hello: Hello, output: Output, log: LogEntry, ask: Ask,
+        audit: Audit, risk_flow: RiskFlow, assessed: Assessed, finished: Finished,
+      }
     end
 
     # What a Supervisor sends.
@@ -127,6 +130,77 @@ module Adjutant
       getter request : DecisionRequest
 
       def initialize(@id : Int32, @request : DecisionRequest)
+      end
+    end
+
+    # One record from the run's audit log, sent after the run ends and
+    # before `Finished`.
+    class Audit < WorkerMessage
+      @[JSON::Field(key: "type")]
+      getter kind : String = "audit"
+      getter record : AuditEntry
+
+      def initialize(@record : AuditEntry)
+      end
+    end
+
+    # One event from the run's risk-flow log, sent after the run ends
+    # and before `Finished`.
+    class RiskFlow < WorkerMessage
+      @[JSON::Field(key: "type")]
+      getter kind : String = "risk_flow"
+      getter event : FlowEvent
+
+      def initialize(@event : FlowEvent)
+      end
+    end
+
+    # How an assessment ended: an `Assessment` or a `Raised`. The
+    # worker's last message for an assessment. Raises ArgumentError
+    # for any other outcome.
+    class Assessed < WorkerMessage
+      @[JSON::Field(key: "type")]
+      getter kind : String = "assessed"
+      getter outcome : Outcome
+
+      def initialize(@outcome : Outcome)
+        raise ArgumentError.new(problem) unless fits?
+      end
+
+      protected def after_initialize : Nil
+        raise Violation.new(problem) unless fits?
+      end
+
+      private def fits? : Bool
+        outcome.is_a?(Assessment) || outcome.is_a?(Raised)
+      end
+
+      private def problem : String
+        "an assessment can't end in #{outcome.kind}"
+      end
+    end
+
+    # How a run ended: a `Completed`, `Raised` or `Fatal`. The worker's
+    # last message for a run. Raises ArgumentError for an `Assessment`.
+    class Finished < WorkerMessage
+      @[JSON::Field(key: "type")]
+      getter kind : String = "finished"
+      getter outcome : Outcome
+
+      def initialize(@outcome : Outcome)
+        raise ArgumentError.new(problem) unless fits?
+      end
+
+      protected def after_initialize : Nil
+        raise Violation.new(problem) unless fits?
+      end
+
+      private def fits? : Bool
+        !outcome.is_a?(Assessment)
+      end
+
+      private def problem : String
+        "a run can't end in #{outcome.kind}"
       end
     end
 

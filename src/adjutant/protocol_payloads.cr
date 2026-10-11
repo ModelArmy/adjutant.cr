@@ -19,6 +19,22 @@ module Adjutant
       end
     end
 
+    # A time as RFC 3339 to the nanosecond, where `Time#to_json` drops
+    # the fraction of a second, which audit records need for ordering.
+    # A malformed time is a parse error like any other.
+    module RFC3339Time
+      def self.from_json(pull : JSON::PullParser) : Time
+        text = pull.read_string
+        Time::Format::RFC_3339.parse(text)
+      rescue Time::Format::Error | ArgumentError
+        pull.raise("not an RFC 3339 time: #{text.inspect}")
+      end
+
+      def self.to_json(value : Time, json : JSON::Builder) : Nil
+        json.string { |io| Time::Format::RFC_3339.format(value, io, fraction_digits: 9) }
+      end
+    end
+
     # A description of a core value, carried in a message. Built from
     # the core value with `from`, and never turned back into one: the
     # reading side gets data to show, not a rule to apply, so nothing
@@ -153,6 +169,200 @@ module Adjutant
         new(request.call_name, Risk.from(request.risk), request.authorities,
           request.matches.map { |match| Match.from(match) },
           request.filename, request.line, request.subject)
+      end
+    end
+
+    # A `RiskSummary`: what a script could do on any run.
+    struct Summary < Payload
+      @[JSON::Field(converter: Adjutant::Protocol::ExactEnumSet(Adjutant::Effect))]
+      getter effects : Set(Effect)
+      @[JSON::Field(converter: Adjutant::Protocol::ExactEnum(Adjutant::Reversibility))]
+      getter reversible : Reversibility
+      @[JSON::Field(converter: Adjutant::Protocol::ExactEnum(Adjutant::Severity))]
+      getter severity : Severity
+      getter? iterated : Bool
+
+      def initialize(@effects : Set(Effect), @reversible : Reversibility, @severity : Severity, @iterated : Bool)
+      end
+
+      def self.from(summary : RiskSummary) : Summary
+        new(summary.effects, summary.reversible, summary.severity, summary.iterated?)
+      end
+    end
+
+    # A `RiskFinding`: one call a script could make, and where it sits.
+    struct Finding < Payload
+      getter description : String
+      getter profile : Risk
+      getter line : Int32
+      getter? iterated : Bool
+      getter branch_path : Array(String)
+
+      def initialize(@description : String, @profile : Risk, @line : Int32, @iterated : Bool, @branch_path : Array(String))
+      end
+
+      def self.from(finding : RiskFinding) : Finding
+        new(finding.description, Risk.from(finding.profile), finding.line, finding.iterated?, finding.branch_path)
+      end
+    end
+
+    # A `Span`: a place in a source file.
+    struct SourceSpan < Payload
+      getter filename : String?
+      getter line : Int32
+      getter column : Int32?
+      getter length : Int32?
+      getter label : String?
+
+      def initialize(@filename : String?, @line : Int32, @column : Int32?, @length : Int32?, @label : String?)
+      end
+
+      def self.from(span : Span) : SourceSpan
+        new(span.filename, span.line, span.column, span.length, span.label)
+      end
+    end
+
+    # A `Diagnostic`: its code, places and substitutions. Wording comes
+    # from the catalog, so a reader shows the rendering that travels
+    # with it (`Raised#rendered`) rather than look the code up.
+    struct DiagnosticReport < Payload
+      getter code : String
+      getter primary : SourceSpan?
+      getter secondary : Array(SourceSpan)
+      getter data : Hash(String, String)
+
+      def initialize(@code : String, @primary : SourceSpan?, @secondary : Array(SourceSpan), @data : Hash(String, String))
+      end
+
+      def self.from(diagnostic : Diagnostic) : DiagnosticReport
+        new(diagnostic.code, diagnostic.primary.try { |span| SourceSpan.from(span) },
+          diagnostic.secondary.map { |span| SourceSpan.from(span) }, diagnostic.data)
+      end
+    end
+
+    # `AuditRecord#decision`.
+    enum AuditDecision
+      Allowed
+      Denied
+      Rejected
+    end
+
+    # An `AuditRecord`: one broker decision.
+    struct AuditEntry < Payload
+      @[JSON::Field(converter: Adjutant::Protocol::RFC3339Time)]
+      getter timestamp : Time
+      getter verb : String
+      getter subject : String
+      @[JSON::Field(converter: Adjutant::Protocol::ExactEnum(Adjutant::Authority))]
+      getter authority : Authority
+      @[JSON::Field(converter: Adjutant::Protocol::ExactEnum(Adjutant::Protocol::AuditDecision))]
+      getter decision : AuditDecision
+      getter exception_class : String?
+
+      def initialize(@timestamp : Time, @verb : String, @subject : String, @authority : Authority,
+                     @decision : AuditDecision, @exception_class : String?)
+      end
+
+      # Raises ArgumentError for a decision `AuditDecision` doesn't name.
+      def self.from(record : AuditRecord) : AuditEntry
+        new(record.timestamp, record.verb, record.subject, record.authority,
+          AuditDecision.parse(record.decision.to_s), record.exception_class)
+      end
+    end
+
+    # A `RiskFlowLabel`: the tags a value carries.
+    struct Label < Payload
+      getter tags : Array(Tag)
+
+      def initialize(@tags : Array(Tag))
+      end
+
+      def self.from(label : RiskFlowLabel) : Label
+        new(label.tags.map { |tag| Tag.from(tag) })
+      end
+    end
+
+    # A `RiskFlowEvent`: one label join during a run.
+    struct FlowEvent < Payload
+      getter op : String
+      getter inputs : Array(Label?)
+      getter result : Label?
+      getter line : Int32
+
+      def initialize(@op : String, @inputs : Array(Label?), @result : Label?, @line : Int32)
+      end
+
+      def self.from(event : RiskFlowEvent) : FlowEvent
+        new(event.op, event.inputs.map { |label| label.try { |present| Label.from(present) } },
+          event.result.try { |label| Label.from(label) }, event.line)
+      end
+    end
+
+    # `FatalSignal#kind`.
+    enum FatalKind
+      Denied
+      Exhausted
+      Aborted
+    end
+
+    # How an assessment or a run ended.
+    abstract struct Outcome < Payload
+      use_json_discriminator "type", {completed: Completed, assessment: Assessment, raised: Raised, fatal: Fatal}
+
+      # The outcome's name on the wire.
+      abstract def kind : String
+    end
+
+    # A run that finished: its result's `inspect`, cut short when
+    # `truncated`.
+    struct Completed < Outcome
+      @[JSON::Field(key: "type")]
+      getter kind : String = "completed"
+      getter value : String
+      getter? truncated : Bool
+
+      def initialize(@value : String, @truncated : Bool)
+      end
+    end
+
+    # An assessment that finished.
+    struct Assessment < Outcome
+      @[JSON::Field(key: "type")]
+      getter kind : String = "assessment"
+      getter summary : Summary
+      getter findings : Array(Finding)
+
+      def initialize(@summary : Summary, @findings : Array(Finding))
+      end
+    end
+
+    # An error the worker rendered: a script's, or one the host caused.
+    # `diagnostic` is nil for an error that carries none.
+    struct Raised < Outcome
+      @[JSON::Field(key: "type")]
+      getter kind : String = "raised"
+      getter diagnostic : DiagnosticReport?
+      getter rendered : String
+
+      def initialize(@diagnostic : DiagnosticReport?, @rendered : String)
+      end
+    end
+
+    # A run a `FatalSignal` ended.
+    struct Fatal < Outcome
+      @[JSON::Field(key: "type")]
+      getter kind : String = "fatal"
+      @[JSON::Field(converter: Adjutant::Protocol::ExactEnum(Adjutant::Protocol::FatalKind))]
+      getter signal : FatalKind
+      getter message : String
+      getter data : Hash(String, String)
+
+      def initialize(@signal : FatalKind, @message : String, @data : Hash(String, String))
+      end
+
+      # Raises ArgumentError for a kind `FatalKind` doesn't name.
+      def self.from(signal : FatalSignal) : Fatal
+        new(FatalKind.parse(signal.kind.to_s), signal.message || "", signal.data)
       end
     end
   end

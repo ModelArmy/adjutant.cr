@@ -70,6 +70,49 @@ module Adjutant
         ask.request.subject.should eq "https://api.example.com:443"
       end
 
+      it "an Audit" do
+        record = AuditRecord.new("read", "/work/a.txt", Authority::Read, :denied, "Legate::Denied",
+          Time.utc(2026, 10, 10, 12, 30, 15, nanosecond: 250_000_000))
+        sent = Protocol::AuditEntry.from(record)
+        sent.decision.should eq Protocol::AuditDecision::Denied
+        audit = protocol_round_trip(Protocol::Audit.new(sent), Protocol::WorkerMessage).should be_a(Protocol::Audit)
+        audit.record.should eq sent
+      end
+
+      it "a RiskFlow" do
+        secret = RiskFlowLabel.of(ProvenanceKind::File, "/work/.env", Sensitivity::High)
+        sent = Protocol::FlowEvent.from(RiskFlowEvent.new("Add", [secret, nil], secret, 4))
+        flow = protocol_round_trip(Protocol::RiskFlow.new(sent), Protocol::WorkerMessage).should be_a(Protocol::RiskFlow)
+        flow.event.should eq sent
+        flow.event.inputs.last.should be_nil
+      end
+
+      it "an Assessed carrying an Assessment" do
+        summary = RiskSummary.new(Set{Effect::ReadsFiles}, Reversibility::Yes, Severity::Info, true)
+        finding = RiskFinding.new("Legate.read", RiskProfile.new(Set{Effect::ReadsFiles}), 2, true, ["if branch"])
+        sent = Protocol::Assessment.new(Protocol::Summary.from(summary), [Protocol::Finding.from(finding)])
+        assessed = protocol_round_trip(Protocol::Assessed.new(sent), Protocol::WorkerMessage).should be_a(Protocol::Assessed)
+        assessed.outcome.should eq sent
+      end
+
+      it "an Assessed carrying a Raised, with its diagnostic's places and data" do
+        diagnostic = Diagnostic.new("P001", Span.new(3, 5, 2, "task.rb", "here"), [Span.new(1)], {"token" => "end"})
+        sent = Protocol::Raised.new(Protocol::DiagnosticReport.from(diagnostic), "error[P001]: ...")
+        assessed = protocol_round_trip(Protocol::Assessed.new(sent), Protocol::WorkerMessage).should be_a(Protocol::Assessed)
+        assessed.outcome.should eq sent
+      end
+
+      it "a Finished carrying each outcome a run can end in" do
+        [
+          Protocol::Completed.new("[1, 2]", false),
+          Protocol::Raised.new(nil, "host error"),
+          Protocol::Fatal.from(FatalSignal.new(:exhausted, "wall_clock budget exceeded", {"budget" => "wall_clock"})),
+        ].each do |sent|
+          finished = protocol_round_trip(Protocol::Finished.new(sent), Protocol::WorkerMessage).should be_a(Protocol::Finished)
+          finished.outcome.should eq sent
+        end
+      end
+
       it "an Assess" do
         assess = protocol_round_trip(Protocol::Assess.new("puts 1", "task.rb", "risk_flow: none"), Protocol::SupervisorMessage)
           .should be_a(Protocol::Assess)
@@ -106,6 +149,27 @@ module Adjutant
         protocol_field_names(Protocol::Match).should eq protocol_field_names(RiskFlowMatch)
         protocol_field_names(Protocol::Risk).should eq protocol_field_names(RiskProfile)
         protocol_field_names(Protocol::DecisionRequest).should eq protocol_field_names(RiskFlowDecisionRequest)
+        protocol_field_names(Protocol::Summary).should eq protocol_field_names(RiskSummary)
+        protocol_field_names(Protocol::Finding).should eq protocol_field_names(RiskFinding)
+        protocol_field_names(Protocol::SourceSpan).should eq protocol_field_names(Span)
+        protocol_field_names(Protocol::DiagnosticReport).should eq protocol_field_names(Diagnostic)
+        protocol_field_names(Protocol::AuditEntry).should eq protocol_field_names(AuditRecord)
+        protocol_field_names(Protocol::Label).should eq protocol_field_names(RiskFlowLabel)
+        protocol_field_names(Protocol::FlowEvent).should eq protocol_field_names(RiskFlowEvent)
+      end
+
+      it "refuse an outcome their message can't end in, on the writing side" do
+        completed = Protocol::Completed.new("1", false)
+        assessment = Protocol::Assessment.new(Protocol::Summary.from(RiskSummary.none), [] of Protocol::Finding)
+        expect_raises(ArgumentError, "an assessment can't end in completed") { Protocol::Assessed.new(completed) }
+        expect_raises(ArgumentError, "a run can't end in assessment") { Protocol::Finished.new(assessment) }
+      end
+
+      it "refuse a core value they have no name for, on the writing side" do
+        expect_raises(ArgumentError) { Protocol::Fatal.from(FatalSignal.new(:vanished, "gone")) }
+        expect_raises(ArgumentError) do
+          Protocol::AuditEntry.from(AuditRecord.new("read", "/a", Authority::Read, :waved_through))
+        end
       end
     end
 
@@ -194,6 +258,34 @@ module Adjutant
         }.each do |risk, message|
           protocol_refuses(protocol_ask_line(risk), Protocol::WorkerMessage, message)
         end
+      end
+
+      it "an outcome its message can't end in" do
+        completed = %({"type":"completed","value":"1","truncated":false})
+        assessment = %({"type":"assessment","summary":{"effects":[],"reversible":"yes","severity":"info","iterated":false},"findings":[]})
+        Protocol.read(IO::Memory.new(%({"type":"finished","outcome":#{completed}}\n)), Protocol::WorkerMessage, limit: 1024)
+          .should be_a(Protocol::Finished)
+        Protocol.read(IO::Memory.new(%({"type":"assessed","outcome":#{assessment}}\n)), Protocol::WorkerMessage, limit: 1024)
+          .should be_a(Protocol::Assessed)
+        protocol_refuses(%({"type":"assessed","outcome":#{completed}}\n), Protocol::WorkerMessage, /an assessment can't end in completed/)
+        protocol_refuses(%({"type":"finished","outcome":#{assessment}}\n), Protocol::WorkerMessage, /a run can't end in assessment/)
+        protocol_refuses(%({"type":"finished","outcome":{"type":"crashed"}}\n), Protocol::WorkerMessage, /malformed message/)
+      end
+
+      it "an audit record with a malformed time or a misnamed decision" do
+        line = ->(timestamp : String, decision : String) do
+          %({"type":"audit","record":{"timestamp":#{timestamp.to_json},"verb":"read","subject":"/a","authority":"read","decision":#{decision.to_json}}}\n)
+        end
+        Protocol.read(IO::Memory.new(line.call("2026-10-10T12:00:00Z", "allowed")), Protocol::WorkerMessage, limit: 1024)
+          .should be_a(Protocol::Audit)
+        protocol_refuses(line.call("yesterday", "allowed"), Protocol::WorkerMessage, /not an RFC 3339 time: "yesterday"/)
+        protocol_refuses(line.call("2026-13-45T00:00:00Z", "allowed"), Protocol::WorkerMessage, /not an RFC 3339 time/)
+        protocol_refuses(line.call("2026-10-10T12:00:00Z", "Allowed"), Protocol::WorkerMessage, /unknown Adjutant::Protocol::AuditDecision/)
+      end
+
+      it "a fatal signal it has no name for" do
+        protocol_refuses(%({"type":"finished","outcome":{"type":"fatal","signal":"crashed","message":"m","data":{}}}\n),
+          Protocol::WorkerMessage, /unknown Adjutant::Protocol::FatalKind/)
       end
 
       it "deep nesting, without overflowing the stack" do
