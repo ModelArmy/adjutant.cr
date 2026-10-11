@@ -5,8 +5,8 @@ Status: partly built. Built: the run limits it relies on
 framing, messages and payloads (`src/adjutant/protocol.cr`,
 `src/adjutant/protocol_payloads.cr`), `Worker`
 (`src/adjutant/worker.cr`) and `Supervisor`
-(`src/adjutant/supervisor.cr`). Specs that start a real worker
-process are proposed.
+(`src/adjutant/supervisor.cr`), with `samples/worker_host.cr` as the
+reference host.
 
 ## Purpose
 
@@ -401,7 +401,10 @@ The VM writes to `STDOUT` only when an `Interpreter` has no
 
 The protocol code works over a reader and a writer, with `Process`
 only at the edges, so specs run a worker in a fiber over `IO.pipe`s
-without starting a process. A few specs start the real thing.
+without starting a process. A few specs start the real thing: the
+`worker_host` sample, built to `bin/debug` by `ops build` (or wherever
+`ADJUTANT_WORKER_HOST` says), since a spec binary can't serve as a
+worker itself.
 
 Each check gets a case it must reject (HANDOFF.md §4.7): a line one
 byte over the limit, an unknown key, an unknown type, a wrong protocol

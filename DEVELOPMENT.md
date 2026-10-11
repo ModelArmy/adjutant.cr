@@ -21,13 +21,15 @@ Command                                 |Description
 `ops test_scripts`                      |Build the script runner and run `spec/scripts/`                            
 `ops test`                              |Specs, scripts, build and lint                                             
 
-The build targets (`shard.yml`) are `test_runner`, `run_script` and `assess_script`.
+The build targets (`shard.yml`) are `test_runner`, `run_script`, `assess_script` and `worker_host`. The specs that start a worker process need `worker_host` built first: run `ops build` before `ops test_specs`.
 
 ### Samples
 
 `samples/run_script.cr` runs a script through both risk layers: a static assessment before execution, then live risk-flow enforcement during it, prompting on stdin for any `Ask`. Its native module (`read_file`, `fetch_url`, `delete_file`, `post_data`, and `remove_path` and `configure` for keyword arguments) shows how native functions label data and declare sensitivity. Run `ops build`, then `bin/debug/run_script samples/scripts/risk_flow/risk_flow_ask.rb`. The other scripts in `samples/scripts/risk_flow/` show a run with no prompt, a hard rejection, and `declare_sensitivity` catching a risky literal.
 
 `samples/assess_script.cr` parses a script without running it and prints its worst-case risk path and every finding: `bin/debug/assess_script samples/scripts/risk_static/risk_static_01.rb`. The scripts in `samples/scripts/risk_static/` exercise branches, loops, method discovery, collection literals and lambdas.
+
+`samples/worker_host.cr` is one executable in two roles. Started normally, it is a host: it assesses a script in one worker process, asks whether to run it, then runs it in another, prompting on stdin for each `Ask`. Each worker is the same executable started again with `Adjutant::Worker::ARGUMENT`, which its first line hands to `Worker.main` (research/WORKER_DESIGN.md). From the repository root: `bin/debug/worker_host samples/scripts/worker/read_secret.rb`.
 
 ## How Adjutant works
 
