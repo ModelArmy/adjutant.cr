@@ -359,6 +359,32 @@ interp.eval(%(Legate.write("out/report.txt", Legate.read("in/data.csv").upcase))
 
 A call outside the grants ends the run with an error no script can rescue; a script can rescue the recoverable ones, such as a missing file. See [POLICY.md](./POLICY.md) for the policy document, and [LEGATE.md](./LEGATE.md) for the verbs, value types, Legate's own grants and error model.
 
+## Running scripts in a worker process
+
+An `Interpreter` runs in the host's own process, so a defect in Adjutant (a crash, a hang, a runaway allocation) takes the host with it. To keep that from happening, run each script in a worker: a child process that is the host's own executable started again, so a host that ships one binary still ships one binary. The host's `main` begins with:
+
+```crystal
+Adjutant::Worker.main(ARGV) { |interp| register_natives(interp) }
+```
+
+Started with `Adjutant::Worker::ARGUMENT`, the executable serves one request and exits on that line; started any other way, the line returns at once and the host carries on. The block configures each worker's Interpreter, as a host would configure its own.
+
+A `Supervisor` drives one worker through one assessment or run, over the worker's stdin and stdout. It yields what the host must see or decide, and returns how the request ended:
+
+```crystal
+report = Adjutant::Supervisor.spawn.run(source, policy_yaml, filename: "task.rb", ceiling: 15.minutes) do |event|
+  case event
+  in Adjutant::Supervisor::Output then ui.append(event.text)
+  in Adjutant::Supervisor::Log    then log.info { event.message }
+  in Adjutant::Supervisor::Ask    then event.answer(ui.approve?(event.request))
+  end
+end
+```
+
+Events and outcomes are unions, so a `case … in` that misses one doesn't compile. The `ceiling` bounds the whole request, decisions included; the policy's `wall_clock` bounds the script's own time. A worker that crashes, overruns or breaks the protocol is killed and reported as `Crashed`, `TimedOut` or `Violated`; the host carries on.
+
+The report keeps apart what the worker said and what the Supervisor saw for itself (`report.observed`: exit status, time, Asks, output), since a script that took over its worker could say anything. See [`research/WORKER_DESIGN.md`](./research/WORKER_DESIGN.md) for the protocol and what a host can trust, and `samples/worker_host.cr` for a complete host that assesses a script, asks whether to run it, and prompts for each Ask.
+
 ## Unsupported language features
 
 Adjutant is a deliberate *subset* of Ruby, not a work-in-progress full implementation — a few constructs are permanently unsupported by design, not just "not yet built." Each one fails with a clear error naming the construct, not a silent wrong result:
