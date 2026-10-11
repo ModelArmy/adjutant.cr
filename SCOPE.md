@@ -294,6 +294,18 @@ Quality-of-diagnostic gaps in the `Diagnostic`/`ErrorCatalog` system
   Would also give U004 its first real use of a secondary span, which
   nothing exercises yet.
 
+- **`Interpreter#render_error` won't take an error rescued with
+  others.** Its parameter is the union of `ParseError`,
+  `CompileError`, `RuntimeError`, `HostArgumentError`,
+  `HostStateError`, `InternalError` and
+  `AmbiguousRiskFlowPolicyError`. A variable bound by
+  `rescue ex : ParseError | CompileError` is typed as their common
+  parent, `Exception`, which that restriction refuses at compile time,
+  so a host rescuing several in one clause must dispatch on each type
+  first, as `Worker#raised` does. Fix: take `Exception`, returning nil
+  for a type with no diagnostic, as it already does for one whose
+  diagnostic is nil. Found writing the Worker.
+
 ### Object model
 
 - **Indexing can't reach a script-defined `[]` or `[]=`.**
