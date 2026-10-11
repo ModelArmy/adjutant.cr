@@ -36,7 +36,7 @@ module Adjutant
             url_limit: url_limit, stream_limit: stream_limit,
             max_open_streams: budgets.max_open_streams, memory: budgets.memory,
             wall_clock: budgets.wall_clock, total_read: budgets.total_read,
-            total_write: budgets.total_write,
+            total_write: budgets.total_write, max_asks: budgets.max_asks,
           ),
         )
       end

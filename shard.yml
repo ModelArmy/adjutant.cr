@@ -25,3 +25,5 @@ targets:
     main: samples/run_script.cr
   assess_script:
     main: samples/assess_script.cr
+  worker_host:
+    main: samples/worker_host.cr

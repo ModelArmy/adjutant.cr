@@ -806,7 +806,7 @@ flowchart TB
 
     subgraph FAT["Fatal: policy, not error"]
         DN["Legate::Denied<br/>no grant covers this call"]
-        EXH["Legate::Exhausted<br/>per-RUN budget: total bytes, memory, wall clock"]
+        EXH["Legate::Exhausted<br/>per-RUN budget: total bytes, memory, wall clock, Asks"]
         AB["Legate::Aborted<br/>Legate.fail, or analyser invariant broken"]
     end
 
@@ -860,11 +860,11 @@ A `TooLargeError` message MUST read like: *"config.json is 1.4 GB, over the 8 Mi
 
 Not caught by `rescue => e`, and not catchable at all under §10.
 
-Class              |Meaning                                                 
--------------------|--------------------------------------------------------
-`Legate::Denied`   |no grant covers this call                               
-`Legate::Exhausted`|per-run budget breached: total bytes, memory, wall clock
-`Legate::Aborted`  |`Legate.fail`, or a runtime invariant broken            
+Class              |Meaning                                                       
+-------------------|--------------------------------------------------------------
+`Legate::Denied`   |no grant covers this call                                     
+`Legate::Exhausted`|per-run budget breached: total bytes, memory, wall clock, Asks
+`Legate::Aborted`  |`Legate.fail`, or a runtime invariant broken                  
 
 The design intent: a denial is not a malfunction to be handled but the policy functioning as specified. A model writing defensively robust code will wrap risky calls in `rescue`, and that reflex must not be able to convert a security boundary into a retry loop. Placing these outside `StandardError` means idiomatic Ruby cannot swallow them by accident, and implementing them as plain Crystal exceptions rather than `RuntimeError`s means it cannot do so on purpose. §10.2 would add a static gate on top; that gate is specified but not built, so it is not what makes this hold.
 

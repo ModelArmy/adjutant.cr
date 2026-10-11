@@ -13,7 +13,7 @@ jobs:
       matrix:
         include:
           - { os: windows-latest, crystal: "1.20" }
-          - { os: windows-latest, crystal: "1.21.0" }
+          - { os: windows-latest, crystal: "1.21" }
 
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
@@ -45,8 +45,36 @@ jobs:
         shell: pwsh
         run: reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock" /t REG_DWORD /f /v AllowDevelopmentWithoutDevLicense /d 1
 
+      - name: Build worker_host needed by test specs
+        shell: powershell
+        env:
+          SHARDS_BIN_PATH: "bin/debug"
+        run: |
+          mkdir bin -ErrorAction SilentlyContinue
+          mkdir bin\debug -ErrorAction SilentlyContinue
+          shards build worker_host
+
+      # Five runs in random order of the specs most exposed to fiber
+      # timing on Windows: a crash there depends on how fibers
+      # interleave, so one green run proves little. Built and run
+      # directly, not through `crystal spec`, which reports a crash as
+      # "terminated abnormally" and drops the exit code; the code
+      # (0xC0000409 is a fail-fast, 0xC0000005 an access violation)
+      # says what kind of crash it was. Each run prints its seed;
+      # `--order <seed>` replays it.
+      - name: Run supervisor tests, repeated
+        shell: pwsh
+        run: |
+          crystal build -o supervisor_spec.exe spec/adjutant/supervisor_spec.cr
+          foreach ($i in 1..5) {
+            ./supervisor_spec.exe --order random
+            if ($LASTEXITCODE -ne 0) { Write-Host ("run $i, exit code 0x{0:X8}" -f $LASTEXITCODE); exit 1 }
+          }
+
+      # In random order, so specs can't come to depend on each other;
+      # the seed is printed, and `--order <seed>` replays it.
       # `fetch_stream_spec.cr`'s raise-mid-walk case is `pending` under
       # `flag?(:windows)` — it hard-crashes the process there. See
       # SCOPE's "Streamed fetch on Windows".
       - name: Run tests
-        run: crystal spec
+        run: crystal spec --order random

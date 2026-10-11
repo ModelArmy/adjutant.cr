@@ -137,6 +137,7 @@ module Adjutant
         it "wrong values, naming where" do
           {
             "risk_flow: none\nlimits:\n  read_limit: lots\n"                                                                   => /limits.read_limit must be a size/,
+            "risk_flow: none\nlimits:\n  max_asks: 0\n"                                                                        => /limits.max_asks must be positive/,
             "risk_flow:\n  rules:\n    - { authority: net, sensitivity: high, action: maybe }\n"                               => /risk_flow.rules\[0\].action must be one of allow, ask, reject/,
             "risk_flow:\n  rules:\n    - { authority: net, sensitivity: High, action: reject }\n"                              => /risk_flow.rules\[0\].sensitivity must be one of/,
             "risk_flow:\n  patterns:\n    - { kind: env, pattern: K, priority: high, sensitivity: high }\n  default: reject\n" => /risk_flow.patterns\[0\].priority must be a whole number/,

@@ -44,8 +44,15 @@ jobs:
       - name: Install shards
         run: shards check || shards install
 
+      - name: Build worker_host needed by test specs
+        run: |
+          mkdir -p bin/debug
+          SHARDS_BIN_PATH=bin/debug shards build worker_host
+
+      # In random order, so specs can't come to depend on each other;
+      # the seed is printed, and `--order <seed>` replays it.
       - name: Run tests
-        run: crystal spec
+        run: crystal spec --order random
 
       # ---- Build and run test scripts
 

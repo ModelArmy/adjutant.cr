@@ -1,6 +1,7 @@
 module Adjutant
   # Per-run caps on what a script consumes outside the VM: bytes read
-  # and written, seconds elapsed, streams held open. Breaching a budget
+  # and written, seconds elapsed, risk-flow decisions asked of the
+  # host, streams held open. Breaching a budget
   # raises an unrescuable FatalSignal, unlike ExecutionLimits (vm.cr),
   # whose instruction and depth limits raise a catchable RuntimeError.
   # Every budget has a default (POLICY.md §3), so a policy that names
@@ -20,6 +21,7 @@ module Adjutant
     DEFAULT_WALL_CLOCK  =               300 # seconds
     DEFAULT_TOTAL_READ  = 4_294_967_296_i64 # 4 GiB
     DEFAULT_TOTAL_WRITE = 1_073_741_824_i64 # 1 GiB
+    DEFAULT_MAX_ASKS    =                20
 
     # For whatever sets up OS-level enforcement (cgroups, rlimit);
     # `Budget` doesn't track it, so its default is advice to the host.
@@ -29,9 +31,14 @@ module Adjutant
     getter total_read : Int64?
     getter total_write : Int64?
 
+    # How many risk-flow Asks a run may put to its host. A script asking
+    # again and again is betting on a reflexive approval.
+    getter max_asks : Int32?
+
     def initialize(@max_open_streams = DEFAULT_MAX_OPEN_STREAMS,
                    @memory : Int64? = DEFAULT_MEMORY, @wall_clock : Int32? = DEFAULT_WALL_CLOCK,
-                   @total_read : Int64? = DEFAULT_TOTAL_READ, @total_write : Int64? = DEFAULT_TOTAL_WRITE)
+                   @total_read : Int64? = DEFAULT_TOTAL_READ, @total_write : Int64? = DEFAULT_TOTAL_WRITE,
+                   @max_asks : Int32? = DEFAULT_MAX_ASKS)
     end
   end
 end

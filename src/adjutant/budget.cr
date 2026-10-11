@@ -2,19 +2,22 @@ require "./resource_limits"
 require "./fatal_signal"
 
 module Adjutant
-  # Per-run cumulative budgets: bytes read and written, and elapsed
-  # time. The middle of three tiers: per-call limits live with each
-  # call, and memory, CPU and descriptors with the OS. `memory` isn't
-  # tracked here. The counts and the wall clock start when the Budget
-  # is built, and again at each `start_run!`, which `Interpreter#eval`
-  # calls, so each run gets the whole budget.
+  # Per-run cumulative budgets: bytes read and written, risk-flow
+  # decisions asked, and elapsed time less any spent `off_clock`. The middle of three tiers:
+  # per-call limits live with each call, and memory, CPU and
+  # descriptors with the OS. `memory` isn't tracked here. The counts
+  # and the wall clock start when the Budget is built, and again at
+  # each `start_run!`, which `Interpreter#eval` calls, so each run
+  # gets the whole budget.
   class Budget
     getter total_read : Int64
     getter total_write : Int64
+    getter asks : Int32
 
     def initialize(@limits : ResourceLimits)
       @total_read = 0_i64
       @total_write = 0_i64
+      @asks = 0
       @started_at = Time.instant
     end
 
@@ -22,6 +25,7 @@ module Adjutant
     def start_run! : Nil
       @total_read = 0_i64
       @total_write = 0_i64
+      @asks = 0
       @started_at = Time.instant
     end
 
@@ -39,6 +43,14 @@ module Adjutant
       exhausted!("total_write", @total_write, limit, "bytes") if @total_write > limit
     end
 
+    # Counts a risk-flow Ask before it reaches the host, so the Ask past
+    # `max_asks` raises instead of asking.
+    def record_ask : Nil
+      @asks += 1
+      return unless limit = @limits.max_asks
+      exhausted!("max_asks", @asks, limit, "") if @asks > limit
+    end
+
     # Checked at the start of each authorization and, every
     # `VM::WALL_CLOCK_INTERVAL` instructions, by the VM, so pure
     # computation meets it too.
@@ -46,6 +58,18 @@ module Adjutant
       return unless limit = @limits.wall_clock
       elapsed = (Time.instant - @started_at).total_seconds
       exhausted!("wall_clock", elapsed.round(1), limit, "s") if elapsed > limit
+    end
+
+    # Runs the block with the wall clock stopped, so the time it takes
+    # doesn't count against `wall_clock`: for waits the script can't
+    # act during, such as its host deciding a risk-flow Ask.
+    def off_clock(& : -> T) : T forall T
+      stopped_at = Time.instant
+      begin
+        yield
+      ensure
+        @started_at += Time.instant - stopped_at
+      end
     end
 
     private def exhausted!(name : String, actual, limit, unit : String) : NoReturn

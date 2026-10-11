@@ -294,6 +294,18 @@ Quality-of-diagnostic gaps in the `Diagnostic`/`ErrorCatalog` system
   Would also give U004 its first real use of a secondary span, which
   nothing exercises yet.
 
+- **`Interpreter#render_error` won't take an error rescued with
+  others.** Its parameter is the union of `ParseError`,
+  `CompileError`, `RuntimeError`, `HostArgumentError`,
+  `HostStateError`, `InternalError` and
+  `AmbiguousRiskFlowPolicyError`. A variable bound by
+  `rescue ex : ParseError | CompileError` is typed as their common
+  parent, `Exception`, which that restriction refuses at compile time,
+  so a host rescuing several in one clause must dispatch on each type
+  first, as `Worker#raised` does. Fix: take `Exception`, returning nil
+  for a type with no diagnostic, as it already does for one whose
+  diagnostic is nil. Found writing the Worker.
+
 ### Object model
 
 - **Indexing can't reach a script-defined `[]` or `[]=`.**
@@ -517,6 +529,18 @@ section).
   and the investigation has already cost more than the platform is
   currently worth. To pick it up, the route that worked was cutting
   DOWN from the crashing spec, not building UP from a small program.
+
+  **Leading lead, unverified.** The Supervisor's specs died the same
+  way on Windows, and were fixed by not waiting on other fibers inside
+  a Crystal `rescue` or `ensure` (DEVELOPMENT.md, "Crystal's own
+  `rescue` and `ensure` on Windows"). `Interpreter#eval`'s `ensure`
+  closes every open stream source while a script's error propagates,
+  and closing a socket-backed stream can wait on the event loop. That
+  fits two of the ingredients above: the raise supplies the exception
+  in flight, the socket the wait. What supplies a fiber that raises
+  during the wait is the open question, and may be what the small
+  programs lacked. To test it: rescue into a variable in `eval`, close
+  the sources after the handler, re-raise, and un-pend the spec.
 
 ### Providers
 
