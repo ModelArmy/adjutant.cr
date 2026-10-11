@@ -2,7 +2,7 @@
 
 Working notes between development sessions, kept current by whoever ends a session. Not user documentation.
 
-Last updated after the `single-policy-document` merge (#81), on `main`.
+Last updated on `worker-supervisor`, before its merge.
 
 ## How to use this document
 
@@ -33,7 +33,7 @@ Key documents: `SCOPE.md` (known defects and gaps: Must Fix, Will Fix), `LEGATE.
 9. **Never `git reset --hard` with uncommitted work in the tree.**
 10. **Markdown tables:** no literal `|` inside a cell; reword instead.
 11. **Spec first, when it can run.** A spec that compiles against the old code and fails there is its own commit, ahead of the fix. One that needs the fix's API, or would crash, hang or overflow the stack on the old code, goes in the same commit.
-12. **Lint as CI runs it.** Ameba accepts only `e` or `ex` for a rescued exception, rejects one-letter block parameters, `not_nil!`, `return nil` and `| Nil`, prefers `max_of?` to `map { }.max?`, and caps cyclomatic complexity at 12; split a method rather than disable the check. A new method goes above a method's doc comment, never between it and its `# ameba:disable` line. Crystal has no chained comparisons (`0 < x <= 9`), no trailing `while`, no variable defined in a modifier's condition, and reserves `responds_to?`, `is_a?`, `nil?`, `as`, `as?` and `out` (a C-binding keyword, so `return out unless …` won't parse). Inside an `enum`, a member's name shadows a type of the same name: write `::Regex` in `PatternType`.
+12. **Lint as CI runs it.** Ameba accepts only `e` or `ex` for a rescued exception, rejects one-letter block parameters, `not_nil!`, `return nil` and `| Nil`, prefers `max_of?` to `map { }.max?`, and caps cyclomatic complexity at 12; split a method rather than disable the check. A new method goes above a method's doc comment, never between it and its `# ameba:disable` line. Crystal has no chained comparisons (`0 < x <= 9`), no trailing `while`, no `rescue` type list continued onto a new line after `|`, no variable defined in a modifier's condition, and reserves `responds_to?`, `is_a?`, `nil?`, `as`, `as?` and `out` (a C-binding keyword, so `return out unless …` won't parse). Inside an `enum`, a member's name shadows a type of the same name: write `::Regex` in `PatternType`.
 13. **Spec helpers are per file.** `with_tmpdir`, `net_grants` and their kind are private to each spec file, so a new file defines its own. `allow_unlisted` is a private method of `module Adjutant` in `spec_helper.cr`, so a helper calling it is a `private def self.` inside that module.
 
 ## 3. The evidence method [Retain]
@@ -71,18 +71,23 @@ Key documents: `SCOPE.md` (known defects and gaps: Must Fix, Will Fix), `LEGATE.
 20. **A bound over alternatives must hold for each.** `RiskChoice` summarized its top-ranked branch whole, so a tied branch's recursive delete vanished, and severity and reversibility were copied from one child, so a sequence reported an irreversible call as reversible. Each field of a summary is its own worst case.
 21. **A default named for safety must deliver it.** `reject_all` has no sensitivity patterns, so nothing Legate reads is sensitive and nothing is rejected: in practice it means grants only. A policy document must now say `risk_flow: none` to get it. Before making something a default, check what it does with the inputs it will actually see.
 22. **Crystal's `raise` takes the arguments that follow it.** `x || raise needs(...)` inside an argument list swallowed the next named argument. Parenthesize a `raise` anywhere but at the end of a statement.
+23. **Crystal merges a union of types sharing a parent into the parent.** An array of `Completed`, `Raised` and `Fatal`, a `rescue ex : A | B`, and a variable that may hold either of two siblings are all typed as their common parent, which a restriction naming the siblings refuses. Take the parent and check at run time (`Finished.new`), dispatch on each type (`Worker#raised`), or give types meant to form a union no common parent (`Supervisor`'s outcomes), which also keeps a `case … in` over them exhaustive.
+24. **Read what Crystal's serialisers write and accept.** `Time#to_json` drops fractions of a second; `Enum.from_json` folds case; a malformed `Time` raises `Time::Format::Error` or `ArgumentError`, not a `JSON::Error`; `JSON::Builder` stops at 99 levels of nesting, before the parser's 512. Each needed a converter or a wider `rescue` in the protocol.
+25. **An exception from a host callback must not be one a script can rescue.** In `call_native` it becomes N001 (lesson 14), and the script carries on. `Worker::Broken`, a `FatalSignal`, carries a protocol failure past every script `rescue`, cleaning up as it goes, and `Worker` unwraps it after `eval`.
+26. **On Windows, never wait inside a Crystal `rescue` or `ensure`** (DEVELOPMENT.md, Exception handling). The crash needs a particular fiber interleaving, so it passes now and then: one green run proves nothing, five under random seeds say more. In a CI log from `crystal spec -v`, each finished example's name appears twice (printed at its start, then again after `\r`), so the crash is in the example after the last pair. Build the spec and run it directly to see the exit code, which `crystal spec` drops.
 
 ---
 
 ## 5. State
 
-Since the last handoff, three branches merged:
+`worker-supervisor` is ready to merge. A host can run each assessment or run in a child process, its own executable started again, so a defect in Adjutant costs that child, not the host:
 
-1. **Risk choice resolution** (#79). A `RiskSummary` is an upper bound on every run: effects union across branches, and severity, reversibility and iteration each take their own worst, in a `RiskSequence` as in a `RiskChoice`. `RiskSummary#path` is gone; `all_findings` is the evidence, and an unresolved call's finding description starts `unresolved call: `.
-2. **Strict policy JSON** (#80). Unknown keys were refused, closing a typo that widened an exception. #81 then removed the JSON format entirely.
-3. **Single policy document** (#81). A host passes one YAML document (`grants`, `limits`, `risk_flow`) to `Policy.from_yaml`, and `Interpreter.new` takes `policy:`. `risk_flow` is required, with `none` the only opt-out, and a mapping with neither patterns nor rules is refused. Every load-time error is `InvalidPolicyError < ArgumentError`, naming a dotted path. `CorePolicySection` and `Legate::PolicySection` each claim and parse their own keys. POLICY.md specifies the document; LEGATE.md §7 now covers only Legate's keys, and §10.1 keys grant inference on providers. `ops test_scripts` clears `workspace/` before running.
+1. **Run limits.** Time spent waiting for a risk-flow decision no longer counts against `wall_clock` (`Budget#off_clock`). `max_asks` (default 20) caps the Asks per run, against approval fatigue.
+2. **Protocol** (`protocol.cr`, `protocol_payloads.cr`). Newline-delimited JSON, strict, bounded per line. Each direction has its own message types. Core values cross as descriptions (`Protocol::Payload`), never rebuilt into core types, with a spec comparing each description's fields to its core type's.
+3. **`Worker`** serves one request and exits. **`Supervisor`** drives one worker: two clocks (a deadline that pauses during decisions, a ceiling that never does), a backstop for every limit, and outcomes and events as unions a `case … in` must cover. Its report keeps what the worker said apart from what the Supervisor saw (`Observed`).
+4. **`samples/worker_host.cr`** is the reference host and the fixture for the process specs, which need `ops build` first.
 
-`SCOPE.md` Must Fix is empty. Will Fix gained "Providers" (generic provider loading, waiting for a second provider) and is still in the older dated style. `spec/skill/TODO.md` §1 items 3 and 5 still call Array-keyed Hashes and slice assignment open divergences; both are fixed.
+`research/WORKER_DESIGN.md` is the design, including what a host can trust from a worker. CI now runs specs in random order, and on Windows repeats the Supervisor specs five times. Must Fix is empty. Will Fix gained an Error reporting entry: `render_error` won't take an error rescued with others. SCOPE's streamed-fetch entry gained a lead from the Windows crash fixed here. `spec/skill/TODO.md` §1 items 3 and 5 still call Array-keyed Hashes and slice assignment open divergences; both are fixed.
 
 Model           |Latest result|Notes                                           
 ----------------|-------------|------------------------------------------------
@@ -90,16 +95,19 @@ qwen3.8 (27B)   |10/10        |Last sat before `fix-ruby-divergences`
 Muse Glimmer 30b|10/10        |Sat at `2bfa808`                                
 Ornith 1.5 (9B) |7/10         |Sat at `2bfa808`; 02, 06 and 08 are model errors
 
-All three predate #69, which renamed the classes the skill teaches, and the skill's `cp` and `H` lines. The task policies now carry `risk_flow: none`, and the runner loads them as full policies. The next sitting is fresh, not a re-run. No current task produces an H code.
+All three predate #69, which renamed the classes the skill teaches, and the skill's `cp` and `H` lines. The task policies carry `risk_flow: none`, and the runner loads them as full policies. The next sitting is fresh, not a re-run. No current task produces an H code.
 
 ## 6. Next
 
-1. **Sit the exam fresh** on all three models, to confirm the renamed skill and the task policies' new format.
-2. **`Legate::Path#under?`** (Will Fix, Legate): see §7.
-3. **Exam tasks 11 to 13** (`spec/skill/TODO.md` §1), correcting its stale items 3 and 5 first; task 12 is a regression check. A credential-to-its-own-host task would exercise risk-flow exceptions.
-4. **Will Fix, style pass**, by subsection, on its own branch.
-5. **§10, the static analyser**, keyed on providers from the start (LEGATE.md §10.1; Will Fix, Static risk assessment).
-6. **Generic provider loading** (Will Fix, Providers), only once a second provider exists to design it against.
+1. **Merge `worker-supervisor`.**
+2. **Sit the exam fresh** on all three models, to confirm the renamed skill and the task policies' format.
+3. **OS sandboxing for workers** (WORKER_DESIGN.md, Later), on its own branch: the worker restricts itself to its grants before parsing, and a kill takes the worker's whole process tree.
+4. **Test the streamed-fetch lead on Windows** (SCOPE.md): restructure `Interpreter#eval`'s `ensure`, then un-pend the spec.
+5. **`Legate::Path#under?`** (Will Fix, Legate): see §7.
+6. **Exam tasks 11 to 13** (`spec/skill/TODO.md` §1), correcting its stale items 3 and 5 first; task 12 is a regression check. A credential-to-its-own-host task would exercise risk-flow exceptions.
+7. **Will Fix, style pass**, by subsection, on its own branch.
+8. **§10, the static analyser**, keyed on providers from the start (LEGATE.md §10.1; Will Fix, Static risk assessment).
+9. **Generic provider loading** (Will Fix, Providers), only once a second provider exists to design it against.
 
 ## 7. Open decisions
 
@@ -108,11 +116,13 @@ All three predate #69, which renamed the classes the skill teaches, and the skil
 - **`Legate::Response` headers.** LEGATE.md §5.5 calls them frozen; Adjutant freezes only Strings. Correct §5.5, or add freezing to the backlog?
 - **LEGATE.md §1** says the core is "ordinary Ruby with mutation removed". It isn't: `<<` and `[]=` mutate Arrays and Hashes. Correct it at the next spec revision.
 - **`inspect` of deep data.** Printing an Array or Hash nested deeper than `call_depth_limit` (256) raises L002, since each level re-enters the VM. JSON from `fetch` may nest to 512. Make `inspect` walk built-in containers iteratively (safe, since scripts can't override their `inspect`, U003), or leave it?
-- **Default budgets.** `wall_clock` 300 s, `total_read` 4 GiB, `total_write` 1 GiB and `memory` 512 MiB (advice only) are POLICY.md §3's defaults, first chosen as examples. Revisit once a harness runs real workloads.
+- **Default budgets.** `wall_clock` 300 s, `total_read` 4 GiB, `total_write` 1 GiB, `memory` 512 MiB (advice only) and `max_asks` 20 are POLICY.md §3's defaults, first chosen as examples. `max_asks` is low on purpose: with no approval cache, a loop over 30 sensitive files stops at the 21st Ask. Revisit once a harness runs real workloads.
+- **Approval cache.** research/IFC_DESIGN.md's open question matters more now Asks are capped. Kept in a worker it lasts one run; kept in a host across runs, it must record only what the host decided and observed (WORKER_DESIGN.md, What a host can trust).
+- **Worker protocol, the rest.** WORKER_DESIGN.md's open decisions: stray writes to `STDOUT` from a host's natives, host round trips for natives needing host state, and structured results.
 - **Crystal's Windows `File.realpath`.** It follows only a path's final link, on `master` as in 1.20 (`src/crystal/system/win32/file.cr`). Adjutant no longer relies on it; report it upstream?
 - **A suffix mode for risk-flow subjects.** Subjects match exactly or by regex. Add a dot-boundary suffix mode, like `net.hosts`' `subdomains: true`, only if policy authors keep writing the same regex.
 - **`ExecutionLimits` stays out of the document.** Instruction and call-depth limits raise catchable errors and guard the host process, so they remain a constructor argument. Revisit if hosts want one place to bound a run.
 
 ## 8. Deferred tests
 
-Two tests are pending on Windows only: `tree_copy_spec.cr`'s FIFO test, since Windows has no FIFOs, and `verbs/fetch_stream_spec.cr`'s raise-mid-walk test (believed a Crystal runtime defect; investigation closed).
+Two tests are pending on Windows only: `tree_copy_spec.cr`'s FIFO test, since Windows has no FIFOs, and `verbs/fetch_stream_spec.cr`'s raise-mid-walk test, which SCOPE.md's streamed-fetch entry now has a lead for.
