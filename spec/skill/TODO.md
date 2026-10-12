@@ -14,9 +14,8 @@ Task|Function                                                                   
 
 1. **Inputs are paths, not commands.** Task 13's source runs `git show HEAD:file`; Legate has no process verb (U021), so the task takes two files. That is the pattern a harness uses anyway: it supplies what a script would otherwise shell out for.
 2. **Fixtures carry the edge cases:** a trailing comment, a line starting with `#` inside a heredoc, an ameba directive, blank lines inside a comment block, and a file ending in a comment.
-3. **Expect Adjutant defects, not only model errors.** The natural translation of task 12 keys a Hash by `[first, last]` pairs and assigns into a slice, both Must Fix divergences in SCOPE.md. A model that follows the skill ("Arrays do not slice by Range") writes around the slice and never triggers it; record which it did.
+3. **Task 12 is a regression check.** Its natural translation keys a Hash by `[first, last]` pairs and assigns into a slice; both behave as in Ruby, and the skill lists `[range]=`. Record whether the model used them or wrote around them.
 4. **Report these tasks separately in README.md's results**, so the 10/10 baseline on 01 to 10 stays comparable.
-5. **Write the tasks before fixing the divergences they touch**, so a failure is the evidence for the fix.
 
 ## 2. Harder tasks from the 2026-09-24 handoff
 
