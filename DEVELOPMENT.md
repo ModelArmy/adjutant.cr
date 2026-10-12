@@ -553,6 +553,38 @@ flowchart TD
 - **Blocks and lambdas.** A block attached to a call is folded in as an iterated body, closing over the enclosing Env. A lambda literal, or a constant bound to one, passed as an argument is walked and wrapped in RiskDeferred; `CONST.call` resolves to the lambda's risk directly. A lambda assigned to a variable isn't walked: which lambda a variable holds can't be known.
 - **Coverage.** `if`, `unless` and `case` are Choices; loops are iterated Sequences; `begin` is a Choice of the body and each rescue clause followed by the ensure; an assignment's right-hand side, every call argument and receiver, and every element of a collection literal are walked.
 
+### The Supervisor's fibers
+
+```mermaid
+---
+displayMode: compact
+config:
+  layout: elk
+  themeVariables:
+    fontSize: 12px
+---
+flowchart LR
+    host[Host's block]
+    conv[Conversation<br/>the caller's fiber]
+    out[stdout reader]
+    err[stderr drain]
+    watch[Watch<br/>every WATCH_INTERVAL]
+    worker[Worker]
+
+    conv -->|yields events| host
+    conv -->|request, answers: stdin| worker
+    worker -->|stdout| out -->|messages, over a channel| conv
+    worker -->|stderr| err -->|kept tail| conv
+    watch -->|kills on a clock, polls ended?| worker
+    watch -->|abandons held pipes| conv
+```
+
+A Supervisor serves one request on four fibers. The conversation runs on the caller's fiber, so the host's block is called where the host called `run` or `assess`. It writes the request and each answer to stdin, and takes messages from the stdout reader over a channel. The stdout reader and the stderr drain each block on their own pipe, so no wait on a pipe holds up the conversation. The watch wakes every `WATCH_INTERVAL`: it kills the worker when a clock expires, notes when the worker has ended, and abandons pipes that another process holds open (research/WORKER_DESIGN.md, Clocks and caps).
+
+Two rules keep this safe on Windows, where breaking either can end the host. Nothing waits inside a `rescue` or an `ensure` (Exception handling): a handler only records what happened, and the waiting comes after it, as in `converse`, `read_message` and `read_stderr`. And nothing closes a pipe another fiber may be reading: `Link#kill` closes only the worker's ends, `Link#wait`, which closes the Supervisor's, runs only once both readers have stopped, and a read the watch abandons is left blocked, never closed.
+
+The fibers share state through instance variables without locks, which relies on their running on one thread, Crystal's default.
+
 ## Error reporting
 
 Errors are data, rendered late. A `Diagnostic` carries a code, spans and substitution data, and no prose: the summary, `why` and `help` come from `ErrorCatalog` by code. `DiagnosticRenderer` renders Markdown or plain text, quoting the source line from the Interpreter's `SourceMap` with carets under the span. The code's letter names the kind of problem, never the subsystem; see [ERRORS.md](./ERRORS.md).
