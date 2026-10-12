@@ -87,9 +87,9 @@ Key documents: `SCOPE.md` (known defects and gaps: Must Fix, Will Fix), `LEGATE.
 3. **`Worker`** serves one request and exits. **`Supervisor`** drives one worker: two clocks (a deadline that pauses during decisions, a ceiling that never does), a backstop for every limit, and outcomes and events as unions a `case … in` must cover. Its report keeps what the worker said apart from what the Supervisor saw (`Observed`).
 4. **`samples/worker_host.cr`** is the reference host and the fixture for the process specs, which need `ops build` first.
 
-README.md's "Sandboxing the worker" shows a host launching the worker under Cordon and handing the process to `Supervisor.new`. Adjutant starts no sandbox: the host writes the sandbox policy from the script's grants. On macOS, a process the worker starts can outlive the kill and hold the Supervisor's read past its ceiling; under Cordon on Linux it can't.
+README.md's "Sandboxing the worker" shows a host launching the worker under Cordon and handing the process to `Supervisor.new`. Adjutant starts no sandbox and derives no sandbox policy: both are the host's. A process that a taken-over worker starts can hold the Supervisor's read open indefinitely unless the host's sandbox kills it, as Cordon does on Linux; that is Must Fix's one entry.
 
-`research/WORKER_DESIGN.md` is the design, including what a host can trust from a worker. CI runs specs in random order, and on Windows repeats the Supervisor specs five times. Must Fix is empty. Will Fix has an Error reporting entry: `render_error` won't take an error rescued with others. SCOPE's streamed-fetch entry has a lead from the crash in lesson 26.
+`research/WORKER_DESIGN.md` is the design, including what a host can trust from a worker. CI runs specs in random order, and on Windows repeats the Supervisor specs five times. Will Fix has an Error reporting entry: `render_error` won't take an error rescued with others. SCOPE's streamed-fetch entry has a lead from the crash in lesson 26.
 
 Model           |Latest result|Notes                                           
 ----------------|-------------|------------------------------------------------
@@ -101,13 +101,14 @@ All three predate #69, which renamed the classes the skill teaches, and the skil
 
 ## 6. Next
 
-1. **Sit the exam fresh** on all three models, to confirm the renamed skill and the task policies' format.
-2. **Test the streamed-fetch lead on Windows** (SCOPE.md): restructure `Interpreter#eval`'s `ensure`, then un-pend the spec.
-3. **`Legate::Path#under?`** (Will Fix, Legate): see §7.
-4. **Exam tasks 11 to 13** (`spec/skill/TODO.md` §1); task 12 is a regression check. A credential-to-its-own-host task would exercise risk-flow exceptions.
-5. **Will Fix, style pass**, by subsection, on its own branch.
-6. **§10, the static analyser**, keyed on providers from the start (LEGATE.md §10.1; Will Fix, Static risk assessment).
-7. **Generic provider loading** (Will Fix, Providers), only once a second provider exists to design it against.
+1. **The Supervisor hang** (Must Fix), on its own branch: the fix and its spec together, since the spec hangs on the current code.
+2. **Sit the exam fresh** on all three models, to confirm the renamed skill and the task policies' format.
+3. **Test the streamed-fetch lead on Windows** (SCOPE.md): restructure `Interpreter#eval`'s `ensure`, then un-pend the spec.
+4. **`Legate::Path#under?`** (Will Fix, Legate): see §7.
+5. **Exam tasks 11 to 13** (`spec/skill/TODO.md` §1); task 12 is a regression check. A credential-to-its-own-host task would exercise risk-flow exceptions.
+6. **Will Fix, style pass**, by subsection, on its own branch.
+7. **§10, the static analyser**, keyed on providers from the start (LEGATE.md §10.1; Will Fix, Static risk assessment).
+8. **Generic provider loading** (Will Fix, Providers), only once a second provider exists to design it against.
 
 ## 7. Open decisions
 
@@ -118,7 +119,6 @@ All three predate #69, which renamed the classes the skill teaches, and the skil
 - **`inspect` of deep data.** Printing an Array or Hash nested deeper than `call_depth_limit` (256) raises L002, since each level re-enters the VM. JSON from `fetch` may nest to 512. Make `inspect` walk built-in containers iteratively (safe, since scripts can't override their `inspect`, U003), or leave it?
 - **Default budgets.** `wall_clock` 300 s, `total_read` 4 GiB, `total_write` 1 GiB, `memory` 512 MiB (advice only) and `max_asks` 20 are POLICY.md §3's defaults, first chosen as examples. `max_asks` is low on purpose: with no approval cache, a loop over 30 sensitive files stops at the 21st Ask. Revisit once a harness runs real workloads.
 - **Approval cache.** research/IFC_DESIGN.md's open question matters more now Asks are capped. Kept in a worker it lasts one run; kept in a host across runs, it must record only what the host decided and observed (WORKER_DESIGN.md, What a host can trust).
-- **Sandboxing, beyond the host's part.** README.md leaves the sandbox to the host. WORKER_DESIGN.md, Later, still lists what Adjutant could add: a description of what a worker needs, derived from its policy, so a host needn't read `Legate::Grants`; a worker that restricts itself before parsing; and a kill that takes the worker's process tree, still open on macOS under Cordon. Decide which stay; WORKER_DESIGN.md follows.
 - **Worker protocol, the rest.** WORKER_DESIGN.md's open decisions: stray writes to `STDOUT` from a host's natives, host round trips for natives needing host state, and structured results.
 - **Crystal's Windows `File.realpath`.** It follows only a path's final link, on `master` as in 1.20 (`src/crystal/system/win32/file.cr`). Adjutant no longer relies on it; report it upstream?
 - **A suffix mode for risk-flow subjects.** Subjects match exactly or by regex. Add a dot-boundary suffix mode, like `net.hosts`' `subdomains: true`, only if policy authors keep writing the same regex.

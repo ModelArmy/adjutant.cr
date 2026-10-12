@@ -21,7 +21,28 @@ after 1.0. Ordered for working through: security and policy defects
 first, then the Ruby divergences, then design work on policy and
 configuration.
 
-None open.
+- **A process the worker leaves behind hangs the Supervisor.** A
+  worker never starts a process, but one a script has taken over can,
+  and the child inherits the worker's stdout. `Supervisor#converse`
+  reads stdout until it closes (`receive`, from `exchange` or
+  `refuse_more`), and a kill ends only the worker, so the read lasts
+  as long as the child keeps the pipe open: the ceiling expires, kills
+  the worker, and the host stays blocked in `run` or `assess`. The
+  Supervisor can't free the read by closing the pipe (`Link#kill`).
+  Stderr's wait is bounded by `STDERR_WAIT`, but its drain fiber stays
+  blocked too. Killing the child is the host's part, since the host
+  starts the worker (a process group, a Job Object, or Cordon on
+  Linux); the Supervisor's part is to return within its ceiling and
+  report what it saw. Fix: learn that the worker ended from
+  `Link#wait`, not from stdout closing; after that, give stdout and
+  stderr a short wait to close, then abandon their reads without
+  closing the pipes, and record in `Observed` which were held open.
+  Only a taken-over worker leaves a process, so the outcome is
+  `Violated` unless a clock ended the request first. The spec needs a
+  link whose kill leaves stdout open and whose `wait` blocks until the
+  worker ends; it hangs on the current code, so it goes in with the
+  fix (HANDOFF.md §2.11). README.md's macOS sentence in "Sandboxing
+  the worker" changes with it. Predicted by reading the code.
 
 ## Will Fix
 
