@@ -33,8 +33,15 @@ module Adjutant
     # How often the clocks are checked.
     WATCH_INTERVAL = 50.milliseconds
 
-    # How long to wait for stderr to close once stdout has.
-    STDERR_WAIT = 1.second
+    # How long a pipe may keep its reader waiting once the worker has
+    # ended, before the Supervisor decides another process holds it.
+    PIPE_WAIT = 1.second
+
+    # One of the worker's output pipes.
+    enum Pipe
+      Stdout
+      Stderr
+    end
 
     # A chunk of the script's standard output, in order.
     struct Output
@@ -153,15 +160,22 @@ module Adjutant
     # What the Supervisor saw for itself: fact, where everything the
     # worker said is testimony.
     struct Observed
-      # Nil when the worker isn't a process (a fiber in specs).
+      # Nil when the worker isn't a process (a fiber in specs), or when
+      # a pipe was held open: collecting the status closes the pipes,
+      # which a fiber is still reading.
       getter exit_status : Process::Status?
       getter elapsed : Time::Span
       getter asks : Int32
       getter output_bytes : Int64
       getter stderr : String
+      # The pipes still open `PIPE_WAIT` after the worker ended, which
+      # the Supervisor stopped reading. Only a process the worker
+      # started can hold them, so the worker was taken over, and that
+      # process may still be running.
+      getter held_open : Array(Pipe)
 
       def initialize(@exit_status : Process::Status?, @elapsed : Time::Span, @asks : Int32,
-                     @output_bytes : Int64, @stderr : String)
+                     @output_bytes : Int64, @stderr : String, @held_open : Array(Pipe) = [] of Pipe)
       end
     end
 
@@ -204,7 +218,13 @@ module Adjutant
       # closing a pipe mid-read can bring the whole process down.
       abstract def kill : Nil
 
-      # Waits for the worker to end; its exit status, if it has one.
+      # Whether the worker has ended, without waiting and without
+      # touching the pipes. False while that is unknown.
+      abstract def ended? : Bool
+
+      # Waits for the worker to end; its exit status, if it has one. May
+      # close the pipes, so the Supervisor calls it only once nothing
+      # is reading them.
       abstract def wait : Process::Status?
     end
 
@@ -231,6 +251,12 @@ module Adjutant
         # Already gone.
       end
 
+      def ended? : Bool
+        @process.terminated?
+      rescue
+        false
+      end
+
       def wait : Process::Status?
         @process.wait
       end
@@ -253,6 +279,10 @@ module Adjutant
       new(ProcessLink.new(process), grace, max_output)
     end
 
+    # What the stdout reader hands over: a message, what reading one
+    # raised, or nil at the end of the stream.
+    private alias Received = Protocol::WorkerMessage | Exception?
+
     @used = false
     @finished = false
     @done = false
@@ -263,6 +293,13 @@ module Adjutant
     @paused_at : Time::Instant? = nil
     @expired : Clock? = nil
     @violation : String? = nil
+    @ended_at : Time::Instant? = nil
+    @stdout_reading_since : Time::Instant? = nil
+    @stderr_reading_since : Time::Instant? = nil
+    @messages = Channel(Received).new
+    @abandon = Channel(Nil).new
+    @abandoned = false
+    @held_open = [] of Pipe
     @stderr = IO::Memory.new
     @audit = [] of Protocol::AuditEntry
     @risk_flow = [] of Protocol::FlowEvent
@@ -331,14 +368,17 @@ module Adjutant
     end
 
     # Steps:
-    # 1. Start the clocks and drain stderr.
+    # 1. Start the clocks, and read stdout and stderr, each in its own
+    #    fiber.
     # 2. Read `hello`, check its protocol, send `request`.
     # 3. Read until the request's last message, enforcing the order,
     #    yielding events and keeping the logs.
-    # 4. Refuse anything after the last message, then wait for the
-    #    worker to end, killing it first unless it finished. The clocks
-    #    run until it has ended.
-    # 5. Re-raise anything the host's block raised.
+    # 4. Refuse anything after the last message, kill the worker unless
+    #    it finished, and wait for both pipes to close, or for the
+    #    watch to abandon them (`check_pipes`). The clocks run until
+    #    then.
+    # 5. Collect the exit status, unless a pipe was held open.
+    # 6. Re-raise anything the host's block raised.
     # Returns the last message, if it came, and what was observed.
     #
     # Rescue bodies only record what happened; the cleanup, which waits
@@ -352,6 +392,7 @@ module Adjutant
       @used = true
       started = Time.instant
       stderr_done = drain_stderr
+      stdout_done = read_stdout
       watch(started, ceiling, deadline)
       last = nil
       failure = nil
@@ -366,16 +407,14 @@ module Adjutant
       rescue ex
         failure = ex
       end
-      @link.kill unless @finished && @violation.nil?
+      stop_worker unless @finished && @violation.nil?
       close_input
-      select
-      when stderr_done.receive
-      when timeout(STDERR_WAIT)
-      end
-      status = @link.wait
+      @messages.close
+      settle(stdout_done, stderr_done)
+      status = @link.wait if @held_open.empty?
       @done = true
       raise failure if failure
-      {last, Observed.new(status, Time.instant - started, @asks, @output_bytes, stderr_tail)}
+      {last, Observed.new(status, Time.instant - started, @asks, @output_bytes, stderr_tail, @held_open.dup)}
     end
 
     private def exchange(request : Protocol::SupervisorMessage, max_asks : Int32?, & : Event ->) : Protocol::WorkerMessage?
@@ -467,8 +506,63 @@ module Adjutant
       raise Protocol::Violation.new("#{message.kind} out of order")
     end
 
+    # The next message from stdout, or nil at its end or once the pipes
+    # are abandoned. Raises what reading the message raised.
     private def receive : Protocol::WorkerMessage?
+      return if @abandoned
+      received = nil
+      select
+      when message = @messages.receive
+        received = message
+      when @abandon.receive?
+      end
+      raise received if received.is_a?(Exception)
+      received.as?(Protocol::WorkerMessage)
+    end
+
+    # Reads stdout in its own fiber, handing each message, failure or
+    # end over to `receive`, so the conversation never waits on the
+    # pipe itself. Stops after the end, a failure, or once `@messages`
+    # closes. The channel receives when it has stopped reading.
+    private def read_stdout : Channel(Nil)
+      done = Channel(Nil).new(1)
+      spawn do
+        loop do
+          received = read_message
+          break unless hand_over(received) && received.is_a?(Protocol::WorkerMessage)
+        end
+        done.send(nil)
+      end
+      done
+    end
+
+    private def read_message : Received
+      @stdout_reading_since = Time.instant
       Protocol.read(@link.output, Protocol::WorkerMessage, limit: Protocol::WORKER_LINE_LIMIT)
+    rescue ex
+      ex
+    ensure
+      @stdout_reading_since = nil
+    end
+
+    # False once the conversation has stopped receiving.
+    private def hand_over(received : Received) : Bool
+      @messages.send(received)
+      true
+    rescue Channel::ClosedError
+      false
+    end
+
+    # Waits until both readers have stopped, or the pipes are abandoned.
+    private def settle(stdout_done : Channel(Nil), stderr_done : Channel(Nil)) : Nil
+      stdout = stderr = false
+      until (stdout && stderr) || @abandoned
+        select
+        when stdout_done.receive then stdout = true
+        when stderr_done.receive then stderr = true
+        when @abandon.receive?
+        end
+      end
     end
 
     private def close_input : Nil
@@ -476,26 +570,60 @@ module Adjutant
     rescue IO::Error
     end
 
-    # Kills the worker when a clock expires: the ceiling always runs,
-    # the deadline only while no Ask is with the host.
+    # Until the request is over: kills the worker when a clock expires,
+    # notes when the worker has ended, and abandons pipes held open
+    # past that.
     private def watch(started : Time::Instant, ceiling : Time::Span, deadline : Time::Span?) : Nil
       spawn do
         until @done
           now = Time.instant
-          clock =
-            if now - started >= ceiling
-              Clock::Ceiling
-            elsif (limit = deadline) && running(started, now) >= limit
-              Clock::Deadline
-            end
-          if clock
-            @expired = clock
-            @link.kill
-            break
-          end
+          expire(now, started, ceiling, deadline) unless @expired
+          @ended_at = now if @ended_at.nil? && @link.ended?
+          check_pipes(now, started, ceiling) unless @abandoned
           sleep WATCH_INTERVAL
         end
       end
+    end
+
+    # Kills the worker if a clock has expired: the ceiling always runs,
+    # the deadline only while no Ask is with the host.
+    private def expire(now : Time::Instant, started : Time::Instant, ceiling : Time::Span, deadline : Time::Span?) : Nil
+      clock =
+        if now - started >= ceiling
+          Clock::Ceiling
+        elsif (limit = deadline) && running(started, now) >= limit
+          Clock::Deadline
+        end
+      return unless clock
+      @expired = clock
+      stop_worker
+    end
+
+    # Abandons the pipes once one has kept its reader waiting
+    # `PIPE_WAIT` since the worker ended, or once the ceiling is
+    # `PIPE_WAIT` past, which bounds a process that keeps writing.
+    # Every pipe still being read then is held open: the worker's ends
+    # closed when it ended, so another process has them. Time a reader
+    # spends waiting on the host doesn't count, since it isn't reading.
+    private def check_pipes(now : Time::Instant, started : Time::Instant, ceiling : Time::Span) : Nil
+      reading = {Pipe::Stdout => @stdout_reading_since, Pipe::Stderr => @stderr_reading_since}.compact
+      return unless now - started >= ceiling + PIPE_WAIT || held?(now, reading.values)
+      @held_open = reading.keys
+      unless @held_open.empty?
+        @violation ||= "#{@held_open.map(&.to_s.downcase).join(" and ")} held open after the worker ended"
+      end
+      @abandoned = true
+      @abandon.close
+    end
+
+    private def held?(now : Time::Instant, reading_since : Array(Time::Instant)) : Bool
+      return false unless ended = @ended_at
+      reading_since.any? { |since| now - {since, ended}.max >= PIPE_WAIT }
+    end
+
+    private def stop_worker : Nil
+      @ended_at ||= Time.instant
+      @link.kill
     end
 
     # Time since `started`, less any spent waiting on the host.
@@ -505,22 +633,29 @@ module Adjutant
     end
 
     # Copies stderr into `@stderr`, keeping about the last
-    # `STDERR_TAIL` bytes. The channel receives when stderr closes.
+    # `STDERR_TAIL` bytes. The channel receives when it has stopped
+    # reading.
     private def drain_stderr : Channel(Nil)
       done = Channel(Nil).new(1)
       spawn do
         buffer = Bytes.new(4096)
-        begin
-          while (count = @link.error.read(buffer)) > 0
-            @stderr.write(buffer[0, count])
-            trim_stderr if @stderr.size > 2 * STDERR_TAIL
-          end
-        rescue IO::Error
-        ensure
-          done.send(nil)
+        while (count = read_stderr(buffer)) > 0
+          @stderr.write(buffer[0, count])
+          trim_stderr if @stderr.size > 2 * STDERR_TAIL
         end
+        done.send(nil)
       end
       done
+    end
+
+    # 0 at the end of stderr, or when reading it fails.
+    private def read_stderr(buffer : Bytes) : Int32
+      @stderr_reading_since = Time.instant
+      @link.error.read(buffer)
+    rescue
+      0
+    ensure
+      @stderr_reading_since = nil
     end
 
     private def trim_stderr : Nil

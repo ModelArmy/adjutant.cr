@@ -127,7 +127,8 @@ refuses a worker speaking another protocol version.
 A Supervisor serves one request, as its worker does.
 
 Underneath, a Supervisor talks to a `Supervisor::Link`: the worker's
-stdin, stdout and stderr, a way to kill it, and a way to wait for it.
+stdin, stdout and stderr, a way to kill it, a way to tell whether it
+has ended, and a way to wait for it.
 `ProcessLink` wraps a `Process`; specs use a link over `IO.pipe`s with
 a worker in a fiber, and another transport can stand in the same way.
 
@@ -200,7 +201,8 @@ Outcome    |From      |Carries                                       |Ends
 
 `Observed` holds what the Supervisor saw for itself (see What a host
 can trust): the exit status, the time taken, the Asks answered, the
-output accepted, and the last 64 KiB of stderr.
+output accepted, the last 64 KiB of stderr, and the pipes held open
+after the worker ended.
 
 A clock that expires before the last message makes the outcome
 `TimedOut`, even if killing the worker also cut a line short; one
@@ -388,7 +390,21 @@ Caps, enforced in the worker and backstopped by the Supervisor:
 
 The Supervisor drains stderr in its own fiber from the start, keeping
 the last 64 KiB, so a worker writing to stderr can't block on a full
-pipe.
+pipe. It reads stdout in a fiber too, so the request never waits on a
+pipe itself.
+
+A worker's pipes close when it ends, unless a process it started
+inherited them, and only a worker a script has taken over starts one.
+Once the worker has ended or been killed, a pipe that keeps its reader
+waiting for `PIPE_WAIT` (1 s) is held open: the Supervisor stops
+reading it, lists it in `Observed#held_open`, and ends the request
+`Violated`, or `TimedOut` if a clock ended it first. Time a reader
+spends waiting on the host's block doesn't count. A process that keeps
+writing is cut off at the ceiling plus `PIPE_WAIT`. The Supervisor
+never closes a pipe it stops reading, since on Windows that can bring
+the host down, so it collects no exit status either: `Process#wait`
+closes the pipes. Killing the process left behind is the host's part
+(README.md, Sandboxing the worker).
 
 ## Changes elsewhere in Adjutant
 
@@ -411,7 +427,10 @@ Each check gets a case it must reject (HANDOFF.md §4.7): a line one
 byte over the limit, an unknown key, an unknown type, a wrong protocol
 version, an `answer` for another `id`, a message after `finished`, a
 `log` while an `ask` is pending, an exit without `finished`, an `ask`
-past the cap, and a block that returns without answering.
+past the cap, a block that returns without answering, and a pipe held
+open after the worker ends, silently or still writing. The held-pipe
+check also has a case it must accept: a worker that ended with
+messages still in the pipe while the host's block was slow.
 
 ## Later
 

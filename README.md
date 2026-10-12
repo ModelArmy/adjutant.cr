@@ -383,7 +383,7 @@ end
 
 Events and outcomes are unions, so a `case … in` that misses one doesn't compile. The `ceiling` bounds the whole request, decisions included; the policy's `wall_clock` bounds the script's own time. A worker that crashes, overruns or breaks the protocol is killed and reported as `Crashed`, `TimedOut` or `Violated`; the host carries on.
 
-The report keeps apart what the worker said and what the Supervisor saw for itself (`report.observed`: exit status, time, Asks, output), since a script that took over its worker could say anything. See [`research/WORKER_DESIGN.md`](./research/WORKER_DESIGN.md) for the protocol and what a host can trust, and `samples/worker_host.cr` for a complete host that assesses a script, asks whether to run it, and prompts for each Ask.
+The report keeps apart what the worker said and what the Supervisor saw for itself (`report.observed`: exit status, time, Asks, output, pipes held open), since a script that took over its worker could say anything. See [`research/WORKER_DESIGN.md`](./research/WORKER_DESIGN.md) for the protocol and what a host can trust, and `samples/worker_host.cr` for a complete host that assesses a script, asks whether to run it, and prompts for each Ask.
 
 ### Sandboxing the worker
 
@@ -403,7 +403,7 @@ The sandbox policy is the host's to write, and should grant no more than the wor
 - what the executable needs to start, which only the host knows (on macOS, Cordon's Brew preset for a Crystal binary's libraries);
 - nothing else: a worker never shells out.
 
-Check that the sandbox enforces anything on the machine at hand with `Cordon.confirm`, and decide what the host does when it doesn't; refusing to run scripts is the safe default. One gap remains on macOS: a process the worker starts can outlive the kill and hold the Supervisor's read past its ceiling, so a worker a script has taken over could stall a run, though not escape the sandbox.
+Check that the sandbox enforces anything on the machine at hand with `Cordon.confirm`, and decide what the host does when it doesn't; refusing to run scripts is the safe default. One gap remains on macOS: a process the worker starts can outlive the kill. The Supervisor doesn't wait for it: it stops reading any pipe such a process holds open, lists it in `report.observed.held_open`, and reports the request as `Violated`, or `TimedOut` if a clock ended it. The process may still be running, inside the sandbox.
 
 ## Unsupported language features
 
