@@ -385,6 +385,26 @@ Events and outcomes are unions, so a `case … in` that misses one doesn't compi
 
 The report keeps apart what the worker said and what the Supervisor saw for itself (`report.observed`: exit status, time, Asks, output), since a script that took over its worker could say anything. See [`research/WORKER_DESIGN.md`](./research/WORKER_DESIGN.md) for the protocol and what a host can trust, and `samples/worker_host.cr` for a complete host that assesses a script, asks whether to run it, and prompts for each Ask.
 
+### Sandboxing the worker
+
+A worker stops a defect in Adjutant from taking the host down; an OS sandbox around the worker limits what such a defect could reach. Adjutant doesn't start the sandbox itself: `Supervisor.new` takes any `Process` whose stdin, stdout and stderr are pipes, however the host launched it. [Cordon](https://github.com/ModelArmy/cordon.cr) (0.8.0 and later) does this on macOS and Linux, with Windows in preview:
+
+```crystal
+report = Cordon.spawn([exe, Adjutant::Worker::ARGUMENT], cordon_policy,
+                      input: :pipe, output: :pipe, error: :pipe) do |process|
+  Adjutant::Supervisor.new(process).run(source, policy_yaml, ceiling: 15.minutes) { |event| handle(event) }
+end
+```
+
+The sandbox policy is the host's to write, and should grant no more than the worker needs:
+
+- what the script's policy grants: its read roots read-only, its write and delete roots read-write, and the network only if it grants any host (Cordon's network access is all or none; Legate still limits which hosts);
+- the temporary directory, read-write, for `Legate.scratch`;
+- what the executable needs to start, which only the host knows (on macOS, Cordon's Brew preset for a Crystal binary's libraries);
+- nothing else: a worker never shells out.
+
+Check that the sandbox enforces anything on the machine at hand with `Cordon.confirm`, and decide what the host does when it doesn't; refusing to run scripts is the safe default. One gap remains on macOS: a process the worker starts can outlive the kill and hold the Supervisor's read past its ceiling, so a worker a script has taken over could stall a run, though not escape the sandbox.
+
 ## Unsupported language features
 
 Adjutant is a deliberate *subset* of Ruby, not a work-in-progress full implementation — a few constructs are permanently unsupported by design, not just "not yet built." Each one fails with a clear error naming the construct, not a silent wrong result:

@@ -414,12 +414,16 @@ past the cap, and a block that returns without answering.
 
 ## Later
 
-- **OS sandboxing.** The worker, after reading its request and before
-  parsing the script, restricts itself to what the policy grants:
-  Landlock and seccomp on Linux, Seatbelt on macOS, a Job Object and
-  AppContainer on Windows. A defect in the Broker then meets the
-  kernel's limit. The request is read first because the grants decide
-  the rules.
+- **OS sandboxing.** A host can already launch the worker under a
+  sandbox and hand the process to `Supervisor.new`, as Cordon's
+  `spawn` does (README.md, Sandboxing the worker), but must translate
+  the script's grants into the sandbox's policy itself. Two steps
+  remain open: a neutral description of what a worker needs, derived
+  from its policy, so hosts needn't read `Legate::Grants`; and a worker
+  that restricts itself after reading its request and before parsing
+  the script (Landlock and seccomp on Linux, Seatbelt on macOS, a Job
+  Object and AppContainer on Windows), which narrows the sandbox to
+  each request's grants without the host's help.
 - **Killing the worker's process tree.** A kill stops the worker and
   lets the Supervisor's reads end as the pipes close; the Supervisor
   never closes a pipe it may be reading, since on Windows that can
@@ -427,7 +431,9 @@ past the cap, and a block that returns without answering.
   stdout, though, so a worker a script has taken over could leave one
   behind that holds the Supervisor past its ceiling. A Job Object on
   Windows, or a process group on Unix, lets the kill take the whole
-  tree; it belongs with the sandboxing.
+  tree; it belongs with the sandboxing. Under Cordon on Linux,
+  `bwrap`'s `--die-with-parent` and PID namespace close the gap; on
+  macOS it stays open.
 - **The `adjutant` executable**: `Worker.main` compiled on its own, as
   a shard target.
 
