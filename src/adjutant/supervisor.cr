@@ -219,7 +219,11 @@ module Adjutant
       abstract def kill : Nil
 
       # Whether the worker has ended, without waiting and without
-      # touching the pipes. False while that is unknown.
+      # touching the pipes. False while that is unknown. Once true,
+      # everything the worker wrote must be readable at once: a pipe
+      # that then keeps its reader waiting `PIPE_WAIT` is taken to be
+      # held open by another process. A transport that delivers late
+      # reports true only once it has delivered.
       abstract def ended? : Bool
 
       # Waits for the worker to end; its exit status, if it has one. May
