@@ -59,5 +59,33 @@ module Adjutant
     it "assigns an enclosing variable of the same name" do
       scope_outcome("x = 0\nfor x in [5]\nend\nx").should eq "5"
     end
+
+    it "assigns an instance variable target" do
+      scope_outcome("for @x in [1, 2]\nend\n@x").should eq "2"
+    end
+
+    it "assigns an index target" do
+      scope_outcome("a = [0, 0]\nfor a[1] in [1, 2]\nend\na").should eq "[0, 2]"
+    end
+
+    it "assigns a class variable target" do
+      result = eval(<<-RUBY)
+        class ForTarget
+          @@v = 0
+          def self.run
+            for @@v in [1, 2]
+            end
+            @@v
+          end
+        end
+        ForTarget.run
+      RUBY
+      result.should eq Value.int(2_i64)
+    end
+
+    it "rejects an attribute target, which a multiple assignment can't take either" do
+      error = expect_raises(CompileError) { compile("o = 1\nfor o.t in [1]\nend") }
+      error.diagnostic.not_nil!.code.should eq "C001"
+    end
   end
 end
