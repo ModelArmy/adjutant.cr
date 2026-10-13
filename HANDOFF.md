@@ -2,7 +2,7 @@
 
 Working notes between development sessions, kept current by whoever ends a session. Not user documentation.
 
-Last updated on `supervisor-held-pipe`, ready to merge.
+Last updated on `main`, after `supervisor-held-pipe` (#83) merged.
 
 ## How to use this document
 
@@ -82,14 +82,14 @@ Key documents: `SCOPE.md` (known defects and gaps: Must Fix, Will Fix), `LEGATE.
 
 ## 5. State
 
-`main` carries `worker-supervisor`. A host can run each assessment or run in a child process, its own executable started again, so a defect in Adjutant costs that child, not the host:
+`main` carries `worker-supervisor` (#82). A host can run each assessment or run in a child process, its own executable started again, so a defect in Adjutant costs that child, not the host:
 
 1. **Run limits.** Time spent waiting for a risk-flow decision no longer counts against `wall_clock` (`Budget#off_clock`). `max_asks` (default 20) caps the Asks per run, against approval fatigue.
 2. **Protocol** (`protocol.cr`, `protocol_payloads.cr`). Newline-delimited JSON, strict, bounded per line. Each direction has its own message types. Core values cross as descriptions (`Protocol::Payload`), never rebuilt into core types, with a spec comparing each description's fields to its core type's.
 3. **`Worker`** serves one request and exits. **`Supervisor`** drives one worker: two clocks (a deadline that pauses during decisions, a ceiling that never does), a backstop for every limit, and outcomes and events as unions a `case … in` must cover. Its report keeps what the worker said apart from what the Supervisor saw (`Observed`).
 4. **`samples/worker_host.cr`** is the reference host and the fixture for the process specs, which need `ops build` first.
 
-`supervisor-held-pipe` stops a process left behind by a taken-over worker from hanging the Supervisor. Once the worker has ended or been killed, a pipe that keeps its reader waiting `PIPE_WAIT` (1 s) is abandoned, never closed, and listed in `Observed#held_open`, and the request ends `Violated`, or `TimedOut` if a clock ended it. A process that keeps writing is cut off at the ceiling plus `PIPE_WAIT`. Stdout is read in its own fiber, `Link` gains `ended?`, `STDERR_WAIT` became `PIPE_WAIT`, and `exit_status` is nil when a pipe was held. DEVELOPMENT.md, The Supervisor's fibers, has the fibers and the two rules that keep them safe on Windows.
+Since #83, a process left behind by a taken-over worker can't hang the Supervisor. Once the worker has ended or been killed, a pipe that keeps its reader waiting `PIPE_WAIT` (1 s) is abandoned, never closed, and listed in `Observed#held_open`, and the request ends `Violated`, or `TimedOut` if a clock ended it. A process that keeps writing is cut off at the ceiling plus `PIPE_WAIT`. Stdout is read in its own fiber, `Link` gains `ended?`, `STDERR_WAIT` became `PIPE_WAIT`, and `exit_status` is nil when a pipe was held. DEVELOPMENT.md, The Supervisor's fibers, has the fibers and the two rules that keep them safe on Windows.
 
 README.md's "Sandboxing the worker" shows a host launching the worker under Cordon and handing the process to `Supervisor.new`. Adjutant starts no sandbox and derives no sandbox policy; both are the host's, as is killing a process a taken-over worker leaves behind.
 
@@ -105,14 +105,13 @@ All three predate #69, which renamed the classes the skill teaches, and the skil
 
 ## 6. Next
 
-1. **Merge `supervisor-held-pipe`.**
-2. **Sit the exam fresh** on all three models, to confirm the renamed skill and the task policies' format.
-3. **Test the streamed-fetch lead on Windows** (SCOPE.md): restructure `Interpreter#eval`'s `ensure`, then un-pend the spec.
-4. **`Legate::Path#under?`** (Will Fix, Legate): see §7.
-5. **Exam tasks 11 to 13** (`spec/skill/TODO.md` §1); task 12 is a regression check. A credential-to-its-own-host task would exercise risk-flow exceptions.
-6. **Will Fix, style pass**, by subsection, on its own branch.
-7. **§10, the static analyser**, keyed on providers from the start (LEGATE.md §10.1; Will Fix, Static risk assessment).
-8. **Generic provider loading** (Will Fix, Providers), only once a second provider exists to design it against.
+1. **Sit the exam fresh** on all three models, to confirm the renamed skill and the task policies' format.
+2. **Test the streamed-fetch lead on Windows** (SCOPE.md): restructure `Interpreter#eval`'s `ensure`, then un-pend the spec.
+3. **`Legate::Path#under?`** (Will Fix, Legate): see §7.
+4. **Exam tasks 11 to 13** (`spec/skill/TODO.md` §1); task 12 is a regression check. A credential-to-its-own-host task would exercise risk-flow exceptions.
+5. **Will Fix, style pass**, by subsection, on its own branch.
+6. **§10, the static analyser**, keyed on providers from the start (LEGATE.md §10.1; Will Fix, Static risk assessment).
+7. **Generic provider loading** (Will Fix, Providers), only once a second provider exists to design it against.
 
 ## 7. Open decisions
 
