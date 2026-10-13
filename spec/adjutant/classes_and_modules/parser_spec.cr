@@ -11,7 +11,12 @@ module Adjutant
 
       it "parses a class with superclass" do
         node = parse_expr("class Poodle < Dog\nend")
-        node.as(ClassNode).superclass.should eq "Dog"
+        node.as(ClassNode).superclass.as(Constant).name.should eq "Dog"
+      end
+
+      it "parses a scoped superclass as a constant path" do
+        node = parse_expr("class Poodle < Pets::Dog\nend")
+        node.as(ClassNode).superclass.should be_a(ConstPath)
       end
 
       it "parses a module definition" do
