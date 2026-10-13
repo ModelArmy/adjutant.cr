@@ -15,6 +15,14 @@ module Adjutant
         eval("x = 2\nif x == 1\n:one\nelsif x == 2\n:two\nelse\n:other\nend").as_sym.name.should eq "two"
       end
 
+      it "evaluates the then-branch when an elsif follows it" do
+        eval("if true\n:one\nelsif false\n:two\nend").as_sym.name.should eq "one"
+      end
+
+      it "evaluates an elsif when another follows it" do
+        eval("x = 2\nif x == 1\n:one\nelsif x == 2\n:two\nelsif x == 3\n:three\nend").as_sym.name.should eq "two"
+      end
+
       it "evaluates unless" do
         eval("unless false\n:yes\nend").as_sym.name.should eq "yes"
       end
