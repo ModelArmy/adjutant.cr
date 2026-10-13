@@ -21,7 +21,18 @@ after 1.0. Ordered for working through: security and policy defects
 first, then the Ruby divergences, then design work on policy and
 configuration.
 
-None open.
+- **A range in a condition is a Range, not a flip-flop.** In Ruby,
+  `a..b` or `a...b` as the condition of `if`, `unless`, `while`,
+  `until` or a ternary, their modifiers included, or as an operand of
+  `and`, `or` or `not` there, is a flip-flop: false until `a` holds,
+  then true until `b` does, its state kept per site. Adjutant builds a
+  Range, which is truthy, so `recorded << i if (i == 4)..(i == 4)`
+  records every `i`. Either implement the flip-flop, a hidden boolean
+  per site that the compiler tests, or reject a range literal in a
+  condition with a U-code, as UNSUPPORTED.md asks of anything left
+  out. Start where the compiler compiles a condition (`compile_if`,
+  `compile_unless`, `compile_while`, the ternary). Confirmed by
+  `spec/scripts/rubyspec/language/if.rb`.
 
 ## Will Fix
 
@@ -42,6 +53,27 @@ wins.
   ok` raise P002. Found writing the require specs. The call already
   returns true or false, which a script can't yet capture. Fix: parse
   `require` (and `load`) as a primary expression.
+
+- **Parentheses hold exactly one expression.** The `LParen` branch of
+  `parse_primary` calls `parse_expression` once, and
+  `parse_multi_assign` is reached only from `parse_statement`, so
+  `if (a, b = ary)` raises P001 at the comma. Ruby parses statements
+  between parentheses, so `()` is nil, `(a; b)` is `b`, and a
+  modifier works there: `(123 if true)` is 123. `()` raises P002, and
+  `(x if c)`, `(x unless c)`, `(x while c)` and `(x rescue y)` raise
+  P001 at the modifier; `(a; b)` is predicted to fail too. A multiple
+  assignment's value is its right-hand side, so `(a, b = nil)` is
+  falsy. Confirmed by `spec/scripts/rubyspec/language/if.rb` and by
+  probing the other modifiers. Fix: parse a statement sequence up to
+  `)`.
+
+- **`then` after an `if`, `elsif` or `unless` condition doesn't parse.**
+  `parse_if` and `parse_unless` go from the condition straight to the
+  body, so `if x then 1 end` raises P002 at `then`; only `when` takes
+  one (`match(TokenKind::KwThen)` in the `case` parser). Confirmed by
+  `spec/scripts/rubyspec/language/if.rb`, and by probing `elsif` and
+  `unless`. Fix: match an optional `then` after each condition, as
+  `when` does.
 
 - **`defined?` and `Module#const_defined?` don't exist.** Found in the
   mruby sweep (`test/t/syntax.rb`, `spec/scripts/mruby/float.rb`).
