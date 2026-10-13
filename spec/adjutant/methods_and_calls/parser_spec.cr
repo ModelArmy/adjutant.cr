@@ -176,6 +176,35 @@ module Adjutant
         parse_expr("a.b [1]").as(Call).args.size.should eq 1
       end
 
+      {
+        "n @iv", "n @@cv", "n %w[a b]", "n %i[a b]",
+        "n yield", "n not(x)", "n -> { 1 }", "n ::Object",
+      }.each do |source|
+        it "takes #{source.inspect}'s argument without parentheses" do
+          call = parse_expr(source).as(Call)
+          call.method.should eq "n"
+          call.args.size.should eq 1
+        end
+      end
+
+      it "keeps `n::Object` a scope path" do
+        parse_expr("n::Object").should_not be_a(Call)
+      end
+
+      it "rejects two statements on one line without a `;` between them" do
+        {"n 1 2", "x = 1 y = 2", "def m; end 1"}.each do |source|
+          error = expect_raises(ParseError) { parse(source) }
+          diagnostic = error.diagnostic.not_nil!
+          diagnostic.code.should eq("P001")
+          diagnostic.data["expected"].should eq("a newline or `;`")
+        end
+      end
+
+      it "accepts two statements on one line with a `;` between them" do
+        parse("x = 1; y = 2").stmts.size.should eq 2
+        parse("def m; end; m").stmts.size.should eq 2
+      end
+
       it "keeps a receiver call without a space before what follows as it was" do
         parse_expr("a.b[1]").should be_a(Index)
         parse_expr("a.b - 1").should be_a(Binary)

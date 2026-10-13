@@ -1102,13 +1102,15 @@ module Adjutant
           when Op::MakeClass
             name_sym = chunk.consts[inst.c].as_sym
             superclass = nil
-            if inst.b != Compiler::NO_SUPER
-              super_sym = chunk.consts[inst.b].as_sym
-              super_val = @globals[super_sym.value]?
-              unless super_val && super_val.rclass?
-                raise undefined_constant(super_sym.name, f)
+            if inst.b == Compiler::SUPER_ON_STACK
+              super_val = pop
+              super_cls = super_val.as_rclass?
+              if super_cls.nil? || super_cls.is_module?
+                raise runtime_diagnostic(
+                  Diagnostic.new(code: "R059", primary: frame_span(f), data: {"value" => describe_value(super_val)}),
+                  f, error_class: "TypeError")
               end
-              superclass = super_val.as_rclass
+              superclass = super_cls
             end
             # A class with no `<` inherits from Object. Nil only for a
             # VM built without an Interpreter.

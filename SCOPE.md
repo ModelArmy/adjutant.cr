@@ -56,32 +56,6 @@ configuration.
   receiver isn't `self` with a U-code, beside U014. Confirmed by
   `spec/scripts/rubyspec/for.rb` and by probing.
 
-- **A superclass is looked up among top-level constants only.**
-  `MakeClass` (vm.cr) resolves `class B < A` through `@globals`, so
-  inside `module M` a sibling `A` raises R003, `class C < M::A` raises
-  R003 at any depth, and where a top-level constant of the same name
-  exists the class silently inherits from that one: with `Base` at top
-  level and `N::Base`, `N::Sub < Base` gets the top-level class's
-  methods. Ruby resolves the superclass like any constant, lexically
-  and then through scope paths. Confirmed by
-  `spec/scripts/rubyspec/break.rb`, which defines its fixture's
-  `Driver` at top level until this is fixed, and by probing. Fix:
-  compile the superclass as an expression and pass its value to
-  `MakeClass`.
-
-- **Two expressions on one line need no separator.** The parser
-  starts a new statement wherever an expression ends, so `r = n 1 2`
-  runs (Ruby: SyntaxError). With `arg_follows_no_paren?`, which
-  decides whether a bare call takes arguments, that turns an argument
-  it doesn't recognise into a separate statement: with
-  `def n(x = :none)`, `r = n -> { 3 }` and `r = n not(true)` set `r` to
-  `:none`, silently, and with a required parameter they raise R046.
-  The list lacks `->`, `yield`, `not` and `::Const` (`n ::Object`
-  becomes `n::Object`), and `n @iv` raises P001. Confirmed by
-  `spec/scripts/rubyspec/break.rb` (`note yield`, `note -> { ... }`)
-  and by probing. Fix: require a newline, `;` or closing token between
-  statements, and add the missing tokens to `arg_follows_no_paren?`.
-
 - **`loop`'s body shares the enclosing scope.** In Ruby `loop` is a
   method taking a block, so a variable first assigned in its body is
   new on every iteration and gone after the loop. `parse_loop` parses

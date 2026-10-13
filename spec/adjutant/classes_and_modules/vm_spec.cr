@@ -402,6 +402,39 @@ module Adjutant
           eval("class Dog < Unknown\nend")
         end
       end
+
+      it "resolves a superclass inside a module lexically" do
+        val = eval("module Pets\nclass Animal\nend\nclass Dog < Animal\nend\nend\nPets::Dog")
+        val.as_rclass.superclass.not_nil!.name.should eq "Animal"
+      end
+
+      it "resolves a superclass given as a constant path" do
+        val = eval("module Pets\nclass Animal\nend\nend\nclass Dog < Pets::Animal\nend\nDog")
+        val.as_rclass.superclass.not_nil!.name.should eq "Animal"
+      end
+
+      it "prefers the enclosing module's class to a top-level one of the same name" do
+        result = eval(<<-RUBY)
+          class Base
+            def who; :top; end
+          end
+          module Inner
+            class Base
+              def who; :nested; end
+            end
+            class Sub < Base
+            end
+          end
+          Inner::Sub.new.who
+        RUBY
+        result.as_sym.name.should eq "nested"
+      end
+
+      it "raises a TypeError (R059) for a superclass that isn't a class" do
+        error = expect_raises(RuntimeError) { eval("module Mixin\nend\nclass Dog < Mixin\nend") }
+        error.diagnostic.not_nil!.code.should eq "R059"
+        eval("begin\nclass Dog < 5\nend\nrescue TypeError\n:type_error\nend").as_sym.name.should eq "type_error"
+      end
     end
 
     describe "method definitions" do

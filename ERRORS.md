@@ -156,6 +156,7 @@ R055|`include` or `extend` given something other than a module          |`type`
 R056|An Array joined that contains itself                               |—                                          
 R057|A MatchData group name the pattern lacks                           |`name`                                     
 R058|`clamp` given a minimum above its maximum                          |—                                          
+R059|A superclass that isn't a class                                    |`value`                                    
 
 Scripts can `rescue` these. R008 raises a `NameError`, matching Ruby;
 R011, R012, R015, and R018 raise `ArgumentError`, also matching Ruby;

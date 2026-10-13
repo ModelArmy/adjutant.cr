@@ -42,8 +42,7 @@ ruby/spec commit it was taken at.
 9. Where a test uses a construct only incidentally, Adjutant can't
    parse it, and Ruby has an equivalent spelling, the test uses that
    spelling, and the SCOPE.md entry says so, to be undone with the
-   fix: `redo if c` as an `if` block, `{ break }` as `{ break; }`, a
-   fixture's superclass defined at top level.
+   fix: `redo if c` as an `if` block, `{ break }` as `{ break; }`.
 
 The runner caps each file at 500,000 instructions, so a long spec is
 split by `describe`. A parse error stops a whole file, so a construct

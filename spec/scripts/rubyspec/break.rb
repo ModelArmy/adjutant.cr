@@ -18,17 +18,16 @@ module ScratchPad
 end
 
 # Fixture: ruby/spec language/fixtures/break.rb
-class Driver
-  def initialize(ensures=false)
-    @ensures = ensures
-  end
-
-  def note(value)
-    ScratchPad.recorded << value
-  end
-end
-
 module BreakSpecs
+  class Driver
+    def initialize(ensures=false)
+      @ensures = ensures
+    end
+
+    def note(value)
+      ScratchPad.recorded << value
+    end
+  end
 
   class Block < Driver
     def break_nil
@@ -318,25 +317,19 @@ module BreakSpecs
 end
 
 
-# --- BLOCKED: passes `note yield` and `note -> { }` as bare arguments,
-# which Adjutant reads as separate statements (SCOPE.md, Must Fix: two
-# expressions on one line need no separator).
-# assert("The break statement in a block returns nil to method invoking the method yielding to the block when not passed an argument") do
-#   ScratchPad.record([])
-#   @program = BreakSpecs::Block.new
-#   @program.break_nil
-#   assert_equal([:a, :aa, :b, nil, :d], ScratchPad.recorded)
-# end
+assert("The break statement in a block returns nil to method invoking the method yielding to the block when not passed an argument") do
+  ScratchPad.record([])
+  @program = BreakSpecs::Block.new
+  @program.break_nil
+  assert_equal([:a, :aa, :b, nil, :d], ScratchPad.recorded)
+end
 
-# --- BLOCKED: passes `note yield` and `note -> { }` as bare arguments,
-# which Adjutant reads as separate statements (SCOPE.md, Must Fix: two
-# expressions on one line need no separator).
-# assert("The break statement in a block returns a value to the method invoking the method yielding to the block") do
-#   ScratchPad.record([])
-#   @program = BreakSpecs::Block.new
-#   @program.break_value
-#   assert_equal([:a, :aa, :b, :break, :d], ScratchPad.recorded)
-# end
+assert("The break statement in a block returns a value to the method invoking the method yielding to the block") do
+  ScratchPad.record([])
+  @program = BreakSpecs::Block.new
+  @program.break_value
+  assert_equal([:a, :aa, :b, :break, :d], ScratchPad.recorded)
+end
 
 assert("The break statement in a block yielded inside a while breaks out of the block") do
   ScratchPad.record([])
@@ -450,25 +443,19 @@ end
 #   assert_equal([:before, :after], ScratchPad.recorded)
 # end
 
-# --- BLOCKED: passes `note yield` and `note -> { }` as bare arguments,
-# which Adjutant reads as separate statements (SCOPE.md, Must Fix: two
-# expressions on one line need no separator).
-# assert("The break statement in a lambda when the invocation of the scope creating the lambda is still active returns nil when not passed an argument") do
-#   ScratchPad.record([])
-#   @program = BreakSpecs::Lambda.new
-#   @program.break_in_defining_scope false
-#   assert_equal([:a, :b, nil, :d], ScratchPad.recorded)
-# end
+assert("The break statement in a lambda when the invocation of the scope creating the lambda is still active returns nil when not passed an argument") do
+  ScratchPad.record([])
+  @program = BreakSpecs::Lambda.new
+  @program.break_in_defining_scope false
+  assert_equal([:a, :b, nil, :d], ScratchPad.recorded)
+end
 
-# --- BLOCKED: passes `note yield` and `note -> { }` as bare arguments,
-# which Adjutant reads as separate statements (SCOPE.md, Must Fix: two
-# expressions on one line need no separator).
-# assert("The break statement in a lambda when the invocation of the scope creating the lambda is still active returns a value to the scope creating and calling the lambda") do
-#   ScratchPad.record([])
-#   @program = BreakSpecs::Lambda.new
-#   @program.break_in_defining_scope
-#   assert_equal([:a, :b, :break, :d], ScratchPad.recorded)
-# end
+assert("The break statement in a lambda when the invocation of the scope creating the lambda is still active returns a value to the scope creating and calling the lambda") do
+  ScratchPad.record([])
+  @program = BreakSpecs::Lambda.new
+  @program.break_in_defining_scope
+  assert_equal([:a, :b, :break, :d], ScratchPad.recorded)
+end
 
 assert("The break statement in a lambda when the invocation of the scope creating the lambda is still active returns a value to the method scope below invoking the lambda") do
   ScratchPad.record([])

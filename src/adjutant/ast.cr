@@ -351,7 +351,8 @@ module Adjutant
 
   class ClassNode < Node
     getter name : String
-    getter superclass : String?
+    # The expression after `<`, usually a Constant or ConstPath.
+    getter superclass : Node?
     getter body : Body
 
     def initialize(@name, @superclass, @body, line, column)

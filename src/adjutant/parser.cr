@@ -107,7 +107,7 @@ module Adjutant
       skip_newlines
       until at_kind?(TokenKind::EOF)
         append_statement(stmts, parse_statement)
-        skip_terminators
+        end_statement(TokenKind::EOF)
       end
       Body.new(stmts, line, col)
     end
@@ -191,6 +191,28 @@ module Adjutant
 
       ParseError.new(
         Diagnostic.new(code: "P001", primary: span, data: data)
+      )
+    end
+
+    # Ends a statement: a newline or `;`, the end of the input, or one
+    # of `stops`, the tokens that end the statement sequence. Two
+    # statements on one line need a `;` between them, as in Ruby, so
+    # anything else is P001.
+    private def end_statement(*stops : TokenKind) : Nil
+      return if skip_terminators || at_kind?(TokenKind::EOF)
+      return if stops.any? { |stop| at_kind?(stop) }
+      expected = "a newline or `;`"
+      raise ParseError.new(
+        Diagnostic.new(
+          code: "P001",
+          primary: Span.new(
+            line: @current.line,
+            column: @current.column,
+            length: caret_width(@current),
+            label: "expected #{expected}"
+          ),
+          data: {"expected" => expected, "found" => describe_token(@current)}
+        )
       )
     end
 
@@ -851,8 +873,15 @@ module Adjutant
            TokenKind::KwFile, TokenKind::KwLine,
            TokenKind::Bang, TokenKind::Tilde,
            TokenKind::LParen, TokenKind::LBracket,
-           TokenKind::Identifier, TokenKind::Constant
+           TokenKind::Identifier, TokenKind::Constant,
+           TokenKind::IVar, TokenKind::CVar,
+           TokenKind::PercentWords, TokenKind::PercentSymbols,
+           TokenKind::KwYield, TokenKind::KwNot, TokenKind::Arrow
         true
+      when TokenKind::ColonColon
+        # `n ::Object` passes a top-level constant; `n::Object` is a
+        # scope path.
+        @current.space_before? && !@next.space_before?
       when TokenKind::Minus
         # `-` and `+` are decided by
         # `signed_literal_starts_bare_call?`, which sees spacing. So
@@ -1214,8 +1243,7 @@ module Adjutant
       superclass = nil
       if at_kind?(TokenKind::Lt)
         advance
-        superclass = @current.lexeme
-        advance
+        superclass = parse_expression(0)
       end
       skip_terminators
       push_local_scope(inherit: false)
@@ -1670,7 +1698,7 @@ module Adjutant
       skip_terminators
       until at_kind?(stop) || at_kind?(TokenKind::EOF)
         append_statement(stmts, parse_statement)
-        skip_terminators
+        end_statement(stop)
       end
       Body.new(stmts, l, c)
     end
@@ -1681,7 +1709,7 @@ module Adjutant
       skip_terminators
       until at_any?(*kinds) || at_kind?(TokenKind::EOF)
         append_statement(stmts, parse_statement)
-        skip_terminators
+        end_statement(*kinds)
       end
       Body.new(stmts, l, c)
     end

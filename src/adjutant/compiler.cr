@@ -125,6 +125,7 @@ module Adjutant
   class Compiler
     MAX_LOOP_DEPTH =         16
     NO_SUPER       = 0xFFFF_u16
+    SUPER_ON_STACK =      0_u16
 
     def initialize(symbols : SymbolTable, def_depth : Int32 = 0)
       @symbols = symbols
@@ -1077,20 +1078,20 @@ module Adjutant
 
     private def compile_class(node : ClassNode) : Nil
       name_idx = intern(node.name)
-      super_idx = if s = node.superclass
-                    intern(s).to_u16
-                  else
-                    NO_SUPER
-                  end
 
-      @chunk.emit(Op::GetClass, node.line)                             # [old_self]
-      @chunk.emit(Op::MakeClass, node.line, b: super_idx, c: name_idx) # [old_self, new_class]
-      @chunk.emit(Op::SetConstant, node.line, c: name_idx)             # [old_self, new_class]  registers in old_self's scope (or globals at top level)
-      @chunk.emit(Op::SetClass, node.line)                             # [old_self]  self := new_class
-      with_nested_scope { compile_body(node.body) }                    # [old_self, body_val]
-      @chunk.emit(Op::Pop, node.line)                                  # [old_self]  discard body value
-      @chunk.emit(Op::SetClass, node.line)                             # []  self := old_self (restored)
-      emit_nil(node.line)                                              # [nil]  class-def statement's own value
+      @chunk.emit(Op::GetClass, node.line) # [old_self]
+      if superclass = node.superclass
+        compile_node(superclass)                                              # [old_self, superclass]
+        @chunk.emit(Op::MakeClass, node.line, b: SUPER_ON_STACK, c: name_idx) # [old_self, new_class]
+      else
+        @chunk.emit(Op::MakeClass, node.line, b: NO_SUPER, c: name_idx) # [old_self, new_class]
+      end
+      @chunk.emit(Op::SetConstant, node.line, c: name_idx) # [old_self, new_class]  registers in old_self's scope (or globals at top level)
+      @chunk.emit(Op::SetClass, node.line)                 # [old_self]  self := new_class
+      with_nested_scope { compile_body(node.body) }        # [old_self, body_val]
+      @chunk.emit(Op::Pop, node.line)                      # [old_self]  discard body value
+      @chunk.emit(Op::SetClass, node.line)                 # []  self := old_self (restored)
+      emit_nil(node.line)                                  # [nil]  class-def statement's own value
     end
 
     private def compile_module(node : ModuleNode) : Nil

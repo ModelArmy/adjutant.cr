@@ -560,6 +560,15 @@ module Adjutant
         help: "Swap the arguments, or check them before calling `clamp`."
       ),
 
+      "R059" => Entry.new(
+        code: "R059",
+        summary: "superclass must be a class, not {value}",
+        why: "`class Name < X` makes the new class inherit from `X`, so " \
+             "`X` has to be a class: not a module, nor any other value.",
+        help: "Name a class after `<`, or include a module in the class " \
+              "body instead."
+      ),
+
       # --- L: limits reached ----------------------------------------
       #
       # The script is valid but larger than something Adjutant will

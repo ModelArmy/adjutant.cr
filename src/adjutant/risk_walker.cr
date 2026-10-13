@@ -309,7 +309,10 @@ module Adjutant
     # against the enclosing scope. `def obj.method` for another
     # receiver is not supported.
     private def walk_class(node : ClassNode) : RiskNode
-      superclass = node.superclass.try { |name| resolve_class(name) }
+      superclass = case sup = node.superclass
+                   when Constant  then resolve_class(sup.name)
+                   when ConstPath then resolve_const_path(sup)
+                   end
       cls = RubyClass.new(node.name, superclass)
       @known_classes[node.name] = cls
 

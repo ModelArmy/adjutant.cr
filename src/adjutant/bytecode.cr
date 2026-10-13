@@ -63,7 +63,7 @@ module Adjutant
     # Classes and methods
     GetClass     # push current frame's self
     SetClass     # pop → set current frame's self
-    MakeClass    # make class: name=constants[c], super=constants[b] (0xFFFF=none)
+    MakeClass    # make class: name=constants[c], superclass popped from the stack (b=0) or none (b=0xFFFF)
     MakeModule   # make module: name=constants[c]
     DefMethod    # define method on self (must be a class/module): proc on stack, name=constants[c]
     DefSingleton # define singleton method: proc on stack, recv on stack, name=constants[c]

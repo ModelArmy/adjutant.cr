@@ -11,10 +11,10 @@ module Adjutant
         ops("module Greetable\nend").should contain(Op::MakeModule)
       end
 
-      it "encodes superclass index in MakeClass.b" do
+      it "computes the superclass onto the stack for MakeClass" do
         chunk = compile("class Poodle < Dog\nend")
         inst = chunk.code.find { |i| i.op == Op::MakeClass }.not_nil!
-        inst.b.should_not eq Compiler::NO_SUPER
+        inst.b.should eq Compiler::SUPER_ON_STACK
       end
 
       it "uses NO_SUPER sentinel when no superclass" do
