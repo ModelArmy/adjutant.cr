@@ -33,6 +33,17 @@ ruby/spec commit it was taken at.
    before it is blocked.
 7. A version guard (`ruby_version_is`) keeps the branch for the current
    Ruby. Tests of warnings, `$` globals and encodings are blocked.
+8. A spec's fixture is copied in after a `ScratchPad` stand-in, a
+   module with `record`, `recorded` and `clear`. Scripts can't define
+   `<<` (U017), so `ScratchPad << v` is `ScratchPad.recorded << v`. A
+   fixture method Adjutant can't parse is commented out under
+   `# --- BLOCKED:`, with the tests that call it, and `private :name`
+   is left out, the method staying public (U008).
+9. Where a test uses a construct only incidentally, Adjutant can't
+   parse it, and Ruby has an equivalent spelling, the test uses that
+   spelling, and the SCOPE.md entry says so, to be undone with the
+   fix: `redo if c` as an `if` block, `{ break }` as `{ break; }`, a
+   fixture's superclass defined at top level.
 
 The runner caps each file at 500,000 instructions, so a long spec is
 split by `describe`. A parse error stops a whole file, so a construct

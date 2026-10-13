@@ -21,7 +21,86 @@ after 1.0. Ordered for working through: security and policy defects
 first, then the Ruby divergences, then design work on policy and
 configuration.
 
-None open.
+- **An Integer past 64 bits escapes as an internal error.** Integers
+  are Int64, and nothing catches Crystal's `OverflowError`:
+  `9223372036854775807 + 1` (or `*`) ends the run with
+  `unexpected_error: OverflowError`, which no `rescue` in the script
+  can catch, and a literal past Int64, such as
+  `1267650600228229401496703205376`, fails in
+  `Compiler.int_literal_value` with a raw `ArgumentError` instead of a
+  diagnostic. Ruby has no limit. Needs a decision: arbitrary precision
+  (`BigInt`), or a catchable error with an R-code for arithmetic and a
+  P- or U-code for literals, documented as a deliberate limit. Confirmed
+  by `spec/scripts/rubyspec/case.rb` and by probing.
+
+- **`for` reads its targets as local names, whatever they are.**
+  `parse_for` takes the next token's text as a local variable's name,
+  so `for @x in [1, 2]` assigns a local called `@x` and leaves the
+  instance variable unset, and `for @@v in` does the same for a class
+  variable: silent wrong answers. `for i, * in` passes only because
+  `*` becomes a local. Targets Ruby also accepts fail to parse
+  (P001): an attribute (`for o.t in`, `for o&.t in`), an index
+  (`for a[1] in`), a named splat (`for i, *r in`), a nested pattern
+  (`for i, (j, k) in`) and a trailing comma (`for i, in`). Confirmed by
+  `spec/scripts/rubyspec/for.rb` and by probing. Fix: parse the targets
+  as a multiple assignment's (`parse_multi_assign`) and assign through
+  the same path.
+
+- **`def obj.name` on an instance defines a class method.** The VM's
+  `DefSingleton` takes `recv.as_robject?.try(&.rclass)` as the owner,
+  meant for `main` at top level, so for any other instance
+  `def obj.hello` defines `Foo.hello` on the object's class and
+  `obj.hello` raises NoMethodError: the definition silently lands on
+  every caller's class. Ruby gives `obj` alone a singleton method.
+  Either support per-object singleton methods or reject a `def` whose
+  receiver isn't `self` with a U-code, beside U014. Confirmed by
+  `spec/scripts/rubyspec/for.rb` and by probing.
+
+- **A superclass is looked up among top-level constants only.**
+  `MakeClass` (vm.cr) resolves `class B < A` through `@globals`, so
+  inside `module M` a sibling `A` raises R003, `class C < M::A` raises
+  R003 at any depth, and where a top-level constant of the same name
+  exists the class silently inherits from that one: with `Base` at top
+  level and `N::Base`, `N::Sub < Base` gets the top-level class's
+  methods. Ruby resolves the superclass like any constant, lexically
+  and then through scope paths. Confirmed by
+  `spec/scripts/rubyspec/break.rb`, which defines its fixture's
+  `Driver` at top level until this is fixed, and by probing. Fix:
+  compile the superclass as an expression and pass its value to
+  `MakeClass`.
+
+- **Two expressions on one line need no separator.** The parser
+  starts a new statement wherever an expression ends, so `r = n 1 2`
+  runs (Ruby: SyntaxError). With `arg_follows_no_paren?`, which
+  decides whether a bare call takes arguments, that turns an argument
+  it doesn't recognise into a separate statement: with
+  `def n(x = :none)`, `r = n -> { 3 }` and `r = n not(true)` set `r` to
+  `:none`, silently, and with a required parameter they raise R046.
+  The list lacks `->`, `yield`, `not` and `::Const` (`n ::Object`
+  becomes `n::Object`), and `n @iv` raises P001. Confirmed by
+  `spec/scripts/rubyspec/break.rb` (`note yield`, `note -> { ... }`)
+  and by probing. Fix: require a newline, `;` or closing token between
+  statements, and add the missing tokens to `arg_follows_no_paren?`.
+
+- **`break` from a block skips the `ensure` of the methods it leaves.**
+  With `def direct; yield; ensure; LOG << :e; end`, `direct { break; }`
+  never runs the `ensure`, and nor does any method between the block
+  and the call it breaks out of. Ruby runs each one. Cleanup code is
+  skipped silently. Confirmed by `spec/scripts/rubyspec/break.rb` and by
+  probing. Fix: unwind `break` through the frames' ensure handlers, as
+  `raise` does.
+
+- **`loop`'s body shares the enclosing scope.** In Ruby `loop` is a
+  method taking a block, so a variable first assigned in its body is
+  new on every iteration and gone after the loop. `parse_loop` parses
+  the body in the enclosing scope and `compile_loop` compiles it like
+  `while`'s, so the variable keeps its value: `x ||= 0; x += 1` gives
+  1, 2, 3 where Ruby gives 1, 1, 1, and the variable is still set
+  after the loop, where Ruby raises NameError. A silent wrong answer.
+  Blocks passed to methods (`3.times { }`) are scoped correctly.
+  Confirmed by `spec/scripts/rubyspec/loop.rb` and by probing. Fix:
+  open a block scope for the body, keeping `break`, `next` and `redo`
+  as they are.
 
 ## Will Fix
 
@@ -64,6 +143,57 @@ wins.
   `unless`. Fix: match an optional `then` after each condition, as
   `when` does.
 
+- **Loops parse only as statements.** `parse_statement` dispatches
+  `loop`, `while`, `until` and `for`, but `parse_primary` doesn't, so
+  `x = loop do ... end`, `(loop { ... })` and `f(loop { ... })` raise
+  P002, as do `while`, `until` and `for` in those places. `if`, `case`
+  and `begin` already work there. In Ruby a loop is an expression:
+  `loop` and `while` give `break`'s value, or nil, and `for` gives its
+  collection. Confirmed by `spec/scripts/rubyspec/loop.rb`, and by
+  probing the others. Fix: parse them as primary expressions.
+
+- **`redo` takes no modifier.** `parse_statement` builds a `RedoNode`
+  and returns, so `redo if a.size < 2` leaves `if` to start a new
+  statement, which then wants an `end` of its own (P002 or P003).
+  `next if` and `break if` work, through `parse_break`. Confirmed by
+  `spec/scripts/rubyspec/redo.rb`; the files there spell each live
+  `redo if` as an `if` block until this is fixed. Fix: let `redo` reach
+  the modifier handling that `parse_expr_statement` does.
+
+- **`**` doesn't parse.** `2 ** 3` and `2.0 ** 3` raise P002 at the
+  second `*`: the lexer has no exponent token, and Integer has no
+  `pow` either. Ruby's `**` binds tighter than unary minus on its left
+  (`-2 ** 2` is -4) and is right-associative. Found translating
+  `spec/scripts/rubyspec/` and confirmed by probing. Fix: a `StarStar`
+  token, its precedence and associativity, and Integer and Float
+  methods.
+
+- **`return`, `break` and `next` take one value.** `return 1, 2` and
+  `next 1, 2, 3` raise P002 at the comma; Ruby collects the values
+  into an Array. `parse_return` and `parse_break` read one expression.
+  Confirmed by `spec/scripts/rubyspec/next.rb` and by probing.
+
+- **`super` takes no block.** `super { break 1 }` and `super do ... end`
+  raise P002, and in `super() { 2 }` the `{` is read as a Hash
+  (P001). Ruby passes the block to the superclass method; with none
+  given, `super` passes on the current method's block. Confirmed by
+  `spec/scripts/rubyspec/break.rb` and by probing.
+
+- **A lambda's parameters must be parenthesised.** `-> x { x + 1 }`
+  and `-> x, y { ... }` raise P001 ("expected `do`") where Ruby accepts
+  them; `->(x) { ... }` works. Confirmed by
+  `spec/scripts/rubyspec/case.rb`. Fix: in `parse_lambda`, read bare
+  parameters up to `{` or `do`.
+
+- **`redo` in a block, a lambda or a `for` raises C002.**
+  `compile_redo` accepts `redo` only inside `while`, `until` or
+  `loop`, and C002 says it has no meaning elsewhere, while its help
+  names `for` as a place it works. In Ruby it restarts the current
+  iteration of a `for` and the body of the block or lambda it is in.
+  Confirmed by `spec/scripts/rubyspec/redo.rb` and `for.rb`. Fix: track
+  a block's and a `for`'s body start as a loop's is, and correct C002's
+  catalog text to match.
+
 - **`defined?` and `Module#const_defined?` don't exist.** Found in the
   mruby sweep (`test/t/syntax.rb`, `spec/scripts/mruby/float.rb`).
   `defined?` lexes as an ordinary method name (`lexer.cr`), so
@@ -98,14 +228,15 @@ wins.
   delimiter instead of the fixed one.
 
 - **A bare `next`, `break` or `return` directly before `}`, `end` or
-  `else` probably fails to parse.** Predicted 2026-09-24 while fixing
-  the modifier `if`/`unless` case; not yet confirmed by a spec or a
-  model. `jump_value_follows?` (parser.cr) treats only a newline, `;`,
-  end of file and a modifier `if`/`unless` as "no value here", so in
-  `items.each { |x| next }` or `if a then break end` the parser tries
-  to read `}` or `end` as the keyword's value. Ruby accepts both. The
-  likely fix is adding `RBrace`, `KwEnd` and `KwElse` to that list,
-  once a failure confirms it.
+  `else` fails to parse.** `jump_value_follows?` (parser.cr) treats
+  only a newline, `;`, end of file and a modifier `if`/`unless` as "no
+  value here", so in `items.each { |x| next }`, `if a; break end` and
+  `if a; break else next end` the parser tries to read `}`, `end` or
+  `else` as the keyword's value (P002). Ruby accepts all three.
+  Confirmed by `spec/scripts/rubyspec/break.rb` and `next.rb` and by
+  probing; the files there spell each live one with a `;`
+  (`{ break; }`) until this is fixed. Fix: add `RBrace`, `KwEnd` and
+  `KwElse` to that list.
 
 - **`&:symbol` proc-shorthand (`arr.map(&:length)`) isn't supported —
   `&` can't start an expression there at all (P002).** Found
@@ -180,7 +311,10 @@ wins.
   call-site splat/double-splat exists, `...` is a terser spelling of
   `(*args, **kwargs, &blk)`, not a separate mechanism; worth
   implementing together or `...` shortly after, not as an independent
-  design question.
+  design question. The splat is missing everywhere outside a
+  parameter list, not only at a call site: `when *a`, `[0, *a]` and
+  `x, y = *a` raise P002 too (confirmed by
+  `spec/scripts/rubyspec/case.rb` and by probing).
 - **An operator Symbol right after `:` in a ternary lexes as a Symbol.**
   The lexer reads `:+`, `:<=>` and the other operator Symbols wherever
   an expression can start, so `x ? a :-1` lexes `:-` as a Symbol and
@@ -495,6 +629,21 @@ section).
   new opcodes — natural fit for the core-API-library work rather than
   a standalone language-layer item. Filed here rather than under a
   language-gap group for that reason.
+
+- **`block_given?` and `LocalJumpError` don't exist.** Both raise
+  (R008, R003). What Adjutant does where Ruby raises LocalJumpError,
+  such as `break` from a block whose method has returned, is
+  unverified. Found with `spec/scripts/rubyspec/break.rb`.
+
+- **`Array#clear` and `Integer#upto` don't exist.** Both raise R047.
+  Found with `spec/scripts/rubyspec/break.rb`.
+
+- **`Kernel#local_variables` doesn't exist.** It raises R008. Found
+  with `spec/scripts/rubyspec/for.rb`.
+
+- **`Object#then` and `#yield_self` don't exist.** `x.then { |v| ... }`
+  raises R047. Both yield the receiver and return the block's value.
+  Found with `spec/scripts/rubyspec/case.rb`.
 
 - **`Integer#[]` takes only a bit index.** `n[i, len]` and `n[i..j]`
   (Ruby 2.7) raise ArgumentError and TypeError (R046, R048) rather
