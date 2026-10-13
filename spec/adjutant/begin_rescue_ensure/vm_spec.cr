@@ -1352,6 +1352,76 @@ module Adjutant
       RUBY
       result.should eq Value.int(99_i64)
     end
+
+    it "runs the ensure of the method a break leaves" do
+      result = eval(<<-RUBY)
+        side = []
+        def yielder(side)
+          yield
+        ensure
+          side << :ensure
+        end
+        side << yielder(side) { break :broke }
+        side
+      RUBY
+      result.as_array.map(&.as_sym.name).should eq ["ensure", "broke"]
+    end
+
+    it "runs the ensure of every method between the block and the call it ends, and skips the rest of that call" do
+      result = eval(<<-RUBY)
+        def inner(side)
+          yield
+        ensure
+          side << :inner_ensure
+        end
+        def outer(side)
+          inner(side) { yield }
+          side << :outer_after_inner
+        ensure
+          side << :outer_ensure
+        end
+        side = []
+        value = outer(side) { break :broke }
+        side << value
+        side
+      RUBY
+      result.as_array.map(&.as_sym.name).should eq ["inner_ensure", "outer_ensure", "broke"]
+    end
+
+    it "passes a rescue by on the way to an ensure" do
+      result = eval(<<-RUBY)
+        def guarded(side)
+          begin
+            yield
+          rescue StandardError
+            side << :rescued
+          ensure
+            side << :ensure
+          end
+          side << :after
+        end
+        side = []
+        guarded(side) { break; }
+        side
+      RUBY
+      result.as_array.map(&.as_sym.name).should eq ["ensure"]
+    end
+
+    it "lets an error raised in an ensure the break enters replace the break" do
+      result = eval(<<-RUBY)
+        def failing
+          yield
+        ensure
+          raise "from ensure"
+        end
+        begin
+          failing { break :broke }
+        rescue StandardError => e
+          e.message
+        end
+      RUBY
+      result.should eq Value.string("from ensure")
+    end
   end
 
   describe "method-body (implicit) rescue/else/ensure" do
