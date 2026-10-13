@@ -33,19 +33,6 @@ configuration.
   P- or U-code for literals, documented as a deliberate limit. Confirmed
   by `spec/scripts/rubyspec/case.rb` and by probing.
 
-- **`for` reads its targets as local names, whatever they are.**
-  `parse_for` takes the next token's text as a local variable's name,
-  so `for @x in [1, 2]` assigns a local called `@x` and leaves the
-  instance variable unset, and `for @@v in` does the same for a class
-  variable: silent wrong answers. `for i, * in` passes only because
-  `*` becomes a local. Targets Ruby also accepts fail to parse
-  (P001): an attribute (`for o.t in`, `for o&.t in`), an index
-  (`for a[1] in`), a named splat (`for i, *r in`), a nested pattern
-  (`for i, (j, k) in`) and a trailing comma (`for i, in`). Confirmed by
-  `spec/scripts/rubyspec/for.rb` and by probing. Fix: parse the targets
-  as a multiple assignment's (`parse_multi_assign`) and assign through
-  the same path.
-
 - **`def obj.name` on an instance defines a class method.** The VM's
   `DefSingleton` takes `recv.as_robject?.try(&.rclass)` as the owner,
   meant for `main` at top level, so for any other instance
@@ -133,6 +120,23 @@ wins.
   `spec/scripts/rubyspec/` and confirmed by probing. Fix: a `StarStar`
   token, its precedence and associativity, and Integer and Float
   methods.
+
+- **A multiple assignment takes only plain targets.** `a, *b = x`
+  and `a, (b, c) = x` raise P002 and P001, `a, = x` raises P002, and
+  `a, o.t = 1, 2` raises C001: a splat, a nested pattern, a trailing
+  comma and an attribute are all valid Ruby targets. `for` takes the
+  same targets, so `for i, *r in`, `for i, (j, k) in`, `for i, in` and
+  `for o.t in` fail the same way. Confirmed by
+  `spec/scripts/rubyspec/for.rb` and by probing. Fix:
+  `parse_multi_assign` and `emit_store`, then `MultiUnpack` for the
+  splat and the nesting.
+
+- **`class` and `module` are statements whose value is nil.** In Ruby
+  each is an expression giving its body's last value:
+  `x = class Foo; 42; end` sets `x` to 42. Adjutant raises P002 there,
+  and the compiler gives the statement nil. Confirmed by
+  `spec/scripts/rubyspec/for.rb`, whose test ends with `true` until
+  this is fixed, and by probing.
 
 - **`return`, `break` and `next` take one value.** `return 1, 2` and
   `next 1, 2, 3` raise P002 at the comma; Ruby collects the values

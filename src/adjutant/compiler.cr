@@ -1260,17 +1260,17 @@ module Adjutant
     end
 
     private def compile_for(node : ForNode) : Nil
-      # `for i in expr ... end` compiles as `expr.each { |<for>i| i = <for>i; ... }`:
+      # `for t in expr ... end` compiles as `expr.each { |<for>0| t = <for>0; ... }`:
       # the block takes each element under a name no script can write,
-      # then assigns the loop variable, which as a `for` body's name
-      # belongs to the scope around the loop and outlives it.
+      # then assigns each target, which as a `for` body's name belongs
+      # to the scope around the loop and outlives it.
       compile_node(node.iter) # receiver: the iterable
 
       l, c = node.line, node.column
-      param_names = node.vars.map { |name| "<for>#{name}" }
+      param_names = node.targets.each_index.map { |i| "<for>#{i}" }.to_a
       for_params = param_names.map { |name| Param.new(name, nil, false, false, false, l, c) }
-      binds = node.vars.zip(param_names).map do |var, param|
-        Assign.new(Identifier.new(var, l, c), Identifier.new(param, l, c), l, c).as(Node)
+      binds = node.targets.zip(param_names).map do |target, param|
+        Assign.new(target, Identifier.new(param, l, c), l, c).as(Node)
       end
       body = Body.new(binds + node.body.stmts, node.body.line, node.body.column)
       blk_chunk, blk_locals = Compiler.compile_proc(

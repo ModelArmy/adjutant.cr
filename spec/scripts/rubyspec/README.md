@@ -25,7 +25,8 @@ ruby/spec commit it was taken at.
    `eval` itself, or of a `SyntaxError` raised through it, is blocked
    (U006).
 5. `proc { }` becomes `->() { }` where the test isn't about procs
-   (U019). Methods a test defines get names unique to the file.
+   (U019). Methods and classes a test defines get names unique to the
+   file, since a class can't be reopened (U003).
 6. A test Adjutant can't run is commented out under
    `# --- BLOCKED: <reason>`, as in `spec/scripts/mruby`. The reason
    names the U-code (UNSUPPORTED.md) or the SCOPE.md entry. A test that

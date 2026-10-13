@@ -69,7 +69,7 @@ module Adjutant
       it "parses for-loop variables split across a newline after the comma" do
         node = parse_expr("for a,\n    b in [[1, 2]]\n  a\nend")
         node.should be_a(ForNode)
-        node.as(ForNode).vars.size.should eq 2
+        node.as(ForNode).targets.size.should eq 2
       end
 
       it "parses case/when patterns split across a newline after the comma" do

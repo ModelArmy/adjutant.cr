@@ -43,24 +43,24 @@ assert("The for expression iterates over an Enumerable passing each element to t
   assert_equal(6, j)
 end
 
-# --- BLOCKED: `for` reads its targets as local names (SCOPE.md, Must
-# Fix).
+# --- BLOCKED: a `for` target, like a multiple assignment's, can't be
+# a splat, a nested pattern or a trailing comma (SCOPE.md, Parser / lexer gaps).
 # assert("The for expression iterates over a list of arrays and destructures with empty comma") do
 #   for i, in [[1,2]]
 #     assert_equal(1, i)
 #   end
 # end
 
-# --- BLOCKED: `for` reads its targets as local names (SCOPE.md, Must
-# Fix).
+# --- BLOCKED: a `for` target, like a multiple assignment's, can't be
+# a splat, a nested pattern or a trailing comma (SCOPE.md, Parser / lexer gaps).
 # assert("The for expression iterates over a list of arrays and destructures with an empty splat") do
 #   for i, * in [[1,2]]
 #     assert_equal(1, i)
 #   end
 # end
 
-# --- BLOCKED: `for` reads its targets as local names (SCOPE.md, Must
-# Fix).
+# --- BLOCKED: a `for` target, like a multiple assignment's, can't be
+# a splat, a nested pattern or a trailing comma (SCOPE.md, Parser / lexer gaps).
 # assert("The for expression iterates over a list of arrays and destructures with a splat") do
 #   for i, *j in [[1,2]]
 #     assert_equal(1, i)
@@ -68,8 +68,8 @@ end
 #   end
 # end
 
-# --- BLOCKED: `for` reads its targets as local names (SCOPE.md, Must
-# Fix).
+# --- BLOCKED: a `for` target, like a multiple assignment's, can't be
+# a splat, a nested pattern or a trailing comma (SCOPE.md, Parser / lexer gaps).
 # assert("The for expression iterates over a list of arrays and destructures with a splat and additional targets") do
 #   for i, *j, k in [[1,2,3,4]]
 #     assert_equal(1, i)
@@ -78,8 +78,8 @@ end
 #   end
 # end
 
-# --- BLOCKED: `for` reads its targets as local names (SCOPE.md, Must
-# Fix).
+# --- BLOCKED: a `for` target, like a multiple assignment's, can't be
+# a splat, a nested pattern or a trailing comma (SCOPE.md, Parser / lexer gaps).
 # assert("The for expression iterates over a list of arrays and destructures with a multi-assignment") do
 #   for (i, j, k) in [[1,2,3]]
 #     assert_equal([1, 2, 3], [i, j, k])
@@ -119,31 +119,28 @@ end
 #   assert_equal(55, j)
 # end
 
-# --- BLOCKED: `for` reads its targets as local names (SCOPE.md, Must
-# Fix).
-# assert("The for expression allows an instance variable as an iterator name") do
-#   m = [1,2,3]
-#   n = 0
-#   for @var in m
-#     n += 1
-#   end
-#   assert_equal(3, @var)
-#   assert_equal(3, n)
-# end
+assert("The for expression allows an instance variable as an iterator name") do
+  m = [1,2,3]
+  n = 0
+  for @var in m
+    n += 1
+  end
+  assert_equal(3, @var)
+  assert_equal(3, n)
+end
 
-# --- BLOCKED: `for` reads its targets as local names (SCOPE.md, Must
-# Fix).
-# assert("The for expression allows a class variable as an iterator name") do
-#   class OFor
-#     m = [1,2,3]
-#     n = 0
-#     for @@var in m
-#       n += 1
-#     end
-#     assert_equal(3, @@var)
-#     assert_equal(3, n)
-#   end
-# end
+assert("The for expression allows a class variable as an iterator name") do
+  class OForClassVariable
+    m = [1,2,3]
+    n = 0
+    for @@var in m
+      n += 1
+    end
+    assert_equal(3, @@var)
+    assert_equal(3, n)
+  end
+  true
+end
 
 # --- BLOCKED: tests a constant warning, which Adjutant doesn't emit;
 # constants are assign-once (U003).
@@ -174,8 +171,8 @@ end
 #   $var = old_global_var
 # end
 
-# --- BLOCKED: `for` reads its targets as local names (SCOPE.md, Must
-# Fix).
+# --- BLOCKED: a `for` target, like a multiple assignment's, can't be
+# an attribute (SCOPE.md, Parser / lexer gaps).
 # assert("The for expression allows an attribute as an iterator name") do
 #   class OFor
 #     attr_accessor :target
@@ -191,8 +188,8 @@ end
 #   assert_equal(3, n)
 # end
 
-# --- BLOCKED: `for` reads its targets as local names (SCOPE.md, Must
-# Fix).
+# --- BLOCKED: a `for` target, like a multiple assignment's, can't be
+# an attribute (SCOPE.md, Parser / lexer gaps).
 # assert("The for expression allows an attribute with safe navigation as an iterator name") do
 #   class OFor
 #     attr_accessor :target
@@ -208,8 +205,8 @@ end
 #   assert_equal(3, n)
 # end
 
-# --- BLOCKED: `for` reads its targets as local names (SCOPE.md, Must
-# Fix).
+# --- BLOCKED: a `for` target, like a multiple assignment's, can't be
+# an attribute (SCOPE.md, Parser / lexer gaps).
 # assert("The for expression allows an attribute with safe navigation on a nil base as an iterator name") do
 #   ofor = nil
 #   m = [1,2,3]
@@ -221,31 +218,27 @@ end
 #   assert_equal(3, n)
 # end
 
-# --- BLOCKED: `for` reads its targets as local names (SCOPE.md, Must
-# Fix).
-# assert("The for expression allows an array index writer as an iterator name") do
-#   arr = [:a, :b, :c]
-#   m = [1,2,3]
-#   n = 0
-#   for arr[1] in m
-#     n += 1
-#   end
-#   assert_equal([:a, 3, :c], arr)
-#   assert_equal(3, n)
-# end
+assert("The for expression allows an array index writer as an iterator name") do
+  arr = [:a, :b, :c]
+  m = [1,2,3]
+  n = 0
+  for arr[1] in m
+    n += 1
+  end
+  assert_equal([:a, 3, :c], arr)
+  assert_equal(3, n)
+end
 
-# --- BLOCKED: `for` reads its targets as local names (SCOPE.md, Must
-# Fix).
-# assert("The for expression allows a hash index writer as an iterator name") do
-#   hash = { a: 10, b: 20, c: 30 }
-#   m = [1,2,3]
-#   n = 0
-#   for hash[:b] in m
-#     n += 1
-#   end
-#   assert_equal({ a: 10, b: 3, c: 30 }, hash)
-#   assert_equal(3, n)
-# end
+assert("The for expression allows a hash index writer as an iterator name") do
+  hash = { a: 10, b: 20, c: 30 }
+  m = [1,2,3]
+  n = 0
+  for hash[:b] in m
+    n += 1
+  end
+  assert_equal({ a: 10, b: 3, c: 30 }, hash)
+  assert_equal(3, n)
+end
 
 assert("The for expression yields only as many values as there are arguments") do
   class OFor

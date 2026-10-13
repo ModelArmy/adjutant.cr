@@ -1380,13 +1380,11 @@ module Adjutant
       l, c = line, col
       open_block("for", l, c)
       expect(TokenKind::KwFor)
-      vars = [] of String
-      vars << @current.lexeme
-      advance
+      # The targets parse as a multiple assignment's do.
+      targets = [parse_expression(0, resolve_assignment: false)] of Node
       while match(TokenKind::Comma)
         skip_newlines
-        vars << @current.lexeme
-        advance
+        targets << parse_expression(0, resolve_assignment: false)
       end
       expect(TokenKind::KwIn)
       @no_do_block = true
@@ -1397,7 +1395,7 @@ module Adjutant
       end
       # A `for` variable joins the current scope and outlives the
       # loop, as in Ruby.
-      vars.each { |v| register_local(v) }
+      targets.each { |target| register_local_if_identifier(target) }
       skip_terminators
       if at_kind?(TokenKind::KwDo)
         advance
@@ -1405,7 +1403,7 @@ module Adjutant
       end
       body = parse_body_until(TokenKind::KwEnd)
       close_block
-      ForNode.new(vars, iter, body, l, c)
+      ForNode.new(targets, iter, body, l, c)
     end
 
     private def parse_case : CaseNode
