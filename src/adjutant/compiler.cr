@@ -660,7 +660,7 @@ module Adjutant
     # --- Ternary ------------------------------------------------------------
 
     private def compile_ternary(node : Ternary) : Nil
-      compile_node(node.cond)
+      compile_condition(node.cond)
       jmp_false = @chunk.emit_jump(Op::JumpIfFalse, node.line)
       compile_node(node.then_branch)
       jmp_end = @chunk.emit_jump(Op::Jump, node.line)
@@ -1129,19 +1129,52 @@ module Adjutant
 
     # --- Control flow -------------------------------------------------------
 
+    # Compiles the condition of an `if`, `elsif`, `unless`, `while`,
+    # `until`, modifier or ternary. A range literal there, or under
+    # `and`, `or` or `not` there, is Ruby's flip-flop, which is
+    # excluded (U023); compiled as a Range, it would always be true.
+    private def compile_condition(cond : Node) : Nil
+      if range = flip_flop(cond)
+        raise CompileError.new(
+          Diagnostic.new(
+            code: "U023",
+            primary: Span.new(
+              line: range.line,
+              column: range.column,
+              length: range.exclusive? ? 3 : 2,
+              label: "flip-flop not supported"
+            )
+          )
+        )
+      end
+      compile_node(cond)
+    end
+
+    private def flip_flop(cond : Node) : RangeLiteral?
+      case cond
+      when RangeLiteral
+        cond
+      when Binary
+        return unless cond.op.in?(TokenKind::AndAnd, TokenKind::KwAnd, TokenKind::OrOr, TokenKind::KwOr)
+        flip_flop(cond.left) || flip_flop(cond.right)
+      when Unary
+        flip_flop(cond.expr) if cond.op == TokenKind::Bang
+      end
+    end
+
     # Each condition jumps past its branch when false, to the next
     # condition or the else-branch; each branch ends with a jump to the
     # end, all patched once the end is known.
     private def compile_if(node : IfNode) : Nil
       end_patches = [] of Int32
-      compile_node(node.cond)
+      compile_condition(node.cond)
       jmp_next = @chunk.emit_jump(Op::JumpIfFalse, node.line)
       compile_body(node.then_branch)
 
       node.elsif_branches.each do |elsif_cond, elsif_body|
         end_patches << @chunk.emit_jump(Op::Jump, node.line)
         @chunk.patch_jump(jmp_next, @chunk.pos)
-        compile_node(elsif_cond)
+        compile_condition(elsif_cond)
         jmp_next = @chunk.emit_jump(Op::JumpIfFalse, node.line)
         compile_body(elsif_body)
       end
@@ -1157,7 +1190,7 @@ module Adjutant
     end
 
     private def compile_unless(node : UnlessNode) : Nil
-      compile_node(node.cond)
+      compile_condition(node.cond)
       jmp_true = @chunk.emit_jump(Op::JumpIfFalse, node.line)
       jmp_body = @chunk.emit_jump(Op::Jump, node.line)
       @chunk.patch_jump(jmp_true, @chunk.pos)
@@ -1178,7 +1211,7 @@ module Adjutant
       scope = LoopScope.new(loop_start, ensure_depth_at_entry: @ensure_stack.size)
       @loop_stack.push(scope)
 
-      compile_node(node.cond)
+      compile_condition(node.cond)
       # `until` inverts the condition.
       @chunk.emit(Op::Not, node.line) if node.until_loop?
       jmp_exit = @chunk.emit_jump(Op::JumpIfFalse, node.line)
@@ -1576,7 +1609,7 @@ module Adjutant
     end
 
     private def compile_modifier_if(node : ModifierIf) : Nil
-      compile_node(node.cond)
+      compile_condition(node.cond)
       @chunk.emit(Op::Not, node.line) if node.negated?
       jmp_skip = @chunk.emit_jump(Op::JumpIfFalse, node.line)
       compile_node(node.body)
@@ -1611,7 +1644,7 @@ module Adjutant
       scope = LoopScope.new(loop_start, ensure_depth_at_entry: @ensure_stack.size)
       @loop_stack.push(scope)
 
-      compile_node(node.cond)
+      compile_condition(node.cond)
       @chunk.emit(Op::Not, node.line) if node.until_loop?
       jmp_exit = @chunk.emit_jump(Op::JumpIfFalse, node.line)
       # Written through the index: LoopScope is a struct.

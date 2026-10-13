@@ -965,6 +965,30 @@ U022 without a block (`Builtins.require_block!`).
 
 ---
 
+### U023 — Flip-flop (a range as a condition)
+
+A range literal written as the condition of `if`, `elsif`, `unless`,
+`while`, `until`, a modifier or a ternary, or as an operand of `and`,
+`or` or `not` there: `lines.each { |l| out << l if l =~ /BEGIN/..l =~ /END/ }`.
+Ruby reads it as a flip-flop, false until its start holds and then
+true until its end does.
+
+**Why:** a flip-flop keeps state between evaluations, one hidden
+boolean per site, and nothing in its text shows it: the same condition
+on the same values answers differently depending on what ran before.
+That fails the test this file's opening sets, that behaviour be
+reasoned about from the script's own text. Built as an ordinary Range
+instead, the condition would always be true, a silently wrong answer.
+
+**Instead:** keep the state in a variable, set when the start
+condition holds and cleared when the end condition does.
+
+**Enforcement — enforced.** The compiler raises U023 at the range
+operator (`Compiler#compile_condition`). A range held in a variable
+and then tested is an ordinary Range, as in Ruby, and always true.
+
+---
+
 ## 2. Design decisions with no script-visible surface
 
 These are closed decisions about Adjutant's own API shape. No script can

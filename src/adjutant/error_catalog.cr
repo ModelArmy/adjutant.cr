@@ -675,6 +675,16 @@ module Adjutant
              "return.",
         help: "Pass a block: `{method} { |x| ... }`."
       ),
+      "U023" => Entry.new(
+        code: "U023",
+        summary: "flip-flop is not supported",
+        why: "A range written as a condition is Ruby's flip-flop: false " \
+             "until its start holds, then true until its end does, with " \
+             "state kept between evaluations that nothing in the script " \
+             "shows (see UNSUPPORTED.md, U023).",
+        help: "Keep the state in a variable: set it when the start " \
+              "condition holds and clear it when the end condition does."
+      ),
       "U007" => Entry.new(
         code: "U007",
         summary: "`{construct}` is not available",

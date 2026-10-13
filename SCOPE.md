@@ -21,18 +21,7 @@ after 1.0. Ordered for working through: security and policy defects
 first, then the Ruby divergences, then design work on policy and
 configuration.
 
-- **A range in a condition is a Range, not a flip-flop.** In Ruby,
-  `a..b` or `a...b` as the condition of `if`, `unless`, `while`,
-  `until` or a ternary, their modifiers included, or as an operand of
-  `and`, `or` or `not` there, is a flip-flop: false until `a` holds,
-  then true until `b` does, its state kept per site. Adjutant builds a
-  Range, which is truthy, so `recorded << i if (i == 4)..(i == 4)`
-  records every `i`. Either implement the flip-flop, a hidden boolean
-  per site that the compiler tests, or reject a range literal in a
-  condition with a U-code, as UNSUPPORTED.md asks of anything left
-  out. Start where the compiler compiles a condition (`compile_if`,
-  `compile_unless`, `compile_while`, the ternary). Confirmed by
-  `spec/scripts/rubyspec/language/if.rb`.
+None open.
 
 ## Will Fix
 

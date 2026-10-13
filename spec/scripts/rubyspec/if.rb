@@ -1,4 +1,4 @@
-# Derived from ruby/spec language/if_spec.rb at 0816047; MIT, see ../LICENSE.
+# Derived from ruby/spec language/if_spec.rb at 0816047; MIT, see LICENSE.
 require "assert"
 
 # --- BLOCKED: a multiple assignment inside parentheses doesn't parse
@@ -249,8 +249,7 @@ end
 #   assert_equal(456, (if false then 123; else 456; end))
 # end
 
-# --- BLOCKED: a range in a condition builds a Range, not a flip-flop
-# (SCOPE.md, Must Fix).
+# --- BLOCKED: flip-flops are excluded (U023).
 # assert("The if expression with a boolean range ('flip-flop' operator) mimics an awk conditional with a single-element inclusive-end range") do
 #   recorded = []
 #   10.times { |i| recorded << i if (i == 4)..(i == 4) }

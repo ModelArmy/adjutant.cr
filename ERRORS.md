@@ -234,6 +234,7 @@ U019|`proc { ... }`                                  |`construct`
 U020|`retry`                                         |—                
 U021|Ruby's effectful core (`File`, `ENV`, `system`) |`name`           
 U022|Enumerator (a call without its block)           |`method`         
+U023|Flip-flop (a range as a condition)              |—                
 
 U005 and U006 are reported when a name that would resolve to one of them
 resolves to nothing else. A script is still free to define its own method

@@ -2,9 +2,9 @@
 
 Ruby's own specification, from [ruby/spec](https://github.com/ruby/spec)
 (MIT, see `LICENSE`), translated to the `assert` API and cut down to the
-subset Adjutant supports. Each file names the spec it comes from and the
-ruby/spec commit it was taken at. `language/` holds the language specs,
-by construct.
+subset Adjutant supports. Each file is named after the spec it comes
+from, less `_spec`, and its first line names that spec and the
+ruby/spec commit it was taken at.
 
 ## Translating a spec
 
