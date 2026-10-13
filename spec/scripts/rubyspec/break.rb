@@ -697,16 +697,14 @@ class BreakTest2
   end
 end
 
-# --- BLOCKED: `break` from a block skips the `ensure` of the methods it
-# leaves (SCOPE.md, Must Fix).
-# assert("Executing break from within a block runs ensures when continuing upward") do
-#   ScratchPad.clear
-#   ScratchPad.record([])
-#
-#   bt2 = BreakTest2.new
-#   bt2.one { break; }
-#   assert_equal([:two_ensure], ScratchPad.recorded)
-# end
+assert("Executing break from within a block runs ensures when continuing upward") do
+  ScratchPad.clear
+  ScratchPad.record([])
+
+  bt2 = BreakTest2.new
+  bt2.one { break; }
+  assert_equal([:two_ensure], ScratchPad.recorded)
+end
 
 assert("Executing break from within a block runs ensures when breaking from a loop") do
   ScratchPad.clear
@@ -724,16 +722,14 @@ assert("Executing break from within a block runs ensures when breaking from a lo
   assert_equal([:begin, :ensure], ScratchPad.recorded)
 end
 
-# --- BLOCKED: `break` from a block skips the `ensure` of the methods it
-# leaves (SCOPE.md, Must Fix).
-# assert("Executing break from within a block doesn't run ensures in the destination method") do
-#   ScratchPad.clear
-#   ScratchPad.record([])
-#
-#   bt2 = BreakTest2.new
-#   bt2.three
-#   assert_equal([:two_ensure, :three_post, :three_ensure], ScratchPad.recorded)
-# end
+assert("Executing break from within a block doesn't run ensures in the destination method") do
+  ScratchPad.clear
+  ScratchPad.record([])
+
+  bt2 = BreakTest2.new
+  bt2.three
+  assert_equal([:two_ensure, :three_post, :three_ensure], ScratchPad.recorded)
+end
 
 # --- BLOCKED: `super` takes no block (SCOPE.md, Parser / lexer gaps).
 # assert("Executing break from within a block works when passing through a super call") do

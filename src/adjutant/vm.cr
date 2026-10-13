@@ -250,6 +250,10 @@ module Adjutant
       # EndEnsure. An error raised inside the ensure body supersedes
       # it, as in Ruby. Cleared on every fresh catch.
       @pending_reraise = nil.as(Value?)
+      # A `break` an ensure body was entered for, with the frame whose
+      # call it ends, resumed by EndEnsure. An error raised inside the
+      # ensure body supersedes it, as in Ruby.
+      @pending_break = nil.as({Value, Frame?}?)
       # Containers being rendered, for `guard_rendering`. VM-wide,
       # since a recursive `inspect` re-enters the VM at each level.
       @rendering_ids = Set(UInt64).new
@@ -621,6 +625,57 @@ module Adjutant
         block_yield, own_yield, block_yield_outer, own_yield_outer)
       @frames.push(frame)
       frame
+    end
+
+    # Unwinds a `break` from a block to `target`, the frame of the call
+    # that received the block, running each `ensure` it leaves,
+    # innermost first, as Ruby does.
+    #
+    # Steps:
+    # 1. In the current frame, enter the innermost open `ensure`, if
+    #    any, leaving the unwind for EndEnsure to resume.
+    # 2. At `target`, end its call: pop it and push `value` to its
+    #    caller.
+    # 3. With no target, stop at the first method frame and push
+    #    `value` there. Ruby raises LocalJumpError.
+    # 4. Otherwise pop the frame and go on. When no frames remain, the
+    #    block was run by a native method, and BlockBreakSignal ends
+    #    that call with `value`.
+    private def unwind_break(value : Value, target : Frame?) : Nil
+      loop do
+        frame = current_frame
+        if ensure_ip = break_ensure_ip(frame)
+          (@stack.size - frame.stack_base).times { @stack.pop } if @stack.size > frame.stack_base
+          @pending_break = {value, target}
+          frame.ip = ensure_ip
+          return
+        end
+        if target.nil? && !frame.proc.is_block?
+          push(value)
+          return
+        end
+        (@stack.size - frame.stack_base).times { @stack.pop } if @stack.size > frame.stack_base
+        pop_frame
+        if target && frame.same?(target)
+          push(value) unless @frames.empty?
+          return
+        end
+        raise BlockBreakSignal.new(value) if @frames.empty?
+      end
+    end
+
+    # The `ensure` target of the innermost construct open in `frame`
+    # that has one. A `break` passes a rescue by, so constructs with
+    # only a rescue are dropped, and a rescue beside the `ensure` is
+    # cleared. Nil when no `ensure` is open.
+    private def break_ensure_ip(frame : Frame) : Int32?
+      while entry = frame.handlers.last?
+        if ensure_ip = entry.ensure_ip
+          entry.rescue_ip = nil
+          return ensure_ip
+        end
+        frame.handlers.pop
+      end
     end
 
     private def pop_frame : Frame
@@ -1122,33 +1177,10 @@ module Adjutant
             end
           when Op::BlockBreak
             val = pop
-            # Pops consecutive block frames, remembering the outermost,
-            # which `yield` pushed if the break came through one.
-            last_popped_proc = nil.as(ScriptProc?)
-            while !@frames.empty? && @frames.last.proc.is_block?
-              sb = @frames.last.stack_base; (@stack.size - sb).times { @stack.pop } if @stack.size > sb
-              last_popped_proc = @frames.last.proc
-              pop_frame
-            end
-            if @frames.empty?
-              # No frames left: the block was run by a native method
-              # (`invoke_internal`). The nearest `call_native` catches
-              # the signal, and `invoke_internal` restores the outer
-              # frames.
-              raise BlockBreakSignal.new(val)
-            elsif last_popped_proc && @frames.last.block == last_popped_proc
-              # This frame yielded to the block, so the break ends its
-              # call, as in Ruby: pop it, as Ret does, and push the
-              # value to its caller.
-              landed = @frames.last
-              (@stack.size - landed.stack_base).times { @stack.pop } if @stack.size > landed.stack_base
-              pop_frame
-              push(val) unless @frames.empty?
-            else
-              # A `break` outside any loop or block pushes its value and
-              # carries on. Ruby raises LocalJumpError.
-              push(val)
-            end
+            # The call that received this block ends: the nearest method
+            # frame whose block it is.
+            target = @frames.reverse_each.find { |frame| !frame.proc.is_block? && frame.block.same?(f.proc) }
+            unwind_break(val, target)
 
             # --- Exception handling ---------------------------------------
           when Op::Try
@@ -1175,6 +1207,9 @@ module Adjutant
             if pending = @pending_reraise
               @pending_reraise = nil
               raise RuntimeError.new(error_message(pending), f, error_value: pending)
+            elsif pending_break = @pending_break
+              @pending_break = nil
+              unwind_break(*pending_break)
             end
           when Op::Throw
             val = pop
@@ -1205,8 +1240,9 @@ module Adjutant
             raise internal_diagnostic("I001", {"opcode" => inst.op.to_s}, f)
           end
         rescue ex : RuntimeError
-          # A new error supersedes any re-raise still pending.
+          # A new error supersedes any re-raise or break still pending.
           @pending_reraise = nil
+          @pending_break = nil
 
           # Unwinds frames to the innermost handler, in this frame or a
           # caller. Within an entry the rescue target is tried before the

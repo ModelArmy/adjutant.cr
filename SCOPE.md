@@ -82,14 +82,6 @@ configuration.
   and by probing. Fix: require a newline, `;` or closing token between
   statements, and add the missing tokens to `arg_follows_no_paren?`.
 
-- **`break` from a block skips the `ensure` of the methods it leaves.**
-  With `def direct; yield; ensure; LOG << :e; end`, `direct { break; }`
-  never runs the `ensure`, and nor does any method between the block
-  and the call it breaks out of. Ruby runs each one. Cleanup code is
-  skipped silently. Confirmed by `spec/scripts/rubyspec/break.rb` and by
-  probing. Fix: unwind `break` through the frames' ensure handlers, as
-  `raise` does.
-
 - **`loop`'s body shares the enclosing scope.** In Ruby `loop` is a
   method taking a block, so a variable first assigned in its body is
   new on every iteration and gone after the loop. `parse_loop` parses
