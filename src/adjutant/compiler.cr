@@ -1129,30 +1129,31 @@ module Adjutant
 
     # --- Control flow -------------------------------------------------------
 
+    # Each condition jumps past its branch when false, to the next
+    # condition or the else-branch; each branch ends with a jump to the
+    # end, all patched once the end is known.
     private def compile_if(node : IfNode) : Nil
+      end_patches = [] of Int32
       compile_node(node.cond)
-      jmp_false = @chunk.emit_jump(Op::JumpIfFalse, node.line)
+      jmp_next = @chunk.emit_jump(Op::JumpIfFalse, node.line)
       compile_body(node.then_branch)
-      patches = [jmp_false] of Int32
 
       node.elsif_branches.each do |elsif_cond, elsif_body|
-        jmp_end = @chunk.emit_jump(Op::Jump, node.line)
-        patches << jmp_end
-        @chunk.patch_jump(patches.shift, @chunk.pos)
+        end_patches << @chunk.emit_jump(Op::Jump, node.line)
+        @chunk.patch_jump(jmp_next, @chunk.pos)
         compile_node(elsif_cond)
-        jmp_f = @chunk.emit_jump(Op::JumpIfFalse, node.line)
+        jmp_next = @chunk.emit_jump(Op::JumpIfFalse, node.line)
         compile_body(elsif_body)
-        patches.unshift(jmp_f)
       end
 
-      jmp_end = @chunk.emit_jump(Op::Jump, node.line)
-      @chunk.patch_jump(patches.first, @chunk.pos)
+      end_patches << @chunk.emit_jump(Op::Jump, node.line)
+      @chunk.patch_jump(jmp_next, @chunk.pos)
       if else_b = node.else_branch
         compile_body(else_b)
       else
         emit_nil(node.line)
       end
-      @chunk.patch_jump(jmp_end, @chunk.pos)
+      end_patches.each { |patch| @chunk.patch_jump(patch, @chunk.pos) }
     end
 
     private def compile_unless(node : UnlessNode) : Nil
