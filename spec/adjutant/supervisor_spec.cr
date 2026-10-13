@@ -3,8 +3,10 @@ require "file_utils"
 
 module Adjutant
   # A Supervisor::Link over pipes, with the worker's ends exposed for a
-  # spec to drive. Killing it closes the worker's ends, as a process's
-  # death would, and leaves the Supervisor's alone.
+  # spec to drive. Killing it, or the worker ending, closes the worker's
+  # ends, as a process's death would, and leaves the Supervisor's alone.
+  # The pipes in `hold` stay open, as if a process the worker started
+  # had them.
   private class SupervisorSpecLink < Supervisor::Link
     getter input : IO
     getter output : IO
@@ -13,8 +15,9 @@ module Adjutant
     getter worker_out : IO
     getter worker_err : IO
     getter? killed = false
+    @ended = false
 
-    def initialize
+    def initialize(@hold : Array(Supervisor::Pipe) = [] of Supervisor::Pipe)
       @worker_in, @input = IO.pipe
       @output, @worker_out = IO.pipe
       @error, @worker_err = IO.pipe
@@ -25,13 +28,18 @@ module Adjutant
       close_worker
     end
 
+    def ended? : Bool
+      @ended
+    end
+
     def wait : Process::Status?
       nil
     end
 
     def close_worker : Nil
-      @worker_out.close
-      @worker_err.close
+      @ended = true
+      @worker_out.close unless @hold.includes?(Supervisor::Pipe::Stdout)
+      @worker_err.close unless @hold.includes?(Supervisor::Pipe::Stderr)
     end
   end
 
@@ -51,19 +59,22 @@ module Adjutant
   end
 
   # A Supervisor talking to a scripted fake worker. Each step is a line
-  # to write, `:read` to read one line, or `:stall` to wait without end.
-  # `:hello` writes a correct hello.
+  # to write, `:read` to read one line, `:stall` to wait without end, or
+  # `:chatter` to write a log entry every 100 ms for 5 seconds, killed
+  # or not. `:hello` writes a correct hello. `hold` is the link's.
   private def self.supervisor_with_script(steps : Array(String | Symbol), max_output : Int64 = Supervisor::DEFAULT_MAX_OUTPUT,
-                                          grace : Time::Span = Supervisor::DEFAULT_GRACE) : {Supervisor, SupervisorSpecLink}
-    link = SupervisorSpecLink.new
+                                          grace : Time::Span = Supervisor::DEFAULT_GRACE,
+                                          hold : Array(Supervisor::Pipe) = [] of Supervisor::Pipe) : {Supervisor, SupervisorSpecLink}
+    link = SupervisorSpecLink.new(hold)
     spawn do
       begin
         steps.each do |step|
           case step
-          when :hello then link.worker_out << Protocol::Hello.new.to_json << '\n'
-          when :read  then link.worker_in.gets
-          when :stall then sleep 1.hour
-          when String then link.worker_out << step << '\n'
+          when :hello   then link.worker_out << Protocol::Hello.new.to_json << '\n'
+          when :read    then link.worker_in.gets
+          when :stall   then sleep 1.hour
+          when :chatter then supervisor_chatter(link.worker_out)
+          when String   then link.worker_out << step << '\n'
           end
           link.worker_out.flush
         end
@@ -74,6 +85,14 @@ module Adjutant
       end
     end
     {Supervisor.new(link, grace, max_output), link}
+  end
+
+  private def self.supervisor_chatter(io : IO) : Nil
+    50.times do
+      io << SUPERVISOR_LOG << '\n'
+      io.flush
+      sleep 100.milliseconds
+    end
   end
 
   private def self.supervisor_run(supervisor : Supervisor, source : String = "1", policy : String = "risk_flow: none",
@@ -113,6 +132,9 @@ module Adjutant
         default: reject
       YAML
   end
+
+  SUPERVISOR_COMPLETED = %({"type":"finished","outcome":{"type":"completed","value":"1","truncated":false}})
+  SUPERVISOR_LOG       = %({"type":"log","severity":"info","source":"spec","message":"still here"})
 
   SUPERVISOR_ASK_REQUEST = %({"call_name":"c","risk":{"effects":[],"reversible":"yes","severity":"info"},"authorities":[],"matches":[],"filename":"f","line":1})
 
@@ -259,6 +281,52 @@ module Adjutant
       it "refuses output past max_output" do
         supervisor, _ = supervisor_with_script([:hello, :read, %({"type":"output","text":"hello"})] of String | Symbol, max_output: 4)
         supervisor_run(supervisor).outcome.should eq Supervisor::Violated.new("output over 4 bytes")
+      end
+    end
+
+    describe "with a worker that leaves a process holding its pipes" do
+      it "stops reading stdout soon after the worker finishes, and reports it" do
+        steps = [:hello, :read, SUPERVISOR_COMPLETED] of String | Symbol
+        supervisor, _ = supervisor_with_script(steps, hold: [Supervisor::Pipe::Stdout])
+        report = supervisor_run(supervisor, ceiling: 30.seconds)
+        report.outcome.should eq Supervisor::Violated.new("stdout held open after the worker ended")
+        report.observed.held_open.should eq [Supervisor::Pipe::Stdout]
+        report.observed.elapsed.should be < Supervisor::PIPE_WAIT + 2.seconds
+      end
+
+      it "stops reading stderr soon after the worker finishes, and reports it" do
+        steps = [:hello, :read, SUPERVISOR_COMPLETED] of String | Symbol
+        supervisor, _ = supervisor_with_script(steps, hold: [Supervisor::Pipe::Stderr])
+        report = supervisor_run(supervisor, ceiling: 30.seconds)
+        report.outcome.should eq Supervisor::Violated.new("stderr held open after the worker ended")
+        report.observed.held_open.should eq [Supervisor::Pipe::Stderr]
+        report.observed.elapsed.should be < Supervisor::PIPE_WAIT + 2.seconds
+      end
+
+      it "returns from a killed worker within its ceiling and the pipe wait" do
+        steps = [:hello, :read, :stall] of String | Symbol
+        supervisor, link = supervisor_with_script(steps, hold: [Supervisor::Pipe::Stdout, Supervisor::Pipe::Stderr])
+        report = supervisor_run(supervisor, ceiling: 200.milliseconds)
+        report.outcome.should eq Supervisor::TimedOut.new(Supervisor::Clock::Ceiling)
+        report.observed.held_open.should eq [Supervisor::Pipe::Stdout, Supervisor::Pipe::Stderr]
+        report.observed.elapsed.should be < 200.milliseconds + Supervisor::PIPE_WAIT + 1.second
+        link.killed?.should be_true
+      end
+
+      it "returns within its ceiling and the pipe wait when the process keeps writing" do
+        steps = [:hello, :read, :chatter] of String | Symbol
+        supervisor, _ = supervisor_with_script(steps, hold: [Supervisor::Pipe::Stdout])
+        report = supervisor_run(supervisor, ceiling: 200.milliseconds)
+        report.outcome.should eq Supervisor::TimedOut.new(Supervisor::Clock::Ceiling)
+        report.observed.elapsed.should be < 200.milliseconds + Supervisor::PIPE_WAIT + 1.second
+      end
+
+      it "doesn't count the host's time against a worker that ended with messages still in the pipe" do
+        steps = [:hello, :read, %({"type":"output","text":"x"}), SUPERVISOR_COMPLETED] of String | Symbol
+        supervisor, _ = supervisor_with_script(steps)
+        report = supervisor.run("1", "risk_flow: none", ceiling: 30.seconds) { sleep Supervisor::PIPE_WAIT * 2 }
+        report.outcome.should eq Supervisor::Completed.new("1", false)
+        report.observed.held_open.should be_empty
       end
     end
   end

@@ -2,7 +2,7 @@
 
 Working notes between development sessions, kept current by whoever ends a session. Not user documentation.
 
-Last updated on `main`, after `worker-supervisor` (#82) merged.
+Last updated on `supervisor-held-pipe`, ready to merge.
 
 ## How to use this document
 
@@ -75,6 +75,8 @@ Key documents: `SCOPE.md` (known defects and gaps: Must Fix, Will Fix), `LEGATE.
 24. **Read what Crystal's serialisers write and accept.** `Time#to_json` drops fractions of a second; `Enum.from_json` folds case; a malformed `Time` raises `Time::Format::Error` or `ArgumentError`, not a `JSON::Error`; `JSON::Builder` stops at 99 levels of nesting, before the parser's 512. Each needed a converter or a wider `rescue` in the protocol.
 25. **An exception from a host callback must not be one a script can rescue.** In `call_native` it becomes N001 (lesson 14), and the script carries on. `Worker::Broken`, a `FatalSignal`, carries a protocol failure past every script `rescue`, cleaning up as it goes, and `Worker` unwraps it after `eval`.
 26. **On Windows, never wait inside a Crystal `rescue` or `ensure`** (DEVELOPMENT.md, Exception handling). The crash needs a particular fiber interleaving, so it passes now and then: one green run proves nothing, five under random seeds say more. In a CI log from `crystal spec -v`, each finished example's name appears twice (printed at its start, then again after `\r`), so the crash is in the example after the last pair. Build the spec and run it directly to see the exit code, which `crystal spec` drops.
+27. **A check on time must charge only the time its subject spent.** The deadline pauses while the host decides; the held-pipe check counts only time a reader waits on its pipe, so a slow host block can't make an honest worker look taken over. A timer that also bounds an adversary needs a hard stop as well: a process writing every 100 ms resets any idle timer, so the Supervisor also stops at the ceiling plus `PIPE_WAIT`.
+28. **Read what a library call does besides its job.** Crystal's `Process#wait` closes the child's pipes in its `ensure`, so the Supervisor calls it only once nothing reads them, and learns that the worker ended from `terminated?` instead. That has its own catch: on Windows a process that exited with code 259 (`STILL_ACTIVE`) looks alive, which is why a kill also starts the pipe wait.
 
 ---
 
@@ -87,9 +89,11 @@ Key documents: `SCOPE.md` (known defects and gaps: Must Fix, Will Fix), `LEGATE.
 3. **`Worker`** serves one request and exits. **`Supervisor`** drives one worker: two clocks (a deadline that pauses during decisions, a ceiling that never does), a backstop for every limit, and outcomes and events as unions a `case … in` must cover. Its report keeps what the worker said apart from what the Supervisor saw (`Observed`).
 4. **`samples/worker_host.cr`** is the reference host and the fixture for the process specs, which need `ops build` first.
 
-README.md's "Sandboxing the worker" shows a host launching the worker under Cordon and handing the process to `Supervisor.new`. Adjutant starts no sandbox and derives no sandbox policy: both are the host's. A process that a taken-over worker starts can hold the Supervisor's read open indefinitely unless the host's sandbox kills it, as Cordon does on Linux; that is Must Fix's one entry.
+`supervisor-held-pipe` stops a process left behind by a taken-over worker from hanging the Supervisor. Once the worker has ended or been killed, a pipe that keeps its reader waiting `PIPE_WAIT` (1 s) is abandoned, never closed, and listed in `Observed#held_open`, and the request ends `Violated`, or `TimedOut` if a clock ended it. A process that keeps writing is cut off at the ceiling plus `PIPE_WAIT`. Stdout is read in its own fiber, `Link` gains `ended?`, `STDERR_WAIT` became `PIPE_WAIT`, and `exit_status` is nil when a pipe was held. DEVELOPMENT.md, The Supervisor's fibers, has the fibers and the two rules that keep them safe on Windows.
 
-`research/WORKER_DESIGN.md` is the design, including what a host can trust from a worker. CI runs specs in random order, and on Windows repeats the Supervisor specs five times. Will Fix has an Error reporting entry: `render_error` won't take an error rescued with others. SCOPE's streamed-fetch entry has a lead from the crash in lesson 26.
+README.md's "Sandboxing the worker" shows a host launching the worker under Cordon and handing the process to `Supervisor.new`. Adjutant starts no sandbox and derives no sandbox policy; both are the host's, as is killing a process a taken-over worker leaves behind.
+
+`research/WORKER_DESIGN.md` is the design, including what a host can trust from a worker. CI runs specs in random order, and on Windows repeats the Supervisor specs five times. Must Fix is empty. Will Fix has an Error reporting entry: `render_error` won't take an error rescued with others. SCOPE's streamed-fetch entry has a lead from the crash in lesson 26.
 
 Model           |Latest result|Notes                                           
 ----------------|-------------|------------------------------------------------
@@ -101,7 +105,7 @@ All three predate #69, which renamed the classes the skill teaches, and the skil
 
 ## 6. Next
 
-1. **The Supervisor hang** (Must Fix), on its own branch: the fix and its spec together, since the spec hangs on the current code.
+1. **Merge `supervisor-held-pipe`.**
 2. **Sit the exam fresh** on all three models, to confirm the renamed skill and the task policies' format.
 3. **Test the streamed-fetch lead on Windows** (SCOPE.md): restructure `Interpreter#eval`'s `ensure`, then un-pend the spec.
 4. **`Legate::Path#under?`** (Will Fix, Legate): see §7.

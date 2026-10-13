@@ -42,6 +42,18 @@ module Adjutant
       report.observed.exit_status.try(&.success?).should be_false
     end
 
+    it "stops reading pipes a process the worker left holds open, without collecting the status" do
+      # A shell that starts a child, which inherits its pipes, and exits.
+      shell = {% if flag?(:win32) %} "cmd.exe" {% else %} "/bin/sh" {% end %}
+      args = {% if flag?(:win32) %} ["/c", "start /b ping -n 10 127.0.0.1 >NUL 2>NUL"] {% else %} ["-c", "sleep 10 &"] {% end %}
+      process = Process.new(shell, args, input: :pipe, output: :pipe, error: :pipe)
+      report = Supervisor.new(process).run("1", "risk_flow: none", ceiling: 30.seconds) { }
+      report.outcome.should eq Supervisor::Violated.new("stdout and stderr held open after the worker ended")
+      report.observed.held_open.should eq [Supervisor::Pipe::Stdout, Supervisor::Pipe::Stderr]
+      report.observed.exit_status.should be_nil
+      report.observed.elapsed.should be < 10.seconds
+    end
+
     it "reports an executable that doesn't serve as Crashed, keeping its stderr" do
       report = Supervisor.new(worker_process(args: [] of String)).run("1", "risk_flow: none", ceiling: 30.seconds) { }
       report.outcome.should eq Supervisor::Crashed.new

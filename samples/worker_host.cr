@@ -64,6 +64,10 @@ def give_up(outcome : Adjutant::Supervisor::Crashed | Adjutant::Supervisor::Time
     end
   STDERR.puts reason
   STDERR.puts "Its stderr ended with:\n#{observed.stderr}" unless observed.stderr.empty?
+  unless observed.held_open.empty?
+    held = observed.held_open.map(&.to_s.downcase).join(" and ")
+    STDERR.puts "A process the worker started held its #{held} open, and may still be running."
+  end
   exit 1
 end
 
