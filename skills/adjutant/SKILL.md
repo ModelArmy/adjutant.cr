@@ -36,7 +36,6 @@ What is different, in order of importance:
 - `arr.count { ... }` → `arr.select { ... }.size`
 - `arr.find { ... }` → `arr.select { ... }.first`
 - `arr.group_by { ... }` → A Hash of Arrays built in `each`
-- `arr.map(&:name)` → `arr.map { |x| x.name }`
 - `hash.map`, `select`, `sort_by`, `find` → `hash.to_a.map { |pair| ... }` or `hash.each { |k, v| ... }`
 - `hash.fetch(k, d)`, `dig` → `hash.key?(k) ? hash[k] : d`; chain `[]`
 - `Hash.new(0)`, `counts[k] += 1` on a key not yet seen → `counts[k] = (counts[k] || 0) + 1`; a missing key is `nil`, and `nil + 1` is a NoMethodError
