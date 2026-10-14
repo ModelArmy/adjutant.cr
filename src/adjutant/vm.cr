@@ -192,6 +192,18 @@ module Adjutant
   # innermost native call catches it, so in
   # `outer.each { inner.each { break } }` only the inner `each` ends.
   # Not a RuntimeError, so no script `rescue` can catch it.
+  # A `return` in a block that has left the frames of this run, as
+  # when the block was run by a native method. It carries the value to
+  # the run that holds `home`, the locals of the frame it leaves.
+  class BlockReturnSignal < Exception
+    getter value : Value
+    getter home : Array(Value)
+
+    def initialize(@value, @home)
+      super("block return")
+    end
+  end
+
   class BlockBreakSignal < Exception
     getter value : Value
 
@@ -254,6 +266,9 @@ module Adjutant
       # call it ends, resumed by EndEnsure. An error raised inside the
       # ensure body supersedes it, as in Ruby.
       @pending_break = nil.as({Value, Frame?}?)
+      # A block's `return` an ensure body was entered for, with the
+      # locals of the frame it leaves, resumed by EndEnsure.
+      @pending_return = nil.as({Value, Array(Value)}?)
       # Containers being rendered, for `guard_rendering`. VM-wide,
       # since a recursive `inspect` re-enters the VM at each level.
       @rendering_ids = Set(UInt64).new
@@ -664,6 +679,39 @@ module Adjutant
       end
     end
 
+    # Unwinds a block's `return` to `home`, the locals of the method or
+    # lambda frame it leaves, running each `ensure` on the way,
+    # innermost first, as Ruby does. Returns the value when that frame
+    # was the last of this run, for `execute` to return; nil otherwise.
+    #
+    # Steps:
+    # 1. In the current frame, enter the innermost open `ensure`, if
+    #    any, leaving the unwind for EndEnsure to resume.
+    # 2. Pop the frame. If it was the home frame, push `value` to its
+    #    caller, or return it when no frames remain.
+    # 3. When no frames remain short of home, the block was run by a
+    #    native method: BlockReturnSignal carries the value out to the
+    #    run that holds the home frame.
+    private def unwind_return(value : Value, home : Array(Value)) : Value?
+      loop do
+        frame = current_frame
+        if ensure_ip = break_ensure_ip(frame)
+          (@stack.size - frame.stack_base).times { @stack.pop } if @stack.size > frame.stack_base
+          @pending_return = {value, home}
+          frame.ip = ensure_ip
+          return
+        end
+        (@stack.size - frame.stack_base).times { @stack.pop } if @stack.size > frame.stack_base
+        pop_frame
+        if frame.locals.same?(home)
+          return value if @frames.empty?
+          push(value)
+          return
+        end
+        raise BlockReturnSignal.new(value, home) if @frames.empty?
+      end
+    end
+
     # The `ensure` target of the innermost construct open in `frame`
     # that has one. A `break` passes a rescue by, so constructs with
     # only a rescue are dropped, and a rescue beside the `ensure` is
@@ -953,6 +1001,18 @@ module Adjutant
             depth_before = @frames.size
             result = dispatch_super(f, args, f.filename, inst.line, zsuper: zsuper)
             push(result) if @frames.size == depth_before
+          when Op::BlockReturn
+            val = pop
+            if home = f.outer_locals.try(&.[inst.a.to_i - 1]?)
+              if returned = unwind_return(val, home)
+                result = returned
+              end
+            else
+              # No scope to leave beyond this frame: return from it.
+              f.stack_base.upto(@stack.size - 1) { @stack.pop } if @stack.size > f.stack_base
+              pop_frame
+              @frames.empty? ? (result = val) : push(val)
+            end
           when Op::Ret
             result = pop
             # Drops this frame's leftover stack values.
@@ -1212,6 +1272,11 @@ module Adjutant
             elsif pending_break = @pending_break
               @pending_break = nil
               unwind_break(*pending_break)
+            elsif pending_return = @pending_return
+              @pending_return = nil
+              if returned = unwind_return(*pending_return)
+                result = returned
+              end
             end
           when Op::Throw
             val = pop
@@ -1241,10 +1306,19 @@ module Adjutant
           else
             raise internal_diagnostic("I001", {"opcode" => inst.op.to_s}, f)
           end
+        rescue ex : BlockReturnSignal
+          # A block's `return` that left a nested run: resumed here if
+          # its home frame is in this run, passed on otherwise.
+          raise ex unless @frames.any?(&.locals.same?(ex.home))
+          if returned = unwind_return(ex.value, ex.home)
+            result = returned
+          end
         rescue ex : RuntimeError
-          # A new error supersedes any re-raise or break still pending.
+          # A new error supersedes any re-raise, break or return still
+          # pending.
           @pending_reraise = nil
           @pending_break = nil
+          @pending_return = nil
 
           # Unwinds frames to the innermost handler, in this frame or a
           # caller. Within an entry the rescue target is tried before the
@@ -1712,6 +1786,9 @@ module Adjutant
       # A `break` in the block this call received ends the call with
       # the break's value, as in Ruby.
       ex.value
+    rescue ex : BlockReturnSignal
+      # A block's `return` passes through to the run holding its home.
+      raise ex
     rescue ex : FatalSignal
       # A FatalSignal (a denied grant, an exhausted budget) passes
       # through unchanged, past every `rescue`, including

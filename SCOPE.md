@@ -43,27 +43,14 @@ configuration.
   receiver isn't `self` with a U-code, beside U014. Confirmed by
   `spec/scripts/rubyspec/for.rb` and by probing.
 
-- **`return` in a block only leaves the block.** `compile_return`
-  emits `Ret` wherever it is, so in a block it acts as `next`: with
-  `def m; [1, 2].each { return :early }; :late; end`, `m` gives
-  `:late`, and the same holds for a block run by `yield`. In Ruby a
-  block's `return` leaves the method the block was written in, running
-  the `ensure`s on the way. A silent wrong answer, and a common Ruby
-  idiom (`items.each { |x| return x if ... }`). UNSUPPORTED.md excludes
-  `proc { }` (U019) for exactly this reason, but every block has it.
-  Needs a decision: implement it, a signal that unwinds to the block's
-  home method across native calls as `break`'s does, or reject
-  `return` in a block with a U-code. Confirmed by probing while fixing
-  `loop`.
-
 - **Closures made in different `loop` iterations share its body's
   variables.** The body runs inline in the enclosing frame, with the
   names it first assigns reset each iteration and gone after the loop,
   so a lambda made in one iteration sees later iterations' values:
   collecting `-> { x }` over three iterations gives `[2, 2, 2]` where
   Ruby gives `[0, 1, 2]`. `each`'s blocks are correct. Fix: compile
-  the body as a block passed to a native `loop`, which needs a block's
-  `return` to leave its method first (above). Confirmed by probing.
+  the body as a block passed to a native `loop`, now that a block's
+  `return` leaves its method. Confirmed by probing.
 
 - **`require` parses only as a statement.** `parse_statement`
   dispatches `KwRequire` to `parse_require`, but `parse_primary`

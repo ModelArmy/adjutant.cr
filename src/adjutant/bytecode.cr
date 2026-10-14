@@ -58,7 +58,8 @@ module Adjutant
     # arguments are popped as for Call.
     Super
 
-    Ret # return top of stack from current frame
+    Ret         # return top of stack from current frame
+    BlockReturn # `return` in a block: leave the method or lambda `a` scopes out with the top of stack
 
     # Classes and methods
     GetClass     # push current frame's self

@@ -64,6 +64,8 @@ module Adjutant
     getter vars : Hash(String, Int32)
     property next_slot : Int32
     getter? is_block : Bool
+    # A lambda's body: a block in scope, but `return` leaves it.
+    getter? is_lambda : Bool
     getter parent : CompilerScope?
     # A `for` body: a block at runtime, but a name it assigns belongs
     # to the scope the loop is in, as in Ruby.
@@ -74,7 +76,7 @@ module Adjutant
     # enclosing frame, so its locals need fresh slots, but it must not
     # close over the enclosing locals (Ruby raises NameError), so it
     # gets no `parent`.
-    def initialize(@is_block = false, @parent = nil, starting_slot : Int32 = 0, @for_body = false)
+    def initialize(@is_block = false, @parent = nil, starting_slot : Int32 = 0, @for_body = false, @is_lambda = false)
       @vars = {} of String => Int32
       @next_slot = starting_slot
     end
@@ -164,10 +166,11 @@ module Adjutant
       def_depth : Int32 = 0,
       enclosing_method : String? = nil,
       for_body : Bool = false,
+      lambda_body : Bool = false,
     ) : {Chunk, Int32}
       c = new(symbols, def_depth)
       c.enclosing_method = enclosing_method
-      scope = CompilerScope.new(in_block, parent_scope, for_body: for_body)
+      scope = CompilerScope.new(in_block, parent_scope, for_body: for_body, is_lambda: lambda_body)
       c.scope = scope
       slots = params.map { |param| scope.define(param.name) }
       c.emit_default_prologue(params, slots)
@@ -836,7 +839,9 @@ module Adjutant
           in_block: true,
           parent_scope: @scope,
           def_depth: @def_depth,
-          enclosing_method: @enclosing_method
+          enclosing_method: @enclosing_method,
+          # `lambda { }` makes its block a lambda, which `return` leaves.
+          lambda_body: node.receiver.nil? && node.method == "lambda"
         )
         sproc = ScriptProc.new(blk_chunk, "<block>", blk_params, blk_locals, true,
           ast_params: blk.params, home_method: @enclosing_method)
@@ -1118,6 +1123,7 @@ module Adjutant
         node.body, @symbols,
         params: node.params,
         in_block: true,
+        lambda_body: true,
         parent_scope: @scope,
         enclosing_method: @enclosing_method,
         # A lambda can run later and repeatedly, like a method, so a
@@ -1360,13 +1366,32 @@ module Adjutant
       end_patches.each { |patch| @chunk.patch_jump(patch, @chunk.pos) }
     end
 
+    # In a method or lambda, `return` leaves it. In a block it leaves
+    # the method or lambda the block was written in: `BlockReturn`
+    # carries how many block scopes out that is.
     private def compile_return(node : ReturnNode) : Nil
       if v = node.value
         compile_node(v)
       else
         emit_nil(node.line)
       end
-      @chunk.emit(Op::Ret, node.line)
+      if (depth = block_return_depth) > 0
+        @chunk.emit(Op::BlockReturn, node.line, a: depth.to_u8)
+      else
+        @chunk.emit(Op::Ret, node.line)
+      end
+    end
+
+    # How many block scopes lie between here and the nearest method,
+    # lambda or top level: 0 outside a block.
+    private def block_return_depth : Int32
+      depth = 0
+      scope = @scope
+      while scope && scope.is_block? && !scope.is_lambda?
+        depth += 1
+        scope = scope.parent
+      end
+      depth
     end
 
     # Before a `break`, `next` or `redo` jumps out of begin regions,
