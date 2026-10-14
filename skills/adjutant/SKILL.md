@@ -41,7 +41,6 @@ What is different, in order of importance:
 - `Hash.new(0)`, `counts[k] += 1` on a key not yet seen → `counts[k] = (counts[k] || 0) + 1`; a missing key is `nil`, and `nil + 1` is a NoMethodError
 - `"ab" * 3`, `"%d" % n`, `format` → Interpolation: `"#{n}"`
 - `str << "x"` → `str = str + "x"`
-- `x ** 2` → `x * x`
 - `obj.count += 1` → `obj.count = obj.count + 1`
 - `foo(*args)` → Pass the Array itself
 - `.method` at the start of a line → End the previous line with `.` instead
@@ -71,9 +70,9 @@ These are complete lists. `<`, `<=`, `>`, `>=` order numbers with numbers, Strin
 
 **Every object**: `nil?` `is_a?` `kind_of?` `class` `respond_to?` `equal?` `dup` `clone` `to_s` `inspect`
 
-**Integer**: `+ - * / %` `& | ^ << >>` `abs` `ceil` `floor` `round` `truncate` `even?` `odd?` `zero?` `next` `succ` `times` `to_i` `to_f` `to_s`
+**Integer**: `+ - * / % **` `& | ^ << >>` `abs` `ceil` `floor` `round` `truncate` `even?` `odd?` `zero?` `next` `succ` `times` `to_i` `to_f` `to_s`
 
-**Float**: `+ - * / %` `abs` `ceil` `floor` `round` `truncate` `finite?` `infinite?` `nan?` `to_i` `to_f` `to_s`
+**Float**: `+ - * / % **` `abs` `ceil` `floor` `round` `truncate` `finite?` `infinite?` `nan?` `to_i` `to_f` `to_s`
 
 **String**: `+` `[i]` `[range]` `[start, length]` `[substring]` `[regexp]` `=~` `length` `size` `empty?` `upcase` `downcase` `capitalize` `strip` `chomp` `reverse` `chars` `each_line` `split` `include?` `start_with?` `end_with?` `index` `rindex` `sub` `gsub` `match` `to_i` `to_f` `to_sym`
 
