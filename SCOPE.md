@@ -21,21 +21,22 @@ after 1.0. Ordered for working through: security and policy defects
 first, then the Ruby divergences, then design work on policy and
 configuration.
 
-- **Native methods drop their inputs' risk-flow labels.** Combining
-  values joins their labels (DEVELOPMENT.md, "Information flow
-  control"), and operators do so in `VM#exec_binary`, but each native
-  method sets its result's label itself, and many don't. `Integer#to_s`
-  and `Float#to_s` return an unlabelled String, so `secret.to_s` reaches
-  a network call unchecked where `"#{secret}"` wouldn't. `abs`, `to_f`,
-  `even?`, `odd?` and `zero?` drop it too, as do `VM#exec_builtin`'s
-  fallbacks for `to_s`, `to_i`, `to_f`, `size` and `length`. Counting
-  scalar results built without a label in `src/adjutant/builtins/`:
-  Integer 5 of 13, Float 5 of 6, String 6 of 22, Range 3 of 3, Time 21
-  of 21, though some may have no labelled input. Predicted by reading
-  the builtins; not yet confirmed by a spec. Fix: one spec that calls
-  each native on labelled inputs and checks its result's label finds
-  them all at once; then pass `Builtins.joined_label(args)` where it's
-  missing.
+- **Values a native yields or collects from labelled input carry no
+  label.** Since `VM#label_from_inputs`, a builtin's result joins its
+  inputs' labels, but a value a native hands to a block, or puts in a
+  container it builds, doesn't pass through it. `Integer#times` yields
+  unlabelled counters from a labelled count, and `(1..t).each` and
+  `(1..t).to_a` yield or hold values without the label of the bound `t`,
+  so `t.times { |i| last = i }` leaves `last` unlabelled. Separately, by
+  the rule agreed for results (whatever is computed from a labelled
+  value carries its label), a container's label should reach its
+  summaries, such as `arr.size`, `arr.include?(x)` and `arr.join`, which
+  `label_from_inputs` deliberately skips because an input container's
+  label also stands for contents an element read may not want. Predicted
+  by reading `src/adjutant/builtins/`; not yet confirmed by a spec. Fix:
+  extend `risk_flow_native_labels_spec.cr` to yields and containers,
+  then label at each `ncc.invoke` and container build that derives from
+  a labelled input.
 
 - **`exec_builtin` answers for methods a receiver lacks.** When dispatch
   finds no method, `VM#exec_builtin`'s fallbacks give `size` and
@@ -659,6 +660,18 @@ section).
   `RiskFlowRule`, `RiskFlowPolicy.reject_all` must cover every
   member, and the manifest's vocabulary must not depend on which
   providers are present.
+
+### Risk-flow tracking
+
+- **A branch decided by a labelled value leaves no record.** Adjutant
+  tracks explicit flows only (`research/IFC_DESIGN.md`), so `hit = c if
+  secrets.include?(c)` followed by sending `hit` leaks through control
+  flow, though nothing labelled leaves. `Op::JumpIfFalse` and
+  `Op::JumpIfTrue` record nothing in the risk-flow log, so not even an
+  audit after the run shows it. Fix: record a `Branch` event when a
+  conditional jump pops a labelled value, ideally one entry per line and
+  label with a count, since a loop repeats it. A record for review, not
+  a prompt: many scripts legitimately branch on sensitive data.
 
 ### Static risk assessment
 

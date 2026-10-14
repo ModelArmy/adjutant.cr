@@ -1756,7 +1756,7 @@ module Adjutant
 
       # 5. Builtin operations.
       if result = exec_builtin(name, args, filename, line, blk, has_receiver, kwargs: kwargs)
-        return result
+        return label_from_inputs(result, args, kwargs, name, line)
       end
 
       # Nothing resolved. A name Adjutant excludes (`send`, `eval`)
@@ -1790,6 +1790,24 @@ module Adjutant
     # undeclared keyword. Then runs the risk-flow check, which raises
     # RiskFlowRejectedError when policy rejects a labelled argument, or
     # an Ask is answered with Reject.
+    # `result`, labelled with the join of its inputs' labels when it has
+    # no label of its own: what a builtin computes from labelled values
+    # carries their label, as an operator's result does. Containers are
+    # left out on both sides. An input container's label stands for its
+    # contents, which each method handles itself; a container result's
+    # label is a field of the container, so setting it here would
+    # relabel a container the script may share.
+    private def label_from_inputs(result : Value, args : Array(Value), kwargs : Hash(String, Value)?,
+                                  name : String, line : Int32) : Value
+      return result if result.label || result.array? || result.hash?
+      inputs = args.reject { |arg| arg.array? || arg.hash? }
+      kwargs.try { |given| inputs.concat(given.values.reject { |value| value.array? || value.hash? }) }
+      label = inputs.reduce(nil.as(RiskFlowLabel?)) { |joined, input| RiskFlowLabel.join(joined, input.label) }
+      return result unless label
+      @risk_flow_log.record(name, inputs.map(&.label), label, line)
+      result.with_label(label)
+    end
+
     private def call_native(native : NativeCallable, args : Array(Value),
                             filename : String, line : Int32, blk : ScriptProc?, name : String,
                             has_receiver : Bool, kwargs : Hash(String, Value)? = nil) : Value
@@ -1797,7 +1815,8 @@ module Adjutant
       raise_arity_error(given, native.arity.to_s, name, filename, line) unless native.arity.accepts?(given)
       check_unknown_native_keywords!(kwargs, native.kwarg_names, name, filename, line)
       check_risk_flow(native, args, kwargs, name, filename, line)
-      NativeFunctionCall.new(self, native, filename, line, name, kwargs, args).call(args, blk)
+      result = NativeFunctionCall.new(self, native, filename, line, name, kwargs, args).call(args, blk)
+      label_from_inputs(result, args, kwargs, name, line)
     rescue ex : BlockBreakSignal
       # A `break` in the block this call received ends the call with
       # the break's value, as in Ruby.
