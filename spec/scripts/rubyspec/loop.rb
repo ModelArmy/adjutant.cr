@@ -10,15 +10,13 @@ assert("The loop expression repeats the given block until a break is called") do
   assert_equal(10, outer_loop)
 end
 
-# --- BLOCKED: `loop`'s body shares the enclosing scope (SCOPE.md, Must
-# Fix).
-# assert("The loop expression executes code in its own scope") do
-#   loop do
-#     inner_loop = 123
-#     break
-#   end
-#   assert_raise(NameError) { inner_loop }
-# end
+assert("The loop expression executes code in its own scope") do
+  loop do
+    inner_loop = 123
+    break
+  end
+  assert_raise(NameError) { inner_loop }
+end
 
 # --- BLOCKED: `loop` parses only as a statement (SCOPE.md, Parser /
 # lexer gaps: loops parse only as statements).

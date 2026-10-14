@@ -131,6 +131,9 @@ module Adjutant
       @symbols = symbols
       @chunk = Chunk.new
       @loop_stack = [] of LoopScope
+      # Where a block's or lambda's body starts, after its parameters'
+      # defaults, for `redo`; nil outside one.
+      @block_body_pos = nil.as(Int32?)
       @ensure_stack = [] of EnsureRegion
       @in_block = false
       @scope = nil.as(CompilerScope?)
@@ -168,6 +171,7 @@ module Adjutant
       c.scope = scope
       slots = params.map { |param| scope.define(param.name) }
       c.emit_default_prologue(params, slots)
+      c.block_body_pos = c.chunk.pos if in_block
       c.compile_body(body)
       c.emit_ret(0)
       local_count = scope.next_slot
@@ -179,6 +183,7 @@ module Adjutant
     protected getter symbols
     protected property scope : CompilerScope?
     protected setter in_block
+    protected setter block_body_pos : Int32?
 
     # The method this code is being compiled inside, so a block can
     # record where it was written. Only R007's message reads it: a
@@ -1239,21 +1244,45 @@ module Adjutant
       scope.breaks.each { |brk| @chunk.patch_jump(brk, tail) }
     end
 
+    # `loop do ... end` is Ruby's `Kernel#loop` with a block: a name
+    # first assigned in the body is new on each iteration. The parser
+    # keeps such names out of the code after the loop, and each
+    # iteration starts by resetting their slots to nil. The body stays
+    # inline, so `return` leaves the method, as in Ruby.
+    #
+    #   start: Jump reset         (patched)
+    #   body:  <body>; Pop; Jump start
+    #          Nil                (`break`s land past it)
+    #   after: Jump done
+    #   reset: Nil; SetLocal s; Pop  (each new slot); Jump body
+    #   done:
     private def compile_loop(node : LoopNode) : Nil
       raise loop_too_deep(node) if @loop_stack.size >= MAX_LOOP_DEPTH
       loop_start = @chunk.pos
+      to_reset = @chunk.emit_jump(Op::Jump, node.line)
+      body_pos = @chunk.pos
       scope = LoopScope.new(loop_start, ensure_depth_at_entry: @ensure_stack.size)
-      scope.body_pos = loop_start
+      scope.body_pos = body_pos
       @loop_stack.push(scope)
+      first_new_slot = @scope.try(&.next_slot) || 0
 
       compile_body(node.body)
       @chunk.emit(Op::Pop, node.line)
       @chunk.emit(Op::Jump, node.line, c: loop_start.to_u32)
+      # The body's new names end with it; their slots stay allocated.
+      @scope.try(&.vars.reject! { |_, slot| slot >= first_new_slot })
 
-      # Only a `break` leaves `loop`, and it has already pushed its
-      # value, so breaks are patched past this nil.
       emit_nil(node.line)
       after_nil = @chunk.pos
+      to_done = @chunk.emit_jump(Op::Jump, node.line)
+      @chunk.patch_jump(to_reset, @chunk.pos)
+      (first_new_slot...(@scope.try(&.next_slot) || 0)).each do |slot|
+        emit_nil(node.line)
+        @chunk.emit(Op::SetLocal, node.line, c: slot.to_u32)
+        @chunk.emit(Op::Pop, node.line)
+      end
+      @chunk.emit(Op::Jump, node.line, c: body_pos.to_u32)
+      @chunk.patch_jump(to_done, @chunk.pos)
 
       scope = @loop_stack.pop
       scope.breaks.each { |brk| @chunk.patch_jump(brk, after_nil) }
@@ -1414,6 +1443,12 @@ module Adjutant
     end
 
     private def compile_redo(node : RedoNode) : Nil
+      if @loop_stack.empty? && (body_pos = @block_body_pos)
+        # In a block or lambda, `redo` restarts its body.
+        emit_ensure_unwind(0, node.line)
+        @chunk.emit(Op::Jump, node.line, c: body_pos.to_u32)
+        return
+      end
       if @loop_stack.empty?
         raise CompileError.new(
           Diagnostic.new(

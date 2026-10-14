@@ -43,11 +43,12 @@ module Adjutant
       ),
       "C002" => Entry.new(
         code: "C002",
-        summary: "`redo` outside a loop",
-        why: "`redo` restarts the current iteration of the loop it appears " \
-             "in, so it has no meaning where there is no loop to restart.",
-        help: "Move the `redo` inside a `while`, `until`, `loop`, or `for` " \
-              "body, or remove it."
+        summary: "`redo` outside a loop or block",
+        why: "`redo` restarts the body of the loop, block or lambda it is " \
+             "in, so it has no meaning directly in a method body or at " \
+             "the top level.",
+        help: "Move the `redo` into a `while`, `until`, `loop` or `for` " \
+              "body, or a block, or remove it."
       ),
       "C003" => Entry.new(
         code: "C003",

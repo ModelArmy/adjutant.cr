@@ -43,30 +43,27 @@ configuration.
   receiver isn't `self` with a U-code, beside U014. Confirmed by
   `spec/scripts/rubyspec/for.rb` and by probing.
 
-- **`loop`'s body shares the enclosing scope.** In Ruby `loop` is a
-  method taking a block, so a variable first assigned in its body is
-  new on every iteration and gone after the loop. `parse_loop` parses
-  the body in the enclosing scope and `compile_loop` compiles it like
-  `while`'s, so the variable keeps its value: `x ||= 0; x += 1` gives
-  1, 2, 3 where Ruby gives 1, 1, 1, and the variable is still set
-  after the loop, where Ruby raises NameError. A silent wrong answer.
-  Blocks passed to methods (`3.times { }`) are scoped correctly.
-  Confirmed by `spec/scripts/rubyspec/loop.rb` and by probing. Fix:
-  open a block scope for the body, keeping `break`, `next` and `redo`
-  as they are.
+- **`return` in a block only leaves the block.** `compile_return`
+  emits `Ret` wherever it is, so in a block it acts as `next`: with
+  `def m; [1, 2].each { return :early }; :late; end`, `m` gives
+  `:late`, and the same holds for a block run by `yield`. In Ruby a
+  block's `return` leaves the method the block was written in, running
+  the `ensure`s on the way. A silent wrong answer, and a common Ruby
+  idiom (`items.each { |x| return x if ... }`). UNSUPPORTED.md excludes
+  `proc { }` (U019) for exactly this reason, but every block has it.
+  Needs a decision: implement it, a signal that unwinds to the block's
+  home method across native calls as `break`'s does, or reject
+  `return` in a block with a U-code. Confirmed by probing while fixing
+  `loop`.
 
-## Will Fix
-
-Real gaps, not currently blocking anything, no active design conversation
-yet. Promote to `Must Fix` when something starts depending on it.
-
-Grouped by capability so adjacent work is easy to spot — within a group,
-still roughly ordered by how cheap/independent the fix is.
-
-### Parser / lexer gaps
-
-Small, mechanical, independent of each other — good candidates for quick
-wins.
+- **Closures made in different `loop` iterations share its body's
+  variables.** The body runs inline in the enclosing frame, with the
+  names it first assigns reset each iteration and gone after the loop,
+  so a lambda made in one iteration sees later iterations' values:
+  collecting `-> { x }` over three iterations gives `[2, 2, 2]` where
+  Ruby gives `[0, 1, 2]`. `each`'s blocks are correct. Fix: compile
+  the body as a block passed to a native `loop`, which needs a block's
+  `return` to leave its method first (above). Confirmed by probing.
 
 - **`require` parses only as a statement.** `parse_statement`
   dispatches `KwRequire` to `parse_require`, but `parse_primary`
@@ -154,15 +151,6 @@ wins.
   them; `->(x) { ... }` works. Confirmed by
   `spec/scripts/rubyspec/case.rb`. Fix: in `parse_lambda`, read bare
   parameters up to `{` or `do`.
-
-- **`redo` in a block, a lambda or a `for` raises C002.**
-  `compile_redo` accepts `redo` only inside `while`, `until` or
-  `loop`, and C002 says it has no meaning elsewhere, while its help
-  names `for` as a place it works. In Ruby it restarts the current
-  iteration of a `for` and the body of the block or lambda it is in.
-  Confirmed by `spec/scripts/rubyspec/redo.rb` and `for.rb`. Fix: track
-  a block's and a `for`'s body start as a loop's is, and correct C002's
-  catalog text to match.
 
 - **`defined?` and `Module#const_defined?` don't exist.** Found in the
   mruby sweep (`test/t/syntax.rb`, `spec/scripts/mruby/float.rb`).
@@ -605,8 +593,9 @@ section).
   such as `break` from a block whose method has returned, is
   unverified. Found with `spec/scripts/rubyspec/break.rb`.
 
-- **`Array#clear` and `Integer#upto` don't exist.** Both raise R047.
-  Found with `spec/scripts/rubyspec/break.rb`.
+- **`Array#clear`, `#delete` and `#count`, and `Integer#upto`, don't
+  exist.** Each raises R047. Found with `spec/scripts/rubyspec/break.rb`
+  and `redo.rb`.
 
 - **`Kernel#local_variables` doesn't exist.** It raises R008. Found
   with `spec/scripts/rubyspec/for.rb`.

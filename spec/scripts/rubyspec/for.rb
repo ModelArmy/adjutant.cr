@@ -442,17 +442,15 @@ assert("The for expression starts the next iteration with 'next'") do
   assert_equal(13, j)
 end
 
-# --- BLOCKED: `redo` in a block, a lambda or a `for` raises C002 (SCOPE.md, Parser
-# / lexer gaps).
-# assert("The for expression repeats current iteration with 'redo'") do
-#   j = 0
-#   for i in 1..3
-#     j += i
-#
-#     if i == 2 && j < 4
-#       redo
-#     end
-#   end
-#
-#   assert_equal(8, j)
-# end
+assert("The for expression repeats current iteration with 'redo'") do
+  j = 0
+  for i in 1..3
+    j += i
+
+    if i == 2 && j < 4
+      redo
+    end
+  end
+
+  assert_equal(8, j)
+end

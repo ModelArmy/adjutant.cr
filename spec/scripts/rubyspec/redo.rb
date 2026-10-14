@@ -1,22 +1,20 @@
 # Derived from ruby/spec language/redo_spec.rb at 0816047; MIT, see LICENSE.
 require "assert"
 
-# --- BLOCKED: `redo` in a block, a lambda or a `for` raises C002 (SCOPE.md, Parser
-# / lexer gaps).
-# assert("The redo statement restarts block execution if used within block") do
-#   a = []
-#   -> {
-#     a << 1
-#     if a.size < 2
-#       redo
-#     end
-#     a << 2
-#   }.call
-#   assert_equal([1, 1, 2], a)
-# end
+assert("The redo statement restarts block execution if used within block") do
+  a = []
+  -> {
+    a << 1
+    if a.size < 2
+      redo
+    end
+    a << 2
+  }.call
+  assert_equal([1, 1, 2], a)
+end
 
-# --- BLOCKED: `redo` in a block, a lambda or a `for` raises C002 (SCOPE.md, Parser
-# / lexer gaps).
+# --- BLOCKED: `Array#delete` doesn't exist (SCOPE.md, Standard library
+# surface).
 # assert("The redo statement re-executes the closest loop") do
 #   exist = [2,3]
 #   processed = []
@@ -38,22 +36,20 @@ require "assert"
 #   assert_equal([1,2,2,3,3,4], order)
 # end
 
-# --- BLOCKED: `redo` in a block, a lambda or a `for` raises C002 (SCOPE.md, Parser
-# / lexer gaps).
-# assert("The redo statement re-executes the last step in enumeration") do
-#   list = []
-#   [1,2,3].each do |x|
-#     list << x
-#     break if list.size == 6
-#     if x == 3
-#       redo
-#     end
-#   end
-#   assert_equal([1,2,3,3,3,3], list)
-# end
+assert("The redo statement re-executes the last step in enumeration") do
+  list = []
+  [1,2,3].each do |x|
+    list << x
+    break if list.size == 6
+    if x == 3
+      redo
+    end
+  end
+  assert_equal([1,2,3,3,3,3], list)
+end
 
-# --- BLOCKED: `redo` in a block, a lambda or a `for` raises C002 (SCOPE.md, Parser
-# / lexer gaps).
+# --- BLOCKED: `Array#count` doesn't exist (SCOPE.md, Standard library
+# surface).
 # assert("The redo statement triggers ensure block when re-executing a block") do
 #   list = []
 #   [1,2,3].each do |x|

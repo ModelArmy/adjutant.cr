@@ -1362,16 +1362,24 @@ module Adjutant
       expect(TokenKind::KwLoop)
       skip_terminators
       # `loop do ... end` or `loop { ... }`. Only the `do` form needs
-      # an `end`, so only it is tracked.
-      if at_kind?(TokenKind::KwDo)
-        open_block("loop", l, c)
-        advance
-        body = parse_body_until(TokenKind::KwEnd)
-        close_block
-      else
-        expect(TokenKind::LBrace)
-        body = parse_body_until(TokenKind::RBrace)
-        expect(TokenKind::RBrace)
+      # an `end`, so only it is tracked. The body is a block, so its
+      # new names are its own, as a block's are.
+      push_local_scope(inherit: true)
+      body = begin
+        if at_kind?(TokenKind::KwDo)
+          open_block("loop", l, c)
+          advance
+          parsed = parse_body_until(TokenKind::KwEnd)
+          close_block
+          parsed
+        else
+          expect(TokenKind::LBrace)
+          parsed = parse_body_until(TokenKind::RBrace)
+          expect(TokenKind::RBrace)
+          parsed
+        end
+      ensure
+        pop_local_scope
       end
       LoopNode.new(body, l, c)
     end

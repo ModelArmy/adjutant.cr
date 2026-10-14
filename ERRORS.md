@@ -89,7 +89,7 @@ The script parsed, but was rejected before running.
 Code|Meaning                                |Placeholders
 ----|---------------------------------------|------------
 C001|Left-hand side of `=` can't be assigned|`target`    
-C002|`redo` used outside any loop           |—           
+C002|`redo` outside a loop or block         |—           
 C003|`break`/`next` outside loop or block   |`keyword`   
 
 ## R — Runtime
