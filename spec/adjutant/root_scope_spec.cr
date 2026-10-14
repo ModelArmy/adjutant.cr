@@ -207,22 +207,9 @@ module Adjutant
     end
 
     describe "def self.foo at top level" do
-      it "is legal and defines a class method of Object — matching Op::DefSingleton's " \
-         "documented approximation, not a true per-instance singleton method" do
-        # Real Ruby: `def self.foo` at top level, where self is
-        # `main` (an OBJECT, not a class), defines a true per-instance
-        # singleton method on that specific object — later callable
-        # bare (implicit self), since main is still self. Adjutant has
-        # no per-instance singleton-method table on RubyObject at all
-        # (only RubyClass-level ones) — see Op::DefSingleton's own
-        # "NOTE — approximation, not a full fix" comment in vm.cr —
-        # so this defines a class method of Object instead (correctly
-        # callable as Object.greet, an explicit-receiver call), not a
-        # method reachable via a later BARE greet. A real, separate,
-        # already-flagged gap from full Ruby fidelity; a true
-        # per-instance singleton-method table would be its own piece
-        # of work, not folded into piece B.
-        eval("def self.greet; \"hi\"; end\nObject.greet").as_string.should eq "hi"
+      it "raises U024: self is main, an object, and no object gets a method of its own" do
+        error = expect_raises(Adjutant::RuntimeError) { eval("def self.greet; \"hi\"; end") }
+        error.diagnostic.not_nil!.code.should eq "U024"
       end
     end
 

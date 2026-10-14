@@ -430,6 +430,34 @@ module Adjutant
         result.as_sym.name.should eq "nested"
       end
 
+      it "rejects a method for one object named by a local or instance variable, at compile time (U024)" do
+        {"obj = 1\ndef obj.hello\nend", "def @obj.hello\nend"}.each do |source|
+          error = expect_raises(CompileError) { compile(source) }
+          error.diagnostic.not_nil!.code.should eq "U024"
+        end
+      end
+
+      it "rejects a method for one object held in a constant, at run time (U024)" do
+        error = expect_raises(RuntimeError) { eval("class Greeter\nend\nONE = Greeter.new\ndef ONE.hello\nend") }
+        diagnostic = error.diagnostic.not_nil!
+        diagnostic.code.should eq "U024"
+        diagnostic.data["receiver"].should eq "ONE"
+      end
+
+      it "defines class methods through self in a body and through a constant" do
+        result = eval(<<-RUBY)
+          class Greeter
+            def self.hello; :class_body; end
+          end
+          def Greeter.bye; :constant; end
+          module Tools
+            def self.run; :module_body; end
+          end
+          [Greeter.hello, Greeter.bye, Tools.run]
+        RUBY
+        result.as_array.map(&.as_sym.name).should eq ["class_body", "constant", "module_body"]
+      end
+
       it "raises a TypeError (R059) for a superclass that isn't a class" do
         error = expect_raises(RuntimeError) { eval("module Mixin\nend\nclass Dog < Mixin\nend") }
         error.diagnostic.not_nil!.code.should eq "R059"
