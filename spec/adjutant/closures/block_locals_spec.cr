@@ -67,6 +67,10 @@ module Adjutant
     it "leaves the method on return" do
       scope_outcome("loop do\n  return :out\nend\n:never").should eq ":out"
     end
+
+    it "gives each iteration's closures their own variables" do
+      scope_outcome("procs = []\nn = 0\nloop do\n  x = n\n  procs << -> { x }\n  n += 1\n  break if n == 3\nend\nprocs.map { |pr| pr.call }").should eq "[0, 1, 2]"
+    end
   end
 
   describe "redo outside a loop" do
