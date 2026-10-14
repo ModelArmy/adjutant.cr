@@ -2,6 +2,37 @@ require "../../spec_helper"
 
 module Adjutant
   describe Interpreter do
+    describe "the 64-bit Integer limit" do
+      it "raises U025 for arithmetic past 64 bits" do
+        {"9223372036854775807 + 1", "-9223372036854775807 - 2", "9223372036854775807 * 2",
+         "-(-9223372036854775807 - 1)"}.each do |source|
+          error = expect_raises(RuntimeError) { eval(source) }
+          error.diagnostic.not_nil!.code.should eq "U025"
+        end
+      end
+
+      it "raises U025 for a native method's result past 64 bits" do
+        {"9223372036854775807.succ", "(-9223372036854775807 - 1).abs", "1e30.to_i"}.each do |source|
+          error = expect_raises(RuntimeError) { eval(source) }
+          error.diagnostic.not_nil!.code.should eq "U025"
+        end
+      end
+
+      it "lets a script rescue it as a RangeError" do
+        eval("begin\n9223372036854775807 + 1\nrescue RangeError\n:caught\nend").as_sym.name.should eq "caught"
+      end
+
+      it "rejects a literal outside 64 bits at compile time" do
+        error = expect_raises(CompileError) { compile("x = 1267650600228229401496703205376") }
+        error.diagnostic.not_nil!.code.should eq "U025"
+      end
+
+      it "accepts the smallest and largest 64-bit literals" do
+        eval("-9223372036854775808").as_int.should eq Int64::MIN
+        eval("0x7fffffffffffffff").as_int.should eq Int64::MAX
+      end
+    end
+
     describe "arithmetic" do
       it "adds integers" do
         eval("1 + 2").as_int.should eq 3_i64

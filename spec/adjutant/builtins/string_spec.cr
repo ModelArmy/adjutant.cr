@@ -51,6 +51,18 @@ module Adjutant
         result = interp.eval(%("abc".to_i))
         result.as_int.should eq 0
       end
+
+      it "reads leading digits after whitespace and a sign, as Ruby does" do
+        interp, _ = make_interp
+        result = interp.eval(%(["123abc", "  42", "-7x", "+5", "1_000", "1__0"].map { |s| s.to_i }))
+        result.as_array.map(&.as_int).should eq [123_i64, 42_i64, -7_i64, 5_i64, 1000_i64, 1_i64]
+      end
+
+      it "raises U025 as a RangeError for digits past 64 bits" do
+        interp, _ = make_interp
+        error = expect_raises(RuntimeError) { interp.eval(%("99999999999999999999".to_i)) }
+        error.diagnostic.not_nil!.code.should eq "U025"
+      end
     end
 
     describe "#to_f" do
