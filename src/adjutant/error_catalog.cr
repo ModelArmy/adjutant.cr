@@ -695,6 +695,17 @@ module Adjutant
         help: "Keep the state in a variable: set it when the start " \
               "condition holds and clear it when the end condition does."
       ),
+      "U024" => Entry.new(
+        code: "U024",
+        summary: "a method for one object (`def {receiver}.name`) is not supported",
+        why: "`def obj.name` gives a single object a method its class doesn't " \
+             "have, so what the object can do no longer follows from its " \
+             "class (see UNSUPPORTED.md, U024). Only a class or module takes " \
+             "a method this way, as `def self.name` in its body or " \
+             "`def ClassName.name`.",
+        help: "Define the method in the object's class, or a class of its " \
+              "own, or make it a method that takes the object as an argument."
+      ),
       "U007" => Entry.new(
         code: "U007",
         summary: "`{construct}` is not available",

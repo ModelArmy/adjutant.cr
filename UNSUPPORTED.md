@@ -989,6 +989,32 @@ and then tested is an ordinary Range, as in Ruby, and always true.
 
 ---
 
+### U024 — A method for one object (`def obj.name`)
+
+A `def` whose receiver is an object rather than a class or module:
+`def obj.greet` on a local, an instance variable or a constant holding
+an object, and `def self.greet` at the top level, where `self` is
+`main`. Ruby gives that one object a method its class doesn't have.
+
+**Why:** what an object can do should follow from its class, which a
+reader can find; a method attached to one object is found only by
+tracing that object back to where the method was added. Approximating
+it, as Adjutant once did, put the method on the object's class
+instead, where every other instance, and every class inheriting from
+it, quietly gained it.
+
+**Instead:** define the method in the object's class, or a class of
+its own, or write a method that takes the object as an argument.
+`def self.name` in a class or module body, and `def ClassName.name`,
+are class methods and work as in Ruby.
+
+**Enforcement — enforced.** The compiler raises U024 for a receiver
+that isn't `self` or a constant (`Compiler#compile_def`); the VM raises
+it when `self` or the constant holds an object rather than a class or
+module (`Op::DefSingleton`).
+
+---
+
 ## 2. Design decisions with no script-visible surface
 
 These are closed decisions about Adjutant's own API shape. No script can

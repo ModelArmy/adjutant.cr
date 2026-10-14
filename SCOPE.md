@@ -33,16 +33,6 @@ configuration.
   P- or U-code for literals, documented as a deliberate limit. Confirmed
   by `spec/scripts/rubyspec/case.rb` and by probing.
 
-- **`def obj.name` on an instance defines a class method.** The VM's
-  `DefSingleton` takes `recv.as_robject?.try(&.rclass)` as the owner,
-  meant for `main` at top level, so for any other instance
-  `def obj.hello` defines `Foo.hello` on the object's class and
-  `obj.hello` raises NoMethodError: the definition silently lands on
-  every caller's class. Ruby gives `obj` alone a singleton method.
-  Either support per-object singleton methods or reject a `def` whose
-  receiver isn't `self` with a U-code, beside U014. Confirmed by
-  `spec/scripts/rubyspec/for.rb` and by probing.
-
 - **`require` parses only as a statement.** `parse_statement`
   dispatches `KwRequire` to `parse_require`, but `parse_primary`
   doesn't accept it, so `loaded = require "x"` and `require("x") if

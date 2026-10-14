@@ -67,7 +67,7 @@ module Adjutant
     MakeClass    # make class: name=constants[c], superclass popped from the stack (b=0) or none (b=0xFFFF)
     MakeModule   # make module: name=constants[c]
     DefMethod    # define method on self (must be a class/module): proc on stack, name=constants[c]
-    DefSingleton # define singleton method: proc on stack, recv on stack, name=constants[c]
+    DefSingleton # define singleton method: proc on stack, recv on stack, name=constants[c], receiver as written=constants[b]
 
     # Control flow
     Jump        # unconditional jump to c

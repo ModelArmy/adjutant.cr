@@ -104,8 +104,7 @@ assert("The for expression iterates over an Hash passing each key-value pair to 
   assert_equal(30, l)
 end
 
-# --- BLOCKED: `def obj.each` on an instance defines a class method
-# (SCOPE.md, Must Fix).
+# --- BLOCKED: `def obj.each` gives one object a method (U024).
 # assert("The for expression iterates over any object responding to 'each'") do
 #   obj = Object.new
 #   def obj.each

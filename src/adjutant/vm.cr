@@ -1209,11 +1209,15 @@ module Adjutant
             recv = pop
             proc_val = pop
             name_sym = chunk.consts[inst.c].as_sym
-            # `recv` is a class or module, or `main` at top level;
-            # `def self.foo` inside a method is rejected by the
-            # compiler.
-            owner = recv.as_rclass? || recv.as_robject?.try(&.rclass)
+            # Only a class or module takes a singleton method. Any other
+            # object, `main` included, would get a method of its own
+            # (U024); the compiler has already rejected receivers that
+            # aren't `self` or a constant.
+            owner = recv.as_rclass?
             unless owner
+              if recv.as_robject?
+                raise script_diagnostic("U024", {"receiver" => chunk.consts[inst.b].as_sym.name}, f)
+              end
               raise script_diagnostic("R006", {"definition" => "def self.#{name_sym.name}"}, f)
             end
             proc = proc_val.as_proc

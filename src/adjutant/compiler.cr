@@ -985,12 +985,13 @@ module Adjutant
       end
     end
 
-    # `self.` or `Name.` for a def with a receiver, as written.
+    # `self.` or `name.` for a def with a receiver, as written.
     private def def_receiver_text(node : DefNode) : String
       case recv = node.receiver
-      when nil      then ""
-      when Constant then "#{recv.name}."
-      else               "self."
+      when nil        then ""
+      when Constant   then "#{recv.name}."
+      when Identifier then "#{recv.name}."
+      else                 "self."
       end
     end
 
@@ -1077,8 +1078,19 @@ module Adjutant
       @chunk.emit(Op::MakeProc, node.line, c: proc_idx)
       sym_idx = intern(node.name)
       if recv = node.receiver
+        # Only a class or module takes a singleton method: `self` or a
+        # constant. Anything else would name one object (U024).
+        unless recv.is_a?(SelfNode) || recv.as?(Identifier).try(&.name[0].ascii_uppercase?)
+          raise CompileError.new(
+            Diagnostic.new(
+              code: "U024",
+              primary: Span.new(line: recv.line, column: recv.column, length: def_receiver_text(node).size - 1, label: "not a class or module"),
+              data: {"receiver" => def_receiver_text(node).rchop}
+            )
+          )
+        end
         compile_node(recv)
-        @chunk.emit(Op::DefSingleton, node.line, c: sym_idx)
+        @chunk.emit(Op::DefSingleton, node.line, b: intern(def_receiver_text(node).rchop).to_u16, c: sym_idx)
       else
         # `def` defines on self's class. At top level self is `main`,
         # so the method goes on Object, as in Ruby.
