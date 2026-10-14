@@ -2130,6 +2130,21 @@ module Adjutant
     end
 
     # Raises R046, Ruby's ArgumentError for a wrong positional count.
+    # Ruby's `Kernel#loop`: calls the block until a `break` ends the
+    # loop with the break's value, or a `return` leaves the method.
+    # Without a block it raises U022, where Ruby would return an
+    # Enumerator.
+    private def run_loop(blk : ScriptProc?, filename : String, line : Int32) : Value
+      unless block = blk
+        raise runtime_diagnostic(
+          Diagnostic.new(code: "U022", primary: Span.new(line: line, filename: filename), data: {"method" => "Kernel#loop"}),
+          current_frame)
+      end
+      loop { invoke(block, [] of Value) }
+    rescue ex : BlockBreakSignal
+      ex.value
+    end
+
     private def raise_arity_error(given : Int32, expected : String, method : String,
                                   filename : String, line : Int32) : NoReturn
       raise runtime_diagnostic(
@@ -2237,6 +2252,7 @@ module Adjutant
       "to_f" => Arity.from(0), "length" => Arity.from(0), "size" => Arity.from(0),
       "+" => Arity.from(1), "-" => Arity.from(1), "*" => Arity.from(1),
       "/" => Arity.from(1), "%" => Arity.from(1),
+      "loop" => Arity.new(0, 0),
     }
 
     # Operations that resolve when nothing else does: output, `raise`,
@@ -2256,6 +2272,8 @@ module Adjutant
       end
       reject_kwargs!(kwargs, name, filename, line)
       case name
+      when "loop"
+        run_loop(blk, filename, line)
       when "puts"
         # Each argument's own `to_s`, so `puts :sym` prints `sym`.
         str = args.map { |arg| render_to_s(arg, filename, line) }.join("\n")

@@ -48,8 +48,8 @@ assert("The redo statement re-executes the last step in enumeration") do
   assert_equal([1,2,3,3,3,3], list)
 end
 
-# --- BLOCKED: `Array#count` doesn't exist (SCOPE.md, Standard library
-# surface).
+# --- BLOCKED: `Array#count` doesn't exist (SCOPE.md, Data & builtin
+# types).
 # assert("The redo statement triggers ensure block when re-executing a block") do
 #   list = []
 #   [1,2,3].each do |x|

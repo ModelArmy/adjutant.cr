@@ -1250,48 +1250,13 @@ module Adjutant
       scope.breaks.each { |brk| @chunk.patch_jump(brk, tail) }
     end
 
-    # `loop do ... end` is Ruby's `Kernel#loop` with a block: a name
-    # first assigned in the body is new on each iteration. The parser
-    # keeps such names out of the code after the loop, and each
-    # iteration starts by resetting their slots to nil. The body stays
-    # inline, so `return` leaves the method, as in Ruby.
-    #
-    #   start: Jump reset         (patched)
-    #   body:  <body>; Pop; Jump start
-    #          Nil                (`break`s land past it)
-    #   after: Jump done
-    #   reset: Nil; SetLocal s; Pop  (each new slot); Jump body
-    #   done:
+    # `loop do ... end` is Ruby's `Kernel#loop` with a block, so it
+    # compiles as that call: the body is a block, with a scope of its
+    # own on each iteration, closures included, and `break`, `next`,
+    # `redo` and `return` act as they do in any block.
     private def compile_loop(node : LoopNode) : Nil
-      raise loop_too_deep(node) if @loop_stack.size >= MAX_LOOP_DEPTH
-      loop_start = @chunk.pos
-      to_reset = @chunk.emit_jump(Op::Jump, node.line)
-      body_pos = @chunk.pos
-      scope = LoopScope.new(loop_start, ensure_depth_at_entry: @ensure_stack.size)
-      scope.body_pos = body_pos
-      @loop_stack.push(scope)
-      first_new_slot = @scope.try(&.next_slot) || 0
-
-      compile_body(node.body)
-      @chunk.emit(Op::Pop, node.line)
-      @chunk.emit(Op::Jump, node.line, c: loop_start.to_u32)
-      # The body's new names end with it; their slots stay allocated.
-      @scope.try(&.vars.reject! { |_, slot| slot >= first_new_slot })
-
-      emit_nil(node.line)
-      after_nil = @chunk.pos
-      to_done = @chunk.emit_jump(Op::Jump, node.line)
-      @chunk.patch_jump(to_reset, @chunk.pos)
-      (first_new_slot...(@scope.try(&.next_slot) || 0)).each do |slot|
-        emit_nil(node.line)
-        @chunk.emit(Op::SetLocal, node.line, c: slot.to_u32)
-        @chunk.emit(Op::Pop, node.line)
-      end
-      @chunk.emit(Op::Jump, node.line, c: body_pos.to_u32)
-      @chunk.patch_jump(to_done, @chunk.pos)
-
-      scope = @loop_stack.pop
-      scope.breaks.each { |brk| @chunk.patch_jump(brk, after_nil) }
+      l, c = node.line, node.column
+      compile_node(Call.new(nil, "loop", [] of Node, BlockNode.new([] of Param, node.body, l, c), false, l, c))
     end
 
     private def compile_for(node : ForNode) : Nil

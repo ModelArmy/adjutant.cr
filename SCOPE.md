@@ -43,15 +43,6 @@ configuration.
   receiver isn't `self` with a U-code, beside U014. Confirmed by
   `spec/scripts/rubyspec/for.rb` and by probing.
 
-- **Closures made in different `loop` iterations share its body's
-  variables.** The body runs inline in the enclosing frame, with the
-  names it first assigns reset each iteration and gone after the loop,
-  so a lambda made in one iteration sees later iterations' values:
-  collecting `-> { x }` over three iterations gives `[2, 2, 2]` where
-  Ruby gives `[0, 1, 2]`. `each`'s blocks are correct. Fix: compile
-  the body as a block passed to a native `loop`, now that a block's
-  `return` leaves its method. Confirmed by probing.
-
 - **`require` parses only as a statement.** `parse_statement`
   dispatches `KwRequire` to `parse_require`, but `parse_primary`
   doesn't accept it, so `loaded = require "x"` and `require("x") if
@@ -580,9 +571,9 @@ section).
   such as `break` from a block whose method has returned, is
   unverified. Found with `spec/scripts/rubyspec/break.rb`.
 
-- **`Array#clear`, `#delete` and `#count`, and `Integer#upto`, don't
-  exist.** Each raises R047. Found with `spec/scripts/rubyspec/break.rb`
-  and `redo.rb`.
+- **`Array#clear` and `#delete`, and `Integer#upto`, don't exist.**
+  Each raises R047 (for `#count`, see Data & builtin types). Found with
+  `spec/scripts/rubyspec/break.rb` and `redo.rb`.
 
 - **`Kernel#local_variables` doesn't exist.** It raises R008. Found
   with `spec/scripts/rubyspec/for.rb`.
