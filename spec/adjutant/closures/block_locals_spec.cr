@@ -51,6 +51,38 @@ module Adjutant
     end
   end
 
+  describe "loop body variables" do
+    it "gives a name first assigned in the body a new value on each iteration" do
+      scope_outcome("acc = []\nn = 0\nloop do\n  x ||= 0\n  x += 1\n  acc << x\n  n += 1\n  break if n == 3\nend\nacc").should eq "[1, 1, 1]"
+    end
+
+    it "ends a name first assigned in the body with the loop" do
+      scope_outcome("loop do\n  inner = 1\n  break\nend\ninner").should eq "NameError"
+    end
+
+    it "assigns a variable from before the loop" do
+      scope_outcome("x = 5\nloop do\n  x += 1\n  break\nend\nx").should eq "6"
+    end
+
+    it "leaves the method on return" do
+      scope_outcome("loop do\n  return :out\nend\n:never").should eq ":out"
+    end
+  end
+
+  describe "redo outside a loop" do
+    it "restarts a block's body" do
+      scope_outcome("a = []\n[1].each do |v|\n  a << v\n  if a.size < 2\n    redo\n  end\nend\na").should eq "[1, 1]"
+    end
+
+    it "restarts a lambda's body" do
+      scope_outcome("a = []\n-> {\n  a << 1\n  if a.size < 2\n    redo\n  end\n}.call\na").should eq "[1, 1]"
+    end
+
+    it "restarts a for body's iteration" do
+      scope_outcome("j = 0\nfor i in 1..3\n  j += i\n  if i == 2 && j < 4\n    redo\n  end\nend\nj").should eq "8"
+    end
+  end
+
   describe "for loop variables" do
     it "leaves the loop variable and body names readable after the loop" do
       scope_outcome("for x in [1, 2]\n  y = x * 10\nend\n[x, y]").should eq "[2, 20]"
