@@ -2,7 +2,7 @@
 
 Working notes between development sessions, kept current by whoever ends a session. Not user documentation.
 
-Last updated on `main`, after `supervisor-held-pipe` (#83) merged.
+Last updated on `language-tests`, ready to merge.
 
 ## How to use this document
 
@@ -22,7 +22,7 @@ Key documents: `SCOPE.md` (known defects and gaps: Must Fix, Will Fix), `LEGATE.
 
 ## 2. Working conventions [Retain]
 
-1. **Division of work.** Claude clones the repo and presents edited files for review; the human saves, tests, commits and pushes. Fewer than ten modified files, present the files, keeping their repo directories when two share a name; ten or more, one patch per commit, checked with `git apply --check` against the branch head. A follow-up to a patch already applied is its own incremental patch. Claude sets up no toolchain. Claude proposes a one-line commit message when a change is ready, and a PR description when a branch is: two sections, "What?" and "Why?", giving outcomes and motivations and leaving out what the commits and code already show.
+1. **Division of work.** Claude clones the repo and presents edited files for review; the human saves, tests, commits and pushes. Fewer than ten modified files, present the files, keeping their repo directories when two share a name; ten or more, one patch per commit, checked with `git apply --check` against the branch head. A follow-up to a patch already applied is its own incremental patch. Claude sets up no toolchain unless the human asks, as for the ruby/spec import, where Crystal and Ruby in Claude's sandbox check each translated file on both. Claude proposes a one-line commit message when a change is ready, and a PR description when a branch is: two sections, "What?" and "Why?", giving outcomes and motivations and leaving out what the commits and code already show.
 2. **Pull before delivering.** Pull at the start of a turn and again just before building the files or patches, since the human may push in between.
 3. **Branches.** Runtime fixes go on a sub-branch or directly on the working branch, at the human's call. Either way, a commit never mixes Crystal changes with exam or skill changes.
 4. **`SCOPE.md` entries are removed when resolved**, not marked resolved. History belongs in the commit log; rationale goes in `DEVELOPMENT.md` only when a future contributor needs it.
@@ -77,23 +77,26 @@ Key documents: `SCOPE.md` (known defects and gaps: Must Fix, Will Fix), `LEGATE.
 26. **On Windows, never wait inside a Crystal `rescue` or `ensure`** (DEVELOPMENT.md, Exception handling). The crash needs a particular fiber interleaving, so it passes now and then: one green run proves nothing, five under random seeds say more. In a CI log from `crystal spec -v`, each finished example's name appears twice (printed at its start, then again after `\r`), so the crash is in the example after the last pair. Build the spec and run it directly to see the exit code, which `crystal spec` drops.
 27. **A check on time must charge only the time its subject spent.** The deadline pauses while the host decides; the held-pipe check counts only time a reader waits on its pipe, so a slow host block can't make an honest worker look taken over. A timer that also bounds an adversary needs a hard stop as well: a process writing every 100 ms resets any idle timer, so the Supervisor also stops at the ceiling plus `PIPE_WAIT`.
 28. **Read what a library call does besides its job.** Crystal's `Process#wait` closes the child's pipes in its `ensure`, so the Supervisor calls it only once nothing reads them, and learns that the worker ended from `terminated?` instead. That has its own catch: on Windows a process that exited with code 259 (`STILL_ACTIVE`) looks alive, which is why a kill also starts the pipe wait.
+29. **A spec that takes only one path through a construct hides the others.** `if … elsif` crashed whenever a branch before the last ran, because its only spec took the last `elsif`; ruby/spec's if_spec found it at once. Spec each branch, and each way in and out of a construct.
+30. **Compile a construct the way Ruby defines it.** `loop` is a method with a block in Ruby; compiled inline here, its body shared the method's scope, its closures shared one binding, and `return` worked only by accident. Once `loop` became a call with a block, all three followed from the block's semantics.
+31. **A reason given for excluding one form applies to its siblings.** U019 excludes `proc { }` partly because its `return` must leave the enclosing method; every ordinary block had the same need, and none met it. When a U-code's reason names a missing mechanism, check what else needs that mechanism.
+32. **An edit that cuts to the next list item can take a heading with it.** Removing the last Must Fix entry by cutting to the next `- **` also removed `## Will Fix` and its first `###`, across five commits nothing noticed. Cut to the next item or heading, whichever comes first, and diff the headings afterwards.
 
 ---
 
 ## 5. State
 
-`main` carries `worker-supervisor` (#82). A host can run each assessment or run in a child process, its own executable started again, so a defect in Adjutant costs that child, not the host:
+`language-tests` adds Ruby's own specification to the script tests and fixes what it found. `main` is as #83 left it: the worker and Supervisor, with a held pipe unable to hang the Supervisor (DEVELOPMENT.md, The Supervisor's fibers).
 
-1. **Run limits.** Time spent waiting for a risk-flow decision no longer counts against `wall_clock` (`Budget#off_clock`). `max_asks` (default 20) caps the Asks per run, against approval fatigue.
-2. **Protocol** (`protocol.cr`, `protocol_payloads.cr`). Newline-delimited JSON, strict, bounded per line. Each direction has its own message types. Core values cross as descriptions (`Protocol::Payload`), never rebuilt into core types, with a spec comparing each description's fields to its core type's.
-3. **`Worker`** serves one request and exits. **`Supervisor`** drives one worker: two clocks (a deadline that pauses during decisions, a ceiling that never does), a backstop for every limit, and outcomes and events as unions a `case … in` must cover. Its report keeps what the worker said apart from what the Supervisor saw (`Observed`).
-4. **`samples/worker_host.cr`** is the reference host and the fixture for the process specs, which need `ops build` first.
+**`spec/scripts/rubyspec/`** holds ruby/spec's language specs (MIT, `LICENSE`), translated to the `assert` API: `if`, `unless`, `while`, `until`, `case`, `and`, `or`, `not`, `break`, `next`, `redo`, `loop` and `for`. Its README.md gives the translation rules. Each file passes on MRI and on Adjutant; 165 tests run and 143 are blocked, each under `# --- BLOCKED:` with a U-code or a SCOPE.md entry. `spec/scripts/mruby/` now carries mruby's licence too.
 
-Since #83, a process left behind by a taken-over worker can't hang the Supervisor. Once the worker has ended or been killed, a pipe that keeps its reader waiting `PIPE_WAIT` (1 s) is abandoned, never closed, and listed in `Observed#held_open`, and the request ends `Violated`, or `TimedOut` if a clock ended it. A process that keeps writing is cut off at the ceiling plus `PIPE_WAIT`. Stdout is read in its own fiber, `Link` gains `ended?`, `STDERR_WAIT` became `PIPE_WAIT`, and `exit_status` is nil when a pipe was held. DEVELOPMENT.md, The Supervisor's fibers, has the fibers and the two rules that keep them safe on Windows.
+The import's tools live only in Claude's sandbox, rebuilt each session: a converter for mspec's common patterns, a helper that blocks a test with its reason, a triage loop that blocks only for errors matching a known entry and stops at anything new, and an MRI version of the `assert` API (Ruby 3.2, which segfaults on `for x&.y in`).
 
-README.md's "Sandboxing the worker" shows a host launching the worker under Cordon and handing the process to `Supervisor.new`. Adjutant starts no sandbox and derives no sandbox policy; both are the host's, as is killing a process a taken-over worker leaves behind.
+**Fixed on the branch:** `if … elsif` crashed when an earlier branch ran; `break` from a block skipped the `ensure`s it left and ended the wrong call; `return` in a block left only the block, now leaving its method across native calls (`BlockReturn`); two statements on one line needed no separator, so an unrecognised bare argument became a silent separate statement; a superclass was looked up among top-level constants only (now an expression, R059 for a non-class); `for` read its targets as local names; `loop` shared its scope, now compiled as `Kernel#loop` with a block; `redo` now restarts blocks, lambdas and `for`; `String#to_i` reads as Ruby; the test runner ran with no workers on one CPU.
 
-`research/WORKER_DESIGN.md` is the design, including what a host can trust from a worker. CI runs specs in random order, and on Windows repeats the Supervisor specs five times. Must Fix is empty. Will Fix has an Error reporting entry: `render_error` won't take an error rescued with others. SCOPE's streamed-fetch entry has a lead from the crash in lesson 26.
+**New exclusions:** U023 flip-flops, U024 a method for one object (`def obj.name`, and `def self.name` at top level), U025 Integers outside 64 bits, raised as a `RangeError` at run time. SKILL.md lists none of the three; `spec/skill/skill_spec.cr` records them as omitted.
+
+Must Fix is empty. Will Fix gained the gaps the import found, chiefly under Parser / lexer gaps, and some missing methods.
 
 Model           |Latest result|Notes                                           
 ----------------|-------------|------------------------------------------------
@@ -105,27 +108,31 @@ All three predate #69, which renamed the classes the skill teaches, and the skil
 
 ## 6. Next
 
-1. **Sit the exam fresh** on all three models, to confirm the renamed skill and the task policies' format.
-2. **Test the streamed-fetch lead on Windows** (SCOPE.md): restructure `Interpreter#eval`'s `ensure`, then un-pend the spec.
-3. **`Legate::Path#under?`** (Will Fix, Legate): see §7.
-4. **Exam tasks 11 to 13** (`spec/skill/TODO.md` §1); task 12 is a regression check. A credential-to-its-own-host task would exercise risk-flow exceptions.
-5. **Will Fix, style pass**, by subsection, on its own branch.
-6. **§10, the static analyser**, keyed on providers from the start (LEGATE.md §10.1; Will Fix, Static risk assessment).
-7. **Generic provider loading** (Will Fix, Providers), only once a second provider exists to design it against.
+1. **Merge `language-tests`.**
+2. **Parser gaps that block the most imported tests**, each unblocking its tests as it lands: a splat outside a parameter list, with multiple assignment's other targets (about 23), loops as expressions (about 21), parentheses holding statements (about 15).
+3. **The next ruby/spec batch:** assignments (`variables`, `optional_assignments`), `def` and method calls, and blocks (`block`, `lambda`, `yield`).
+4. **Sit the exam fresh** on all three models, to confirm the renamed skill and the task policies' format.
+5. **Test the streamed-fetch lead on Windows** (SCOPE.md): restructure `Interpreter#eval`'s `ensure`, then un-pend the spec.
+6. **Exam tasks 11 to 13** (`spec/skill/TODO.md` §1); task 12 is a regression check.
+7. **Will Fix, style pass**, by subsection, on its own branch; **§10, the static analyser** (LEGATE.md §10.1); **generic provider loading**, once a second provider exists.
 
 ## 7. Open decisions
 
+- **U019's reason.** UNSUPPORTED.md excludes `proc { }` chiefly for its non-local `return`, which blocks now have. Its lenient arity is still unbuilt, so the exclusion stands, but its reason needs restating, or the exclusion revisiting.
+- **SKILL.md and U025.** A model writing sums or timestamps could meet the 64-bit limit. Teach it in the skill (an exam re-sit), or leave it to the diagnostic?
+- **The import's tools.** Commit the converter and triage loop (say under `spec/scripts/rubyspec/tools/`), or keep rebuilding them per session?
+- **Pending unwinds inside an ensure body.** The VM keeps one pending re-raise, break and return each, so a `begin … ensure` nested inside an ensure body entered for one of them may resume it early. Predicted from the code, unconfirmed; log it in SCOPE.md?
 - **D5. `Time.now`.** Core's ungated `Time.now` sits beside `Legate.now`, and `SKILL.md` both maps one to the other and whitelists `Time.now`. Keep it, fixing the skill, or bring it under U021?
-- **`Legate::Path#under?`.** It doesn't resolve `..`, so it misleads a script using it as a boundary check. Logged under Will Fix, Legate. #72 settled how Adjutant judges a path (`RealPath.of`), so the remaining question is only whether to promote it to Must Fix and answer by real path too.
+- **`Legate::Path#under?`.** It doesn't resolve `..`, so it misleads a script using it as a boundary check (Will Fix, Legate). Promote to Must Fix and answer by real path too?
 - **`Legate::Response` headers.** LEGATE.md §5.5 calls them frozen; Adjutant freezes only Strings. Correct §5.5, or add freezing to the backlog?
 - **LEGATE.md §1** says the core is "ordinary Ruby with mutation removed". It isn't: `<<` and `[]=` mutate Arrays and Hashes. Correct it at the next spec revision.
-- **`inspect` of deep data.** Printing an Array or Hash nested deeper than `call_depth_limit` (256) raises L002, since each level re-enters the VM. JSON from `fetch` may nest to 512. Make `inspect` walk built-in containers iteratively (safe, since scripts can't override their `inspect`, U003), or leave it?
-- **Default budgets.** `wall_clock` 300 s, `total_read` 4 GiB, `total_write` 1 GiB, `memory` 512 MiB (advice only) and `max_asks` 20 are POLICY.md §3's defaults, first chosen as examples. `max_asks` is low on purpose: with no approval cache, a loop over 30 sensitive files stops at the 21st Ask. Revisit once a harness runs real workloads.
-- **Approval cache.** research/IFC_DESIGN.md's open question matters more now Asks are capped. Kept in a worker it lasts one run; kept in a host across runs, it must record only what the host decided and observed (WORKER_DESIGN.md, What a host can trust).
+- **`inspect` of deep data.** Printing an Array or Hash nested deeper than `call_depth_limit` (256) raises L002. Make `inspect` walk built-in containers iteratively, or leave it?
+- **Default budgets.** POLICY.md §3's defaults, `max_asks` 20 among them, were first chosen as examples. Revisit once a harness runs real workloads.
+- **Approval cache.** research/IFC_DESIGN.md's open question; kept in a host across runs, it must record only what the host decided and observed (WORKER_DESIGN.md, What a host can trust).
 - **Worker protocol, the rest.** WORKER_DESIGN.md's open decisions: stray writes to `STDOUT` from a host's natives, host round trips for natives needing host state, and structured results.
-- **Crystal's Windows `File.realpath`.** It follows only a path's final link, on `master` as in 1.20 (`src/crystal/system/win32/file.cr`). Adjutant no longer relies on it; report it upstream?
-- **A suffix mode for risk-flow subjects.** Subjects match exactly or by regex. Add a dot-boundary suffix mode, like `net.hosts`' `subdomains: true`, only if policy authors keep writing the same regex.
-- **`ExecutionLimits` stays out of the document.** Instruction and call-depth limits raise catchable errors and guard the host process, so they remain a constructor argument. Revisit if hosts want one place to bound a run.
+- **Crystal's Windows `File.realpath`.** It follows only a path's final link. Adjutant no longer relies on it; report it upstream?
+- **A suffix mode for risk-flow subjects**, only if policy authors keep writing the same regex.
+- **`ExecutionLimits` stays out of the document.** Revisit if hosts want one place to bound a run.
 
 ## 8. Deferred tests
 
