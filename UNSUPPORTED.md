@@ -7,7 +7,7 @@ nothing here is a work queue. An entry leaves this file only if the stated
 reason no longer holds, which is a real design conversation, not a routine
 edit.
 
-Two standing principles shape every entry:
+These standing principles shape every entry:
 
 - **Adjutant should be, at worst, a proper subset of Ruby.** The only
   intended runtime difference from real Ruby is IFC support and its
@@ -47,6 +47,15 @@ Two standing principles shape every entry:
   "could this let a class/module/object's behavior change conditionally,
   at runtime, invisibly to someone reading the declaration alone?" — not
   just "can RiskWalker still resolve it."
+- **A construct is excluded only when supporting it costs more than it
+  gives:** it would add to what a model must reason about to predict a
+  script's behaviour (the principle above is one case), or it is both
+  rarely written and significant work to build. Rarity alone doesn't
+  exclude anything. A rare construct that is cheap to support, or a
+  costly one that scripts often need, is a gap: it raises, is logged in
+  [SCOPE.md](./SCOPE.md)'s Will Fix, and its rarity sets only its
+  priority there. U025 is rare and costly: arbitrary precision would
+  touch every integer path for values scripts seldom need.
 
 ## How this file is organised
 
