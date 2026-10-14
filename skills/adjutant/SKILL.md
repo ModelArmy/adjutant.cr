@@ -56,7 +56,6 @@ What is different, in order of importance:
 - `class << self` → `def self.name`
 - `$global` → A constant, or pass the value along
 - `def sq(x) = x * x` → `def sq(x)` ... `end`
-- `0644` → Decimal: a leading zero is not octal here
 - `defined?(x)` → Initialise `x` first
 
 ## 2. Language details
