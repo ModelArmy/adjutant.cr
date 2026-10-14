@@ -21,7 +21,33 @@ after 1.0. Ordered for working through: security and policy defects
 first, then the Ruby divergences, then design work on policy and
 configuration.
 
-None open.
+- **Native methods drop their inputs' risk-flow labels.** Combining
+  values joins their labels (DEVELOPMENT.md, "Information flow
+  control"), and operators do so in `VM#exec_binary`, but each native
+  method sets its result's label itself, and many don't. `Integer#to_s`
+  and `Float#to_s` return an unlabelled String, so `secret.to_s` reaches
+  a network call unchecked where `"#{secret}"` wouldn't. `abs`, `to_f`,
+  `even?`, `odd?` and `zero?` drop it too, as do `VM#exec_builtin`'s
+  fallbacks for `to_s`, `to_i`, `to_f`, `size` and `length`. Counting
+  scalar results built without a label in `src/adjutant/builtins/`:
+  Integer 5 of 13, Float 5 of 6, String 6 of 22, Range 3 of 3, Time 21
+  of 21, though some may have no labelled input. Predicted by reading
+  the builtins; not yet confirmed by a spec. Fix: one spec that calls
+  each native on labelled inputs and checks its result's label finds
+  them all at once; then pass `Builtins.joined_label(args)` where it's
+  missing.
+
+- **`exec_builtin` answers for methods a receiver lacks.** When dispatch
+  finds no method, `VM#exec_builtin`'s fallbacks give `size` and
+  `length` 0 for anything but a String, Array or Hash, and `to_i` and
+  `to_f` 0 for anything but a number or a String, which is right only
+  for nil. Ruby gives `(1..10).size` 10, `:abc.length` 3 and `5.size` 8,
+  and raises NoMethodError for `nil.size`, `true.to_i` or `[].to_f`.
+  Range and Symbol define neither `size` nor `length` natively, so a
+  script's `(1..n).size` silently gives 0. Predicted by reading
+  `exec_builtin`; not yet confirmed by a spec. Fix: answer only for the
+  receivers Ruby defines these on and raise NoMethodError otherwise,
+  adding `size` to Range and `size` and `length` to Symbol.
 
 ## Will Fix
 
