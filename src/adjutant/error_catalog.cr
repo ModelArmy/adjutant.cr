@@ -43,11 +43,12 @@ module Adjutant
       ),
       "C002" => Entry.new(
         code: "C002",
-        summary: "`redo` outside a loop",
-        why: "`redo` restarts the current iteration of the loop it appears " \
-             "in, so it has no meaning where there is no loop to restart.",
-        help: "Move the `redo` inside a `while`, `until`, `loop`, or `for` " \
-              "body, or remove it."
+        summary: "`redo` outside a loop or block",
+        why: "`redo` restarts the body of the loop, block or lambda it is " \
+             "in, so it has no meaning directly in a method body or at " \
+             "the top level.",
+        help: "Move the `redo` into a `while`, `until`, `loop` or `for` " \
+              "body, or a block, or remove it."
       ),
       "C003" => Entry.new(
         code: "C003",
@@ -560,6 +561,15 @@ module Adjutant
         help: "Swap the arguments, or check them before calling `clamp`."
       ),
 
+      "R059" => Entry.new(
+        code: "R059",
+        summary: "superclass must be a class, not {value}",
+        why: "`class Name < X` makes the new class inherit from `X`, so " \
+             "`X` has to be a class: not a module, nor any other value.",
+        help: "Name a class after `<`, or include a module in the class " \
+              "body instead."
+      ),
+
       # --- L: limits reached ----------------------------------------
       #
       # The script is valid but larger than something Adjutant will
@@ -674,6 +684,37 @@ module Adjutant
              "UNSUPPORTED.md, U022), so the call would have nothing to " \
              "return.",
         help: "Pass a block: `{method} { |x| ... }`."
+      ),
+      "U023" => Entry.new(
+        code: "U023",
+        summary: "flip-flop is not supported",
+        why: "A range written as a condition is Ruby's flip-flop: false " \
+             "until its start holds, then true until its end does, with " \
+             "state kept between evaluations that nothing in the script " \
+             "shows (see UNSUPPORTED.md, U023).",
+        help: "Keep the state in a variable: set it when the start " \
+              "condition holds and clear it when the end condition does."
+      ),
+      "U024" => Entry.new(
+        code: "U024",
+        summary: "a method for one object (`def {receiver}.name`) is not supported",
+        why: "`def obj.name` gives a single object a method its class doesn't " \
+             "have, so what the object can do no longer follows from its " \
+             "class (see UNSUPPORTED.md, U024). Only a class or module takes " \
+             "a method this way, as `def self.name` in its body or " \
+             "`def ClassName.name`.",
+        help: "Define the method in the object's class, or a class of its " \
+              "own, or make it a method that takes the object as an argument."
+      ),
+      "U025" => Entry.new(
+        code: "U025",
+        summary: "an Integer outside 64 bits is not supported",
+        why: "Adjutant's Integers are 64-bit, from -2**63 to 2**63 - 1, " \
+             "and don't widen as Ruby's do (see UNSUPPORTED.md, U025), so " \
+             "this literal or result has no value Adjutant can hold.",
+        help: "Keep values within 64 bits, or use a Float where an " \
+              "approximate value will do. A script can rescue the error " \
+              "as a RangeError."
       ),
       "U007" => Entry.new(
         code: "U007",
@@ -980,6 +1021,15 @@ module Adjutant
              "script's text never calls.",
         help: "Do it explicitly where it happens: for a registry, append " \
               "each class to an Array in its own body."
+      ),
+      "U014" => Entry.new(
+        code: "U014",
+        summary: "`class << self` is not supported",
+        why: "The singleton-class block only groups class methods; " \
+             "`def self.name` defines each one directly (see UNSUPPORTED.md, " \
+             "U014).",
+        help: "Write each method in the block as `def self.name` in the " \
+              "class body, and drop `class << self` and its `end`."
       ),
       "U016" => Entry.new(
         code: "U016",

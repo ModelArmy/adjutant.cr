@@ -64,6 +64,8 @@ module Adjutant
     getter vars : Hash(String, Int32)
     property next_slot : Int32
     getter? is_block : Bool
+    # A lambda's body: a block in scope, but `return` leaves it.
+    getter? is_lambda : Bool
     getter parent : CompilerScope?
     # A `for` body: a block at runtime, but a name it assigns belongs
     # to the scope the loop is in, as in Ruby.
@@ -74,7 +76,7 @@ module Adjutant
     # enclosing frame, so its locals need fresh slots, but it must not
     # close over the enclosing locals (Ruby raises NameError), so it
     # gets no `parent`.
-    def initialize(@is_block = false, @parent = nil, starting_slot : Int32 = 0, @for_body = false)
+    def initialize(@is_block = false, @parent = nil, starting_slot : Int32 = 0, @for_body = false, @is_lambda = false)
       @vars = {} of String => Int32
       @next_slot = starting_slot
     end
@@ -125,11 +127,15 @@ module Adjutant
   class Compiler
     MAX_LOOP_DEPTH =         16
     NO_SUPER       = 0xFFFF_u16
+    SUPER_ON_STACK =      0_u16
 
     def initialize(symbols : SymbolTable, def_depth : Int32 = 0)
       @symbols = symbols
       @chunk = Chunk.new
       @loop_stack = [] of LoopScope
+      # Where a block's or lambda's body starts, after its parameters'
+      # defaults, for `redo`; nil outside one.
+      @block_body_pos = nil.as(Int32?)
       @ensure_stack = [] of EnsureRegion
       @in_block = false
       @scope = nil.as(CompilerScope?)
@@ -160,13 +166,15 @@ module Adjutant
       def_depth : Int32 = 0,
       enclosing_method : String? = nil,
       for_body : Bool = false,
+      lambda_body : Bool = false,
     ) : {Chunk, Int32}
       c = new(symbols, def_depth)
       c.enclosing_method = enclosing_method
-      scope = CompilerScope.new(in_block, parent_scope, for_body: for_body)
+      scope = CompilerScope.new(in_block, parent_scope, for_body: for_body, is_lambda: lambda_body)
       c.scope = scope
       slots = params.map { |param| scope.define(param.name) }
       c.emit_default_prologue(params, slots)
+      c.block_body_pos = c.chunk.pos if in_block
       c.compile_body(body)
       c.emit_ret(0)
       local_count = scope.next_slot
@@ -178,6 +186,7 @@ module Adjutant
     protected getter symbols
     protected property scope : CompilerScope?
     protected setter in_block
+    protected setter block_body_pos : Int32?
 
     # The method this code is being compiled inside, so a block can
     # record where it was written. Only R007's message reads it: a
@@ -320,15 +329,27 @@ module Adjutant
       @chunk.emit(Op::Const, node.line, c: idx)
     end
 
+    # A literal outside 64 bits raises U025: Adjutant's Integers don't
+    # widen.
     private def compile_int(node : IntLiteral) : Nil
-      idx = @chunk.add_const(Value.int(Compiler.int_literal_value(node.value)))
+      value = Compiler.int_literal_value(node.value)
+      unless value
+        raise CompileError.new(
+          Diagnostic.new(
+            code: "U025",
+            primary: Span.new(line: node.line, column: node.column, length: node.value.size, label: "outside 64 bits")
+          )
+        )
+      end
+      idx = @chunk.add_const(Value.int(value))
       @chunk.emit(Op::Const, node.line, c: idx)
     end
 
     # An Integer literal's value, as Ruby reads it: an optional `-`,
     # then a `0x`, `0b`, `0o` or `0d` prefix, or a bare leading `0` for
-    # octal, with `_` separators. The lexer has checked the digits.
-    def self.int_literal_value(lexeme : String) : Int64
+    # octal, with `_` separators. The lexer has checked the digits. Nil
+    # when the value is outside Int64.
+    def self.int_literal_value(lexeme : String) : Int64?
       raw = lexeme.delete('_')
       negative = raw.starts_with?('-')
       raw = raw.lchop('-')
@@ -339,8 +360,17 @@ module Adjutant
                      else
                        {10, raw}
                      end
-      value = digits.to_i64(base)
-      negative ? -value : value
+      Compiler.signed_int64(digits.to_u64?(base), negative)
+    end
+
+    # `magnitude` with the given sign, or nil when that is outside
+    # Int64: the magnitude may reach 2**63 only when negative.
+    def self.signed_int64(magnitude : UInt64?, negative : Bool) : Int64?
+      return unless magnitude
+      limit = negative ? Int64::MAX.to_u64 + 1 : Int64::MAX.to_u64
+      return if magnitude > limit
+      return Int64::MIN if negative && magnitude == limit
+      negative ? -magnitude.to_i64 : magnitude.to_i64
     end
 
     private def compile_float(node : FloatLiteral) : Nil
@@ -660,7 +690,7 @@ module Adjutant
     # --- Ternary ------------------------------------------------------------
 
     private def compile_ternary(node : Ternary) : Nil
-      compile_node(node.cond)
+      compile_condition(node.cond)
       jmp_false = @chunk.emit_jump(Op::JumpIfFalse, node.line)
       compile_node(node.then_branch)
       jmp_end = @chunk.emit_jump(Op::Jump, node.line)
@@ -830,7 +860,9 @@ module Adjutant
           in_block: true,
           parent_scope: @scope,
           def_depth: @def_depth,
-          enclosing_method: @enclosing_method
+          enclosing_method: @enclosing_method,
+          # `lambda { }` makes its block a lambda, which `return` leaves.
+          lambda_body: node.receiver.nil? && node.method == "lambda"
         )
         sproc = ScriptProc.new(blk_chunk, "<block>", blk_params, blk_locals, true,
           ast_params: blk.params, home_method: @enclosing_method)
@@ -974,12 +1006,13 @@ module Adjutant
       end
     end
 
-    # `self.` or `Name.` for a def with a receiver, as written.
+    # `self.` or `name.` for a def with a receiver, as written.
     private def def_receiver_text(node : DefNode) : String
       case recv = node.receiver
-      when nil      then ""
-      when Constant then "#{recv.name}."
-      else               "self."
+      when nil        then ""
+      when Constant   then "#{recv.name}."
+      when Identifier then "#{recv.name}."
+      else                 "self."
       end
     end
 
@@ -1066,8 +1099,19 @@ module Adjutant
       @chunk.emit(Op::MakeProc, node.line, c: proc_idx)
       sym_idx = intern(node.name)
       if recv = node.receiver
+        # Only a class or module takes a singleton method: `self` or a
+        # constant. Anything else would name one object (U024).
+        unless recv.is_a?(SelfNode) || recv.as?(Identifier).try(&.name[0].ascii_uppercase?)
+          raise CompileError.new(
+            Diagnostic.new(
+              code: "U024",
+              primary: Span.new(line: recv.line, column: recv.column, length: def_receiver_text(node).size - 1, label: "not a class or module"),
+              data: {"receiver" => def_receiver_text(node).rchop}
+            )
+          )
+        end
         compile_node(recv)
-        @chunk.emit(Op::DefSingleton, node.line, c: sym_idx)
+        @chunk.emit(Op::DefSingleton, node.line, b: intern(def_receiver_text(node).rchop).to_u16, c: sym_idx)
       else
         # `def` defines on self's class. At top level self is `main`,
         # so the method goes on Object, as in Ruby.
@@ -1077,20 +1121,20 @@ module Adjutant
 
     private def compile_class(node : ClassNode) : Nil
       name_idx = intern(node.name)
-      super_idx = if s = node.superclass
-                    intern(s).to_u16
-                  else
-                    NO_SUPER
-                  end
 
-      @chunk.emit(Op::GetClass, node.line)                             # [old_self]
-      @chunk.emit(Op::MakeClass, node.line, b: super_idx, c: name_idx) # [old_self, new_class]
-      @chunk.emit(Op::SetConstant, node.line, c: name_idx)             # [old_self, new_class]  registers in old_self's scope (or globals at top level)
-      @chunk.emit(Op::SetClass, node.line)                             # [old_self]  self := new_class
-      with_nested_scope { compile_body(node.body) }                    # [old_self, body_val]
-      @chunk.emit(Op::Pop, node.line)                                  # [old_self]  discard body value
-      @chunk.emit(Op::SetClass, node.line)                             # []  self := old_self (restored)
-      emit_nil(node.line)                                              # [nil]  class-def statement's own value
+      @chunk.emit(Op::GetClass, node.line) # [old_self]
+      if superclass = node.superclass
+        compile_node(superclass)                                              # [old_self, superclass]
+        @chunk.emit(Op::MakeClass, node.line, b: SUPER_ON_STACK, c: name_idx) # [old_self, new_class]
+      else
+        @chunk.emit(Op::MakeClass, node.line, b: NO_SUPER, c: name_idx) # [old_self, new_class]
+      end
+      @chunk.emit(Op::SetConstant, node.line, c: name_idx) # [old_self, new_class]  registers in old_self's scope (or globals at top level)
+      @chunk.emit(Op::SetClass, node.line)                 # [old_self]  self := new_class
+      with_nested_scope { compile_body(node.body) }        # [old_self, body_val]
+      @chunk.emit(Op::Pop, node.line)                      # [old_self]  discard body value
+      @chunk.emit(Op::SetClass, node.line)                 # []  self := old_self (restored)
+      emit_nil(node.line)                                  # [nil]  class-def statement's own value
     end
 
     private def compile_module(node : ModuleNode) : Nil
@@ -1112,6 +1156,7 @@ module Adjutant
         node.body, @symbols,
         params: node.params,
         in_block: true,
+        lambda_body: true,
         parent_scope: @scope,
         enclosing_method: @enclosing_method,
         # A lambda can run later and repeatedly, like a method, so a
@@ -1129,34 +1174,68 @@ module Adjutant
 
     # --- Control flow -------------------------------------------------------
 
+    # Compiles the condition of an `if`, `elsif`, `unless`, `while`,
+    # `until`, modifier or ternary. A range literal there, or under
+    # `and`, `or` or `not` there, is Ruby's flip-flop, which is
+    # excluded (U023); compiled as a Range, it would always be true.
+    private def compile_condition(cond : Node) : Nil
+      if range = flip_flop(cond)
+        raise CompileError.new(
+          Diagnostic.new(
+            code: "U023",
+            primary: Span.new(
+              line: range.line,
+              column: range.column,
+              length: range.exclusive? ? 3 : 2,
+              label: "flip-flop not supported"
+            )
+          )
+        )
+      end
+      compile_node(cond)
+    end
+
+    private def flip_flop(cond : Node) : RangeLiteral?
+      case cond
+      when RangeLiteral
+        cond
+      when Binary
+        return unless cond.op.in?(TokenKind::AndAnd, TokenKind::KwAnd, TokenKind::OrOr, TokenKind::KwOr)
+        flip_flop(cond.left) || flip_flop(cond.right)
+      when Unary
+        flip_flop(cond.expr) if cond.op == TokenKind::Bang
+      end
+    end
+
+    # Each condition jumps past its branch when false, to the next
+    # condition or the else-branch; each branch ends with a jump to the
+    # end, all patched once the end is known.
     private def compile_if(node : IfNode) : Nil
-      compile_node(node.cond)
-      jmp_false = @chunk.emit_jump(Op::JumpIfFalse, node.line)
+      end_patches = [] of Int32
+      compile_condition(node.cond)
+      jmp_next = @chunk.emit_jump(Op::JumpIfFalse, node.line)
       compile_body(node.then_branch)
-      patches = [jmp_false] of Int32
 
       node.elsif_branches.each do |elsif_cond, elsif_body|
-        jmp_end = @chunk.emit_jump(Op::Jump, node.line)
-        patches << jmp_end
-        @chunk.patch_jump(patches.shift, @chunk.pos)
-        compile_node(elsif_cond)
-        jmp_f = @chunk.emit_jump(Op::JumpIfFalse, node.line)
+        end_patches << @chunk.emit_jump(Op::Jump, node.line)
+        @chunk.patch_jump(jmp_next, @chunk.pos)
+        compile_condition(elsif_cond)
+        jmp_next = @chunk.emit_jump(Op::JumpIfFalse, node.line)
         compile_body(elsif_body)
-        patches.unshift(jmp_f)
       end
 
-      jmp_end = @chunk.emit_jump(Op::Jump, node.line)
-      @chunk.patch_jump(patches.first, @chunk.pos)
+      end_patches << @chunk.emit_jump(Op::Jump, node.line)
+      @chunk.patch_jump(jmp_next, @chunk.pos)
       if else_b = node.else_branch
         compile_body(else_b)
       else
         emit_nil(node.line)
       end
-      @chunk.patch_jump(jmp_end, @chunk.pos)
+      end_patches.each { |patch| @chunk.patch_jump(patch, @chunk.pos) }
     end
 
     private def compile_unless(node : UnlessNode) : Nil
-      compile_node(node.cond)
+      compile_condition(node.cond)
       jmp_true = @chunk.emit_jump(Op::JumpIfFalse, node.line)
       jmp_body = @chunk.emit_jump(Op::Jump, node.line)
       @chunk.patch_jump(jmp_true, @chunk.pos)
@@ -1177,7 +1256,7 @@ module Adjutant
       scope = LoopScope.new(loop_start, ensure_depth_at_entry: @ensure_stack.size)
       @loop_stack.push(scope)
 
-      compile_node(node.cond)
+      compile_condition(node.cond)
       # `until` inverts the condition.
       @chunk.emit(Op::Not, node.line) if node.until_loop?
       jmp_exit = @chunk.emit_jump(Op::JumpIfFalse, node.line)
@@ -1204,38 +1283,27 @@ module Adjutant
       scope.breaks.each { |brk| @chunk.patch_jump(brk, tail) }
     end
 
+    # `loop do ... end` is Ruby's `Kernel#loop` with a block, so it
+    # compiles as that call: the body is a block, with a scope of its
+    # own on each iteration, closures included, and `break`, `next`,
+    # `redo` and `return` act as they do in any block.
     private def compile_loop(node : LoopNode) : Nil
-      raise loop_too_deep(node) if @loop_stack.size >= MAX_LOOP_DEPTH
-      loop_start = @chunk.pos
-      scope = LoopScope.new(loop_start, ensure_depth_at_entry: @ensure_stack.size)
-      scope.body_pos = loop_start
-      @loop_stack.push(scope)
-
-      compile_body(node.body)
-      @chunk.emit(Op::Pop, node.line)
-      @chunk.emit(Op::Jump, node.line, c: loop_start.to_u32)
-
-      # Only a `break` leaves `loop`, and it has already pushed its
-      # value, so breaks are patched past this nil.
-      emit_nil(node.line)
-      after_nil = @chunk.pos
-
-      scope = @loop_stack.pop
-      scope.breaks.each { |brk| @chunk.patch_jump(brk, after_nil) }
+      l, c = node.line, node.column
+      compile_node(Call.new(nil, "loop", [] of Node, BlockNode.new([] of Param, node.body, l, c), false, l, c))
     end
 
     private def compile_for(node : ForNode) : Nil
-      # `for i in expr ... end` compiles as `expr.each { |<for>i| i = <for>i; ... }`:
+      # `for t in expr ... end` compiles as `expr.each { |<for>0| t = <for>0; ... }`:
       # the block takes each element under a name no script can write,
-      # then assigns the loop variable, which as a `for` body's name
-      # belongs to the scope around the loop and outlives it.
+      # then assigns each target, which as a `for` body's name belongs
+      # to the scope around the loop and outlives it.
       compile_node(node.iter) # receiver: the iterable
 
       l, c = node.line, node.column
-      param_names = node.vars.map { |name| "<for>#{name}" }
+      param_names = node.targets.each_index.map { |i| "<for>#{i}" }.to_a
       for_params = param_names.map { |name| Param.new(name, nil, false, false, false, l, c) }
-      binds = node.vars.zip(param_names).map do |var, param|
-        Assign.new(Identifier.new(var, l, c), Identifier.new(param, l, c), l, c).as(Node)
+      binds = node.targets.zip(param_names).map do |target, param|
+        Assign.new(target, Identifier.new(param, l, c), l, c).as(Node)
       end
       body = Body.new(binds + node.body.stmts, node.body.line, node.body.column)
       blk_chunk, blk_locals = Compiler.compile_proc(
@@ -1296,13 +1364,32 @@ module Adjutant
       end_patches.each { |patch| @chunk.patch_jump(patch, @chunk.pos) }
     end
 
+    # In a method or lambda, `return` leaves it. In a block it leaves
+    # the method or lambda the block was written in: `BlockReturn`
+    # carries how many block scopes out that is.
     private def compile_return(node : ReturnNode) : Nil
       if v = node.value
         compile_node(v)
       else
         emit_nil(node.line)
       end
-      @chunk.emit(Op::Ret, node.line)
+      if (depth = block_return_depth) > 0
+        @chunk.emit(Op::BlockReturn, node.line, a: depth.to_u8)
+      else
+        @chunk.emit(Op::Ret, node.line)
+      end
+    end
+
+    # How many block scopes lie between here and the nearest method,
+    # lambda or top level: 0 outside a block.
+    private def block_return_depth : Int32
+      depth = 0
+      scope = @scope
+      while scope && scope.is_block? && !scope.is_lambda?
+        depth += 1
+        scope = scope.parent
+      end
+      depth
     end
 
     # Before a `break`, `next` or `redo` jumps out of begin regions,
@@ -1379,6 +1466,12 @@ module Adjutant
     end
 
     private def compile_redo(node : RedoNode) : Nil
+      if @loop_stack.empty? && (body_pos = @block_body_pos)
+        # In a block or lambda, `redo` restarts its body.
+        emit_ensure_unwind(0, node.line)
+        @chunk.emit(Op::Jump, node.line, c: body_pos.to_u32)
+        return
+      end
       if @loop_stack.empty?
         raise CompileError.new(
           Diagnostic.new(
@@ -1575,7 +1668,7 @@ module Adjutant
     end
 
     private def compile_modifier_if(node : ModifierIf) : Nil
-      compile_node(node.cond)
+      compile_condition(node.cond)
       @chunk.emit(Op::Not, node.line) if node.negated?
       jmp_skip = @chunk.emit_jump(Op::JumpIfFalse, node.line)
       compile_node(node.body)
@@ -1610,7 +1703,7 @@ module Adjutant
       scope = LoopScope.new(loop_start, ensure_depth_at_entry: @ensure_stack.size)
       @loop_stack.push(scope)
 
-      compile_node(node.cond)
+      compile_condition(node.cond)
       @chunk.emit(Op::Not, node.line) if node.until_loop?
       jmp_exit = @chunk.emit_jump(Op::JumpIfFalse, node.line)
       # Written through the index: LoopScope is a struct.

@@ -107,9 +107,17 @@ module Adjutant::Builtins
       args.first
     end
 
-    define(cls, interp, "to_i", arity: 0) do |args|
+    # Ruby's reading: leading whitespace, a sign, then digits with
+    # single `_` separators, up to the first other character; 0 when
+    # none. Digits past 64 bits raise U025.
+    define(cls, interp, "to_i", arity: 0) do |args, _blk, ncc|
       recv = args.first
-      Adjutant::Value.int(recv.as_string.to_i64? || 0_i64, recv.label)
+      value = 0_i64
+      if match = recv.as_string.match(/\A\s*([-+]?)(\d+(?:_\d+)*)/)
+        magnitude = match[2].delete('_').to_u64?
+        value = Adjutant::Compiler.signed_int64(magnitude, match[1] == "-") || ncc.raise_error("U025", error_class: "RangeError")
+      end
+      Adjutant::Value.int(value, recv.label)
     end
 
     define(cls, interp, "to_f", arity: 0) do |args|

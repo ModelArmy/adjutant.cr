@@ -89,7 +89,7 @@ The script parsed, but was rejected before running.
 Code|Meaning                                |Placeholders
 ----|---------------------------------------|------------
 C001|Left-hand side of `=` can't be assigned|`target`    
-C002|`redo` used outside any loop           |—           
+C002|`redo` outside a loop or block         |—           
 C003|`break`/`next` outside loop or block   |`keyword`   
 
 ## R — Runtime
@@ -156,6 +156,7 @@ R055|`include` or `extend` given something other than a module          |`type`
 R056|An Array joined that contains itself                               |—                                          
 R057|A MatchData group name the pattern lacks                           |`name`                                     
 R058|`clamp` given a minimum above its maximum                          |—                                          
+R059|A superclass that isn't a class                                    |`value`                                    
 
 Scripts can `rescue` these. R008 raises a `NameError`, matching Ruby;
 R011, R012, R015, and R018 raise `ArgumentError`, also matching Ruby;
@@ -234,6 +235,9 @@ U019|`proc { ... }`                                  |`construct`
 U020|`retry`                                         |—                
 U021|Ruby's effectful core (`File`, `ENV`, `system`) |`name`           
 U022|Enumerator (a call without its block)           |`method`         
+U023|Flip-flop (a range as a condition)              |—                
+U024|A method for one object (`def obj.name`)        |`receiver`       
+U025|An Integer outside 64 bits                      |—                
 
 U005 and U006 are reported when a name that would resolve to one of them
 resolves to nothing else. A script is still free to define its own method
@@ -245,7 +249,7 @@ U010 was investigated and found not to be a real gap — see
 retired, not reassigned: codes are never reused for a different
 problem once allocated (see "Reading a code" above).
 
-**U008, U009, U012–U014, U015's `undef` and U021 status: decided, not yet enforced.** Using one
+**U008, U009, U012, U013, U015's `undef` and U021 status: decided, not yet enforced.** Using one
 of these constructs today falls through to an ordinary undefined-name
 or generic parse error rather than naming the construct specifically —
 expect a less-specific error than the table above until enforcement

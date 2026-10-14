@@ -351,7 +351,8 @@ module Adjutant
 
   class ClassNode < Node
     getter name : String
-    getter superclass : String?
+    # The expression after `<`, usually a Constant or ConstPath.
+    getter superclass : Node?
     getter body : Body
 
     def initialize(@name, @superclass, @body, line, column)
@@ -439,11 +440,13 @@ module Adjutant
   end
 
   class ForNode < Node
-    getter vars : Array(String)
+    # What each element is assigned to: a local, instance or class
+    # variable, or an index, as in a multiple assignment.
+    getter targets : Array(Node)
     getter iter : Node
     getter body : Body
 
-    def initialize(@vars, @iter, @body, line, column)
+    def initialize(@targets, @iter, @body, line, column)
       super(line, column)
     end
   end

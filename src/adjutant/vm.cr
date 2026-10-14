@@ -192,6 +192,18 @@ module Adjutant
   # innermost native call catches it, so in
   # `outer.each { inner.each { break } }` only the inner `each` ends.
   # Not a RuntimeError, so no script `rescue` can catch it.
+  # A `return` in a block that has left the frames of this run, as
+  # when the block was run by a native method. It carries the value to
+  # the run that holds `home`, the locals of the frame it leaves.
+  class BlockReturnSignal < Exception
+    getter value : Value
+    getter home : Array(Value)
+
+    def initialize(@value, @home)
+      super("block return")
+    end
+  end
+
   class BlockBreakSignal < Exception
     getter value : Value
 
@@ -250,6 +262,13 @@ module Adjutant
       # EndEnsure. An error raised inside the ensure body supersedes
       # it, as in Ruby. Cleared on every fresh catch.
       @pending_reraise = nil.as(Value?)
+      # A `break` an ensure body was entered for, with the frame whose
+      # call it ends, resumed by EndEnsure. An error raised inside the
+      # ensure body supersedes it, as in Ruby.
+      @pending_break = nil.as({Value, Frame?}?)
+      # A block's `return` an ensure body was entered for, with the
+      # locals of the frame it leaves, resumed by EndEnsure.
+      @pending_return = nil.as({Value, Array(Value)}?)
       # Containers being rendered, for `guard_rendering`. VM-wide,
       # since a recursive `inspect` re-enters the VM at each level.
       @rendering_ids = Set(UInt64).new
@@ -623,6 +642,90 @@ module Adjutant
       frame
     end
 
+    # Unwinds a `break` from a block to `target`, the frame of the call
+    # that received the block, running each `ensure` it leaves,
+    # innermost first, as Ruby does.
+    #
+    # Steps:
+    # 1. In the current frame, enter the innermost open `ensure`, if
+    #    any, leaving the unwind for EndEnsure to resume.
+    # 2. At `target`, end its call: pop it and push `value` to its
+    #    caller.
+    # 3. With no target, stop at the first method frame and push
+    #    `value` there. Ruby raises LocalJumpError.
+    # 4. Otherwise pop the frame and go on. When no frames remain, the
+    #    block was run by a native method, and BlockBreakSignal ends
+    #    that call with `value`.
+    private def unwind_break(value : Value, target : Frame?) : Nil
+      loop do
+        frame = current_frame
+        if ensure_ip = break_ensure_ip(frame)
+          (@stack.size - frame.stack_base).times { @stack.pop } if @stack.size > frame.stack_base
+          @pending_break = {value, target}
+          frame.ip = ensure_ip
+          return
+        end
+        if target.nil? && !frame.proc.is_block?
+          push(value)
+          return
+        end
+        (@stack.size - frame.stack_base).times { @stack.pop } if @stack.size > frame.stack_base
+        pop_frame
+        if target && frame.same?(target)
+          push(value) unless @frames.empty?
+          return
+        end
+        raise BlockBreakSignal.new(value) if @frames.empty?
+      end
+    end
+
+    # Unwinds a block's `return` to `home`, the locals of the method or
+    # lambda frame it leaves, running each `ensure` on the way,
+    # innermost first, as Ruby does. Returns the value when that frame
+    # was the last of this run, for `execute` to return; nil otherwise.
+    #
+    # Steps:
+    # 1. In the current frame, enter the innermost open `ensure`, if
+    #    any, leaving the unwind for EndEnsure to resume.
+    # 2. Pop the frame. If it was the home frame, push `value` to its
+    #    caller, or return it when no frames remain.
+    # 3. When no frames remain short of home, the block was run by a
+    #    native method: BlockReturnSignal carries the value out to the
+    #    run that holds the home frame.
+    private def unwind_return(value : Value, home : Array(Value)) : Value?
+      loop do
+        frame = current_frame
+        if ensure_ip = break_ensure_ip(frame)
+          (@stack.size - frame.stack_base).times { @stack.pop } if @stack.size > frame.stack_base
+          @pending_return = {value, home}
+          frame.ip = ensure_ip
+          return
+        end
+        (@stack.size - frame.stack_base).times { @stack.pop } if @stack.size > frame.stack_base
+        pop_frame
+        if frame.locals.same?(home)
+          return value if @frames.empty?
+          push(value)
+          return
+        end
+        raise BlockReturnSignal.new(value, home) if @frames.empty?
+      end
+    end
+
+    # The `ensure` target of the innermost construct open in `frame`
+    # that has one. A `break` passes a rescue by, so constructs with
+    # only a rescue are dropped, and a rescue beside the `ensure` is
+    # cleared. Nil when no `ensure` is open.
+    private def break_ensure_ip(frame : Frame) : Int32?
+      while entry = frame.handlers.last?
+        if ensure_ip = entry.ensure_ip
+          entry.rescue_ip = nil
+          return ensure_ip
+        end
+        frame.handlers.pop
+      end
+    end
+
     private def pop_frame : Frame
       @frames.pop
     end
@@ -898,6 +1001,18 @@ module Adjutant
             depth_before = @frames.size
             result = dispatch_super(f, args, f.filename, inst.line, zsuper: zsuper)
             push(result) if @frames.size == depth_before
+          when Op::BlockReturn
+            val = pop
+            if home = f.outer_locals.try(&.[inst.a.to_i - 1]?)
+              if returned = unwind_return(val, home)
+                result = returned
+              end
+            else
+              # No scope to leave beyond this frame: return from it.
+              f.stack_base.upto(@stack.size - 1) { @stack.pop } if @stack.size > f.stack_base
+              pop_frame
+              @frames.empty? ? (result = val) : push(val)
+            end
           when Op::Ret
             result = pop
             # Drops this frame's leftover stack values.
@@ -1047,13 +1162,15 @@ module Adjutant
           when Op::MakeClass
             name_sym = chunk.consts[inst.c].as_sym
             superclass = nil
-            if inst.b != Compiler::NO_SUPER
-              super_sym = chunk.consts[inst.b].as_sym
-              super_val = @globals[super_sym.value]?
-              unless super_val && super_val.rclass?
-                raise undefined_constant(super_sym.name, f)
+            if inst.b == Compiler::SUPER_ON_STACK
+              super_val = pop
+              super_cls = super_val.as_rclass?
+              if super_cls.nil? || super_cls.is_module?
+                raise runtime_diagnostic(
+                  Diagnostic.new(code: "R059", primary: frame_span(f), data: {"value" => describe_value(super_val)}),
+                  f, error_class: "TypeError")
               end
-              superclass = super_val.as_rclass
+              superclass = super_cls
             end
             # A class with no `<` inherits from Object. Nil only for a
             # VM built without an Interpreter.
@@ -1092,11 +1209,15 @@ module Adjutant
             recv = pop
             proc_val = pop
             name_sym = chunk.consts[inst.c].as_sym
-            # `recv` is a class or module, or `main` at top level;
-            # `def self.foo` inside a method is rejected by the
-            # compiler.
-            owner = recv.as_rclass? || recv.as_robject?.try(&.rclass)
+            # Only a class or module takes a singleton method. Any other
+            # object, `main` included, would get a method of its own
+            # (U024); the compiler has already rejected receivers that
+            # aren't `self` or a constant.
+            owner = recv.as_rclass?
             unless owner
+              if recv.as_robject?
+                raise script_diagnostic("U024", {"receiver" => chunk.consts[inst.b].as_sym.name}, f)
+              end
               raise script_diagnostic("R006", {"definition" => "def self.#{name_sym.name}"}, f)
             end
             proc = proc_val.as_proc
@@ -1122,33 +1243,10 @@ module Adjutant
             end
           when Op::BlockBreak
             val = pop
-            # Pops consecutive block frames, remembering the outermost,
-            # which `yield` pushed if the break came through one.
-            last_popped_proc = nil.as(ScriptProc?)
-            while !@frames.empty? && @frames.last.proc.is_block?
-              sb = @frames.last.stack_base; (@stack.size - sb).times { @stack.pop } if @stack.size > sb
-              last_popped_proc = @frames.last.proc
-              pop_frame
-            end
-            if @frames.empty?
-              # No frames left: the block was run by a native method
-              # (`invoke_internal`). The nearest `call_native` catches
-              # the signal, and `invoke_internal` restores the outer
-              # frames.
-              raise BlockBreakSignal.new(val)
-            elsif last_popped_proc && @frames.last.block == last_popped_proc
-              # This frame yielded to the block, so the break ends its
-              # call, as in Ruby: pop it, as Ret does, and push the
-              # value to its caller.
-              landed = @frames.last
-              (@stack.size - landed.stack_base).times { @stack.pop } if @stack.size > landed.stack_base
-              pop_frame
-              push(val) unless @frames.empty?
-            else
-              # A `break` outside any loop or block pushes its value and
-              # carries on. Ruby raises LocalJumpError.
-              push(val)
-            end
+            # The call that received this block ends: the nearest method
+            # frame whose block it is.
+            target = @frames.reverse_each.find { |frame| !frame.proc.is_block? && frame.block.same?(f.proc) }
+            unwind_break(val, target)
 
             # --- Exception handling ---------------------------------------
           when Op::Try
@@ -1175,6 +1273,14 @@ module Adjutant
             if pending = @pending_reraise
               @pending_reraise = nil
               raise RuntimeError.new(error_message(pending), f, error_value: pending)
+            elsif pending_break = @pending_break
+              @pending_break = nil
+              unwind_break(*pending_break)
+            elsif pending_return = @pending_return
+              @pending_return = nil
+              if returned = unwind_return(*pending_return)
+                result = returned
+              end
             end
           when Op::Throw
             val = pop
@@ -1204,9 +1310,22 @@ module Adjutant
           else
             raise internal_diagnostic("I001", {"opcode" => inst.op.to_s}, f)
           end
-        rescue ex : RuntimeError
-          # A new error supersedes any re-raise still pending.
+        rescue ex : BlockReturnSignal
+          # A block's `return` that left a nested run: resumed here if
+          # its home frame is in this run, passed on otherwise.
+          raise ex unless @frames.any?(&.locals.same?(ex.home))
+          if returned = unwind_return(ex.value, ex.home)
+            result = returned
+          end
+        rescue error : RuntimeError | OverflowError
+          # Integer arithmetic past 64 bits is U025, which the script
+          # can rescue as a RangeError.
+          ex = error.is_a?(RuntimeError) ? error : integer_overflow(f)
+          # A new error supersedes any re-raise, break or return still
+          # pending.
           @pending_reraise = nil
+          @pending_break = nil
+          @pending_return = nil
 
           # Unwinds frames to the innermost handler, in this frame or a
           # caller. Within an entry the rescue target is tried before the
@@ -1674,6 +1793,12 @@ module Adjutant
       # A `break` in the block this call received ends the call with
       # the break's value, as in Ruby.
       ex.value
+    rescue ex : BlockReturnSignal
+      # A block's `return` passes through to the run holding its home.
+      raise ex
+    rescue OverflowError
+      # Integer arithmetic past 64 bits in a native: U025, as in the VM.
+      raise integer_overflow(current_frame, filename, line)
     rescue ex : FatalSignal
       # A FatalSignal (a denied grant, an exhausted budget) passes
       # through unchanged, past every `rescue`, including
@@ -2015,6 +2140,29 @@ module Adjutant
     end
 
     # Raises R046, Ruby's ArgumentError for a wrong positional count.
+    # Ruby's `Kernel#loop`: calls the block until a `break` ends the
+    # loop with the break's value, or a `return` leaves the method.
+    # Without a block it raises U022, where Ruby would return an
+    # Enumerator.
+    private def run_loop(blk : ScriptProc?, filename : String, line : Int32) : Value
+      unless block = blk
+        raise runtime_diagnostic(
+          Diagnostic.new(code: "U022", primary: Span.new(line: line, filename: filename), data: {"method" => "Kernel#loop"}),
+          current_frame)
+      end
+      loop { invoke(block, [] of Value) }
+    rescue ex : BlockBreakSignal
+      ex.value
+    end
+
+    # U025 as a RangeError: an Integer result outside 64 bits, which
+    # Adjutant doesn't widen. At `line` of `filename` when given, else
+    # at `frame`'s current line.
+    private def integer_overflow(frame : Frame, filename : String? = nil, line : Int32? = nil) : RuntimeError
+      span = line ? Span.new(line: line, filename: filename) : frame_span(frame)
+      runtime_diagnostic(Diagnostic.new(code: "U025", primary: span), frame, error_class: "RangeError")
+    end
+
     private def raise_arity_error(given : Int32, expected : String, method : String,
                                   filename : String, line : Int32) : NoReturn
       raise runtime_diagnostic(
@@ -2122,6 +2270,7 @@ module Adjutant
       "to_f" => Arity.from(0), "length" => Arity.from(0), "size" => Arity.from(0),
       "+" => Arity.from(1), "-" => Arity.from(1), "*" => Arity.from(1),
       "/" => Arity.from(1), "%" => Arity.from(1),
+      "loop" => Arity.new(0, 0),
     }
 
     # Operations that resolve when nothing else does: output, `raise`,
@@ -2141,6 +2290,8 @@ module Adjutant
       end
       reject_kwargs!(kwargs, name, filename, line)
       case name
+      when "loop"
+        run_loop(blk, filename, line)
       when "puts"
         # Each argument's own `to_s`, so `puts :sym` prints `sym`.
         str = args.map { |arg| render_to_s(arg, filename, line) }.join("\n")

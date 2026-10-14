@@ -62,7 +62,13 @@ module Adjutant
       it "parses a for loop" do
         node = parse_expr("for i in 1..3\nputs(i)\nend")
         node.should be_a(ForNode)
-        node.as(ForNode).vars.should eq ["i"]
+        node.as(ForNode).targets.map(&.as(Identifier).name).should eq ["i"]
+      end
+
+      it "parses a for loop's targets as assignment targets" do
+        targets = parse("b = []\nfor @a, b[0] in c\nend").stmts[1].as(ForNode).targets
+        targets[0].should be_a(IVar)
+        targets[1].should be_a(Index)
       end
 
       it "parses a for loop over a bare-identifier iterable with a trailing do" do
@@ -71,7 +77,7 @@ module Adjutant
         # leaving the parser expecting KwEnd at EOF.
         node = parse_expr("for o in a do\nputs(o)\nend")
         node.should be_a(ForNode)
-        node.as(ForNode).vars.should eq ["o"]
+        node.as(ForNode).targets.map(&.as(Identifier).name).should eq ["o"]
         node.as(ForNode).iter.should be_a(Identifier)
       end
 

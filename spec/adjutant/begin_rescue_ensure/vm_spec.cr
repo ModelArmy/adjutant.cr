@@ -1352,6 +1352,184 @@ module Adjutant
       RUBY
       result.should eq Value.int(99_i64)
     end
+
+    it "runs the ensure of the method a break leaves" do
+      result = eval(<<-RUBY)
+        side = []
+        def yielder(side)
+          yield
+        ensure
+          side << :ensure
+        end
+        side << yielder(side) { break :broke }
+        side
+      RUBY
+      result.as_array.map(&.as_sym.name).should eq ["ensure", "broke"]
+    end
+
+    it "runs the ensure of every method between the block and the call it ends, and skips the rest of that call" do
+      result = eval(<<-RUBY)
+        def inner(side)
+          yield
+        ensure
+          side << :inner_ensure
+        end
+        def outer(side)
+          inner(side) { yield }
+          side << :outer_after_inner
+        ensure
+          side << :outer_ensure
+        end
+        side = []
+        value = outer(side) { break :broke }
+        side << value
+        side
+      RUBY
+      result.as_array.map(&.as_sym.name).should eq ["inner_ensure", "outer_ensure", "broke"]
+    end
+
+    it "passes a rescue by on the way to an ensure" do
+      result = eval(<<-RUBY)
+        def guarded(side)
+          begin
+            yield
+          rescue StandardError
+            side << :rescued
+          ensure
+            side << :ensure
+          end
+          side << :after
+        end
+        side = []
+        guarded(side) { break; }
+        side
+      RUBY
+      result.as_array.map(&.as_sym.name).should eq ["ensure"]
+    end
+
+    it "lets an error raised in an ensure the break enters replace the break" do
+      result = eval(<<-RUBY)
+        def failing
+          yield
+        ensure
+          raise "from ensure"
+        end
+        begin
+          failing { break :broke }
+        rescue StandardError => e
+          e.message
+        end
+      RUBY
+      result.should eq Value.string("from ensure")
+    end
+  end
+
+  describe "return inside a block" do
+    it "leaves the method from a block a native method runs" do
+      result = eval(<<-RUBY)
+        def first_big(items)
+          items.each { |x| return x if x > 1 }
+          :none
+        end
+        [first_big([1, 2, 3]), first_big([1])]
+      RUBY
+      result.as_array.map(&.to_s).should eq ["2", ":none"]
+    end
+
+    it "leaves the method from a block run by yield" do
+      result = eval(<<-RUBY)
+        def yielder
+          yield
+          :yielder_late
+        end
+        def caller_of_yielder
+          yielder { return :early }
+          :late
+        end
+        caller_of_yielder
+      RUBY
+      result.as_sym.name.should eq "early"
+    end
+
+    it "runs each ensure it leaves, innermost first" do
+      result = eval(<<-RUBY)
+        side = []
+        def guarded_yield(side)
+          yield
+        ensure
+          side << :yielder
+        end
+        def leaver(side)
+          guarded_yield(side) do
+            begin
+              return :out
+            ensure
+              side << :block
+            end
+          end
+          :late
+        ensure
+          side << :method
+        end
+        side << leaver(side)
+        side
+      RUBY
+      result.as_array.map(&.as_sym.name).should eq ["block", "yielder", "method", "out"]
+    end
+
+    it "leaves the method from nested blocks" do
+      result = eval(<<-RUBY)
+        def find_three
+          [[1, 2], [3, 4]].each do |pair|
+            pair.each { |v| return v if v == 3 }
+          end
+          :none
+        end
+        find_three
+      RUBY
+      result.should eq Value.int(3_i64)
+    end
+
+    it "leaves only the lambda a block is written in" do
+      result = eval(<<-RUBY)
+        def with_lambdas
+          arrow = -> { [1].each { return :arrow }; :arrow_late }
+          braces = lambda { return :braces }
+          [arrow.call, braces.call, :method_late]
+        end
+        with_lambdas
+      RUBY
+      result.as_array.map(&.as_sym.name).should eq ["arrow", "braces", "method_late"]
+    end
+
+    it "leaves a method a native method called, such as initialize" do
+      result = eval(<<-RUBY)
+        class EarlyInit
+          attr_reader :state
+          def initialize
+            @state = :unset
+            [1].each { |x| @state = :set; return; }
+            @state = :late
+          end
+        end
+        EarlyInit.new.state
+      RUBY
+      result.as_sym.name.should eq "set"
+    end
+
+    it "isn't caught by a rescue it passes" do
+      result = eval(<<-RUBY)
+        def through_rescue
+          begin
+            [1].each { return :returned }
+          rescue Exception
+            :rescued
+          end
+        end
+        through_rescue
+      RUBY
+      result.as_sym.name.should eq "returned"
+    end
   end
 
   describe "method-body (implicit) rescue/else/ensure" do

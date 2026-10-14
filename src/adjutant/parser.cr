@@ -107,7 +107,7 @@ module Adjutant
       skip_newlines
       until at_kind?(TokenKind::EOF)
         append_statement(stmts, parse_statement)
-        skip_terminators
+        end_statement(TokenKind::EOF)
       end
       Body.new(stmts, line, col)
     end
@@ -194,6 +194,28 @@ module Adjutant
       )
     end
 
+    # Ends a statement: a newline or `;`, the end of the input, or one
+    # of `stops`, the tokens that end the statement sequence. Two
+    # statements on one line need a `;` between them, as in Ruby, so
+    # anything else is P001.
+    private def end_statement(*stops : TokenKind) : Nil
+      return if skip_terminators || at_kind?(TokenKind::EOF)
+      return if stops.any? { |stop| at_kind?(stop) }
+      expected = "a newline or `;`"
+      raise ParseError.new(
+        Diagnostic.new(
+          code: "P001",
+          primary: Span.new(
+            line: @current.line,
+            column: @current.column,
+            length: caret_width(@current),
+            label: "expected #{expected}"
+          ),
+          data: {"expected" => expected, "found" => describe_token(@current)}
+        )
+      )
+    end
+
     # One column for EOF, which has no text.
     private def caret_width(token : Token) : Int32
       token.kind == TokenKind::EOF ? 1 : Math.max(1, token.lexeme.size)
@@ -214,6 +236,7 @@ module Adjutant
       TokenKind::Comma    => "`,`",
       TokenKind::EOF      => "end of file",
       TokenKind::Newline  => "a line break",
+      TokenKind::Constant => "a constant name",
     }
 
     private def describe_kind(kind : TokenKind) : String
@@ -284,6 +307,17 @@ module Adjutant
         # `super + 4` and `x = yield` work at statement position.
         parse_expr_statement
       end
+    end
+
+    # Rejects `class << self`, the singleton-class block, with U014.
+    private def reject_singleton_class(l : Int32, c : Int32) : Nil
+      return unless at_kind?(TokenKind::Shl)
+      raise ParseError.new(
+        Diagnostic.new(
+          code: "U014",
+          primary: Span.new(line: l, column: c, length: 8, label: "singleton-class block not supported")
+        )
+      )
     end
 
     # Rejects a bare `begin...end while cond` (or `until`) with U016.
@@ -851,8 +885,15 @@ module Adjutant
            TokenKind::KwFile, TokenKind::KwLine,
            TokenKind::Bang, TokenKind::Tilde,
            TokenKind::LParen, TokenKind::LBracket,
-           TokenKind::Identifier, TokenKind::Constant
+           TokenKind::Identifier, TokenKind::Constant,
+           TokenKind::IVar, TokenKind::CVar,
+           TokenKind::PercentWords, TokenKind::PercentSymbols,
+           TokenKind::KwYield, TokenKind::KwNot, TokenKind::Arrow
         true
+      when TokenKind::ColonColon
+        # `n ::Object` passes a top-level constant; `n::Object` is a
+        # scope path.
+        @current.space_before? && !@next.space_before?
       when TokenKind::Minus
         # `-` and `+` are decided by
         # `signed_literal_starts_bare_call?`, which sees spacing. So
@@ -1209,13 +1250,12 @@ module Adjutant
       l, c = line, col
       open_block("class", l, c)
       expect(TokenKind::KwClass)
-      name = @current.lexeme
-      advance
+      reject_singleton_class(l, c)
+      name = expect(TokenKind::Constant).lexeme
       superclass = nil
       if at_kind?(TokenKind::Lt)
         advance
-        superclass = @current.lexeme
-        advance
+        superclass = parse_expression(0)
       end
       skip_terminators
       push_local_scope(inherit: false)
@@ -1229,8 +1269,7 @@ module Adjutant
       l, c = line, col
       open_block("module", l, c)
       expect(TokenKind::KwModule)
-      name = @current.lexeme
-      advance
+      name = expect(TokenKind::Constant).lexeme
       skip_terminators
       push_local_scope(inherit: false)
       body = parse_body_until(TokenKind::KwEnd)
@@ -1334,16 +1373,24 @@ module Adjutant
       expect(TokenKind::KwLoop)
       skip_terminators
       # `loop do ... end` or `loop { ... }`. Only the `do` form needs
-      # an `end`, so only it is tracked.
-      if at_kind?(TokenKind::KwDo)
-        open_block("loop", l, c)
-        advance
-        body = parse_body_until(TokenKind::KwEnd)
-        close_block
-      else
-        expect(TokenKind::LBrace)
-        body = parse_body_until(TokenKind::RBrace)
-        expect(TokenKind::RBrace)
+      # an `end`, so only it is tracked. The body is a block, so its
+      # new names are its own, as a block's are.
+      push_local_scope(inherit: true)
+      body = begin
+        if at_kind?(TokenKind::KwDo)
+          open_block("loop", l, c)
+          advance
+          parsed = parse_body_until(TokenKind::KwEnd)
+          close_block
+          parsed
+        else
+          expect(TokenKind::LBrace)
+          parsed = parse_body_until(TokenKind::RBrace)
+          expect(TokenKind::RBrace)
+          parsed
+        end
+      ensure
+        pop_local_scope
       end
       LoopNode.new(body, l, c)
     end
@@ -1352,13 +1399,11 @@ module Adjutant
       l, c = line, col
       open_block("for", l, c)
       expect(TokenKind::KwFor)
-      vars = [] of String
-      vars << @current.lexeme
-      advance
+      # The targets parse as a multiple assignment's do.
+      targets = [parse_expression(0, resolve_assignment: false)] of Node
       while match(TokenKind::Comma)
         skip_newlines
-        vars << @current.lexeme
-        advance
+        targets << parse_expression(0, resolve_assignment: false)
       end
       expect(TokenKind::KwIn)
       @no_do_block = true
@@ -1369,7 +1414,7 @@ module Adjutant
       end
       # A `for` variable joins the current scope and outlives the
       # loop, as in Ruby.
-      vars.each { |v| register_local(v) }
+      targets.each { |target| register_local_if_identifier(target) }
       skip_terminators
       if at_kind?(TokenKind::KwDo)
         advance
@@ -1377,7 +1422,7 @@ module Adjutant
       end
       body = parse_body_until(TokenKind::KwEnd)
       close_block
-      ForNode.new(vars, iter, body, l, c)
+      ForNode.new(targets, iter, body, l, c)
     end
 
     private def parse_case : CaseNode
@@ -1670,7 +1715,7 @@ module Adjutant
       skip_terminators
       until at_kind?(stop) || at_kind?(TokenKind::EOF)
         append_statement(stmts, parse_statement)
-        skip_terminators
+        end_statement(stop)
       end
       Body.new(stmts, l, c)
     end
@@ -1681,7 +1726,7 @@ module Adjutant
       skip_terminators
       until at_any?(*kinds) || at_kind?(TokenKind::EOF)
         append_statement(stmts, parse_statement)
-        skip_terminators
+        end_statement(*kinds)
       end
       Body.new(stmts, l, c)
     end

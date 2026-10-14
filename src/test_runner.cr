@@ -38,7 +38,7 @@ module Testing
 
       # Runs each file in parallel.
       results = [] of FileResult
-      ctx = Fiber::ExecutionContext::Parallel.new("MULTI", maximum: System.cpu_count // 2)
+      ctx = Fiber::ExecutionContext::Parallel.new("MULTI", maximum: Math.max(1, System.cpu_count // 2))
       sync_results = Sync::Exclusive.new(results)
       sync_stdout = Sync::Exclusive.new(STDOUT)
       wait_group = WaitGroup.new(files.size)

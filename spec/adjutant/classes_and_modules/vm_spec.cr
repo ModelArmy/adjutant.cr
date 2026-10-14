@@ -402,6 +402,67 @@ module Adjutant
           eval("class Dog < Unknown\nend")
         end
       end
+
+      it "resolves a superclass inside a module lexically" do
+        val = eval("module Pets\nclass Animal\nend\nclass Dog < Animal\nend\nend\nPets::Dog")
+        val.as_rclass.superclass.not_nil!.name.should eq "Animal"
+      end
+
+      it "resolves a superclass given as a constant path" do
+        val = eval("module Pets\nclass Animal\nend\nend\nclass Dog < Pets::Animal\nend\nDog")
+        val.as_rclass.superclass.not_nil!.name.should eq "Animal"
+      end
+
+      it "prefers the enclosing module's class to a top-level one of the same name" do
+        result = eval(<<-RUBY)
+          class Base
+            def who; :top; end
+          end
+          module Inner
+            class Base
+              def who; :nested; end
+            end
+            class Sub < Base
+            end
+          end
+          Inner::Sub.new.who
+        RUBY
+        result.as_sym.name.should eq "nested"
+      end
+
+      it "rejects a method for one object named by a local or instance variable, at compile time (U024)" do
+        {"obj = 1\ndef obj.hello\nend", "def @obj.hello\nend"}.each do |source|
+          error = expect_raises(CompileError) { compile(source) }
+          error.diagnostic.not_nil!.code.should eq "U024"
+        end
+      end
+
+      it "rejects a method for one object held in a constant, at run time (U024)" do
+        error = expect_raises(RuntimeError) { eval("class Greeter\nend\nONE = Greeter.new\ndef ONE.hello\nend") }
+        diagnostic = error.diagnostic.not_nil!
+        diagnostic.code.should eq "U024"
+        diagnostic.data["receiver"].should eq "ONE"
+      end
+
+      it "defines class methods through self in a body and through a constant" do
+        result = eval(<<-RUBY)
+          class Greeter
+            def self.hello; :class_body; end
+          end
+          def Greeter.bye; :constant; end
+          module Tools
+            def self.run; :module_body; end
+          end
+          [Greeter.hello, Greeter.bye, Tools.run]
+        RUBY
+        result.as_array.map(&.as_sym.name).should eq ["class_body", "constant", "module_body"]
+      end
+
+      it "raises a TypeError (R059) for a superclass that isn't a class" do
+        error = expect_raises(RuntimeError) { eval("module Mixin\nend\nclass Dog < Mixin\nend") }
+        error.diagnostic.not_nil!.code.should eq "R059"
+        eval("begin\nclass Dog < 5\nend\nrescue TypeError\n:type_error\nend").as_sym.name.should eq "type_error"
+      end
     end
 
     describe "method definitions" do

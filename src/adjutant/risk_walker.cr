@@ -119,7 +119,7 @@ module Adjutant
       when CaseNode      then walk_case(node, env)
       when WhileNode     then walk_iterated(node.body, env, node.line)
       when LoopNode      then walk_iterated(node.body, env, node.line)
-      when ForNode       then walk_iterated(node.body, env, node.line, node.vars)
+      when ForNode       then walk_iterated(node.body, env, node.line, node.targets.compact_map(&.as?(Identifier).try(&.name)))
       when ModifierIf    then walk_modifier_if(node, env)
       when ModifierWhile then walk_modifier_while(node, env)
       when BeginNode     then walk_begin(node, env)
@@ -309,7 +309,10 @@ module Adjutant
     # against the enclosing scope. `def obj.method` for another
     # receiver is not supported.
     private def walk_class(node : ClassNode) : RiskNode
-      superclass = node.superclass.try { |name| resolve_class(name) }
+      superclass = case sup = node.superclass
+                   when Constant  then resolve_class(sup.name)
+                   when ConstPath then resolve_const_path(sup)
+                   end
       cls = RubyClass.new(node.name, superclass)
       @known_classes[node.name] = cls
 

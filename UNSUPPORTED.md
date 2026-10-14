@@ -567,9 +567,8 @@ defining several class methods together, not new expressiveness.
 **Instead:** prefix each class method with `self.` individually
 (`def self.foo; end`).
 
-**Enforcement — not yet enforced.** `class << self` fails to parse
-today (`<<` after `class` isn't a recognized construct), with a
-generic syntax error rather than one naming this construct.
+**Enforcement — enforced.** The parser raises U014 at `class <<`
+(`Parser#reject_singleton_class`).
 
 ### U015 — `undef` and callback hooks
 
@@ -962,6 +961,81 @@ index the Array (`arr[i, 2]`).
 
 **Enforcement — enforced.** Every builtin block-taking method raises
 U022 without a block (`Builtins.require_block!`).
+
+---
+
+### U023 — Flip-flop (a range as a condition)
+
+A range literal written as the condition of `if`, `elsif`, `unless`,
+`while`, `until`, a modifier or a ternary, or as an operand of `and`,
+`or` or `not` there: `lines.each { |l| out << l if l =~ /BEGIN/..l =~ /END/ }`.
+Ruby reads it as a flip-flop, false until its start holds and then
+true until its end does.
+
+**Why:** a flip-flop keeps state between evaluations, one hidden
+boolean per site, and nothing in its text shows it: the same condition
+on the same values answers differently depending on what ran before.
+That fails the test this file's opening sets, that behaviour be
+reasoned about from the script's own text. Built as an ordinary Range
+instead, the condition would always be true, a silently wrong answer.
+
+**Instead:** keep the state in a variable, set when the start
+condition holds and cleared when the end condition does.
+
+**Enforcement — enforced.** The compiler raises U023 at the range
+operator (`Compiler#compile_condition`). A range held in a variable
+and then tested is an ordinary Range, as in Ruby, and always true.
+
+---
+
+### U024 — A method for one object (`def obj.name`)
+
+A `def` whose receiver is an object rather than a class or module:
+`def obj.greet` on a local, an instance variable or a constant holding
+an object, and `def self.greet` at the top level, where `self` is
+`main`. Ruby gives that one object a method its class doesn't have.
+
+**Why:** what an object can do should follow from its class, which a
+reader can find; a method attached to one object is found only by
+tracing that object back to where the method was added. Approximating
+it, as Adjutant once did, put the method on the object's class
+instead, where every other instance, and every class inheriting from
+it, quietly gained it.
+
+**Instead:** define the method in the object's class, or a class of
+its own, or write a method that takes the object as an argument.
+`def self.name` in a class or module body, and `def ClassName.name`,
+are class methods and work as in Ruby.
+
+**Enforcement — enforced.** The compiler raises U024 for a receiver
+that isn't `self` or a constant (`Compiler#compile_def`); the VM raises
+it when `self` or the constant holds an object rather than a class or
+module (`Op::DefSingleton`).
+
+---
+
+### U025 — Integers outside 64 bits
+
+Integer values below -2**63 or above 2**63 - 1: a literal such as
+`1267650600228229401496703205376`, or a result such as
+`9223372036854775807 + 1`, `1e30.to_i` or
+`"99999999999999999999".to_i`. Ruby widens an Integer as far as
+memory allows.
+
+**Why:** arbitrary precision would touch every integer path in the VM
+and the builtins for values scripts rarely need. A fixed range with a
+clear error keeps every Integer cheap and predictable. If wider
+integers are ever needed, they come as a type of their own, not as a
+silent change to Integer.
+
+**Instead:** keep values within 64 bits, or use a Float where an
+approximate value will do. A script can rescue U025 as a `RangeError`.
+
+**Enforcement — enforced.** The compiler raises U025 for a literal
+outside 64 bits (`Compiler#compile_int`). At run time the VM turns any
+64-bit overflow into U025, in its own operators and in natives alike
+(`VM#integer_overflow`), and `String#to_i` raises it for digits that
+don't fit.
 
 ---
 

@@ -180,11 +180,11 @@ module Adjutant
         diag.primary.not_nil!.column.not_nil!.should be > 0
       end
 
-      it "rejects redo outside any loop as C002" do
-        error = expect_raises(CompileError) do
-          compile("redo")
+      it "rejects redo outside any loop or block as C002" do
+        {"redo", "def m\nredo\nend"}.each do |source|
+          error = expect_raises(CompileError) { compile(source) }
+          error.diagnostic.not_nil!.code.should eq("C002")
         end
-        error.diagnostic.not_nil!.code.should eq("C002")
       end
 
       it "reports the nesting limit, and its actual value, as L001" do

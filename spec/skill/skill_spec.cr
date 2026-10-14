@@ -37,6 +37,9 @@ module Adjutant
     "U015" => "undef and method hooks are rare in scripts; the diagnostic names the fix",
     "U016" => "begin...end while is rare in scripts; the diagnostic names the fix",
     "U018" => "extend or include on a receiver is rare in scripts; the diagnostic names the fix",
+    "U023" => "flip-flops are rare in scripts; the diagnostic names the fix",
+    "U024" => "methods on one object are rare in scripts; the diagnostic names the fix",
+    "U025" => "integers past 64 bits are rare in scripts; the diagnostic names the fix",
   }
 
   private def self.skill_legate_verb_names : Array(String)
