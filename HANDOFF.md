@@ -2,7 +2,7 @@
 
 Working notes between development sessions, kept current by whoever ends a session. Not user documentation.
 
-Last updated on `language-tests`, ready to merge.
+Last updated on `main`, after `language-tests` (#84) merged.
 
 ## How to use this document
 
@@ -86,13 +86,13 @@ Key documents: `SCOPE.md` (known defects and gaps: Must Fix, Will Fix), `LEGATE.
 
 ## 5. State
 
-`language-tests` adds Ruby's own specification to the script tests and fixes what it found. `main` is as #83 left it: the worker and Supervisor, with a held pipe unable to hang the Supervisor (DEVELOPMENT.md, The Supervisor's fibers).
+`main` carries `language-tests` (#84), which added Ruby's own specification to the script tests and fixed what it found, and, from #83, the worker and Supervisor, with a held pipe unable to hang the Supervisor (DEVELOPMENT.md, The Supervisor's fibers).
 
 **`spec/scripts/rubyspec/`** holds ruby/spec's language specs (MIT, `LICENSE`), translated to the `assert` API: `if`, `unless`, `while`, `until`, `case`, `and`, `or`, `not`, `break`, `next`, `redo`, `loop` and `for`. Its README.md gives the translation rules. Each file passes on MRI and on Adjutant; 165 tests run and 143 are blocked, each under `# --- BLOCKED:` with a U-code or a SCOPE.md entry. `spec/scripts/mruby/` now carries mruby's licence too.
 
 The import's tools live only in Claude's sandbox, rebuilt each session: a converter for mspec's common patterns, a helper that blocks a test with its reason, a triage loop that blocks only for errors matching a known entry and stops at anything new, and an MRI version of the `assert` API (Ruby 3.2, which segfaults on `for x&.y in`).
 
-**Fixed on the branch:** `if … elsif` crashed when an earlier branch ran; `break` from a block skipped the `ensure`s it left and ended the wrong call; `return` in a block left only the block, now leaving its method across native calls (`BlockReturn`); two statements on one line needed no separator, so an unrecognised bare argument became a silent separate statement; a superclass was looked up among top-level constants only (now an expression, R059 for a non-class); `for` read its targets as local names; `loop` shared its scope, now compiled as `Kernel#loop` with a block; `redo` now restarts blocks, lambdas and `for`; `String#to_i` reads as Ruby; the test runner ran with no workers on one CPU.
+**Fixed in #84:** `if … elsif` crashed when an earlier branch ran; `break` from a block skipped the `ensure`s it left and ended the wrong call; `return` in a block left only the block, now leaving its method across native calls (`BlockReturn`); two statements on one line needed no separator, so an unrecognised bare argument became a silent separate statement; a superclass was looked up among top-level constants only (now an expression, R059 for a non-class); `for` read its targets as local names; `loop` shared its scope, now compiled as `Kernel#loop` with a block; `redo` now restarts blocks, lambdas and `for`; `String#to_i` reads as Ruby; the test runner ran with no workers on one CPU.
 
 **New exclusions:** U023 flip-flops, U024 a method for one object (`def obj.name`, and `def self.name` at top level), U025 Integers outside 64 bits, raised as a `RangeError` at run time. SKILL.md lists none of the three; `spec/skill/skill_spec.cr` records them as omitted. U014 (`class << self`) is now enforced, and a class or module name must be a constant; `class << self` used to define a class named `<<`. SKILL.md lost a line calling `0644` decimal, untrue since #66.
 
@@ -108,13 +108,12 @@ All three predate #69, which renamed the classes the skill teaches, and the skil
 
 ## 6. Next
 
-1. **Merge `language-tests`.**
-2. **Parser gaps that block the most imported tests**, each unblocking its tests as it lands: a splat outside a parameter list, with multiple assignment's other targets (about 23), loops as expressions (about 21), parentheses holding statements (about 15).
-3. **The next ruby/spec batch:** assignments (`variables`, `optional_assignments`), `def` and method calls, and blocks (`block`, `lambda`, `yield`).
-4. **Sit the exam fresh** on all three models, to confirm the renamed skill and the task policies' format.
-5. **Test the streamed-fetch lead on Windows** (SCOPE.md): restructure `Interpreter#eval`'s `ensure`, then un-pend the spec.
-6. **Exam tasks 11 to 13** (`spec/skill/TODO.md` §1); task 12 is a regression check.
-7. **Will Fix, style pass**, by subsection, on its own branch; **§10, the static analyser** (LEGATE.md §10.1); **generic provider loading**, once a second provider exists.
+1. **Parser gaps that block the most imported tests**, each unblocking its tests as it lands: a splat outside a parameter list, with multiple assignment's other targets (about 23), loops as expressions (about 21), parentheses holding statements (about 15).
+2. **The next ruby/spec batch:** assignments (`variables`, `optional_assignments`), `def` and method calls, and blocks (`block`, `lambda`, `yield`).
+3. **Sit the exam fresh** on all three models, to confirm the renamed skill and the task policies' format.
+4. **Test the streamed-fetch lead on Windows** (SCOPE.md): restructure `Interpreter#eval`'s `ensure`, then un-pend the spec.
+5. **Exam tasks 11 to 13** (`spec/skill/TODO.md` §1); task 12 is a regression check.
+6. **Will Fix, style pass**, by subsection, on its own branch; **§10, the static analyser** (LEGATE.md §10.1); **generic provider loading**, once a second provider exists.
 
 ## 7. Open decisions
 
