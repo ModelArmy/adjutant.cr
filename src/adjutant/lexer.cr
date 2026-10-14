@@ -336,7 +336,11 @@ module Adjutant
           make_token(TokenKind::Minus, "-", line, col)
         end
       when '*'
-        match('=') ? make_token(TokenKind::StarEq, "*=", line, col) : make_token(TokenKind::Star, "*", line, col)
+        if match('*')
+          match('=') ? make_token(TokenKind::StarStarEq, "**=", line, col) : make_token(TokenKind::StarStar, "**", line, col)
+        else
+          match('=') ? make_token(TokenKind::StarEq, "*=", line, col) : make_token(TokenKind::Star, "*", line, col)
+        end
       when '/'
         if regex_starts_here?
           scan_regex(start, line, col)

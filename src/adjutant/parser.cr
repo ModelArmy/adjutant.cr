@@ -387,7 +387,7 @@ module Adjutant
         register_local_if_identifier(lhs)
         Assign.new(lhs, rhs, l, c)
       when TokenKind::PlusEq, TokenKind::MinusEq, TokenKind::StarEq,
-           TokenKind::SlashEq, TokenKind::PercentEq
+           TokenKind::SlashEq, TokenKind::PercentEq, TokenKind::StarStarEq
         op = advance.kind
         base_op = compound_base_op(op)
         rhs = parse_expression(PREC_AND_OR)
@@ -423,12 +423,13 @@ module Adjutant
 
     private def compound_base_op(op : TokenKind) : TokenKind
       case op
-      when TokenKind::PlusEq    then TokenKind::Plus
-      when TokenKind::MinusEq   then TokenKind::Minus
-      when TokenKind::StarEq    then TokenKind::Star
-      when TokenKind::SlashEq   then TokenKind::Slash
-      when TokenKind::PercentEq then TokenKind::Percent
-      else                           op
+      when TokenKind::PlusEq     then TokenKind::Plus
+      when TokenKind::MinusEq    then TokenKind::Minus
+      when TokenKind::StarEq     then TokenKind::Star
+      when TokenKind::StarStarEq then TokenKind::StarStar
+      when TokenKind::SlashEq    then TokenKind::Slash
+      when TokenKind::PercentEq  then TokenKind::Percent
+      else                            op
       end
     end
 
@@ -480,7 +481,13 @@ module Adjutant
       TokenKind::Star      => 12,
       TokenKind::Slash     => 12,
       TokenKind::Percent   => 12,
+      TokenKind::StarStar  => POW_PREC,
     }
+
+    # The precedence of `**`, the tightest binary operator. It groups to
+    # the right, and binds tighter than unary minus but looser than `!`,
+    # `~` and unary `+`.
+    POW_PREC = 13
 
     # The precedence of `and` and `or`. An assignment's right-hand
     # side, a call's arguments, a ternary's branches and `not`'s
@@ -503,7 +510,8 @@ module Adjutant
     private def assignment_token?(kind : TokenKind) : Bool
       kind.in?(
         TokenKind::Eq, TokenKind::PlusEq, TokenKind::MinusEq, TokenKind::StarEq,
-        TokenKind::SlashEq, TokenKind::PercentEq, TokenKind::OrAssign, TokenKind::AndAssign
+        TokenKind::SlashEq, TokenKind::PercentEq, TokenKind::StarStarEq, TokenKind::OrAssign,
+        TokenKind::AndAssign
       )
     end
 
@@ -545,10 +553,25 @@ module Adjutant
 
         advance
         skip_newlines
-        right = parse_expression(prec)
+        right = parse_expression(right_operand_precedence(op_tok.kind, prec))
         left = Binary.new(op_tok.kind, left, right, op_tok.line, op_tok.column)
       end
       left
+    end
+
+    # The precedence a binary operator's right operand must exceed. `**`
+    # groups to the right, so its right operand may hold another.
+    private def right_operand_precedence(kind : TokenKind, prec : Int32) : Int32
+      kind == TokenKind::StarStar ? prec - 1 : prec
+    end
+
+    # `base ** exponent` when `**` follows `base`, else `base`: for unary
+    # minus, which binds looser than `**`.
+    private def parse_power(base : Node) : Node
+      return base unless at_kind?(TokenKind::StarStar)
+      op_tok = advance
+      skip_newlines
+      Binary.new(TokenKind::StarStar, base, parse_expression(POW_PREC - 1), op_tok.line, op_tok.column)
     end
 
     private def chained_operator_error(op_tok : Token) : ParseError
@@ -567,6 +590,12 @@ module Adjutant
       )
     end
 
+    # An Integer or Float literal from the numeric token `tok`, spelled
+    # `lexeme`.
+    private def number_literal(tok : Token, lexeme : String, l : Int32 = tok.line, c : Int32 = tok.column) : Node
+      tok.kind == TokenKind::Integer ? IntLiteral.new(lexeme, l, c) : FloatLiteral.new(lexeme, l, c)
+    end
+
     private def parse_unary : Node
       l, c = line, col
       case current_kind
@@ -581,15 +610,14 @@ module Adjutant
         # negates the result of the call.
         if (current_kind == TokenKind::Integer || current_kind == TokenKind::Float) && !@current.space_before?
           lit_tok = advance
-          negated_lexeme = "-" + lit_tok.lexeme
-          literal = if lit_tok.kind == TokenKind::Integer
-                      IntLiteral.new(negated_lexeme, minus_l, minus_c)
-                    else
-                      FloatLiteral.new(negated_lexeme, minus_l, minus_c)
-                    end
-          parse_postfix(literal)
+          # Ruby negates after the power when `**` follows the literal
+          # directly: `-2 ** 2` is `-(2 ** 2)`.
+          if at_kind?(TokenKind::StarStar)
+            return Unary.new(TokenKind::Minus, parse_power(number_literal(lit_tok, lit_tok.lexeme)), minus_l, minus_c)
+          end
+          parse_postfix(number_literal(lit_tok, "-" + lit_tok.lexeme, minus_l, minus_c))
         else
-          Unary.new(TokenKind::Minus, parse_unary, minus_l, minus_c)
+          Unary.new(TokenKind::Minus, parse_power(parse_unary), minus_l, minus_c)
         end
       when TokenKind::Plus
         # Unary `+`, `!` and `~`, Ruby's tightest tier. Unlike `-`,
@@ -1259,6 +1287,9 @@ module Adjutant
 
     private def parse_param : Param
       l, c = line, col
+      # A double splat (`**opts`) isn't supported; without this the `**`
+      # would be read as the parameter's name.
+      raise unexpected_token(TokenKind::Identifier) if at_kind?(TokenKind::StarStar)
       if at_kind?(TokenKind::Star)
         advance
         name = @current.lexeme

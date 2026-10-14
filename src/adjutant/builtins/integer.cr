@@ -5,9 +5,31 @@ require "./helpers"
 
 module Adjutant::Builtins
   # Builds the `Integer` class and its native methods, all pure.
-  # Arithmetic is opcodes, not methods.
+  # Arithmetic is opcodes, not methods, apart from `**`.
   def self.bootstrap_integer(interp : Adjutant::Interpreter) : Adjutant::RubyClass
     cls = Adjutant::RubyClass.new("Integer")
+
+    # `**`, as Ruby's Integer#** gives it: an Integer for an Integer
+    # exponent, a Float for a Float one, with both operands' labels.
+    # Ruby's answer to a negative Integer exponent is a Rational, so it
+    # raises U026 (RangeError), or R060 (ZeroDivisionError) for a zero
+    # base, as Ruby does.
+    define(cls, interp, "**", arity: 1) do |args, _blk, ncc|
+      base = args.first.as_int
+      exponent = args[1]
+      label = joined_label(args)
+      if exponent.int?
+        if exponent.as_int < 0
+          ncc.raise_error("R060", error_class: "ZeroDivisionError") if base == 0
+          ncc.raise_error("U026", {"kind" => "Rational"}, "RangeError")
+        end
+        Adjutant::Value.int(base ** exponent.as_int, label)
+      elsif exponent.float?
+        Adjutant::Value.float(float_power(base.to_f64, exponent.as_float, ncc), label)
+      else
+        ncc.raise_error("R005", {"operator" => "**", "type" => builtin_type_name(exponent)}, "TypeError")
+      end
+    end
 
     # `to_s(base)`, base 2 to 36; another base raises R015
     # (ArgumentError), as in Ruby.

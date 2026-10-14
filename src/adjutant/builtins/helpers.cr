@@ -112,6 +112,17 @@ module Adjutant::Builtins
     values.reduce(seed) { |acc, v| Adjutant::RiskFlowLabel.join(acc, v.label) }
   end
 
+  # `base ** exponent` as Ruby computes it for Floats. A negative base
+  # with an exponent that isn't whole has a Complex answer in Ruby, so
+  # it raises U026 (RangeError). The test is Ruby's own, so a NaN
+  # exponent counts as not whole.
+  def self.float_power(base : Float64, exponent : Float64, ncc : Adjutant::NativeCallContext) : Float64
+    if base < 0 && exponent != exponent.round
+      ncc.raise_error("U026", {"kind" => "Complex"}, "RangeError")
+    end
+    base ** exponent
+  end
+
   # The type name a native method's error message shows. Not the
   # value's class object; for that, the Interpreter resolves it.
   # ameba:disable Metrics/CyclomaticComplexity - one `when` per Value variant, each a flat one-line case; not tangled branching

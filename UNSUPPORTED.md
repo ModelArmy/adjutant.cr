@@ -1049,6 +1049,32 @@ outside 64 bits (`Compiler#compile_int`). At run time the VM turns any
 (`VM#integer_overflow`), and `String#to_i` raises it for digits that
 don't fit.
 
+### U026 — Rational and Complex numbers
+
+Ruby's Rational and Complex types, and every operation whose Ruby
+result is one. In Adjutant that is `**` with a negative Integer
+exponent (`2 ** -1` is `(1/2)` in Ruby), and `**` with a negative base
+and an exponent that isn't whole (`(-8) ** 0.5` is a Complex). The
+literals `3r` and `2i`, `Rational()`, `Complex()` and `to_r` don't
+exist either.
+
+**Why:** an ordinary scoping cut, rare and costly by the test above.
+Scripts seldom want exact fractions or complex numbers, and a model
+that writes `10 ** -2` expects 0.01, not `(1/100)`. Either type would
+need arithmetic and comparison with Integer and Float in every
+combination, each with its own coercion rule: significant work, and
+more for a model to predict.
+
+**Instead:** use a Float base or exponent for an approximate answer:
+`10.0 ** -2` is 0.01. A negative base with a fractional exponent has no
+real-number answer. A script can rescue U026 as a `RangeError`, as for
+U025, since in both Ruby's answer is a value Adjutant can't hold.
+
+**Enforcement — enforced** for `**`: `Integer#**` and `Float#**` raise
+U026, through `Builtins.float_power` for a Complex answer. The literals
+and methods above don't exist, so they fail as any unknown syntax or
+method does.
+
 ---
 
 ## 2. Design decisions with no script-visible surface

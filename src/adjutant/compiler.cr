@@ -590,8 +590,21 @@ module Adjutant
       else
         compile_node(node.left)
         compile_node(node.right)
-        @chunk.emit(binary_op(node.op), node.line)
+        emit_binary_op(node.op, node.line)
       end
+    end
+
+    # Applies `op` to the two values on the stack. `**` is a method call
+    # on the left value, as `<=>` is, so that Integer and Float define it
+    # and `2.**(3)` and `inject(:**)` reach the same code.
+    private def emit_binary_op(op : TokenKind, line : Int32) : Nil
+      unless op == TokenKind::StarStar
+        @chunk.emit(binary_op(op), line)
+        return
+      end
+      @chunk.emit(Op::Const, line, c: @chunk.add_const(Value.nil_value))
+      @chunk.emit(Op::SetBlock, line)
+      @chunk.emit(Op::Call, line, a: 2_u8, b: 0b10_u16, c: intern("**"))
     end
 
     private def compile_short_circuit_or(node : Binary) : Nil
@@ -712,7 +725,7 @@ module Adjutant
       declare_assigned_local(node.target)
       compile_node(node.target)
       compile_node(node.value)
-      @chunk.emit(binary_op(node.op), node.line)
+      emit_binary_op(node.op, node.line)
       emit_store(node.target, node.line)
     end
 

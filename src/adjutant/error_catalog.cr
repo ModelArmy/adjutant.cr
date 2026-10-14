@@ -569,6 +569,14 @@ module Adjutant
         help: "Name a class after `<`, or include a module in the class " \
               "body instead."
       ),
+      "R060" => Entry.new(
+        code: "R060",
+        summary: "divided by 0",
+        why: "Zero raised to a negative power is one divided by zero, " \
+             "which has no value. Ruby raises a ZeroDivisionError here too.",
+        help: "Check that the base isn't zero before raising it to a " \
+              "negative power."
+      ),
 
       # --- L: limits reached ----------------------------------------
       #
@@ -715,6 +723,16 @@ module Adjutant
         help: "Keep values within 64 bits, or use a Float where an " \
               "approximate value will do. A script can rescue the error " \
               "as a RangeError."
+      ),
+      "U026" => Entry.new(
+        code: "U026",
+        summary: "a {kind} result is not supported",
+        why: "Ruby's answer here is a {kind}, and Adjutant's numbers are " \
+             "Integers and Floats only (see UNSUPPORTED.md, U026).",
+        help: "For an approximate answer, use a Float base: `10.0 ** -2` " \
+              "is 0.01. A negative base with a fractional exponent has no " \
+              "real-number answer. A script can rescue the error as a " \
+              "RangeError."
       ),
       "U007" => Entry.new(
         code: "U007",

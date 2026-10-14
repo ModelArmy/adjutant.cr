@@ -161,6 +161,7 @@ R056|An Array joined that contains itself                               |—
 R057|A MatchData group name the pattern lacks                           |`name`                                     
 R058|`clamp` given a minimum above its maximum                          |—                                          
 R059|A superclass that isn't a class                                    |`value`                                    
+R060|Zero raised to a negative Integer power                            |—                                          
 
 Scripts can `rescue` these. R008 raises a `NameError`, matching Ruby;
 R011, R012, R015, and R018 raise `ArgumentError`, also matching Ruby;
@@ -242,6 +243,7 @@ U022|Enumerator (a call without its block)           |`method`
 U023|Flip-flop (a range as a condition)              |—                
 U024|A method for one object (`def obj.name`)        |`receiver`       
 U025|An Integer outside 64 bits                      |—                
+U026|A Rational or Complex result                    |`kind`           
 
 U005 and U006 are reported when a name that would resolve to one of them
 resolves to nothing else. A script is still free to define its own method

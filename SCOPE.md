@@ -78,14 +78,6 @@ still roughly ordered by how cheap/independent the fix is.
   `redo if` as an `if` block until this is fixed. Fix: let `redo` reach
   the modifier handling that `parse_expr_statement` does.
 
-- **`**` doesn't parse.** `2 ** 3` and `2.0 ** 3` raise P002 at the
-  second `*`: the lexer has no exponent token, and Integer has no
-  `pow` either. Ruby's `**` binds tighter than unary minus on its left
-  (`-2 ** 2` is -4) and is right-associative. Found translating
-  `spec/scripts/rubyspec/` and confirmed by probing. Fix: a `StarStar`
-  token, its precedence and associativity, and Integer and Float
-  methods.
-
 - **A multiple assignment takes only plain targets.** `a, *b = x`
   and `a, (b, c) = x` raise P002 and P001, `a, = x` raises P002, and
   `a, o.t = 1, 2` raises C001: a splat, a nested pattern, a trailing
@@ -227,7 +219,8 @@ still roughly ordered by how cheap/independent the fix is.
   design question. The splat is missing everywhere outside a
   parameter list, not only at a call site: `when *a`, `[0, *a]` and
   `x, y = *a` raise P002 too (confirmed by
-  `spec/scripts/rubyspec/case.rb` and by probing).
+  `spec/scripts/rubyspec/case.rb` and by probing). Inside a parameter
+  list, a double splat (`def f(**opts)`) raises P001.
 - **An operator Symbol right after `:` in a ternary lexes as a Symbol.**
   The lexer reads `:+`, `:<=>` and the other operator Symbols wherever
   an expression can start, so `x ? a :-1` lexes `:-` as a Symbol and
