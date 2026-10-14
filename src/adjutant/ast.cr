@@ -379,6 +379,26 @@ module Adjutant
     end
   end
 
+  # The body of the block a block argument `&:name` stands for, as
+  # Ruby's `Symbol#to_proc` gives: calls `method` on the block's first
+  # argument, passing the rest. The block's one parameter, a splat named
+  # `ARGS`, collects them all, so an Array yielded alone is never spread.
+  class SymbolProcCall < Node
+    ARGS = "<&>"
+
+    getter method : String
+
+    def initialize(@method, line, column)
+      super(line, column)
+    end
+
+    # The block `&:method` stands for.
+    def self.block(method : String, line : Int32, column : Int32) : BlockNode
+      param = Param.new(ARGS, nil, true, false, false, line, column)
+      BlockNode.new([param], Body.new([new(method, line, column)] of Node, line, column), line, column)
+    end
+  end
+
   class Lambda < Node
     getter params : Array(Param)
     getter body : Body

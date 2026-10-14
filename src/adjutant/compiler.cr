@@ -299,6 +299,7 @@ module Adjutant
       when NextNode       then compile_next(node)
       when RedoNode       then compile_redo(node)
       when YieldNode      then compile_yield(node)
+      when SymbolProcCall then compile_symbol_proc_call(node)
       when SuperNode      then compile_super(node)
       when BeginNode      then compile_begin(node)
       when RetryNode      then compile_retry(node)
@@ -880,6 +881,13 @@ module Adjutant
       argc = (node.args.size + recv).to_u8
       op = node.safe? ? Op::SafeCall : Op::Call
       @chunk.emit(op, node.line, a: argc, b: safe_bit | recv_bit, c: sym_idx)
+    end
+
+    # The body of `&:name`'s block: its collected arguments, then the
+    # call SymbolCall makes on the first of them.
+    private def compile_symbol_proc_call(node : SymbolProcCall) : Nil
+      compile_identifier(Identifier.new(SymbolProcCall::ARGS, node.line, node.column))
+      @chunk.emit(Op::SymbolCall, node.line, c: intern(node.method))
     end
 
     private def compile_index(node : Index) : Nil

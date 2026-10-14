@@ -130,6 +130,7 @@ module Adjutant
     # Blocks / iterators
     Yield      # yield to block with a args
     BlockBreak # break from a block iterator (value on stack)
+    SymbolCall # `&:name`'s body: pop an Array, call constants[c] on its first element with the rest as arguments
 
     # Multi-assign
     MultiUnpack # a=target_count, b=value_count — normalise RHS on stack; splats a single Array value when b=1 and a>1

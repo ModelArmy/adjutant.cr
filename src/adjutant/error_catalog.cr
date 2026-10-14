@@ -935,6 +935,13 @@ module Adjutant
         help: "Add parentheses, or join two comparisons with `&&`: " \
               "`a == b && b == c`."
       ),
+      "P009" => Entry.new(
+        code: "P009",
+        summary: "`{method}` is given two blocks",
+        why: "A call takes one block: a block argument such as `&:name`, " \
+             "or a literal block, not both.",
+        help: "Keep one of them."
+      ),
       "P006" => Entry.new(
         code: "P006",
         summary: "unexpected parameter order",
@@ -954,13 +961,16 @@ module Adjutant
       ),
       "U001" => Entry.new(
         code: "U001",
-        summary: "block parameter capture (`&{param}`) is not supported",
-        why: "A block passed to a method can only be run synchronously, " \
-             "via `yield`, inside the call it was passed to. It never " \
-             "becomes a value, so it cannot be bound to the parameter " \
-             "`{param}`, stored, returned, or called later.",
-        help: "Run the block with `yield` inside `{method}`, or take a " \
-              "lambda as an ordinary parameter and call it with `.call`."
+        summary: "a block can't be a value (`&{param}`)",
+        why: "A block runs only through `yield`, inside the call it was " \
+             "passed to. It never becomes a value, so a parameter can't " \
+             "capture it to store, return or call later, and a call can't " \
+             "be given one from a variable or a lambda. Only a Symbol " \
+             "literal, as in `&:name`, stands for a block.",
+        help: "Inside a method, run the block with `yield`. When calling " \
+              "`{method}`, write the block out, or use `&:name` for a " \
+              "block that calls one method. A lambda can be passed as an " \
+              "ordinary argument and called with `.call`."
       ),
       "U011" => Entry.new(
         code: "U011",

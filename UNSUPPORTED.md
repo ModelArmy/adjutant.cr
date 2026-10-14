@@ -93,7 +93,7 @@ Every entry below now reports its own code.
 
 ## 1. Unsupported language constructs
 
-### U001 — `&blk` parameter capture
+### U001 — A block as a value (`&blk`, `&fn`)
 
 Block literals are never first-class `Proc` values. Only a `Lambda` node
 (`->(){}`) or the `lambda { }` Kernel-method spelling (both wrap into the
@@ -126,11 +126,14 @@ ordinary `yield` — a separate mechanism — is untouched by the guard.
 Revisit as a new, separate scope item if a real script needs to hold and
 defer-call a block.
 
-**Also covers:** `&obj` calling `to_proc` on a non-`Symbol` receiver at
-a call site (found 2026-08-05 in the mruby full-repo sweep,
-`test/t/proc.rb`) — not a separate decision, just one more manifestation
-of the same underlying gap (no first-class block/proc capture), since
-`&obj` needs somewhere to bind the resulting proc.
+**Also covers:** `&` before anything but a Symbol literal at a call
+site, such as `items.map(&fn)` or `items.map(&name)`, which the parser
+rejects with U001. It would pass a block as a value, the same gap from
+the other side. `&:name` is the exception: it stands for the block
+`Symbol#to_proc` gives, whose one method call the risk walker can read
+from the text. A variable holding a Symbol is rejected even though Ruby
+accepts it, because only a literal names the method before the script
+runs.
 
 ### U002 — `Class.new` / `Module.new`
 

@@ -29,17 +29,20 @@ The letter describes the problem, not the part of Adjutant that noticed it.
 ## What an error looks like
 
 ```
-error[U001]: block parameter capture (`&blk`) is not supported
+error[U001]: a block can't be a value (`&blk`)
 script.rb:1:9
 1 | def foo(&blk)
   |         ^^^^
   |         not usable as a value
-why:  A block passed to a method can only be run synchronously, via
-      `yield`, inside the call it was passed to. It never becomes a value,
-      so it cannot be bound to the parameter `blk`, stored, returned, or
-      called later.
-help: Run the block with `yield` inside `foo`, or take a lambda as an
-      ordinary parameter and call it with `.call`.
+why:  A block runs only through `yield`, inside the call it was passed
+      to. It never becomes a value, so a parameter can't capture it to
+      store, return or call later, and a call can't be given one from a
+      variable or a lambda. Only a Symbol literal, as in `&:name`, stands
+      for a block.
+help: Inside a method, run the block with `yield`. When calling `foo`,
+      write the block out, or use `&:name` for a block that calls one
+      method. A lambda can be passed as an ordinary argument and called
+      with `.call`.
 ```
 
 Not every error has all of these. Some carry no source location, because
@@ -71,6 +74,7 @@ P005|A `begin` block can have only one `else` clause|—
 P006|Parameters out of Ruby's order                 |`name`                          
 P007|Two parameters with the same name              |`name`                          
 P008|A non-associative operator chained             |`operator`                      
+P009|A call given a block argument and a block      |`method`                        
 
 P003 points at two places: where the parser ran out of input, and the
 `def`, `class`, `if`, or other construct that was never closed. The second
@@ -213,7 +217,7 @@ alternative in [UNSUPPORTED.md](./UNSUPPORTED.md).
 
 Code|Construct                                       |Placeholders     
 ----|------------------------------------------------|-----------------
-U001|`&blk` parameter capture                        |`param`, `method`
+U001|A block as a value (`&blk`, `&fn`)              |`param`, `method`
 U002|`Class.new` / `Module.new`                      |`class`          
 U003|Reopening a class or module                     |`name`           
 U004|Defining a method inside another method         |`definition`     

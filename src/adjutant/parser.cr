@@ -626,8 +626,9 @@ module Adjutant
           advance
           method_tok = @current
           advance
-          args, kwargs, blk = receiver_call_takes_bare_args? ? parse_bare_args_and_block : parse_call_args_and_block
-          node = Call.new(node, method_tok.lexeme, args, blk, safe, l, c, kwargs: kwargs)
+          method = method_tok.lexeme
+          args, kwargs, blk = receiver_call_takes_bare_args? ? parse_bare_args_and_block(method) : parse_call_args_and_block(method)
+          node = Call.new(node, method, args, blk, safe, l, c, kwargs: kwargs)
         when TokenKind::ColonColon
           advance
           name_tok = @current
@@ -812,7 +813,7 @@ module Adjutant
         # `name(...)`: its own argument list. With a space before the
         # `(`, as in `eq (6/3), 2`, the parenthesized expression is the
         # first argument of a bare call instead.
-        args, kwargs, blk = parse_call_args_and_block
+        args, kwargs, blk = parse_call_args_and_block(name)
         Call.new(nil, name, args, blk, false, l, c, kwargs: kwargs)
       elsif block_follows_no_paren?
         blk = parse_block
@@ -821,6 +822,10 @@ module Adjutant
         # `name [x]`: indexing if `name` is a local, otherwise a call
         # with an array argument, as in Ruby.
         known_local?(name) ? Identifier.new(name, l, c) : parse_bare_call_args(name, l, c)
+      elsif block_arg_follows_no_paren? && !known_local?(name)
+        # `name &:sym`: a block argument, unless `name` is a local,
+        # when the `&` is binary, as in Ruby.
+        parse_bare_call_args(name, l, c)
       elsif signed_literal_starts_bare_call?
         # `name -x` or `name +x`; see
         # `signed_literal_starts_bare_call?`.
@@ -836,22 +841,22 @@ module Adjutant
     # Parses a bare call's comma-separated arguments and optional
     # block.
     private def parse_bare_call_args(name : String, l : Int32, c : Int32) : Call
-      args, kwargs, blk = parse_bare_args_and_block
+      args, kwargs, blk = parse_bare_args_and_block(name)
       Call.new(nil, name, args, blk, false, l, c, kwargs: kwargs)
     end
 
     # Parses comma-separated arguments without parentheses, then an
-    # optional block.
-    private def parse_bare_args_and_block : {Array(Node), Array({String, Node}), BlockNode?}
+    # optional block. `method` is the called method's name, for
+    # diagnostics.
+    private def parse_bare_args_and_block(method : String) : {Array(Node), Array({String, Node}), BlockNode?}
       args = [] of Node
       kwargs = [] of {String, Node}
-      parse_call_arg(args, kwargs)
-      while match(TokenKind::Comma)
+      block_arg = parse_call_arg_or_block_arg(args, kwargs, method)
+      while block_arg.nil? && match(TokenKind::Comma)
         skip_newlines
-        parse_call_arg(args, kwargs)
+        block_arg = parse_call_arg_or_block_arg(args, kwargs, method)
       end
-      blk = parse_block if block_follows_no_paren?
-      {args, kwargs, blk}
+      {args, kwargs, parse_trailing_block(block_arg, method)}
     end
 
     # Whether a call with a receiver takes arguments without
@@ -861,7 +866,14 @@ module Adjutant
     private def receiver_call_takes_bare_args? : Bool
       return false unless @current.space_before?
       return false if at_kind?(TokenKind::LParen)
-      signed_literal_starts_bare_call? || arg_follows_no_paren?
+      signed_literal_starts_bare_call? || block_arg_follows_no_paren? || arg_follows_no_paren?
+    end
+
+    # Whether the current `&` starts a block argument without
+    # parentheses, as in `items.map &:upcase`: a space before it and
+    # none after. `a & b` and `a&b` are binary, as in Ruby.
+    private def block_arg_follows_no_paren? : Bool
+      at_kind?(TokenKind::Amp) && @current.space_before? && !@next.space_before?
     end
 
     private def block_follows_no_paren? : Bool
@@ -920,26 +932,74 @@ module Adjutant
       end
     end
 
-    private def parse_call_args_and_block : {Array(Node), Array({String, Node}), BlockNode?}
+    # Parses a call's parenthesized arguments, if any, then an optional
+    # block. `method` is the called method's name, for diagnostics.
+    private def parse_call_args_and_block(method : String) : {Array(Node), Array({String, Node}), BlockNode?}
       args = [] of Node
       kwargs = [] of {String, Node}
-      blk = nil
+      block_arg = nil
       if at_kind?(TokenKind::LParen)
         advance
         skip_newlines
         unless at_kind?(TokenKind::RParen)
-          parse_call_arg(args, kwargs)
-          while match(TokenKind::Comma)
+          block_arg = parse_call_arg_or_block_arg(args, kwargs, method)
+          while block_arg.nil? && match(TokenKind::Comma)
             skip_newlines
             break if at_kind?(TokenKind::RParen)
-            parse_call_arg(args, kwargs)
+            block_arg = parse_call_arg_or_block_arg(args, kwargs, method)
           end
         end
         skip_newlines
         expect(TokenKind::RParen)
       end
-      blk = parse_block if block_follows_no_paren?
-      {args, kwargs, blk}
+      {args, kwargs, parse_trailing_block(block_arg, method)}
+    end
+
+    # Parses one call argument as `parse_call_arg` does, unless it is a
+    # block argument (`&:name`), which it returns instead. A block
+    # argument ends the list, so an argument after it raises P001.
+    private def parse_call_arg_or_block_arg(args : Array(Node), kwargs : Array({String, Node}),
+                                            method : String) : BlockNode?
+      return parse_block_arg(method) if at_kind?(TokenKind::Amp)
+      parse_call_arg(args, kwargs)
+      nil
+    end
+
+    # Parses a block argument from its `&`. Only a Symbol literal can
+    # stand for a block, as `SymbolProcCall.block`; anything else would
+    # pass a block as a value, which raises U001.
+    private def parse_block_arg(method : String) : BlockNode
+      l, c = line, col
+      advance # the `&`
+      tok = @current
+      if tok.kind == TokenKind::Symbol
+        sym = parse_symbol_literal(advance, tok.line, tok.column)
+        return SymbolProcCall.block(sym.value, l, c) if sym.is_a?(SymbolLiteral)
+      end
+      raise ParseError.new(
+        Diagnostic.new(
+          code: "U001",
+          primary: Span.new(line: l, column: c, length: tok.lexeme.size + 1, label: "not usable as a block"),
+          data: {"method" => method, "param" => tok.lexeme}
+        )
+      )
+    end
+
+    # Parses the literal block after a call's arguments, if there is
+    # one, and returns it or else `block_arg`. A call given both raises
+    # P009.
+    private def parse_trailing_block(block_arg : BlockNode?, method : String) : BlockNode?
+      return block_arg unless block_follows_no_paren?
+      if block_arg
+        raise ParseError.new(
+          Diagnostic.new(
+            code: "P009",
+            primary: Span.new(line: line, column: col, length: caret_width(@current), label: "a second block"),
+            data: {"method" => method}
+          )
+        )
+      end
+      parse_block
     end
 
     private def parse_block : BlockNode
@@ -1555,7 +1615,7 @@ module Adjutant
       advance # consume 'raise'
       args = [] of Node
       if at_kind?(TokenKind::LParen)
-        args, _kwargs, _blk = parse_call_args_and_block
+        args, _kwargs, _blk = parse_call_args_and_block("raise")
       elsif arg_follows_no_paren?
         args << parse_expression(0)
         while match(TokenKind::Comma)

@@ -1241,6 +1241,15 @@ module Adjutant
             else
               raise script_diagnostic("R007", {"method" => yielding_method_name(f)}, f)
             end
+          when Op::SymbolCall
+            # Ruby's `Symbol#to_proc` raises an ArgumentError with no
+            # receiver; otherwise it calls as `recv.name(*rest)` would.
+            sym = chunk.consts[inst.c].as_sym
+            values = pop.as_array.to_a
+            raise_arity_error(0, "1+", "&:#{sym.name}", f.filename, inst.line) if values.empty?
+            depth_before = @frames.size
+            result = dispatch_call(sym.name, values, false, f.filename, inst.line, nil, true, self_val: f.self_val)
+            push(result) if @frames.size == depth_before
           when Op::BlockBreak
             val = pop
             # The call that received this block ends: the nearest method

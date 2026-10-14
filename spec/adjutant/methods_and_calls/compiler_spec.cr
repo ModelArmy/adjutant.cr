@@ -31,7 +31,7 @@ module Adjutant
       # immediately
       # at compile time now, not left to silently bind nothing.
       it "rejects &blk param capture at compile time" do
-        expect_raises(CompileError, /block parameter capture/) do
+        expect_raises(CompileError, /a block can.t be a value/) do
           compile("def foo(&blk)\nend")
         end
       end

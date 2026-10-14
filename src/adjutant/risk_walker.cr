@@ -96,8 +96,8 @@ module Adjutant
         walk_control_flow(node, env)
       when Assign, OpAssign, CondAssign, MultiAssign, IndexAssign, AttrAssign
         walk_assignment(node, env)
-      when Call       then walk_call(node, env)
-      when SuperNode  then walk_super(node, env)
+      when Call, SuperNode, SymbolProcCall
+        walk_invocation(node, env)
       when Identifier then walk_identifier(node, env)
       when Body       then walk_body(node, env)
       when DefNode    then walk_def(node)
@@ -124,6 +124,21 @@ module Adjutant
       when ModifierWhile then walk_modifier_while(node, env)
       when BeginNode     then walk_begin(node, env)
       else                    RiskSequence.new([] of RiskNode, node.line)
+      end
+    end
+
+    private def walk_invocation(node : Node, env : TypeInference::Env) : RiskNode
+      case node
+      when Call
+        walk_call(node, env)
+      when SuperNode
+        walk_super(node, env)
+      when SymbolProcCall
+        # `&:name` calls `name` on whatever the callee yields, which
+        # is never known here.
+        walk_receiver_call(Call.new(nil, node.method, [] of Node, nil, false, node.line, node.column), UnknownType.new)
+      else
+        RiskSequence.new([] of RiskNode, node.line)
       end
     end
 
