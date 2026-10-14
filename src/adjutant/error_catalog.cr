@@ -1022,6 +1022,15 @@ module Adjutant
         help: "Do it explicitly where it happens: for a registry, append " \
               "each class to an Array in its own body."
       ),
+      "U014" => Entry.new(
+        code: "U014",
+        summary: "`class << self` is not supported",
+        why: "The singleton-class block only groups class methods; " \
+             "`def self.name` defines each one directly (see UNSUPPORTED.md, " \
+             "U014).",
+        help: "Write each method in the block as `def self.name` in the " \
+              "class body, and drop `class << self` and its `end`."
+      ),
       "U016" => Entry.new(
         code: "U016",
         summary: "the `begin...end while`/`until` do-while form is not supported",

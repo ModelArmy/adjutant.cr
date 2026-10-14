@@ -567,9 +567,8 @@ defining several class methods together, not new expressiveness.
 **Instead:** prefix each class method with `self.` individually
 (`def self.foo; end`).
 
-**Enforcement — not yet enforced.** `class << self` fails to parse
-today (`<<` after `class` isn't a recognized construct), with a
-generic syntax error rather than one naming this construct.
+**Enforcement — enforced.** The parser raises U014 at `class <<`
+(`Parser#reject_singleton_class`).
 
 ### U015 — `undef` and callback hooks
 

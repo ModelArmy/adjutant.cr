@@ -236,6 +236,7 @@ module Adjutant
       TokenKind::Comma    => "`,`",
       TokenKind::EOF      => "end of file",
       TokenKind::Newline  => "a line break",
+      TokenKind::Constant => "a constant name",
     }
 
     private def describe_kind(kind : TokenKind) : String
@@ -306,6 +307,17 @@ module Adjutant
         # `super + 4` and `x = yield` work at statement position.
         parse_expr_statement
       end
+    end
+
+    # Rejects `class << self`, the singleton-class block, with U014.
+    private def reject_singleton_class(l : Int32, c : Int32) : Nil
+      return unless at_kind?(TokenKind::Shl)
+      raise ParseError.new(
+        Diagnostic.new(
+          code: "U014",
+          primary: Span.new(line: l, column: c, length: 8, label: "singleton-class block not supported")
+        )
+      )
     end
 
     # Rejects a bare `begin...end while cond` (or `until`) with U016.
@@ -1238,8 +1250,8 @@ module Adjutant
       l, c = line, col
       open_block("class", l, c)
       expect(TokenKind::KwClass)
-      name = @current.lexeme
-      advance
+      reject_singleton_class(l, c)
+      name = expect(TokenKind::Constant).lexeme
       superclass = nil
       if at_kind?(TokenKind::Lt)
         advance
@@ -1257,8 +1269,7 @@ module Adjutant
       l, c = line, col
       open_block("module", l, c)
       expect(TokenKind::KwModule)
-      name = @current.lexeme
-      advance
+      name = expect(TokenKind::Constant).lexeme
       skip_terminators
       push_local_scope(inherit: false)
       body = parse_body_until(TokenKind::KwEnd)

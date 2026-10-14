@@ -114,6 +114,12 @@ still roughly ordered by how cheap/independent the fix is.
   given, `super` passes on the current method's block. Confirmed by
   `spec/scripts/rubyspec/break.rb` and by probing.
 
+- **`class A::B` reads only `A`.** `parse_class` takes one constant as
+  the name, so `class Outer::Inner` opens `Outer` again (U003, a
+  misleading message) and then reads `::Inner` as its body's first
+  statement. Ruby defines `Inner` inside `Outer`. Found while
+  enforcing U014.
+
 - **A lambda's parameters must be parenthesised.** `-> x { x + 1 }`
   and `-> x, y { ... }` raise P001 ("expected `do`") where Ruby accepts
   them; `->(x) { ... }` works. Confirmed by
@@ -311,7 +317,7 @@ because nothing had ever run it.
   drop their nil handling. `InternalError.new(message)` is still used
   and stays.
 
-- **U008, U009, U012–U014, U015's `undef` and U021 are decided but
+- **U008, U009, U012, U013, U015's `undef` and U021 are decided but
   not enforced.**
   See `UNSUPPORTED.md` for each. Using one falls through to a generic
   undefined-name, undefined-method or parse error that doesn't name
@@ -323,7 +329,7 @@ because nothing had ever run it.
   and `EXCLUDED_METHODS` (`system`, `exec`, ...), which are consulted
   only after resolution fails. U008, U009 and U021 are
   lookup-after-resolution-fails checks, the mechanism U005–U007 use
-  (`dispatch_call` and constant resolution, `vm.cr`); U012–U014 and
+  (`dispatch_call` and constant resolution, `vm.cr`); U012, U013 and
   U015's `undef` fail in the parser today, so each needs its own
   enforcement point. U015's hooks are enforced at compile time.
   Backticks and `%x{}` have no case in the lexer at all, so theirs is

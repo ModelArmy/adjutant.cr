@@ -249,7 +249,7 @@ U010 was investigated and found not to be a real gap — see
 retired, not reassigned: codes are never reused for a different
 problem once allocated (see "Reading a code" above).
 
-**U008, U009, U012–U014, U015's `undef` and U021 status: decided, not yet enforced.** Using one
+**U008, U009, U012, U013, U015's `undef` and U021 status: decided, not yet enforced.** Using one
 of these constructs today falls through to an ordinary undefined-name
 or generic parse error rather than naming the construct specifically —
 expect a less-specific error than the table above until enforcement

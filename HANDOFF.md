@@ -94,7 +94,7 @@ The import's tools live only in Claude's sandbox, rebuilt each session: a conver
 
 **Fixed on the branch:** `if … elsif` crashed when an earlier branch ran; `break` from a block skipped the `ensure`s it left and ended the wrong call; `return` in a block left only the block, now leaving its method across native calls (`BlockReturn`); two statements on one line needed no separator, so an unrecognised bare argument became a silent separate statement; a superclass was looked up among top-level constants only (now an expression, R059 for a non-class); `for` read its targets as local names; `loop` shared its scope, now compiled as `Kernel#loop` with a block; `redo` now restarts blocks, lambdas and `for`; `String#to_i` reads as Ruby; the test runner ran with no workers on one CPU.
 
-**New exclusions:** U023 flip-flops, U024 a method for one object (`def obj.name`, and `def self.name` at top level), U025 Integers outside 64 bits, raised as a `RangeError` at run time. SKILL.md lists none of the three; `spec/skill/skill_spec.cr` records them as omitted.
+**New exclusions:** U023 flip-flops, U024 a method for one object (`def obj.name`, and `def self.name` at top level), U025 Integers outside 64 bits, raised as a `RangeError` at run time. SKILL.md lists none of the three; `spec/skill/skill_spec.cr` records them as omitted. U014 (`class << self`) is now enforced, and a class or module name must be a constant; `class << self` used to define a class named `<<`. SKILL.md lost a line calling `0644` decimal, untrue since #66.
 
 Must Fix is empty. Will Fix gained the gaps the import found, chiefly under Parser / lexer gaps, and some missing methods.
 
