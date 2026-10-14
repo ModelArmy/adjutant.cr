@@ -329,15 +329,27 @@ module Adjutant
       @chunk.emit(Op::Const, node.line, c: idx)
     end
 
+    # A literal outside 64 bits raises U025: Adjutant's Integers don't
+    # widen.
     private def compile_int(node : IntLiteral) : Nil
-      idx = @chunk.add_const(Value.int(Compiler.int_literal_value(node.value)))
+      value = Compiler.int_literal_value(node.value)
+      unless value
+        raise CompileError.new(
+          Diagnostic.new(
+            code: "U025",
+            primary: Span.new(line: node.line, column: node.column, length: node.value.size, label: "outside 64 bits")
+          )
+        )
+      end
+      idx = @chunk.add_const(Value.int(value))
       @chunk.emit(Op::Const, node.line, c: idx)
     end
 
     # An Integer literal's value, as Ruby reads it: an optional `-`,
     # then a `0x`, `0b`, `0o` or `0d` prefix, or a bare leading `0` for
-    # octal, with `_` separators. The lexer has checked the digits.
-    def self.int_literal_value(lexeme : String) : Int64
+    # octal, with `_` separators. The lexer has checked the digits. Nil
+    # when the value is outside Int64.
+    def self.int_literal_value(lexeme : String) : Int64?
       raw = lexeme.delete('_')
       negative = raw.starts_with?('-')
       raw = raw.lchop('-')
@@ -348,8 +360,17 @@ module Adjutant
                      else
                        {10, raw}
                      end
-      value = digits.to_i64(base)
-      negative ? -value : value
+      Compiler.signed_int64(digits.to_u64?(base), negative)
+    end
+
+    # `magnitude` with the given sign, or nil when that is outside
+    # Int64: the magnitude may reach 2**63 only when negative.
+    def self.signed_int64(magnitude : UInt64?, negative : Bool) : Int64?
+      return unless magnitude
+      limit = negative ? Int64::MAX.to_u64 + 1 : Int64::MAX.to_u64
+      return if magnitude > limit
+      return Int64::MIN if negative && magnitude == limit
+      negative ? -magnitude.to_i64 : magnitude.to_i64
     end
 
     private def compile_float(node : FloatLiteral) : Nil

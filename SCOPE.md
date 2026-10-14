@@ -21,17 +21,17 @@ after 1.0. Ordered for working through: security and policy defects
 first, then the Ruby divergences, then design work on policy and
 configuration.
 
-- **An Integer past 64 bits escapes as an internal error.** Integers
-  are Int64, and nothing catches Crystal's `OverflowError`:
-  `9223372036854775807 + 1` (or `*`) ends the run with
-  `unexpected_error: OverflowError`, which no `rescue` in the script
-  can catch, and a literal past Int64, such as
-  `1267650600228229401496703205376`, fails in
-  `Compiler.int_literal_value` with a raw `ArgumentError` instead of a
-  diagnostic. Ruby has no limit. Needs a decision: arbitrary precision
-  (`BigInt`), or a catchable error with an R-code for arithmetic and a
-  P- or U-code for literals, documented as a deliberate limit. Confirmed
-  by `spec/scripts/rubyspec/case.rb` and by probing.
+None open.
+
+## Will Fix
+
+Real gaps, not currently blocking anything, no active design conversation
+yet. Promote to `Must Fix` when something starts depending on it.
+
+Grouped by capability so adjacent work is easy to spot — within a group,
+still roughly ordered by how cheap/independent the fix is.
+
+### Parser / lexer gaps
 
 - **`require` parses only as a statement.** `parse_statement`
   dispatches `KwRequire` to `parse_require`, but `parse_primary`

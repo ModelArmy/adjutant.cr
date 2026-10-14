@@ -1317,7 +1317,10 @@ module Adjutant
           if returned = unwind_return(ex.value, ex.home)
             result = returned
           end
-        rescue ex : RuntimeError
+        rescue error : RuntimeError | OverflowError
+          # Integer arithmetic past 64 bits is U025, which the script
+          # can rescue as a RangeError.
+          ex = error.is_a?(RuntimeError) ? error : integer_overflow(f)
           # A new error supersedes any re-raise, break or return still
           # pending.
           @pending_reraise = nil
@@ -1793,6 +1796,9 @@ module Adjutant
     rescue ex : BlockReturnSignal
       # A block's `return` passes through to the run holding its home.
       raise ex
+    rescue OverflowError
+      # Integer arithmetic past 64 bits in a native: U025, as in the VM.
+      raise integer_overflow(current_frame, filename, line)
     rescue ex : FatalSignal
       # A FatalSignal (a denied grant, an exhausted budget) passes
       # through unchanged, past every `rescue`, including
@@ -2147,6 +2153,14 @@ module Adjutant
       loop { invoke(block, [] of Value) }
     rescue ex : BlockBreakSignal
       ex.value
+    end
+
+    # U025 as a RangeError: an Integer result outside 64 bits, which
+    # Adjutant doesn't widen. At `line` of `filename` when given, else
+    # at `frame`'s current line.
+    private def integer_overflow(frame : Frame, filename : String? = nil, line : Int32? = nil) : RuntimeError
+      span = line ? Span.new(line: line, filename: filename) : frame_span(frame)
+      runtime_diagnostic(Diagnostic.new(code: "U025", primary: span), frame, error_class: "RangeError")
     end
 
     private def raise_arity_error(given : Int32, expected : String, method : String,

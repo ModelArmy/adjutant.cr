@@ -44,8 +44,7 @@ assert("The 'case'-construct matches an Integer literal whose value does not fit
   assert_equal(true, result)
 end
 
-# --- BLOCKED: an Integer literal past 64 bits escapes as an internal
-# error (SCOPE.md, Must Fix).
+# --- BLOCKED: Integers outside 64 bits are excluded (U025).
 # assert("The 'case'-construct matches an arbitrary-precision Integer literal") do
 #   huge = 1267650600228229401496703205376
 #   result = case huge
@@ -55,9 +54,9 @@ end
 #   assert_equal(true, result)
 # end
 
-# --- BLOCKED: a lambda's parameters must be parenthesised, and an
-# Integer literal past 64 bits escapes as an internal error (SCOPE.md,
-# Parser / lexer gaps; Must Fix).
+# --- BLOCKED: Integers outside 64 bits are excluded (U025), and a
+# lambda's parameters must be parenthesised (SCOPE.md, Parser / lexer
+# gaps).
 # assert("The 'case'-construct dispatches correctly with mixed small and large Integer literals") do
 #   pick = -> x {
 #     case x

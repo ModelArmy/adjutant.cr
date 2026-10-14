@@ -1015,6 +1015,31 @@ module (`Op::DefSingleton`).
 
 ---
 
+### U025 — Integers outside 64 bits
+
+Integer values below -2**63 or above 2**63 - 1: a literal such as
+`1267650600228229401496703205376`, or a result such as
+`9223372036854775807 + 1`, `1e30.to_i` or
+`"99999999999999999999".to_i`. Ruby widens an Integer as far as
+memory allows.
+
+**Why:** arbitrary precision would touch every integer path in the VM
+and the builtins for values scripts rarely need. A fixed range with a
+clear error keeps every Integer cheap and predictable. If wider
+integers are ever needed, they come as a type of their own, not as a
+silent change to Integer.
+
+**Instead:** keep values within 64 bits, or use a Float where an
+approximate value will do. A script can rescue U025 as a `RangeError`.
+
+**Enforcement — enforced.** The compiler raises U025 for a literal
+outside 64 bits (`Compiler#compile_int`). At run time the VM turns any
+64-bit overflow into U025, in its own operators and in natives alike
+(`VM#integer_overflow`), and `String#to_i` raises it for digits that
+don't fit.
+
+---
+
 ## 2. Design decisions with no script-visible surface
 
 These are closed decisions about Adjutant's own API shape. No script can

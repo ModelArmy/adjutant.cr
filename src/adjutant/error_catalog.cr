@@ -706,6 +706,16 @@ module Adjutant
         help: "Define the method in the object's class, or a class of its " \
               "own, or make it a method that takes the object as an argument."
       ),
+      "U025" => Entry.new(
+        code: "U025",
+        summary: "an Integer outside 64 bits is not supported",
+        why: "Adjutant's Integers are 64-bit, from -2**63 to 2**63 - 1, " \
+             "and don't widen as Ruby's do (see UNSUPPORTED.md, U025), so " \
+             "this literal or result has no value Adjutant can hold.",
+        help: "Keep values within 64 bits, or use a Float where an " \
+              "approximate value will do. A script can rescue the error " \
+              "as a RangeError."
+      ),
       "U007" => Entry.new(
         code: "U007",
         summary: "`{construct}` is not available",
