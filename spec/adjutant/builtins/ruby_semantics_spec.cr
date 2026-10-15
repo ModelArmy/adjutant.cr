@@ -138,4 +138,40 @@ module Adjutant
       builtin_outcome("", "{a: 1..2} == {a: 1..2}").should eq "true"
     end
   end
+
+  describe "size, length, to_i and to_f" do
+    it "count a Range's elements, as Ruby does" do
+      builtin_outcome("", "(1..10).size").should eq "10"
+      builtin_outcome("", "(1...10).size").should eq "9"
+      builtin_outcome("", "(5..1).size").should eq "0"
+      builtin_outcome("", "(1..).size").should eq "Infinity"
+      builtin_outcome("", %(("a".."c").size)).should eq "nil"
+    end
+
+    it "count a Symbol's characters" do
+      builtin_outcome("", ":abc.length").should eq "3"
+      builtin_outcome("", ":abc.size").should eq "3"
+    end
+
+    it "give an Integer's size in bytes" do
+      builtin_outcome("", "5.size").should eq "8"
+    end
+
+    it "still count a String's characters" do
+      builtin_outcome("", %("abc".size)).should eq "3"
+      builtin_outcome("", %("abc".length)).should eq "3"
+    end
+
+    it "convert nil, as Ruby does" do
+      builtin_outcome("", "nil.to_i").should eq "0"
+      builtin_outcome("", "nil.to_f").should eq "0.0"
+    end
+
+    it "raise NoMethodError on a receiver Ruby doesn't define them for" do
+      {"nil.size", "nil.length", "true.size", "true.to_i", "false.to_f", ":a.to_i", ":a.to_f",
+       "[1].to_i", "[1].to_f", "{a: 1}.to_i", "(1..2).to_i", "(1..2).to_f"}.each do |expr|
+        builtin_outcome("", expr).should eq "NoMethodError"
+      end
+    end
+  end
 end
