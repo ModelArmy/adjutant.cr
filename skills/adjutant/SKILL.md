@@ -43,7 +43,6 @@ What is different, in order of importance:
 - `str << "x"` → `str = str + "x"`
 - `obj.count += 1` → `obj.count = obj.count + 1`
 - `foo(*args)` → Pass the Array itself
-- `.method` at the start of a line → End the previous line with `.` instead
 - `retry` → A `while` loop around `begin`/`rescue`, with an attempt counter
 - `def run(&blk)`, `block_given?` → `yield`, which returns the block's value: `x = yield 10`
 - `proc { }` → `lambda { }` or `-> { }`
