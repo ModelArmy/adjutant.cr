@@ -98,6 +98,9 @@ module Adjutant
           @column = 1
           @pending_heredoc_skip_at = nil
         end
+        # A line starting with `.x` or `&.` continues the expression,
+        # so this newline is only whitespace.
+        return next_token_inner if continues_method_chain?
         return make_token(TokenKind::Newline, "\n", line, col)
       end
 
@@ -143,6 +146,33 @@ module Adjutant
 
     # Skips spaces, tabs and comments. Returns whether anything was
     # skipped, which becomes the next token's `space_before`.
+    # Whether the line after the newline just read continues the
+    # expression before it, as Ruby's lexer decides: past spaces and
+    # whole comment lines, a `.` not followed by another `.`, or an
+    # `&.`, calls a method on that expression. A blank line ends it, and
+    # `..` starts a range.
+    private def continues_method_chain? : Bool
+      offset = 0
+      loop do
+        case peek_at(offset)
+        when ' ', '\t', '\r'
+          offset += 1
+        when '#'
+          while !peek_at(offset).in?('\n', '\0')
+            offset += 1
+          end
+          return false if peek_at(offset) == '\0'
+          offset += 1
+        when '.'
+          return peek_at(offset + 1) != '.'
+        when '&'
+          return peek_at(offset + 1) == '.'
+        else
+          return false
+        end
+      end
+    end
+
     private def skip_whitespace_and_comments : Bool
       consumed = false
       loop do

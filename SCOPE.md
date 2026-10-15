@@ -127,16 +127,6 @@ still roughly ordered by how cheap/independent the fix is.
   `Object.const_defined?(:Float)` is separate work, an ordinary native
   method.
 
-- **Leading-dot line continuation for a method chain isn't supported**
-  (`obj\n  .method\n  .method` — real Ruby 1.9+ syntax) — raises P002
-  (`.` can't start an expression here) rather than parsing. Found
-  2026-08-24 writing a multi-line `Legate::Stream` chain spec.
-  Genuinely common, readable Ruby style for a chain of 3+ calls, and
-  the kind of thing an LLM trained on real-world Ruby would reach for
-  by default — worth fixing since a script author hitting this gets a
-  parse error on ordinary-looking code, not silent wrongness, but
-  still a real everyday-syntax gap.
-
 - **`%W[]`/`%I[]` (interpolating word/symbol arrays) and `%q`/`%Q`/`%r`
   (the general delimited-literal forms) aren't supported — only plain
   `%w[]`/`%i[]` are.** Added 2026-08-19 alongside `%w[]`/`%i[]` itself

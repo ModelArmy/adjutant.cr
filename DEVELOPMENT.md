@@ -119,6 +119,9 @@ Heredocs (`<<ID`, `<<-ID`, `<<~ID`, the identifier optionally quoted) are resolv
 - A bare call's first argument may start with `-` or `+` only with space before and none after: `eq -1, -1` is a call, while `a - b`, `a-b` and `n - 1` are binary, whether or not `a` is a local.
 - `name(...)` is `name`'s own argument list; `name (6/3), 2` passes a parenthesized expression as a bare call's first argument.
 - `key: value` needs the colon touching the key.
+- `&` with space before and none after starts a block argument: `items.map &:upcase` passes `&:upcase`, while `a & b` and `a&b` are binary. After a bare name, `known_local?` decides, as for `name [x]`.
+
+**Line continuation.** A newline ends a statement unless the next line, past spaces and whole comment lines, starts with a `.` not followed by another `.`, or with `&.`. Then `Lexer#continues_method_chain?` treats the newline as whitespace and the method chain carries on, as Ruby 2.7's lexer does. A blank line ends a chain, and `..` at a line's start begins a range.
 
 **`name [x]`** is indexing if `name` is a known local, otherwise a call with an array argument, as Ruby decides it at parse time. The parser tracks known locals in `@local_scopes`: a `def` pushes an empty scope, a block or lambda a copy of the enclosing one, and a `for` variable or `rescue => e` binding joins the current scope.
 
