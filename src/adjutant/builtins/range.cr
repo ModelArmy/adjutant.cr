@@ -43,7 +43,7 @@ module Adjutant::Builtins
     # A beginless range raises RangeError, with or without `n`, as in
     # Ruby. With `n`, an Array of the first `n` elements, which works
     # on an endless range; a negative `n` raises ArgumentError.
-    define(cls, interp, "first", arity: 0..1) do |args, _blk, ncc|
+    define(cls, interp, "first", arity: 0..1, labels_own_result: true) do |args, _blk, ncc|
       obj = args.first.as_robject
       lo = obj.ivars[min_sym]
       ncc.raise_error("R030", {} of String => String, "RangeError") if lo.null?
@@ -59,7 +59,7 @@ module Adjutant::Builtins
         while elements.size < n
           in_bounds = hi.null? || (exclusive ? ncc.compare(current, hi, :<) : ncc.compare(current, hi, :<=))
           break unless in_bounds
-          elements << current
+          elements << range_value(current, args.first)
           current = ncc.call_method(current, "succ", [] of Adjutant::Value)
         end
         Adjutant::Value.new(Adjutant::LabeledArray.new(elements, joined_label(elements, args.first.label)), nil)
@@ -69,11 +69,11 @@ module Adjutant::Builtins
     end
 
     # The bounds as stored, nil included; never raises.
-    define(cls, interp, "begin", arity: 0) do |args|
+    define(cls, interp, "begin", arity: 0, labels_own_result: true) do |args|
       args.first.as_robject.ivars[min_sym]
     end
 
-    define(cls, interp, "end", arity: 0) do |args|
+    define(cls, interp, "end", arity: 0, labels_own_result: true) do |args|
       args.first.as_robject.ivars[max_sym]
     end
 
@@ -84,7 +84,7 @@ module Adjutant::Builtins
       hi
     end
 
-    define(cls, interp, "last", arity: 0) do |args, _blk, ncc|
+    define(cls, interp, "last", arity: 0, labels_own_result: true) do |args, _blk, ncc|
       obj = args.first.as_robject
       hi = obj.ivars[max_sym]
       ncc.raise_error("R028", {} of String => String, "RangeError") if hi.null?
@@ -143,7 +143,7 @@ module Adjutant::Builtins
       loop do
         in_bounds = hi.null? || (exclusive ? ncc.compare(current, hi, :<) : ncc.compare(current, hi, :<=))
         break unless in_bounds
-        ncc.invoke(block, [current])
+        ncc.invoke(block, [range_value(current, recv)])
         current = ncc.call_method(current, "succ", [] of Adjutant::Value)
       end
       recv
@@ -165,7 +165,7 @@ module Adjutant::Builtins
       loop do
         in_bounds = exclusive ? ncc.compare(current, hi, :<) : ncc.compare(current, hi, :<=)
         break unless in_bounds
-        elements << current
+        elements << range_value(current, recv)
         current = ncc.call_method(current, "succ", [] of Adjutant::Value)
       end
       Adjutant::Value.new(Adjutant::LabeledArray.new(elements, joined_label(elements, recv.label)), nil)
@@ -191,7 +191,7 @@ module Adjutant::Builtins
       loop do
         in_bounds = hi.null? || (exclusive ? ncc.compare(current, hi, :<) : ncc.compare(current, hi, :<=))
         break unless in_bounds
-        ncc.invoke(block, [current])
+        ncc.invoke(block, [range_value(current, recv)])
         current = ncc.add(current, n)
       end
       recv
@@ -202,6 +202,12 @@ module Adjutant::Builtins
 
   # Whether `x` lies within the bounds; a nil bound is no limit on
   # its side.
+  # `value` with `range`'s label joined in: every value a Range yields
+  # or collects is computed from its bounds.
+  private def self.range_value(value : Adjutant::Value, range : Adjutant::Value) : Adjutant::Value
+    value.with_label(Adjutant::RiskFlowLabel.join(value.label, range.label))
+  end
+
   private def self.range_includes?(args : Array(Adjutant::Value), ncc : Adjutant::NativeCallContext,
                                    min_sym : Int32, max_sym : Int32, excl_sym : Int32) : Adjutant::Value
     obj = args.first.as_robject

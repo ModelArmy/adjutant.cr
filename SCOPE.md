@@ -21,23 +21,6 @@ after 1.0. Ordered for working through: security and policy defects
 first, then the Ruby divergences, then design work on policy and
 configuration.
 
-- **Values a native yields or collects from labelled input carry no
-  label.** Since `VM#label_from_inputs`, a builtin's result joins its
-  inputs' labels, but a value a native hands to a block, or puts in a
-  container it builds, doesn't pass through it. `Integer#times` yields
-  unlabelled counters from a labelled count, and `(1..t).each` and
-  `(1..t).to_a` yield or hold values without the label of the bound `t`,
-  so `t.times { |i| last = i }` leaves `last` unlabelled. Separately, by
-  the rule agreed for results (whatever is computed from a labelled
-  value carries its label), a container's label should reach its
-  summaries, such as `arr.size`, `arr.include?(x)` and `arr.join`, which
-  `label_from_inputs` deliberately skips because an input container's
-  label also stands for contents an element read may not want. Predicted
-  by reading `src/adjutant/builtins/`; not yet confirmed by a spec. Fix:
-  extend `risk_flow_native_labels_spec.cr` to yields and containers,
-  then label at each `ncc.invoke` and container build that derives from
-  a labelled input.
-
 - **`exec_builtin` answers for methods a receiver lacks.** When dispatch
   finds no method, `VM#exec_builtin`'s fallbacks give `size` and
   `length` 0 for anything but a String, Array or Hash, and `to_i` and

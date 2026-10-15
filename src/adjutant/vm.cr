@@ -1792,16 +1792,17 @@ module Adjutant
     # an Ask is answered with Reject.
     # `result`, labelled with the join of its inputs' labels when it has
     # no label of its own: what a builtin computes from labelled values
-    # carries their label, as an operator's result does. Containers are
-    # left out on both sides. An input container's label stands for its
-    # contents, which each method handles itself; a container result's
-    # label is a field of the container, so setting it here would
-    # relabel a container the script may share.
+    # carries their label, as an operator's result does. An input
+    # container counts by its own label, so `arr.size` carries it; a
+    # method returning one of its elements as is declares
+    # `labels_own_result`, the element having a label of its own. A
+    # container result is left as returned: its label is a field of the
+    # container, so setting it here would relabel a container the script
+    # may share.
     private def label_from_inputs(result : Value, args : Array(Value), kwargs : Hash(String, Value)?,
                                   name : String, line : Int32) : Value
       return result if result.label || result.array? || result.hash?
-      inputs = args.reject { |arg| arg.array? || arg.hash? }
-      kwargs.try { |given| inputs.concat(given.values.reject { |value| value.array? || value.hash? }) }
+      inputs = kwargs ? args + kwargs.values : args
       label = inputs.reduce(nil.as(RiskFlowLabel?)) { |joined, input| RiskFlowLabel.join(joined, input.label) }
       return result unless label
       @risk_flow_log.record(name, inputs.map(&.label), label, line)
