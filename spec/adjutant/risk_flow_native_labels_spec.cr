@@ -90,4 +90,45 @@ module Adjutant
       }).should eq [] of String
     end
   end
+
+  # Values a native yields to a block or collects into a container from
+  # labelled input, and values it computes from a labelled container. A
+  # plain element read (`arr.first`, `arr[0]`) is left out: it returns
+  # the element, with its own label, rather than a computed value.
+  describe "a value yielded, collected or computed from a labelled container" do
+    it "carries the label into what it yields to a block" do
+      unlabelled_results({
+        "last = nil\nt_int.times { |i| last = i }\nlast",
+        "last = nil\n(1..t_int).each { |i| last = i }\nlast",
+        "last = nil\n(1..t_int).step(2) { |i| last = i }\nlast",
+        "last = nil\nt_str.chars.each { |char| last = char }\nlast",
+        "last = nil\nt_str.each_line { |line| last = line }\nlast",
+      }).should eq [] of String
+    end
+
+    it "carries the label into a container it builds, and its elements" do
+      unlabelled_results({
+        "(1..t_int).to_a", "(1..t_int).to_a.first", "(1..t_int).to_a.last",
+        %(t_str.split(" ")), "t_str.chars",
+      }).should eq [] of String
+    end
+
+    it "carries a labelled Array's label into what it computes from it" do
+      unlabelled_results({
+        "[t_int, 2, 3].size", "[t_int, 2, 3].length", "[t_int, 2, 3].empty?",
+        "[t_int, 2, 3].include?(2)", %([t_int, 2, 3].join(",")),
+        "[t_int, 2, 3].min", "[t_int, 2, 3].max", "[t_int, 2, 3].inject(:+)",
+        "[t_int, 2, 3].to_s", "[t_int, 2, 3].inspect",
+        %(t_str.split(" ").size),
+      }).should eq [] of String
+    end
+
+    it "carries a labelled Hash's label into what it computes from it" do
+      unlabelled_results({
+        "h = {k: t_int}\nh.size", "h = {k: t_int}\nh.length", "h = {k: t_int}\nh.empty?",
+        "h = {k: t_int}\nh.key?(:k)", "h = {k: t_int}\nh.has_key?(:k)", "h = {k: t_int}\nh.include?(:k)",
+        "h = {k: t_int}\nh.to_s", "h = {k: t_int}\nh.inspect",
+      }).should eq [] of String
+    end
+  end
 end
