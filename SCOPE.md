@@ -21,17 +21,16 @@ after 1.0. Ordered for working through: security and policy defects
 first, then the Ruby divergences, then design work on policy and
 configuration.
 
-- **`exec_builtin` answers for methods a receiver lacks.** When dispatch
-  finds no method, `VM#exec_builtin`'s fallbacks give `size` and
-  `length` 0 for anything but a String, Array or Hash, and `to_i` and
-  `to_f` 0 for anything but a number or a String, which is right only
-  for nil. Ruby gives `(1..10).size` 10, `:abc.length` 3 and `5.size` 8,
-  and raises NoMethodError for `nil.size`, `true.to_i` or `[].to_f`.
-  Range and Symbol define neither `size` nor `length` natively, so a
-  script's `(1..n).size` silently gives 0. Predicted by reading
-  `exec_builtin`; not yet confirmed by a spec. Fix: answer only for the
-  receivers Ruby defines these on and raise NoMethodError otherwise,
-  adding `size` to Range and `size` and `length` to Symbol.
+- **Range's `min` and `max` ignore an empty range and an exclusive
+  end.** `Range#min` returns the start and `#max` the end as stored, so
+  `(5..1).min` is 5 and `(1...10).max` is 10, where Ruby gives nil and
+  9. Separately, `each` and `to_a` from a Float start raise
+  NoMethodError, Float having no `succ`, where Ruby raises TypeError,
+  "can't iterate from Float", which R024 now names. Predicted by reading
+  `src/adjutant/builtins/range.cr`; not yet confirmed by a spec. Fix:
+  give `min` and `max` Ruby's rules (nil for an empty range, and for an
+  exclusive Integer range `max` is the end less one), and raise R024 for
+  a Float start in `each` and `to_a`.
 
 ## Will Fix
 

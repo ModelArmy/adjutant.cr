@@ -9,6 +9,10 @@ module Adjutant::Builtins
   def self.bootstrap_integer(interp : Adjutant::Interpreter) : Adjutant::RubyClass
     cls = Adjutant::RubyClass.new("Integer")
 
+    # The bytes in an Integer's machine representation, 8 as Ruby gives
+    # on a 64-bit platform.
+    define(cls, interp, "size", arity: 0) { |_| Adjutant::Value.int(8_i64) }
+
     # `**`, as Ruby's Integer#** gives it: an Integer for an Integer
     # exponent, a Float for a Float one, with both operands' labels.
     # Ruby's answer to a negative Integer exponent is a Rational, so it

@@ -77,6 +77,20 @@ module Adjutant::Builtins
       args.first.as_robject.ivars[max_sym]
     end
 
+    # Ruby's `Range#size`: how many Integers lie between an Integer
+    # start and the end, Infinity for an endless range, nil for a start
+    # that isn't a number. A nil or Float start raises R024 (TypeError),
+    # as Ruby 3.3 does.
+    define(cls, interp, "size", arity: 0) do |args, _blk, ncc|
+      obj = args.first.as_robject
+      lo = obj.ivars[min_sym]
+      if lo.null? || lo.float?
+        ncc.raise_error("R024", {"method" => "size", "class" => lo.null? ? "NilClass" : "Float"}, "TypeError")
+      end
+      next Adjutant::Value.nil_value unless lo.int?
+      range_size(lo.as_int, obj.ivars[max_sym], obj.ivars[excl_sym].as_bool)
+    end
+
     define(cls, interp, "max", arity: 0) do |args, _blk, ncc|
       obj = args.first.as_robject
       hi = obj.ivars[max_sym]
@@ -137,7 +151,7 @@ module Adjutant::Builtins
       exclusive = obj.ivars[excl_sym].as_bool
       lo = obj.ivars[min_sym]
       hi = obj.ivars[max_sym]
-      ncc.raise_error("R024", {"method" => "each"}, "TypeError") if lo.null?
+      ncc.raise_error("R024", {"method" => "each", "class" => "NilClass"}, "TypeError") if lo.null?
       block = require_block!(blk, "Range#each", ncc)
       current = lo
       loop do
@@ -158,7 +172,7 @@ module Adjutant::Builtins
       exclusive = obj.ivars[excl_sym].as_bool
       lo = obj.ivars[min_sym]
       hi = obj.ivars[max_sym]
-      ncc.raise_error("R024", {"method" => "to_a"}, "TypeError") if lo.null?
+      ncc.raise_error("R024", {"method" => "to_a", "class" => "NilClass"}, "TypeError") if lo.null?
       ncc.raise_error("R026", {} of String => String, "RangeError") if hi.null?
       elements = [] of Adjutant::Value
       current = lo
@@ -202,6 +216,25 @@ module Adjutant::Builtins
 
   # Whether `x` lies within the bounds; a nil bound is no limit on
   # its side.
+  # How many Integers lie from `lo` to `hi`: none when `hi` is below
+  # `lo`, Infinity when there's no end or an infinite one, nil when the
+  # end isn't a number. A Float end counts the Integers at or below it.
+  private def self.range_size(lo : Int64, hi : Adjutant::Value, exclusive : Bool) : Adjutant::Value
+    return Adjutant::Value.float(Float64::INFINITY) if hi.null?
+    top =
+      if hi.int?
+        exclusive ? hi.as_int - 1 : hi.as_int
+      elsif hi.float?
+        limit = hi.as_float
+        return Adjutant::Value.float(Float64::INFINITY) if limit == Float64::INFINITY
+        return Adjutant::Value.int(0_i64) if limit < lo
+        exclusive && limit == limit.floor ? limit.to_i64 - 1 : limit.floor.to_i64
+      else
+        return Adjutant::Value.nil_value
+      end
+    Adjutant::Value.int(top < lo ? 0_i64 : top - lo + 1)
+  end
+
   # `value` with `range`'s label joined in: every value a Range yields
   # or collects is computed from its bounds.
   private def self.range_value(value : Adjutant::Value, range : Adjutant::Value) : Adjutant::Value

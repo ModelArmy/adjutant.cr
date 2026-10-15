@@ -125,7 +125,7 @@ R020|`Range#step` called with a step of 0                               |—
 R021|Invalid regex pattern                                              |`reason`                                   
 R022|A Regexp match method called with no string argument               |`method`                                   
 R023|A private method called via an explicit receiver from outside self |`method`, `target`                         
-R024|`Range#each`/`#to_a` called on a beginless range                   |`method`                                   
+R024|A Range iterated or sized from a nil or Float start                |`method`, `class`                          
 R025|`Range#step` called on a beginless range                           |—                                          
 R026|`Range#to_a` called on an endless range                            |—                                          
 R027|`Range#max` called on an endless range                             |—                                          

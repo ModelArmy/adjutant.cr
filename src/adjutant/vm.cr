@@ -2296,7 +2296,7 @@ module Adjutant
       "equal?" => Arity.from(1), "dup" => Arity.from(0), "clone" => Arity.from(0),
       "==" => Arity.from(1), "!=" => Arity.from(1), "===" => Arity.from(1),
       "to_s" => Arity.from(0), "inspect" => Arity.from(0), "to_i" => Arity.from(0),
-      "to_f" => Arity.from(0), "length" => Arity.from(0), "size" => Arity.from(0),
+      "to_f" => Arity.from(0),
       "+" => Arity.from(1), "-" => Arity.from(1), "*" => Arity.from(1),
       "/" => Arity.from(1), "%" => Arity.from(1),
       "loop" => Arity.new(0, 0),
@@ -2481,29 +2481,11 @@ module Adjutant
         recv = args.first? || Value.nil_value
         Value.string(recv.inspect)
       when "to_i"
-        recv = args.first? || Value.nil_value
-        case
-        when recv.int?    then recv
-        when recv.float?  then Value.int(recv.as_float.to_i64)
-        when recv.string? then Value.int(recv.as_string.to_i64? || 0_i64)
-        else                   Value.int(0_i64)
-        end
+        # nil's: every other builtin with a `to_i` defines it natively,
+        # and a receiver reaching here otherwise has none (NoMethodError).
+        Value.int(0_i64) if has_receiver && args.first.null?
       when "to_f"
-        recv = args.first? || Value.nil_value
-        case
-        when recv.float?  then recv
-        when recv.int?    then Value.float(recv.as_int.to_f64)
-        when recv.string? then Value.float(recv.as_string.to_f64? || 0.0)
-        else                   Value.float(0.0)
-        end
-      when "length", "size"
-        recv = args.first? || Value.nil_value
-        case
-        when recv.string? then Value.int(recv.as_string.size.to_i64)
-        when recv.array?  then Value.int(recv.as_array.size.to_i64)
-        when recv.hash?   then Value.int(recv.as_hash.size.to_i64)
-        else                   Value.int(0_i64)
-        end
+        Value.float(0.0) if has_receiver && args.first.null?
       when "+"
         ValueOps.add(args[0], args[1], error_raiser(current_frame))
       when "-"

@@ -256,13 +256,13 @@ module Adjutant
       ),
       "R024" => Entry.new(
         code: "R024",
-        summary: "can't iterate from NilClass",
-        why: "`{method}` needs a real starting value to count up from — " \
-             "a beginless range (`..5`) has no start, so there's " \
-             "nothing to begin iterating at.",
-        help: "Only an endless range (`5..`) or an ordinary bounded " \
-              "range (`1..5`) can be iterated — a beginless range can " \
-              "still be used with `include?`/`===`, just not walked."
+        summary: "can't iterate from {class}",
+        why: "`{method}` counts up from the range's start, and a {class} " \
+             "start gives it nothing to count from: a beginless range " \
+             "(`..5`) has no start, and a Float has no next value.",
+        help: "Iterate or size a range that starts at an Integer, such " \
+              "as `1..5` or the endless `5..`. Any range can still be " \
+              "tested with `include?` or `===`."
       ),
       "R025" => Entry.new(
         code: "R025",
