@@ -14,6 +14,10 @@ module Adjutant
         "IndexError"
       rescue NoMethodError
         "NoMethodError"
+      rescue TypeError
+        "TypeError"
+      rescue RangeError
+        "RangeError"
       end
       RUBY
   end
@@ -172,6 +176,43 @@ module Adjutant
        "[1].to_i", "[1].to_f", "{a: 1}.to_i", "(1..2).to_i", "(1..2).to_f"}.each do |expr|
         builtin_outcome("", expr).should eq "NoMethodError"
       end
+    end
+  end
+
+  describe "Range#min and #max" do
+    it "give the start and end of a range that isn't empty" do
+      builtin_outcome("", "(1..5).min").should eq "1"
+      builtin_outcome("", "(1..5).max").should eq "5"
+      builtin_outcome("", "(1...10).min").should eq "1"
+      builtin_outcome("", "(1.0..2.5).max").should eq "2.5"
+      builtin_outcome("", %(("a".."c").max)).should eq %("c")
+    end
+
+    it "give the last Integer below an exclusive end" do
+      builtin_outcome("", "(1...10).max").should eq "9"
+    end
+
+    it "give nil for an empty range" do
+      {"(5..1).min", "(5..1).max", "(1...1).min", "(1...1).max", "(2.5..1.0).max"}.each do |expr|
+        builtin_outcome("", expr).should eq "nil"
+      end
+    end
+
+    it "raise TypeError for an exclusive range they can't step back through" do
+      builtin_outcome("", "(1...2.5).max").should eq "TypeError"
+      builtin_outcome("", "(1.0...2).max").should eq "TypeError"
+    end
+
+    it "still raise RangeError without the bound they read" do
+      builtin_outcome("", "(..5).min").should eq "RangeError"
+      builtin_outcome("", "(1..).max").should eq "RangeError"
+    end
+  end
+
+  describe "iterating a Range from a Float start" do
+    it "raises TypeError, as Ruby does" do
+      builtin_outcome("", "(1.0..3).to_a").should eq "TypeError"
+      builtin_outcome("", "(1.0..3).each { }").should eq "TypeError"
     end
   end
 end
