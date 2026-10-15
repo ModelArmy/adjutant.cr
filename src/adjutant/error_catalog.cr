@@ -577,6 +577,21 @@ module Adjutant
         help: "Check that the base isn't zero before raising it to a " \
               "negative power."
       ),
+      "R061" => Entry.new(
+        code: "R061",
+        summary: "cannot exclude non Integer end value",
+        why: "The largest value of an exclusive range is the Integer just " \
+             "below its end, which only an Integer end has.",
+        help: "Make the range inclusive (`..`), or give it an Integer end."
+      ),
+      "R062" => Entry.new(
+        code: "R062",
+        summary: "cannot exclude end value with non Integer begin value",
+        why: "The largest value of an exclusive range is the Integer just " \
+             "below its end, which is only a member of the range when the " \
+             "range starts at an Integer too.",
+        help: "Start the range at an Integer, or make it inclusive (`..`)."
+      ),
 
       # --- L: limits reached ----------------------------------------
       #

@@ -8,8 +8,10 @@ module Adjutant::Builtins
   # object whose `__min`, `__max` and `__exclusive` ivars are set when
   # it is built (Op::MakeRange or `Range.new`) and never change.
   # Iteration steps with each bound's own `succ`, so any bound type
-  # with `succ` and `<=>` works; one without raises NoMethodError, as
-  # in Ruby.
+  # with `succ` and `<=>` works. A Float or nil start raises R024
+  # (TypeError), as in Ruby; any other start without `succ` raises
+  # NoMethodError where Ruby raises TypeError, String included (see
+  # SCOPE.md's entry on ranges iterated through `succ`).
   # ameba:disable Metrics/CyclomaticComplexity - one `define` call per native method, each a flat independent case; count comes from many methods, not tangled branching
   def self.bootstrap_range(interp : Adjutant::Interpreter) : Adjutant::RubyClass
     cls = Adjutant::RubyClass.new("Range")
@@ -32,12 +34,17 @@ module Adjutant::Builtins
     end
 
     # `min` and `max` raise RangeError on a missing bound, as `first`
-    # and `last` do, with Ruby's messages.
+    # and `last` do, with Ruby's messages. Otherwise `min` is the start,
+    # or nil for an empty range: a start above the end, or equal to an
+    # excluded end.
     define(cls, interp, "min", arity: 0) do |args, _blk, ncc|
       obj = args.first.as_robject
       lo = obj.ivars[min_sym]
       ncc.raise_error("R029", {} of String => String, "RangeError") if lo.null?
-      lo
+      hi = obj.ivars[max_sym]
+      next lo if hi.null?
+      order = ncc.order(lo, hi)
+      order > 0 || (order == 0 && obj.ivars[excl_sym].as_bool) ? Adjutant::Value.nil_value : lo
     end
 
     # A beginless range raises RangeError, with or without `n`, as in
@@ -51,6 +58,7 @@ module Adjutant::Builtins
         if n_val.int? && n_val.as_int < 0
           ncc.raise_error("R031", {} of String => String, "ArgumentError")
         end
+        ncc.raise_error("R024", {"method" => "first", "class" => "Float"}, "TypeError") if lo.float?
         n = n_val.as_int.to_i
         hi = obj.ivars[max_sym]
         exclusive = obj.ivars[excl_sym].as_bool
@@ -91,11 +99,27 @@ module Adjutant::Builtins
       range_size(lo.as_int, obj.ivars[max_sym], obj.ivars[excl_sym].as_bool)
     end
 
+    # Ruby's `Range#max`, step for step: nil for an empty range; the end
+    # of an inclusive range; for an exclusive one, the Integer just
+    # below its end, which needs an Integer end (R061) and an Integer
+    # start (R062), both TypeError. An exclusive range whose end isn't a
+    # number is walked instead, as Ruby does.
     define(cls, interp, "max", arity: 0) do |args, _blk, ncc|
       obj = args.first.as_robject
       hi = obj.ivars[max_sym]
       ncc.raise_error("R027", {} of String => String, "RangeError") if hi.null?
-      hi
+      exclusive = obj.ivars[excl_sym].as_bool
+      if exclusive && !(hi.int? || hi.float?)
+        next ncc.call_method(ncc.call_method(args.first, "to_a", [] of Adjutant::Value), "max", [] of Adjutant::Value)
+      end
+      lo = obj.ivars[min_sym]
+      order = lo.null? ? -1 : ncc.order(lo, hi)
+      next Adjutant::Value.nil_value if order > 0
+      next hi unless exclusive
+      ncc.raise_error("R061", {} of String => String, "TypeError") unless hi.int?
+      next Adjutant::Value.nil_value if order == 0
+      ncc.raise_error("R062", {} of String => String, "TypeError") unless lo.int?
+      Adjutant::Value.int(hi.as_int - 1)
     end
 
     define(cls, interp, "last", arity: 0, labels_own_result: true) do |args, _blk, ncc|
@@ -151,7 +175,7 @@ module Adjutant::Builtins
       exclusive = obj.ivars[excl_sym].as_bool
       lo = obj.ivars[min_sym]
       hi = obj.ivars[max_sym]
-      ncc.raise_error("R024", {"method" => "each", "class" => "NilClass"}, "TypeError") if lo.null?
+      ncc.raise_error("R024", {"method" => "each", "class" => lo.null? ? "NilClass" : "Float"}, "TypeError") if lo.null? || lo.float?
       block = require_block!(blk, "Range#each", ncc)
       current = lo
       loop do
@@ -172,7 +196,7 @@ module Adjutant::Builtins
       exclusive = obj.ivars[excl_sym].as_bool
       lo = obj.ivars[min_sym]
       hi = obj.ivars[max_sym]
-      ncc.raise_error("R024", {"method" => "to_a", "class" => "NilClass"}, "TypeError") if lo.null?
+      ncc.raise_error("R024", {"method" => "to_a", "class" => lo.null? ? "NilClass" : "Float"}, "TypeError") if lo.null? || lo.float?
       ncc.raise_error("R026", {} of String => String, "RangeError") if hi.null?
       elements = [] of Adjutant::Value
       current = lo

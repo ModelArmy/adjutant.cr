@@ -162,6 +162,8 @@ R057|A MatchData group name the pattern lacks                           |`name`
 R058|`clamp` given a minimum above its maximum                          |—                                          
 R059|A superclass that isn't a class                                    |`value`                                    
 R060|Zero raised to a negative Integer power                            |—                                          
+R061|`Range#max` of an exclusive range with a non-Integer end           |—                                          
+R062|`Range#max` of an exclusive range with a non-Integer start         |—                                          
 
 Scripts can `rescue` these. R008 raises a `NameError`, matching Ruby;
 R011, R012, R015, and R018 raise `ArgumentError`, also matching Ruby;

@@ -21,16 +21,7 @@ after 1.0. Ordered for working through: security and policy defects
 first, then the Ruby divergences, then design work on policy and
 configuration.
 
-- **Range's `min` and `max` ignore an empty range and an exclusive
-  end.** `Range#min` returns the start and `#max` the end as stored, so
-  `(5..1).min` is 5 and `(1...10).max` is 10, where Ruby gives nil and
-  9. Separately, `each` and `to_a` from a Float start raise
-  NoMethodError, Float having no `succ`, where Ruby raises TypeError,
-  "can't iterate from Float", which R024 now names. Predicted by reading
-  `src/adjutant/builtins/range.cr`; not yet confirmed by a spec. Fix:
-  give `min` and `max` Ruby's rules (nil for an empty range, and for an
-  exclusive Integer range `max` is the end less one), and raise R024 for
-  a Float start in `each` and `to_a`.
+None open.
 
 ## Will Fix
 
