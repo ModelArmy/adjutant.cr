@@ -1816,7 +1816,7 @@ module Adjutant
       check_unknown_native_keywords!(kwargs, native.kwarg_names, name, filename, line)
       check_risk_flow(native, args, kwargs, name, filename, line)
       result = NativeFunctionCall.new(self, native, filename, line, name, kwargs, args).call(args, blk)
-      label_from_inputs(result, args, kwargs, name, line)
+      native.labels_own_result? ? result : label_from_inputs(result, args, kwargs, name, line)
     rescue ex : BlockBreakSignal
       # A `break` in the block this call received ends the call with
       # the break's value, as in Ruby.

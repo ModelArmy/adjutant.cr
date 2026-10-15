@@ -682,16 +682,16 @@ module Adjutant
         interp.eval(%(/b./.match("abc")[0])).label.should be_nil
       end
 
-      it "#begin/#end stay unlabeled — position metadata, not extracted data" do
+      it "#begin/#end carry the label, being positions in labelled content" do
         interp, _ = make_tainted_interp
         result = interp.eval(%(/x/.match(tainted_str("/etc/passwd")).begin(0)))
-        result.label.should be_nil
+        result.label.not_nil!.sensitivity.should eq Sensitivity::High
       end
 
-      it "#match?/#begin/#end stay unlabeled — a boolean/positional fact, not extracted data" do
+      it "#match? carries the label, being a predicate over labelled content" do
         interp, _ = make_tainted_interp
         match_q = interp.eval(%(/x/.match?(tainted_str("/etc/passwd"))))
-        match_q.label.should be_nil
+        match_q.label.not_nil!.sensitivity.should eq Sensitivity::High
       end
     end
 

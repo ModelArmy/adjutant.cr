@@ -34,11 +34,19 @@ module Adjutant
     # which name no subject, don't.
     getter? checks_flow_at_subject : Bool
 
+    # Whether the call sets its result's risk-flow label itself, so
+    # `VM#label_from_inputs` leaves the result as returned. For a result
+    # not computed from every labelled input: a field describing a
+    # labelled object's source rather than its content (`Stat#mode`), or
+    # a result that used an input only on some paths (`String#sub`).
+    getter? labels_own_result : Bool
+
     def initialize(@func : NativeFunc, @risk : RiskProfile = RiskProfile.none,
                    @kwarg_names : Set(String) = Set(String).new,
                    @authorities : Set(Authority) = Set(Authority).new,
                    @arity : Arity = Arity.any,
-                   @checks_flow_at_subject : Bool = false)
+                   @checks_flow_at_subject : Bool = false,
+                   @labels_own_result : Bool = false)
     end
 
     def call(args : Array(Value), blk : ScriptProc?, ctx : NativeCallContext) : Value

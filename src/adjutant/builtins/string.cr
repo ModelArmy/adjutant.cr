@@ -311,12 +311,12 @@ module Adjutant::Builtins
     # and whatever was substituted: the replacement's, or each block
     # result's. The block's argument carries the receiver's and the
     # pattern's, being text taken from the receiver.
-    define(cls, interp, "sub", arity: 1..2) do |args, blk, ncc|
+    define(cls, interp, "sub", arity: 1..2, labels_own_result: true) do |args, blk, ncc|
       text, label = string_sub_or_gsub(args, blk, ncc, "sub", all: false)
       Adjutant::Value.string(text, label)
     end
 
-    define(cls, interp, "gsub", arity: 1..2) do |args, blk, ncc|
+    define(cls, interp, "gsub", arity: 1..2, labels_own_result: true) do |args, blk, ncc|
       text, label = string_sub_or_gsub(args, blk, ncc, "gsub", all: true)
       Adjutant::Value.string(text, label)
     end

@@ -39,9 +39,12 @@ module Adjutant::Builtins
   def self.define(cls : Adjutant::RubyClass, interp : Adjutant::Interpreter, name : String,
                   arity : Adjutant::ArityLike,
                   risk : Adjutant::RiskProfile = Adjutant::RiskProfile.none, is_private : Bool = false,
+                  labels_own_result : Bool = false,
                   &block : Array(Adjutant::Value), Adjutant::ScriptProc?, Adjutant::NativeCallContext -> Adjutant::Value) : Nil
     sym_id = interp.symbols.intern(name).value
-    cls.define_native_method(sym_id, risk, is_private: is_private, arity: arity) { |args, blk, ncc| block.call(args, blk, ncc) }
+    cls.define_native_method(sym_id, risk, is_private: is_private, arity: arity, labels_own_result: labels_own_result) do |args, blk, ncc|
+      block.call(args, blk, ncc)
+    end
   end
 
   # Registers a native singleton method on a builtin class, as
