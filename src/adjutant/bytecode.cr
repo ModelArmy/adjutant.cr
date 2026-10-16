@@ -190,11 +190,24 @@ module Adjutant
     getter code : Array(Instruction)
     getter consts : Array(Value)
 
+    # The code that runs while an error is being handled: each rescue
+    # section and each ensure body, as `{start, stop}` instruction
+    # ranges, `stop` exclusive. A frame records the error each handles
+    # under its `start` (`Frame#caught`).
+    getter handling_ranges : Array({Int32, Int32})
+
     NO_TARGET = 0xFFFF_FFFF_u32
 
     def initialize
       @code = [] of Instruction
       @consts = [] of Value
+      @handling_ranges = [] of {Int32, Int32}
+    end
+
+    # Marks the instructions from `start` up to `stop` as code that
+    # handles an error.
+    def add_handling_range(start : Int32, stop : Int32) : Nil
+      @handling_ranges << {start, stop}
     end
 
     # Emit an instruction, returning its index.

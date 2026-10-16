@@ -99,6 +99,11 @@ module Adjutant
     property block_yield_outer : OuterChain?
     property own_yield_outer : OuterChain?
 
+    # The errors being handled in this frame, each under the start of
+    # the handling range (`Chunk#handling_ranges`) that handles it. Nil
+    # until the frame first handles one.
+    getter caught : Hash(Int32, Value)?
+
     # How many positional arguments the call passed, for GetArgc.
     # `locals.size` counts declared slots instead.
     property argc : Int32
@@ -106,6 +111,31 @@ module Adjutant
     # The keyword argument names the call passed, for HasKwarg; nil
     # when it passed none.
     property kwarg_names : Set(String)?
+
+    # Records `error` as the one the handling range starting at `start`
+    # handles.
+    def record_caught(start : Int32, error : Value) : Nil
+      (@caught ||= {} of Int32 => Value)[start] = error
+    end
+
+    # Forgets the error the handling range starting at `start` handled,
+    # for an ensure body entered without one.
+    def forget_caught(start : Int32) : Nil
+      @caught.try(&.delete(start))
+    end
+
+    # The error being handled where this frame is running: the one
+    # recorded for the innermost handling range around its current
+    # instruction that has one. Nil when there is none.
+    def handled_error : Value?
+      caught = @caught
+      return unless caught
+      at = @ip - 1
+      around = @chunk.handling_ranges.select { |(start, stop)| start <= at && at < stop }
+      around.sort_by! { |(start, _)| -start }
+      around.each { |(start, _)| caught[start]?.try { |error| return error } }
+      nil
+    end
 
     # What `yield` resolves to in this frame: a method's own block, or
     # for a block frame the block of the method it was written in.
@@ -262,6 +292,9 @@ module Adjutant
       # EndEnsure. An error raised inside the ensure body supersedes
       # it, as in Ruby. Cleared on every fresh catch.
       @pending_reraise = nil.as(Value?)
+      # The error the unwinder is entering an ensure body with, taken
+      # by that body's EnterEnsure, the next instruction to run.
+      @ensure_error = nil.as(Value?)
       # A `break` an ensure body was entered for, with the frame whose
       # call it ends, resumed by EndEnsure. An error raised inside the
       # ensure body supersedes it, as in Ruby.
@@ -276,6 +309,8 @@ module Adjutant
       # (`invoke_internal`, `call_method`), which still count toward
       # `call_depth_limit`.
       @outer_frame_count = 0
+      # The frame lists those nested runs set aside, innermost last.
+      @set_aside_frames = [] of Array(Frame)
     end
 
     # Runs a compiled top-level chunk and returns its value.
@@ -328,7 +363,7 @@ module Adjutant
         @current_block_yield = saved_cur_block_yield
         @current_block_yield_outer = saved_cur_block_yield_outer
         @pending_kwargs = saved_pending_kwargs
-        @outer_frame_count = saved_outer_frame_count
+        leave_nested_run!(saved_outer_frame_count)
       end
       result
     end
@@ -411,7 +446,7 @@ module Adjutant
         @current_block_yield = saved_cur_block_yield
         @current_block_yield_outer = saved_cur_block_yield_outer
         @pending_kwargs = saved_pending_kwargs
-        @outer_frame_count = saved_outer_frame_count
+        leave_nested_run!(saved_outer_frame_count)
       end
       result
     end
@@ -794,6 +829,26 @@ module Adjutant
         raise script_diagnostic("L002", {"limit" => @limits.call_depth_limit.to_s}, current_frame)
       end
       @outer_frame_count = depth
+      @set_aside_frames << @frames
+    end
+
+    # Ends what `enter_nested_run!` began, restoring `@outer_frame_count`
+    # to `saved`.
+    private def leave_nested_run!(saved : Int32) : Nil
+      @outer_frame_count = saved
+      @set_aside_frames.pop
+    end
+
+    # The error a bare `raise` re-raises: the one handled by the
+    # innermost rescue section or ensure body running, in this frame or
+    # any caller, frames set aside by nested runs included, as MRI's
+    # `errinfo_place` finds it. Nil when none is.
+    private def error_being_handled : Value?
+      @frames.reverse_each { |frame| frame.handled_error.try { |error| return error } }
+      @set_aside_frames.reverse_each do |frames|
+        frames.reverse_each { |frame| frame.handled_error.try { |error| return error } }
+      end
+      nil
     end
 
     # `self` in the current frame, which for a native function is the
@@ -1325,8 +1380,15 @@ module Adjutant
             clear_rescue_portion(f)
           when Op::EnterEnsure
             # Removes this construct's handler entry, however the
-            # ensure was reached.
+            # ensure was reached, and records the error it was entered
+            # with, if any, for a bare `raise` in its body.
             f.handlers.pop?
+            if entered_with = @ensure_error
+              @ensure_error = nil
+              f.record_caught(f.ip - 1, entered_with)
+            else
+              f.forget_caught(f.ip - 1)
+            end
           when Op::EndEnsure
             if pending = @pending_reraise
               @pending_reraise = nil
@@ -1384,6 +1446,7 @@ module Adjutant
           @pending_reraise = nil
           @pending_break = nil
           @pending_return = nil
+          @ensure_error = nil
 
           # Unwinds frames to the innermost handler, in this frame or a
           # caller. Within an entry the rescue target is tried before the
@@ -1425,12 +1488,15 @@ module Adjutant
             while @stack.size > handler_frame.stack_base
               @stack.pop
             end
+            caught_error = ex.error_value || Value.string(ex.message || "RuntimeError")
             if entering_ensure
               # EndEnsure re-raises this once the ensure body ends. An
               # error raised in the ensure body supersedes it.
-              @pending_reraise = ex.error_value || Value.string(ex.message || "RuntimeError")
+              @pending_reraise = caught_error
+              @ensure_error = caught_error
             else
-              @last_error = ex.error_value || Value.string(ex.message || "RuntimeError")
+              @last_error = caught_error
+              handler_frame.record_caught(handler_ip, caught_error)
             end
             handler_frame.ip = handler_ip
           else
@@ -1482,7 +1548,7 @@ module Adjutant
         @current_block_yield = saved_cur_block_yield
         @current_block_yield_outer = saved_cur_block_yield_outer
         @pending_kwargs = saved_pending_kwargs
-        @outer_frame_count = saved_outer_frame_count
+        leave_nested_run!(saved_outer_frame_count)
       end
     end
 
@@ -2402,6 +2468,10 @@ module Adjutant
           Value.new(LabeledArray.new(args.dup, joined_label), nil)
         end
       when "raise"
+        if args.empty? && (handled = error_being_handled)
+          # A bare `raise` re-raises the error being handled, as is.
+          raise RuntimeError.new(error_message(handled), filename, line, error_value: handled)
+        end
         cls = nil
         error_obj = nil
         msg = if args.empty?

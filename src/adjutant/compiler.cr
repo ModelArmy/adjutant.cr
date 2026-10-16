@@ -1645,10 +1645,11 @@ module Adjutant
         if ea = ensure_at
           @chunk.patch_jump(ea, @chunk.pos)
         end
-        @chunk.emit(Op::EnterEnsure, node.line)
+        ensure_start = @chunk.emit(Op::EnterEnsure, node.line)
         compile_body(ensure_body)
         # The ensure body's value is discarded.
         @chunk.emit(Op::Pop, node.line)
+        @chunk.add_handling_range(ensure_start, @chunk.pos)
         # Re-raises the error the ensure was entered with, if any.
         @chunk.emit(Op::EndEnsure, node.line)
       end
@@ -1675,6 +1676,7 @@ module Adjutant
     private def compile_rescue_clauses(node : BeginNode, try_at : Int32) : Nil
       jmp_past_rescue = @chunk.emit_jump(Op::Jump, node.line)
       @chunk.patch_jump(try_at, @chunk.pos)
+      rescue_start = @chunk.pos
 
       match_done_jumps = [] of Int32
       node.rescue_clauses.each do |clause|
@@ -1690,6 +1692,7 @@ module Adjutant
 
       match_done_jumps.each { |j| @chunk.patch_jump(j, @chunk.pos) }
       @chunk.patch_jump(jmp_past_rescue, @chunk.pos)
+      @chunk.add_handling_range(rescue_start, @chunk.pos)
     end
 
     # Emits one clause's class test and returns the jump taken when

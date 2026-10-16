@@ -21,20 +21,6 @@ after 1.0. Ordered for working through: security and policy defects
 first, then the Ruby divergences, then design work on policy and
 configuration.
 
-- **A bare `raise` in a `rescue` body raises a new RuntimeError instead
-  of re-raising.** In Ruby, `raise` with no arguments re-raises the
-  exception being handled, keeping its class and message. The `"raise"`
-  case of `VM`'s builtins (`vm.cr`) makes a RuntimeError, "unhandled
-  exception", whenever it has no arguments, so `rescue IOError` then
-  `raise` turns an IOError into a RuntimeError that an outer
-  `rescue IOError` misses. UNSUPPORTED.md's alternative to `retry`
-  (U020) uses this idiom. The exception being handled is dynamic in
-  Ruby: a method called from a rescue body re-raises it too, so it
-  belongs to the run, not to the compiler. Predicted by reading the
-  code. Fix: keep the exception being handled on the VM while a rescue
-  body runs, restoring the outer one when it ends, and re-raise it from
-  a bare `raise`; a RuntimeError only when nothing is being handled.
-
 - **`raise` with anything but an exception, an exception class or a
   String raises RuntimeError.** Ruby raises TypeError, "exception
   class/object expected", for `raise nil`, `raise 42`, a class that
