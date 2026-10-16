@@ -601,6 +601,15 @@ module Adjutant
              "raises a TypeError here too.",
         help: "Make the method return an Array, or use an Array built from the object."
       ),
+      "R064" => Entry.new(
+        code: "R064",
+        summary: "exception class/object expected",
+        why: "`raise` takes an exception class, an exception object, or a " \
+             "String message on its own. Ruby raises a TypeError for anything " \
+             "else too.",
+        help: "Raise an exception class or object, such as " \
+              "`raise ArgumentError, \"bad input\"`, or a String message."
+      ),
 
       # --- L: limits reached ----------------------------------------
       #

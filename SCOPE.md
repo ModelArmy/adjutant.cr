@@ -21,24 +21,18 @@ after 1.0. Ordered for working through: security and policy defects
 first, then the Ruby divergences, then design work on policy and
 configuration.
 
-- **`raise` with anything but an exception, an exception class or a
-  String raises RuntimeError.** Ruby raises TypeError, "exception
-  class/object expected", for `raise nil`, `raise 42`, a class that
-  isn't an exception (`raise String, "x"`) and an object that isn't
-  one. The `"raise"` case of `VM`'s builtins accepts any class in its
-  `rclass?` branch and turns any other value into a RuntimeError with
-  the value as its message, so `rescue RuntimeError` catches what
-  Ruby's wouldn't. Predicted by reading the code. Fix: a TypeError
-  R-code in those branches, checking a class's ancestors for Exception
-  as the script-class branch already does.
-
-- **A splat ignores a private `to_a`.** MRI's conversion calls `to_a`
-  even when it is private, so after a top-level `def to_a`, `[*5]` is
-  what that method returns; `VM#splat_array` asks `script_responds_to?`,
-  which counts public methods only, and gives `[5]`. Predicted by
-  reading the code; rare, since only a top-level `def` is private here.
-  Fix: a lookup that counts private methods, and a call that skips the
-  private check, as MRI's `rb_check_funcall` does.
+- **Implicit conversions skip methods MRI would call.** MRI calls a
+  conversion method even when it is private, so after a top-level
+  `def to_a`, `[*5]` is what that method returns, and likewise `to_ary`
+  for `a, b = 5`. `VM#convert_to_array` asks `script_responds_to?`,
+  which counts public methods only, and gives `[5]`. And MRI raises
+  whatever any object's `exception` method returns, where
+  `VM#exception_from` accepts exception classes and objects only, so
+  `raise obj` for an object defining `exception` raises R064. Predicted
+  by reading the code; both rare. Fix: a lookup that counts private
+  methods and a call that skips the private check, as MRI's
+  `rb_check_funcall` does, and a call of `exception` on anything else
+  that defines it.
 
 ## Will Fix
 

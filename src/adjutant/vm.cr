@@ -2476,43 +2476,8 @@ module Adjutant
           Value.new(LabeledArray.new(args.dup, joined_label), nil)
         end
       when "raise"
-        if args.empty? && (handled = error_being_handled)
-          # A bare `raise` re-raises the error being handled, as is.
-          raise RuntimeError.new(error_message(handled), filename, line, error_value: handled)
-        end
-        cls = nil
-        error_obj = nil
-        msg = if args.empty?
-                cls = builtin_class_by_name("RuntimeError")
-                "unhandled exception"
-              elsif (script_cls = args.first.as_rclass?) && script_cls.ancestors.any? { |ancestor| ancestor.name == "Exception" } &&
-                    (init = script_initialize(script_cls))
-                # `raise Oops, arg` for a class with a script
-                # `initialize`: built with `new(arg)`, as Ruby's
-                # `Oops.exception(arg)` is, so the `initialize` runs.
-                inst = RubyObject.new(script_cls)
-                invoke(init, args[1..], self_val: Value.robject(inst))
-                error_obj = inst
-                error_message(Value.robject(inst))
-              elsif args.first.rclass?
-                # `raise NameError, "boo"`: a class and a message.
-                cls = args.first.as_rclass
-                args[1]?.try(&.to_s) || cls.name
-              elsif (obj = args.first.as_robject?) && obj.instance_of?("Exception")
-                # `raise NameError.new("boo")`: an error object.
-                error_obj = obj # already exception instance
-                obj.to_s
-              else
-                # Anything else: a RuntimeError with it as the message.
-                cls = builtin_class_by_name("RuntimeError")
-                args.first.to_s
-              end
-        err_val = if error_obj
-                    Value.robject(error_obj)
-                  else
-                    cls ? make_error_object(cls, msg) : Value.string(msg)
-                  end
-        raise RuntimeError.new(msg, filename, line, error_value: err_val)
+        exception_value = exception_from(args, filename, line)
+        raise RuntimeError.new(error_message(exception_value), filename, line, error_value: exception_value)
       when "<=>"
         a = args[0]? || Value.nil_value
         b = args[1]? || Value.nil_value
@@ -3124,6 +3089,62 @@ module Adjutant
         obj.ivars[@symbols.intern(name).value] = value
       end
       Value.robject(obj)
+    end
+
+    # The error `raise` with `args` raises, as MRI's `make_exception`
+    # decides it. None re-raises the error being handled, else makes a
+    # RuntimeError, "unhandled exception"; a lone String is a
+    # RuntimeError's message; an exception class makes an instance with
+    # the arguments that follow; an exception object is raised as it is,
+    # or as a copy carrying the message that follows. Anything else
+    # raises R064, a TypeError.
+    private def exception_from(args : Array(Value), filename : String, line : Int32) : Value
+      first = args.first?
+      return error_being_handled || builtin_error("RuntimeError", "unhandled exception") unless first
+      return builtin_error("RuntimeError", first.as_string) if first.string? && args.size == 1
+      if (cls = first.as_rclass?) && exception_class?(cls)
+        return new_exception(cls, args[1..])
+      end
+      if (obj = first.as_robject?) && obj.instance_of?("Exception")
+        return first if args.size == 1
+        return exception_with_message(first, args[1], filename, line)
+      end
+      raise runtime_diagnostic(
+        Diagnostic.new(code: "R064", primary: Span.new(line: line, filename: filename)),
+        error_class: "TypeError")
+    end
+
+    # Whether `cls` is Exception or a class descending from it.
+    private def exception_class?(cls : RubyClass) : Bool
+      !cls.is_module? && cls.ancestors.any? { |ancestor| ancestor.name == "Exception" }
+    end
+
+    # An error object of the builtin class `class_name` with `message`;
+    # the message alone for a VM built without the class.
+    private def builtin_error(class_name : String, message : String) : Value
+      cls = builtin_class_by_name(class_name)
+      cls ? make_error_object(cls, message) : Value.string(message)
+    end
+
+    # A new instance of the exception class `cls`, as `cls.new(*rest)`:
+    # through its script `initialize` if it has one, else with the first
+    # of `rest` as its message, or the class's name without one.
+    private def new_exception(cls : RubyClass, rest : Array(Value)) : Value
+      if init = script_initialize(cls)
+        inst = Value.robject(RubyObject.new(cls))
+        invoke(init, rest, self_val: inst)
+        return inst
+      end
+      make_error_object(cls, rest.first?.try(&.to_s) || cls.name)
+    end
+
+    # A copy of the exception object `error` carrying `message`, as
+    # Ruby's `Exception#exception(message)` makes for `raise error,
+    # message`. The copy keeps the original's other attributes.
+    private def exception_with_message(error : Value, message : Value, filename : String, line : Int32) : Value
+      copy = copy_value(error, "clone", filename, line) || error
+      copy.as_robject.ivars[@symbols.intern("message").value] = Value.string(message.to_s)
+      copy
     end
 
     # The message of an error value: an object's `message` ivar, a
