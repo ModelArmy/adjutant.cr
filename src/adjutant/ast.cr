@@ -245,7 +245,8 @@ module Adjutant
 
   # `a, b = values`. `values` are the right-hand side as written: one
   # value, which the targets take apart, or several, any of them a
-  # splat, which are gathered into one Array first.
+  # splat, which are gathered into one Array first. One target may be
+  # a Splat, which takes the values the others leave.
   class MultiAssign < Node
     getter targets : Array(Node)
     getter values : Array(Node)

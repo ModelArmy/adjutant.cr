@@ -40,6 +40,11 @@ module Adjutant
     # needs its parentheses.
     @no_pipe = false
 
+    # While true, `x[i] =` leaves its `=` to the multiple assignment
+    # whose target `x[i]` is. Set while parsing a target after the
+    # first: `b, x[0] = 5, 9`.
+    @parsing_target = false
+
     # The bare names known as locals in each open scope, used only to
     # parse `name [x]`: indexing if `name` is a local, otherwise a call
     # with an array argument, as in Ruby. A name becomes a local when
@@ -343,10 +348,11 @@ module Adjutant
     # An expression that may be followed by a modifier (if/unless/while/until).
     # Modifiers are checked AFTER assignment so `x -= 1 while x > 0` works.
     private def parse_expr_statement : Node
-      expr = parse_expression(0)
+      expr = at_kind?(TokenKind::Star) ? parse_splat_target : parse_expression(0)
       # A `,` after a statement's first expression can only begin a
-      # multiple assignment's target list: `a, b = ...`.
-      result = at_kind?(TokenKind::Comma) ? parse_multi_assign(expr) : expr
+      # multiple assignment's target list: `a, b = ...`. A splat target
+      # begins one too: `*init, last = ...`.
+      result = at_kind?(TokenKind::Comma) || expr.is_a?(Splat) ? parse_multi_assign(expr) : expr
       l, c = result.line, result.column
       case current_kind
       when TokenKind::KwIf
@@ -412,12 +418,34 @@ module Adjutant
       targets = [first] of Node
       while match(TokenKind::Comma)
         skip_newlines
-        targets << parse_expression(0, resolve_assignment: false)
+        # One splat target at most, as in Ruby: a second `*` can't
+        # start a target, so raises P002.
+        targets << (targets.none?(Splat) && at_kind?(TokenKind::Star) ? parse_splat_target : parse_target)
       end
       expect(TokenKind::Eq)
       values = parse_rhs_values
-      targets.each { |target| register_local_if_identifier(target) }
+      targets.each { |target| register_local_if_identifier(target.is_a?(Splat) ? target.value : target) }
       MultiAssign.new(targets, values, l, c)
+    end
+
+    # Parses a multiple assignment's target after the first, leaving
+    # the `=` that follows it to the multiple assignment.
+    private def parse_target : Node
+      saved = @parsing_target
+      begin
+        @parsing_target = true
+        parse_expression(0, resolve_assignment: false)
+      ensure
+        @parsing_target = saved
+      end
+    end
+
+    # Parses a splat target, `*target`, from its `*`: it takes the
+    # values the other targets leave, as an Array.
+    private def parse_splat_target : Splat
+      l, c = line, col
+      advance # the `*`
+      Splat.new(parse_target, l, c)
     end
 
     private def compound_base_op(op : TokenKind) : TokenKind
@@ -680,7 +708,7 @@ module Adjutant
           length = match(TokenKind::Comma) ? parse_expression(0) : nil
           expect(TokenKind::RBracket)
           safe = false
-          if at_kind?(TokenKind::Eq)
+          if at_kind?(TokenKind::Eq) && !@parsing_target
             advance
             val = parse_expression(PREC_AND_OR)
             node = IndexAssign.new(node, idx, val, l, c, length)

@@ -823,9 +823,10 @@ module Adjutant
         compile_array(ArrayLiteral.new(values, node.line, node.column))
       end
       @chunk.emit(Op::Dup, node.line)
-      @chunk.emit(Op::MultiUnpack, node.line, a: node.targets.size.to_u8)
+      splat_at = node.targets.index { |target| target.is_a?(Splat) }
+      @chunk.emit(Op::MultiUnpack, node.line, a: node.targets.size.to_u8, b: splat_at ? (splat_at + 1).to_u16 : 0_u16)
       node.targets.reverse_each do |target|
-        emit_store(target, node.line)
+        emit_store(target.is_a?(Splat) ? target.value : target, node.line)
         @chunk.emit(Op::Pop, node.line)
       end
     end

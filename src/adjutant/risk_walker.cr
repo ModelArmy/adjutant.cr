@@ -518,7 +518,8 @@ module Adjutant
     private def walk_multi_assign(node : MultiAssign, env : TypeInference::Env) : RiskNode
       children = node.values.map { |value| walk_node(value, env).as(RiskNode) }
       node.targets.each do |target|
-        env.delete(target.name) if target.is_a?(Identifier)
+        assigned = target.is_a?(Splat) ? target.value : target
+        env.delete(assigned.name) if assigned.is_a?(Identifier)
       end
       RiskSequence.new(children, node.line)
     end

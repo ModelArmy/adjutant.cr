@@ -560,6 +560,29 @@ module Adjutant
       converted ? converted.as_array.to_a : [value]
     end
 
+    # The values for `count` targets from `parts`, as MRI's
+    # `vm_expandarray` deals them. Without a splat target (`splat_at`
+    # below 0), in order, padded with nil. With one, the targets before
+    # it take from the front, padded with nil; those after it take the
+    # last of what remains, or, when too few remain, those from the
+    # front, padded with nil; and the splat target an Array of the rest,
+    # labelled with its elements' labels.
+    private def deal_targets(parts : Array(Value), count : Int32, splat_at : Int32) : Array(Value)
+      return Array(Value).new(count) { |index| parts[index]? || Value.nil_value } if splat_at < 0
+      before = Array(Value).new(splat_at) { |index| parts[index]? || Value.nil_value }
+      rest = parts.size > splat_at ? parts[splat_at..] : [] of Value
+      after_count = count - splat_at - 1
+      if rest.size < after_count
+        after = Array(Value).new(after_count) { |index| rest[index]? || Value.nil_value }
+        middle = [] of Value
+      else
+        after = rest[rest.size - after_count..]
+        middle = rest[0, rest.size - after_count]
+      end
+      label = middle.reduce(nil.as(RiskFlowLabel?)) { |acc, value| RiskFlowLabel.join(acc, value.label) }
+      before + [Value.new(LabeledArray.new(middle, label), label)] + after
+    end
+
     # `value`'s `method` (`to_a` or `to_ary`) if it has one returning an
     # Array, as MRI's `rb_check_convert_type_with_id` does; nil if it
     # has none or it returns nil. Raises R063, a TypeError, if it
@@ -1432,7 +1455,7 @@ module Adjutant
 
           when Op::MultiUnpack
             parts = multi_unpack_values(pop, f)
-            inst.a.to_i.times { |index| push(parts[index]? || Value.nil_value) }
+            deal_targets(parts, inst.a.to_i, inst.b.to_i - 1).each { |part| push(part) }
           when Op::GetMethodName
             push(Value.string(f.proc.name))
           else

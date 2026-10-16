@@ -140,7 +140,7 @@ module Adjutant
     SymbolCall # `&:name`'s body: pop an Array, call constants[c] on its first element with the rest as arguments
 
     # Multi-assign
-    MultiUnpack # a=target_count — pop a value, push a values for the targets: what VM#multi_unpack_values takes it apart into, padded with nil or cut to fit
+    MultiUnpack # a=target_count, b=splat target's position + 1, or 0 for none — pop a value, push a values for the targets, as VM#deal_targets deals what VM#multi_unpack_values takes it apart into
 
     # Misc
     GetMethodName # push current method name as symbol

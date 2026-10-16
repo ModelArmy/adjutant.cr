@@ -89,15 +89,16 @@ still roughly ordered by how cheap/independent the fix is.
   `redo if` as an `if` block until this is fixed. Fix: let `redo` reach
   the modifier handling that `parse_expr_statement` does.
 
-- **A multiple assignment takes only plain targets.** `a, *b = x`
-  and `a, (b, c) = x` raise P002 and P001, `a, = x` raises P002, and
-  `a, o.t = 1, 2` raises C001: a splat, a nested pattern, a trailing
-  comma and an attribute are all valid Ruby targets. `for` takes the
-  same targets, so `for i, *r in`, `for i, (j, k) in`, `for i, in` and
-  `for o.t in` fail the same way. Confirmed by
-  `spec/scripts/rubyspec/for.rb` and by probing. Fix:
-  `parse_multi_assign` and `emit_store`, then `MultiUnpack` for the
-  splat and the nesting.
+- **A multiple assignment takes only plain and splat targets.**
+  `a, (b, c) = x` raises P001, `a, = x` and the anonymous splat
+  `a, * = x` raise P002, and `a, o.t = 1, 2` raises C001: a nested
+  pattern, a trailing comma, a bare `*` and an attribute are all valid
+  Ruby targets. `for` takes none but plain targets, so
+  `for i, *r in`, `for i, (j, k) in`, `for i, in` and `for o.t in`
+  fail too. Confirmed by `spec/scripts/rubyspec/for.rb` and by
+  probing. Fix: `parse_multi_assign` and `emit_store`, then
+  `deal_targets` for the nesting; `for` could compile its targets as
+  a multiple assignment from one block parameter.
 
 - **`class` and `module` are statements whose value is nil.** In Ruby
   each is an expression giving its body's last value:
