@@ -42,7 +42,6 @@ What is different, in order of importance:
 - `"ab" * 3`, `"%d" % n`, `format` → Interpolation: `"#{n}"`
 - `str << "x"` → `str = str + "x"`
 - `obj.count += 1` → `obj.count = obj.count + 1`
-- `foo(*args)` → Pass the Array itself
 - `retry` → A `while` loop around `begin`/`rescue`, with an attempt counter
 - `def run(&blk)`, `block_given?` → `yield`, which returns the block's value: `x = yield 10`
 - `proc { }` → `lambda { }` or `-> { }`
