@@ -675,7 +675,7 @@ module Adjutant
           safe = false
           if at_kind?(TokenKind::Eq)
             advance
-            val = parse_expression(0)
+            val = parse_expression(PREC_AND_OR)
             node = IndexAssign.new(node, idx, val, l, c, length)
           else
             node = Index.new(node, idx, safe, l, c, length)
@@ -956,8 +956,15 @@ module Adjutant
         advance # the Colon
         kwargs << {name, parse_expression(PREC_AND_OR)}
       else
-        args << parse_expression(PREC_AND_OR)
+        args << parse_positional_arg
       end
+    end
+
+    # Parses one positional argument, which stops before `and` and `or`
+    # as an argument does in Ruby: `yield x or y` is `(yield x) or y`,
+    # and `f(a or b)` raises.
+    private def parse_positional_arg : Node
+      parse_expression(PREC_AND_OR)
     end
 
     # Parses a call's parenthesized arguments, if any, then an optional
@@ -1588,23 +1595,11 @@ module Adjutant
       expect(TokenKind::KwYield)
       args = [] of Node
       if at_kind?(TokenKind::LParen)
-        advance
-        skip_newlines
-        until at_kind?(TokenKind::RParen) || at_kind?(TokenKind::EOF)
-          args << parse_expression(0)
-          skip_newlines
-          break unless match(TokenKind::Comma)
-          skip_newlines
-        end
-        expect(TokenKind::RParen)
+        args = parse_paren_positional_args
       elsif arg_follows_no_paren?
         # Without the check, `x = yield + 1` would read `+ 1` as an
         # argument.
-        args << parse_expression(0)
-        while match(TokenKind::Comma)
-          skip_newlines
-          args << parse_expression(0)
-        end
+        args = parse_bare_positional_args
       end
       YieldNode.new(args, l, c)
     end
@@ -1613,26 +1608,11 @@ module Adjutant
       l, c = line, col
       expect(TokenKind::KwSuper)
       if at_kind?(TokenKind::LParen)
-        advance
-        skip_newlines
-        args = [] of Node
-        until at_kind?(TokenKind::RParen) || at_kind?(TokenKind::EOF)
-          args << parse_expression(0)
-          skip_newlines
-          break unless match(TokenKind::Comma)
-          skip_newlines
-        end
-        expect(TokenKind::RParen)
-        SuperNode.new(args, false, l, c)
+        SuperNode.new(parse_paren_positional_args, false, l, c)
       elsif arg_follows_no_paren?
         # `arg_follows_no_paren?` rejects `+` and `-`, so `super + 4`
         # adds to super's result instead of passing `+4`.
-        args = [parse_expression(0)] of Node
-        while match(TokenKind::Comma)
-          skip_newlines
-          args << parse_expression(0)
-        end
-        SuperNode.new(args, false, l, c)
+        SuperNode.new(parse_bare_positional_args, false, l, c)
       else
         # Bare `super` forwards the method's current parameter values
         # (zsuper), rather than calling with no arguments.
@@ -1648,13 +1628,36 @@ module Adjutant
       if at_kind?(TokenKind::LParen)
         args, _kwargs, _blk = parse_call_args_and_block("raise")
       elsif arg_follows_no_paren?
-        args << parse_expression(0)
-        while match(TokenKind::Comma)
-          skip_newlines
-          args << parse_expression(0)
-        end
+        args = parse_bare_positional_args
       end
       Call.new(nil, "raise", args, nil, false, l, c)
+    end
+
+    # Parses a parenthesized list of positional arguments from its `(`,
+    # for `yield` and `super`.
+    private def parse_paren_positional_args : Array(Node)
+      expect(TokenKind::LParen)
+      skip_newlines
+      args = [] of Node
+      until at_kind?(TokenKind::RParen) || at_kind?(TokenKind::EOF)
+        args << parse_positional_arg
+        skip_newlines
+        break unless match(TokenKind::Comma)
+        skip_newlines
+      end
+      expect(TokenKind::RParen)
+      args
+    end
+
+    # Parses comma-separated positional arguments without parentheses,
+    # for `yield`, `super` and `raise`.
+    private def parse_bare_positional_args : Array(Node)
+      args = [parse_positional_arg] of Node
+      while match(TokenKind::Comma)
+        skip_newlines
+        args << parse_positional_arg
+      end
+      args
     end
 
     private def parse_begin : BeginNode
