@@ -433,16 +433,17 @@ module Adjutant
       end
     end
 
-    # Parse a comma-separated rhs; wraps in MultiAssign if needed.
+    # Parses an assignment's right-hand side: one value, or several, or
+    # a splat, which are gathered into an ArrayLiteral as Ruby gathers
+    # them into an Array (`x = 1, 2`, `x = *a`).
     private def parse_multi_rhs : Node
-      first = parse_expression(PREC_AND_OR)
-      return first unless at_kind?(TokenKind::Comma)
+      first = parse_positional_arg
+      return first unless at_kind?(TokenKind::Comma) || first.is_a?(Splat)
       values = [first] of Node
       while match(TokenKind::Comma)
         skip_newlines
-        values << parse_expression(PREC_AND_OR)
+        values << parse_positional_arg
       end
-      # Wrap as an array literal used as multi-rhs
       ArrayLiteral.new(values, first.line, first.column)
     end
 
@@ -833,6 +834,13 @@ module Adjutant
         @current.space_before? && operand_immediately_follows?
     end
 
+    # Whether the current `*` starts a bare call's splat argument rather
+    # than multiplying: space before it and none after (`puts *lines`),
+    # as for `-` and `&`. `a * b` and `a*b` multiply.
+    private def splat_starts_bare_call? : Bool
+      at_kind?(TokenKind::Star) && @current.space_before? && operand_immediately_follows?
+    end
+
     # Parses a bare identifier as a local variable or a method call.
     private def parse_identifier_or_call(l : Int32, c : Int32) : Node
       tok = advance
@@ -853,6 +861,10 @@ module Adjutant
       elsif block_arg_follows_no_paren? && !known_local?(name)
         # `name &:sym`: a block argument, unless `name` is a local,
         # when the `&` is binary, as in Ruby.
+        parse_bare_call_args(name, l, c)
+      elsif splat_starts_bare_call? && !known_local?(name)
+        # `name *x`: a splat argument, unless `name` is a local, when
+        # the `*` multiplies, as in Ruby.
         parse_bare_call_args(name, l, c)
       elsif signed_literal_starts_bare_call?
         # `name -x` or `name +x`; see
@@ -894,7 +906,8 @@ module Adjutant
     private def receiver_call_takes_bare_args? : Bool
       return false unless @current.space_before?
       return false if at_kind?(TokenKind::LParen)
-      signed_literal_starts_bare_call? || block_arg_follows_no_paren? || arg_follows_no_paren?
+      signed_literal_starts_bare_call? || splat_starts_bare_call? || block_arg_follows_no_paren? ||
+        arg_follows_no_paren?
     end
 
     # Whether the current `&` starts a block argument without
@@ -962,9 +975,17 @@ module Adjutant
 
     # Parses one positional argument, which stops before `and` and `or`
     # as an argument does in Ruby: `yield x or y` is `(yield x) or y`,
-    # and `f(a or b)` raises.
+    # and `f(a or b)` raises. A `*` starts a splat.
     private def parse_positional_arg : Node
-      parse_expression(PREC_AND_OR)
+      at_kind?(TokenKind::Star) ? parse_splat : parse_expression(PREC_AND_OR)
+    end
+
+    # Parses `*value` from its `*`. The value is an argument, so it
+    # stops before `and` and `or`.
+    private def parse_splat : Splat
+      l, c = line, col
+      advance # the `*`
+      Splat.new(parse_expression(PREC_AND_OR), l, c)
     end
 
     # Parses a call's parenthesized arguments, if any, then an optional
@@ -1135,7 +1156,7 @@ module Adjutant
       elements = [] of Node
       skip_newlines
       until at_kind?(TokenKind::RBracket) || at_kind?(TokenKind::EOF)
-        elements << parse_expression(0)
+        elements << (at_kind?(TokenKind::Star) ? parse_splat : parse_expression(0))
         skip_newlines
         break unless match(TokenKind::Comma)
         skip_newlines
@@ -1532,10 +1553,10 @@ module Adjutant
       whens = [] of {Array(Node), Body}
       until at_any?(TokenKind::KwElse, TokenKind::KwEnd, TokenKind::EOF)
         expect(TokenKind::KwWhen)
-        patterns = [parse_expression(0)] of Node
+        patterns = [parse_when_pattern] of Node
         while match(TokenKind::Comma)
           skip_newlines
-          patterns << parse_expression(0)
+          patterns << parse_when_pattern
         end
         skip_terminators
         match(TokenKind::KwThen)
@@ -1550,6 +1571,11 @@ module Adjutant
       end
       close_block
       CaseNode.new(subject, whens, else_branch, l, c)
+    end
+
+    # Parses one pattern of a `when` list, or a splat of patterns.
+    private def parse_when_pattern : Node
+      at_kind?(TokenKind::Star) ? parse_splat : parse_expression(0)
     end
 
     # True when `return`, `break` or `next` is followed by its optional
@@ -1596,7 +1622,7 @@ module Adjutant
       args = [] of Node
       if at_kind?(TokenKind::LParen)
         args = parse_paren_positional_args
-      elsif arg_follows_no_paren?
+      elsif arg_follows_no_paren? || splat_starts_bare_call?
         # Without the check, `x = yield + 1` would read `+ 1` as an
         # argument.
         args = parse_bare_positional_args
@@ -1609,7 +1635,7 @@ module Adjutant
       expect(TokenKind::KwSuper)
       if at_kind?(TokenKind::LParen)
         SuperNode.new(parse_paren_positional_args, false, l, c)
-      elsif arg_follows_no_paren?
+      elsif arg_follows_no_paren? || splat_starts_bare_call?
         # `arg_follows_no_paren?` rejects `+` and `-`, so `super + 4`
         # adds to super's result instead of passing `+4`.
         SuperNode.new(parse_bare_positional_args, false, l, c)
@@ -1627,7 +1653,7 @@ module Adjutant
       args = [] of Node
       if at_kind?(TokenKind::LParen)
         args, _kwargs, _blk = parse_call_args_and_block("raise")
-      elsif arg_follows_no_paren?
+      elsif arg_follows_no_paren? || splat_starts_bare_call?
         args = parse_bare_positional_args
       end
       Call.new(nil, "raise", args, nil, false, l, c)

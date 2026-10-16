@@ -164,6 +164,7 @@ R059|A superclass that isn't a class                                    |`value`
 R060|Zero raised to a negative Integer power                            |—                                          
 R061|`Range#max` of an exclusive range with a non-Integer end           |—                                          
 R062|`Range#max` of an exclusive range with a non-Integer start         |—                                          
+R063|A splat (`*x`) whose `to_a` returns something other than an Array  |`class`, `result`                          
 
 Scripts can `rescue` these. R008 raises a `NameError`, matching Ruby;
 R011, R012, R015, and R018 raise `ArgumentError`, also matching Ruby;
@@ -177,7 +178,8 @@ R041, R042, R043, R044, R045, and R046 raise an `ArgumentError`, also
 matching Ruby; R047 raises a `NoMethodError`, R048 a `TypeError`, R049
 and R050 an `IndexError`, R051 a `RangeError`, R052 a `FrozenError`,
 R053, R054 and R055 a `TypeError`, R056 and R058 an `ArgumentError`,
-and R057 an `IndexError`, all matching Ruby; the rest raise
+R057 an `IndexError`, R059, R061, R062 and R063 a `TypeError`, and R060
+a `ZeroDivisionError`, all matching Ruby; the rest raise
 `RuntimeError`.
 
 Adjutant's constants are assign-once, which Ruby only warns about. R001 is

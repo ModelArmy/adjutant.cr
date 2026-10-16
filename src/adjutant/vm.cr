@@ -489,6 +489,55 @@ module Adjutant
       end
     end
 
+    # Pops a call's `argc` values. With `spread`, the last is an Array
+    # whose elements stand in for it as positional arguments.
+    private def pop_args(argc : Int32, spread : Bool) : Array(Value)
+      args = @stack.last(argc)
+      @stack.pop(argc) if argc > 0
+      return args unless spread
+      args[0, args.size - 1] + args.last.as_array.to_a
+    end
+
+    # What `*value` spreads, as MRI's `vm_splat_array` decides it, in a
+    # new Array: nothing for nil; an Array's elements; otherwise the
+    # Array `to_a` returns, or `value` alone when it has no `to_a` or
+    # `to_a` returns nil. A `to_a` returning anything else raises R063,
+    # a TypeError. The copy carries the label of the Array it copies.
+    private def splat_array(value : Value, f : Frame) : Value
+      return Value.new(LabeledArray.new, nil) if value.null?
+      source = value
+      if !value.array? && script_responds_to?(value, "to_a")
+        converted = call_method(value, "to_a", [] of Value, f.filename, f.line)
+        unless converted.null? || converted.array?
+          raise runtime_diagnostic(
+            Diagnostic.new(code: "R063", primary: frame_span(f),
+              data: {"class" => describe_value(value), "result" => describe_value(converted)}),
+            f, error_class: "TypeError")
+        end
+        source = converted unless converted.null?
+      end
+      if source.array?
+        items = source.as_array
+        Value.new(LabeledArray.new(items.dup_items, items.label), items.label)
+      else
+        Value.new(LabeledArray.new([value], value.label), value.label)
+      end
+    end
+
+    # `MatchAny`: whether any pattern of a `when` list's splat matches,
+    # tried in order. The result carries the labels of the patterns and
+    # the subject, as `TripleEq`'s does.
+    private def exec_match_any(inst : Instruction, f : Frame) : Nil
+      patterns = pop
+      subject = inst.a == 1 ? pop : nil
+      matched = patterns.as_array.to_a.any? do |pattern|
+        subject ? triple_eq_matches?(pattern, subject) : pattern.truthy?
+      end
+      label = RiskFlowLabel.join(patterns.label, subject.try(&.label))
+      @risk_flow_log.record("MatchAny", [patterns.label, subject.try(&.label)], label, f.line)
+      push(Value.bool(matched, label))
+    end
+
     # Whether `recv` has `method_name`, in the order `dispatch_call`
     # resolves it, without calling it.
     # Operations `exec_builtin` performs for any receiver, which
@@ -970,9 +1019,7 @@ module Adjutant
             argc = inst.a.to_i
             safe = inst.b & 0b01_u16 != 0
             has_receiver = inst.b & 0b10_u16 != 0
-
-            args = @stack.last(argc)
-            @stack.pop(argc) if argc > 0
+            args = pop_args(argc, spread: inst.b & 0b100_u16 != 0)
 
             depth_before = @frames.size
             # `ensure` clears the staged block and keywords even if the
@@ -994,9 +1041,7 @@ module Adjutant
             push(result) if @frames.size == depth_before
           when Op::Super
             zsuper = inst.b & 0b1_u16 != 0
-            argc = inst.a.to_i
-            args = @stack.last(argc)
-            @stack.pop(argc) if argc > 0
+            args = pop_args(inst.a.to_i, spread: inst.b & 0b10_u16 != 0)
 
             depth_before = @frames.size
             result = dispatch_super(f, args, f.filename, inst.line, zsuper: zsuper)
@@ -1039,6 +1084,7 @@ module Adjutant
             @risk_flow_log.record("Eq", [a.label, b.label], result.label, f.line)
             push(result)
           when Op::TripleEq then exec_binary(inst) { |subject, pattern| Value.bool(triple_eq_matches?(pattern, subject)) }
+          when Op::MatchAny then exec_match_any(inst, f)
           when Op::Lt       then exec_binary(inst) { |lhs, rhs| Value.bool(strict_compare(lhs, rhs, :<)) }
           when Op::Lte      then exec_binary(inst) { |lhs, rhs| Value.bool(strict_compare(lhs, rhs, :<=)) }
           when Op::Gt       then exec_binary(inst) { |lhs, rhs| Value.bool(strict_compare(lhs, rhs, :>)) }
@@ -1085,6 +1131,11 @@ module Adjutant
             joined_label = elements.reduce(nil.as(RiskFlowLabel?)) { |acc, value| RiskFlowLabel.join(acc, value.label) }
             @risk_flow_log.record("MakeArray", elements.map(&.label), joined_label, f.line)
             push(Value.new(LabeledArray.new(elements, joined_label), joined_label))
+          when Op::SplatArray
+            splat_source = pop
+            splatted = splat_array(splat_source, f)
+            @risk_flow_log.record("SplatArray", [splat_source.label], splatted.label, f.line)
+            push(splatted)
           when Op::MakeHash
             n = inst.a.to_i * 2
             pairs = @stack.last(n)
@@ -1227,9 +1278,7 @@ module Adjutant
 
             # --- Block / yield --------------------------------------------------
           when Op::Yield
-            argc = inst.a.to_i
-            args = @stack.last(argc)
-            @stack.pop(argc) if argc > 0
+            args = pop_args(inst.a.to_i, spread: inst.b & 0b1_u16 != 0)
             blk = f.yield_target
             if blk
               depth_before = @frames.size

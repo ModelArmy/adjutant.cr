@@ -592,6 +592,14 @@ module Adjutant
              "range starts at an Integer too.",
         help: "Start the range at an Integer, or make it inclusive (`..`)."
       ),
+      "R063" => Entry.new(
+        code: "R063",
+        summary: "can't convert {class} into Array ({class}#to_a gives {result})",
+        why: "A splat (`*x`) spreads `x` through its `to_a`, which must return " \
+             "an Array, or nil to spread `x` as a single value. Ruby raises a " \
+             "TypeError here too.",
+        help: "Make `to_a` return an Array, or splat an Array built from the object."
+      ),
 
       # --- L: limits reached ----------------------------------------
       #

@@ -48,14 +48,14 @@ module Adjutant
     # since a nil slot can't tell "omitted" from "passed nil".
     HasKwarg
 
-    Call     # call method constants[c], argc=a, b bit0=safe(&.), bit1=has_receiver
+    Call     # call method constants[c], argc=a, b bit0=safe(&.), bit1=has_receiver, bit2=spread: the last of the a values is an Array of the positional arguments
     SafeCall # &. nil-safe call
 
     # Calls the current method's name on the next class or module
     # after the method's lexical scope in the receiver's ancestors;
     # self is unchanged. b bit0 = zsuper (bare `super`): a is 0 and the
     # method's current parameter values are forwarded. Otherwise a
-    # arguments are popped as for Call.
+    # arguments are popped as for Call; b bit1 = spread, as Call's bit2.
     Super
 
     Ret         # return top of stack from current frame
@@ -91,10 +91,11 @@ module Adjutant
     Reraise
 
     # Collections
-    MakeArray # pop a elements → push Array
-    MakeHash  # pop a*2 elements (alternating k,v) → push Hash
-    MakeRange # pop end, pop start → push Range; a=1 for exclusive
-    MakeRegex # pop pattern String (already Concat'd if interpolated) → push Regexp; a=flag bitmask (Builtins::IGNORECASE|EXTENDED|MULTILINE)
+    MakeArray  # pop a elements → push Array
+    SplatArray # pop a value → push a new Array of what `*value` spreads (VM#splat_array)
+    MakeHash   # pop a*2 elements (alternating k,v) → push Hash
+    MakeRange  # pop end, pop start → push Range; a=1 for exclusive
+    MakeRegex  # pop pattern String (already Concat'd if interpolated) → push Regexp; a=flag bitmask (Builtins::IGNORECASE|EXTENDED|MULTILINE)
 
     # Arithmetic
     Add
@@ -119,6 +120,12 @@ module Adjutant
     # Comparison
     Eq
     TripleEq # `a === b`; also compile_case's per-`when`-pattern check — see this op's own VM handler for the Class/Range/Regexp/Proc special-casing
+
+    # A `when` list's splat: pops an Array of patterns, then with a=1 the
+    # subject, and pushes whether any pattern === the subject, trying
+    # them in order; with a=0 (a `case` without a subject), whether any
+    # pattern is truthy.
+    MatchAny
     Lt
     Lte
     Gt
@@ -128,7 +135,7 @@ module Adjutant
     Concat # pop a strings → push concatenated string
 
     # Blocks / iterators
-    Yield      # yield to block with a args
+    Yield      # yield to block with a args; b bit0 = spread, as Call's bit2
     BlockBreak # break from a block iterator (value on stack)
     SymbolCall # `&:name`'s body: pop an Array, call constants[c] on its first element with the rest as arguments
 

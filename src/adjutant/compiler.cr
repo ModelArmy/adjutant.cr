@@ -463,8 +463,55 @@ module Adjutant
     end
 
     private def compile_array(node : ArrayLiteral) : Nil
+      if spreads?(node.elements)
+        compile_spread(node.elements, node.line)
+        return
+      end
       node.elements.each { |e| compile_node(e) }
       @chunk.emit(Op::MakeArray, node.line, a: node.elements.size.to_u8)
+    end
+
+    # Whether `nodes` holds a splat, and so compiles to one Array
+    # through `compile_spread`.
+    private def spreads?(nodes : Array(Node)) : Bool
+      nodes.any?(Splat)
+    end
+
+    # Pushes `nodes` as one new Array, in order: each run of plain
+    # values becomes an Array (`MakeArray`), each splat the Array its
+    # value spreads (`SplatArray`), and each part after the first is
+    # joined to those before with `Add`, which joins their labels.
+    private def compile_spread(nodes : Array(Node), line : Int32) : Nil
+      parts = 0
+      run = 0
+      nodes.each do |node|
+        if node.is_a?(Splat)
+          parts = close_run(run, parts, line)
+          run = 0
+          compile_node(node.value)
+          @chunk.emit(Op::SplatArray, node.line)
+          parts = join_part(parts, line)
+        else
+          compile_node(node)
+          run += 1
+        end
+      end
+      close_run(run, parts, line)
+    end
+
+    # Makes the `run` plain values on the stack an Array and joins it,
+    # if there are any. Returns the parts now joined.
+    private def close_run(run : Int32, parts : Int32, line : Int32) : Int32
+      return parts if run == 0
+      @chunk.emit(Op::MakeArray, line, a: run.to_u8)
+      join_part(parts, line)
+    end
+
+    # Joins the Array just pushed to the parts before it. Returns the
+    # parts now joined.
+    private def join_part(parts : Int32, line : Int32) : Int32
+      @chunk.emit(Op::Add, line) if parts > 0
+      parts + 1
     end
 
     private def compile_hash(node : HashLiteral) : Nil
@@ -764,9 +811,16 @@ module Adjutant
     end
 
     private def compile_multi_assign(node : MultiAssign) : Nil
-      node.values.each { |v| compile_node(v) }
+      # Values with a splat become one Array, which MultiUnpack spreads
+      # across the targets as it does any single Array value.
+      if spreads?(node.values)
+        compile_spread(node.values, node.line)
+        vc = 1_u8
+      else
+        node.values.each { |v| compile_node(v) }
+        vc = node.values.size.to_u8
+      end
       tc = node.targets.size.to_u8
-      vc = node.values.size.to_u8
       @chunk.emit(Op::MultiUnpack, node.line, a: tc, b: vc.to_u16)
       node.targets.reverse_each do |target|
         emit_store(target, node.line)
@@ -855,7 +909,7 @@ module Adjutant
       if recv = node.receiver
         compile_node(recv)
       end
-      node.args.each { |arg| compile_node(arg) }
+      positional = compile_args(node.args, node.line)
       # Keyword arguments: (name symbol, value) pairs, as for
       # MakeHash, staged by SetKwargNames for the Call.
       unless node.kwargs.empty?
@@ -890,10 +944,23 @@ module Adjutant
       sym_idx = intern(node.method)
       safe_bit = node.safe? ? 0b01_u16 : 0_u16
       recv_bit = node.receiver ? 0b10_u16 : 0_u16
+      spread_bit = spreads?(node.args) ? 0b100_u16 : 0_u16
       recv = node.receiver ? 1_u8 : 0_u8
-      argc = (node.args.size + recv).to_u8
+      argc = (positional + recv).to_u8
       op = node.safe? ? Op::SafeCall : Op::Call
-      @chunk.emit(op, node.line, a: argc, b: safe_bit | recv_bit, c: sym_idx)
+      @chunk.emit(op, node.line, a: argc, b: safe_bit | recv_bit | spread_bit, c: sym_idx)
+    end
+
+    # Pushes a call's positional arguments: each in turn, or with a
+    # splat among them, one Array of them all (`compile_spread`), which
+    # the call spreads. Returns how many values were pushed.
+    private def compile_args(args : Array(Node), line : Int32) : Int32
+      if spreads?(args)
+        compile_spread(args, line)
+        return 1
+      end
+      args.each { |arg| compile_node(arg) }
+      args.size
     end
 
     # The body of `&:name`'s block: its collected arguments, then the
@@ -1359,12 +1426,11 @@ module Adjutant
         patterns.each_with_index do |pat, _i|
           if node.subject
             # The stack is `[subject, pattern]`, the order `TripleEq`
-            # pops.
+            # and `MatchAny` pop.
             @chunk.emit(Op::Dup, node.line)
-            compile_node(pat)
-            @chunk.emit(Op::TripleEq, node.line)
+            compile_when_pattern(pat, node.line, with_subject: true)
           else
-            compile_node(pat)
+            compile_when_pattern(pat, node.line, with_subject: false)
           end
           pattern_patches << @chunk.emit_jump(Op::JumpIfTrue, node.line)
         end
@@ -1383,6 +1449,20 @@ module Adjutant
         emit_nil(node.line)
       end
       end_patches.each { |patch| @chunk.patch_jump(patch, @chunk.pos) }
+    end
+
+    # Pushes whether one `when` pattern matches: the pattern === the
+    # subject below it, or, without a subject, the pattern's truth. A
+    # splat matches if any pattern it spreads does (`MatchAny`).
+    private def compile_when_pattern(pat : Node, line : Int32, with_subject : Bool) : Nil
+      if pat.is_a?(Splat)
+        compile_node(pat.value)
+        @chunk.emit(Op::SplatArray, pat.line)
+        @chunk.emit(Op::MatchAny, line, a: with_subject ? 1_u8 : 0_u8)
+      else
+        compile_node(pat)
+        @chunk.emit(Op::TripleEq, line) if with_subject
+      end
     end
 
     # In a method or lambda, `return` leaves it. In a block it leaves
@@ -1513,8 +1593,9 @@ module Adjutant
     end
 
     private def compile_yield(node : YieldNode) : Nil
-      node.args.each { |arg| compile_node(arg) }
-      @chunk.emit(Op::Yield, node.line, a: node.args.size.to_u8)
+      argc = compile_args(node.args, node.line)
+      spread_bit = spreads?(node.args) ? 0b1_u16 : 0_u16
+      @chunk.emit(Op::Yield, node.line, a: argc.to_u8, b: spread_bit)
     end
 
     private def compile_super(node : SuperNode) : Nil
@@ -1525,8 +1606,9 @@ module Adjutant
         @chunk.emit(Op::Super, node.line, b: 1_u16)
         return
       end
-      node.args.each { |arg| compile_node(arg) }
-      @chunk.emit(Op::Super, node.line, a: node.args.size.to_u8)
+      argc = compile_args(node.args, node.line)
+      spread_bit = spreads?(node.args) ? 0b10_u16 : 0_u16
+      @chunk.emit(Op::Super, node.line, a: argc.to_u8, b: spread_bit)
     end
 
     # --- Exception handling -------------------------------------------------

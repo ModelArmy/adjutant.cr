@@ -209,6 +209,17 @@ module Adjutant
     end
   end
 
+  # `*value` in a list that spreads it: call arguments, an Array
+  # literal, an assignment's values or a `when` list. Only those lists
+  # hold one; `VM#splat_array` converts its value as Ruby's splat does.
+  class Splat < Node
+    getter value : Node
+
+    def initialize(@value, line, column)
+      super(line, column)
+    end
+  end
+
   class Ternary < Node
     getter cond : Node
     getter then_branch : Node

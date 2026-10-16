@@ -46,6 +46,14 @@ configuration.
   R-code in those branches, checking a class's ancestors for Exception
   as the script-class branch already does.
 
+- **A splat ignores a private `to_a`.** MRI's conversion calls `to_a`
+  even when it is private, so after a top-level `def to_a`, `[*5]` is
+  what that method returns; `VM#splat_array` asks `script_responds_to?`,
+  which counts public methods only, and gives `[5]`. Predicted by
+  reading the code; rare, since only a top-level `def` is private here.
+  Fix: a lookup that counts private methods, and a call that skips the
+  private check, as MRI's `rb_check_funcall` does.
+
 ## Will Fix
 
 Real gaps, not currently blocking anything, no active design conversation
@@ -118,10 +126,12 @@ still roughly ordered by how cheap/independent the fix is.
   `spec/scripts/rubyspec/for.rb`, whose test ends with `true` until
   this is fixed, and by probing.
 
-- **`return`, `break` and `next` take one value.** `return 1, 2` and
-  `next 1, 2, 3` raise P002 at the comma; Ruby collects the values
+- **`return`, `break` and `next` take one value.** `return 1, 2`,
+  `next 1, 2, 3` and `return *a` raise P002; Ruby collects the values
   into an Array. `parse_return` and `parse_break` read one expression.
-  Confirmed by `spec/scripts/rubyspec/next.rb` and by probing.
+  Confirmed by `spec/scripts/rubyspec/next.rb` and by probing. Fix:
+  `parse_multi_rhs`, which gathers values and splats as an assignment's
+  right-hand side does.
 
 - **`super` takes no block.** `super { break 1 }` and `super do ... end`
   raise P002, and in `super() { 2 }` the `{` is read as a Hash
@@ -216,24 +226,20 @@ still roughly ordered by how cheap/independent the fix is.
   the SAME copy) — a genuinely different shape from `AttrAssign`, not
   a small extension to it.
 
-- **Call-site splat/double-splat expansion (`foo(*args)`,
-  `foo(**opts)`), and `def foo(...); bar(...); end` argument-forwarding
-  shorthand.** Def-site `*args` collection already works; what's
-  missing is *spreading* an existing array/hash back out at a call
-  site — needed for delegation/wrapper patterns ("call this other
-  method with whatever I was given"), a common shape in agent-
-  generated code. Not yet traced to specific parser/compiler locations.
-  The `...` forwarding shorthand (found 2026-08-05 in the mruby
-  full-repo sweep, `test/t/syntax.rb`'s "argument forwarding") is
-  real Ruby 2.7+ sugar over the same underlying capability — once
-  call-site splat/double-splat exists, `...` is a terser spelling of
-  `(*args, **kwargs, &blk)`, not a separate mechanism; worth
-  implementing together or `...` shortly after, not as an independent
-  design question. The splat is missing everywhere outside a
-  parameter list, not only at a call site: `when *a`, `[0, *a]` and
-  `x, y = *a` raise P002 too (confirmed by
-  `spec/scripts/rubyspec/case.rb` and by probing). Inside a parameter
-  list, a double splat (`def f(**opts)`) raises P001.
+- **No double splat, and no `...` forwarding.** `f(**opts)` and
+  `{**defaults, k: v}` raise P002, and `def f(**opts)` raises P001.
+  `def f(...); g(...); end` doesn't parse either; it is Ruby's
+  spelling of `(*args, **opts, &blk)`, so it follows once the double
+  splat and a block parameter exist. Fix: as the splat does, a
+  `DoubleSplat` node, its value converted with `to_hash`, merged into
+  the call's keywords or the Hash literal in order.
+
+- **A splat is accepted only where a list spreads it.** Call arguments,
+  `yield` and `super` arguments, Array literals, an assignment's values
+  and `when` lists take `*x`; an index (`a[*i]`), a `rescue` list
+  (`rescue *ERRORS`) and an index assignment's value (`h[k] = *a`)
+  raise P002, as Ruby does not. Predicted by reading the code. Fix:
+  `parse_splat` at each site, then `compile_spread` and a spread index.
 - **An operator Symbol right after `:` in a ternary lexes as a Symbol.**
   The lexer reads `:+`, `:<=>` and the other operator Symbols wherever
   an expression can start, so `x ? a :-1` lexes `:-` as a Symbol and

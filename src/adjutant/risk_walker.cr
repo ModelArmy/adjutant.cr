@@ -98,7 +98,7 @@ module Adjutant
         walk_assignment(node, env)
       when Call, SuperNode, SymbolProcCall
         walk_invocation(node, env)
-      when Binary, Unary, Ternary, InterpString, RegexLiteral, RangeLiteral, Index,
+      when Binary, Unary, Splat, Ternary, InterpString, RegexLiteral, RangeLiteral, Index,
            ReturnNode, BreakNode, NextNode, YieldNode
         walk_expression(node, env)
       when Identifier then walk_identifier(node, env)
@@ -128,6 +128,7 @@ module Adjutant
       case node
       when Binary then walk_binary(node, env)
       when Unary  then walk_node(node.expr, env)
+      when Splat  then walk_node(node.value, env)
       when Ternary
         branches = [walk_node(node.then_branch, env.dup), walk_node(node.else_branch, env.dup)] of RiskNode
         RiskSequence.new([walk_node(node.cond, env), RiskChoice.new(branches, "ternary", node.line)] of RiskNode, node.line)
