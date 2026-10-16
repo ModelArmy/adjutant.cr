@@ -21,7 +21,30 @@ after 1.0. Ordered for working through: security and policy defects
 first, then the Ruby divergences, then design work on policy and
 configuration.
 
-None open.
+- **A bare `raise` in a `rescue` body raises a new RuntimeError instead
+  of re-raising.** In Ruby, `raise` with no arguments re-raises the
+  exception being handled, keeping its class and message. The `"raise"`
+  case of `VM`'s builtins (`vm.cr`) makes a RuntimeError, "unhandled
+  exception", whenever it has no arguments, so `rescue IOError` then
+  `raise` turns an IOError into a RuntimeError that an outer
+  `rescue IOError` misses. UNSUPPORTED.md's alternative to `retry`
+  (U020) uses this idiom. The exception being handled is dynamic in
+  Ruby: a method called from a rescue body re-raises it too, so it
+  belongs to the run, not to the compiler. Predicted by reading the
+  code. Fix: keep the exception being handled on the VM while a rescue
+  body runs, restoring the outer one when it ends, and re-raise it from
+  a bare `raise`; a RuntimeError only when nothing is being handled.
+
+- **`raise` with anything but an exception, an exception class or a
+  String raises RuntimeError.** Ruby raises TypeError, "exception
+  class/object expected", for `raise nil`, `raise 42`, a class that
+  isn't an exception (`raise String, "x"`) and an object that isn't
+  one. The `"raise"` case of `VM`'s builtins accepts any class in its
+  `rclass?` branch and turns any other value into a RuntimeError with
+  the value as its message, so `rescue RuntimeError` catches what
+  Ruby's wouldn't. Predicted by reading the code. Fix: a TypeError
+  R-code in those branches, checking a class's ancestors for Exception
+  as the script-class branch already does.
 
 ## Will Fix
 
@@ -217,16 +240,26 @@ still roughly ordered by how cheap/independent the fix is.
   fails to parse. Ruby reads it as a ternary. Spacing it as
   `x ? a : -1` works. The fix is tracking an open `?` in the lexer.
 
-- **`raise`/`super` don't get the same space-before-`(` fix
-  `parse_identifier_or_call` got.** Flagged 2026-07-26 while fixing
-  `eq (6/3), 2` (see `DEVELOPMENT.md`'s Parser section) — `parse_raise`
-  and `parse_super` (`parser.cr`) both still have the identical
-  unconditional `if at_kind?(TokenKind::LParen)` pattern that bug was
-  in, so `raise (x), y`-shaped code would misparse the same way.
-  Deliberately not fixed alongside the reported bug (would have
-  silently widened that session's scope); pick up using
-  `Token#space_before?` the same way `parse_identifier_or_call` does,
-  if ever actually hit.
+- **`raise`, `super` and `yield` read a spaced `(` as their argument
+  list.** `parse_raise`, `parse_super` and `parse_yield` take any `(`
+  after the keyword as the start of the argument list, so
+  `raise (x), y` is predicted to misparse. `parse_identifier_or_call`
+  reads `name (x), y` as a bare call whose first argument is `(x)`, as
+  Ruby does (DEVELOPMENT.md, Parser). Predicted by reading the code.
+  Fix: the same `Token#space_before?` test.
+
+- **`and` and `or` are accepted where Ruby's grammar takes an `arg`.**
+  `when` lists, `return`, `next` and `break` values, Array and Hash
+  literal elements, index arguments, parameter defaults and `rescue`
+  class lists are parsed at precedence 0, so `when 1 or 2`,
+  `return a or b`, `[a or b]`, `h[a or b]`, `def f(x = a or b)` and
+  `rescue A or B` run where Ruby raises a SyntaxError. No program Ruby
+  accepts runs differently, so this only lets a mistaken script run.
+  Predicted by reading the code. Fix: `parse_positional_arg`, which
+  calls, `yield`, `super` and `raise` already use, in `parse_case`,
+  `parse_return`, `parse_break`, `parse_array_literal`,
+  `parse_hash_or_block_brace`, `parse_postfix`'s index branch,
+  `parse_param` and `parse_rescue_clause`.
 - **`for`/`while`'s do-ambiguity fix pattern not applied elsewhere.** The
   `@no_do_block` suppression flag (parser.cr) fixing `for x in a do`/
   `while cond do` mis-parsing was scoped to those two constructs. The
