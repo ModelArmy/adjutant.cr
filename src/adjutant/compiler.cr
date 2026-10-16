@@ -810,23 +810,24 @@ module Adjutant
       scope.local_host.define(name)
     end
 
+    # Pushes the right-hand side as one value, which is also the
+    # assignment's value, as in Ruby: one value as itself, several or
+    # any splat gathered into an Array. MultiUnpack takes a copy apart
+    # for the targets.
     private def compile_multi_assign(node : MultiAssign) : Nil
-      # Values with a splat become one Array, which MultiUnpack spreads
-      # across the targets as it does any single Array value.
-      if spreads?(node.values)
-        compile_spread(node.values, node.line)
-        vc = 1_u8
+      values = node.values
+      first = values.first
+      if values.size == 1 && !first.is_a?(Splat)
+        compile_node(first)
       else
-        node.values.each { |v| compile_node(v) }
-        vc = node.values.size.to_u8
+        compile_array(ArrayLiteral.new(values, node.line, node.column))
       end
-      tc = node.targets.size.to_u8
-      @chunk.emit(Op::MultiUnpack, node.line, a: tc, b: vc.to_u16)
+      @chunk.emit(Op::Dup, node.line)
+      @chunk.emit(Op::MultiUnpack, node.line, a: node.targets.size.to_u8)
       node.targets.reverse_each do |target|
         emit_store(target, node.line)
         @chunk.emit(Op::Pop, node.line)
       end
-      emit_nil(node.line)
     end
 
     # Stores the value on top of the stack into `target`. Constants are

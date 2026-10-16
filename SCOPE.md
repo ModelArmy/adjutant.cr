@@ -32,16 +32,6 @@ configuration.
   R-code in those branches, checking a class's ancestors for Exception
   as the script-class branch already does.
 
-- **A multiple assignment spreads a one-element Array literal.**
-  `a, b = [[1, 2]]` sets `a` to 1 and `b` to 2, where Ruby sets `a` to
-  `[1, 2]` and `b` to nil; so does `first, rest = [pair]`.
-  `parse_multi_assign` takes the elements of any ArrayLiteral on the
-  right as the values, so a literal the script wrote can't be told from
-  the list `parse_multi_rhs` gathers from `a, b = x, y`, and
-  `MultiUnpack` then spreads the lone element. Predicted by reading the
-  code. Fix: mark the gathered list apart from a written literal, and
-  take elements only from the gathered one.
-
 - **A splat ignores a private `to_a`.** MRI's conversion calls `to_a`
   even when it is private, so after a top-level `def to_a`, `[*5]` is
   what that method returns; `VM#splat_array` asks `script_responds_to?`,

@@ -540,23 +540,39 @@ module Adjutant
     # a TypeError. The copy carries the label of the Array it copies.
     private def splat_array(value : Value, f : Frame) : Value
       return Value.new(LabeledArray.new, nil) if value.null?
-      source = value
-      if !value.array? && script_responds_to?(value, "to_a")
-        converted = call_method(value, "to_a", [] of Value, f.filename, f.line)
-        unless converted.null? || converted.array?
-          raise runtime_diagnostic(
-            Diagnostic.new(code: "R063", primary: frame_span(f),
-              data: {"class" => describe_value(value), "result" => describe_value(converted)}),
-            f, error_class: "TypeError")
-        end
-        source = converted unless converted.null?
-      end
-      if source.array?
+      source = value.array? ? value : convert_to_array(value, "to_a", f)
+      if source
         items = source.as_array
         Value.new(LabeledArray.new(items.dup_items, items.label), items.label)
       else
         Value.new(LabeledArray.new([value], value.label), value.label)
       end
+    end
+
+    # What a multiple assignment's targets take from its one value, as
+    # MRI's `vm_expandarray` decides it: an Array's elements, else the
+    # elements of the Array `to_ary` returns, else the value alone, also
+    # when `to_ary` returns nil. A `to_ary` returning anything else
+    # raises R063, a TypeError.
+    private def multi_unpack_values(value : Value, f : Frame) : Array(Value)
+      return value.as_array.to_a if value.array?
+      converted = convert_to_array(value, "to_ary", f)
+      converted ? converted.as_array.to_a : [value]
+    end
+
+    # `value`'s `method` (`to_a` or `to_ary`) if it has one returning an
+    # Array, as MRI's `rb_check_convert_type_with_id` does; nil if it
+    # has none or it returns nil. Raises R063, a TypeError, if it
+    # returns anything else.
+    private def convert_to_array(value : Value, method : String, f : Frame) : Value?
+      return unless script_responds_to?(value, method)
+      converted = call_method(value, method, [] of Value, f.filename, f.line)
+      return if converted.null?
+      return converted if converted.array?
+      raise runtime_diagnostic(
+        Diagnostic.new(code: "R063", primary: frame_span(f),
+          data: {"class" => describe_value(value), "method" => method, "result" => describe_value(converted)}),
+        f, error_class: "TypeError")
     end
 
     # `MatchAny`: whether any pattern of a `when` list's splat matches,
@@ -1415,16 +1431,8 @@ module Adjutant
             # --- Misc -----------------------------------------------------------
 
           when Op::MultiUnpack
-            tc = inst.a.to_i
-            vc = inst.b.to_i
-            values = @stack.last(vc)
-            @stack.pop(vc) if vc > 0
-            # One Array value spreads across several targets, as in
-            # Ruby: `a, b = [1, 2]` splats; `a, b = [1, 2], 3` doesn't.
-            values = values[0].as_array.to_a if vc == 1 && tc > 1 && values[0].array?
-            # Pads with nil or drops extras to match the targets.
-            padded = Array(Value).new(tc) { |i| i < values.size ? values[i] : Value.nil_value }
-            padded.each { |value| push(value) }
+            parts = multi_unpack_values(pop, f)
+            inst.a.to_i.times { |index| push(parts[index]? || Value.nil_value) }
           when Op::GetMethodName
             push(Value.string(f.proc.name))
           else

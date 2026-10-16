@@ -164,7 +164,7 @@ R059|A superclass that isn't a class                                    |`value`
 R060|Zero raised to a negative Integer power                            |—                                          
 R061|`Range#max` of an exclusive range with a non-Integer end           |—                                          
 R062|`Range#max` of an exclusive range with a non-Integer start         |—                                          
-R063|A splat (`*x`) whose `to_a` returns something other than an Array  |`class`, `result`                          
+R063|`to_a` or `to_ary` giving something other than an Array            |`class`, `method`, `result`                
 
 Scripts can `rescue` these. R008 raises a `NameError`, matching Ruby;
 R011, R012, R015, and R018 raise `ArgumentError`, also matching Ruby;

@@ -155,10 +155,8 @@ module Adjutant
       end
 
       it "parses a single-expression rhs (array-valued at runtime) without wrapping it" do
-        # `a, b = some_array` has one rhs expression, not a comma list —
-        # parse_multi_rhs only wraps in ArrayLiteral when it sees a
-        # comma; the runtime splat (single Array value -> many targets)
-        # is Op::MultiUnpack's job, not the parser's. See vm_spec.
+        # The values are kept as written; taking one value apart for the
+        # targets is Op::MultiUnpack's job, at run time.
         node = parse_expr("a, b = xs").as(MultiAssign)
         node.targets.size.should eq 2
         node.values.size.should eq 1

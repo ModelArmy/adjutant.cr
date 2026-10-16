@@ -594,11 +594,12 @@ module Adjutant
       ),
       "R063" => Entry.new(
         code: "R063",
-        summary: "can't convert {class} into Array ({class}#to_a gives {result})",
-        why: "A splat (`*x`) spreads `x` through its `to_a`, which must return " \
-             "an Array, or nil to spread `x` as a single value. Ruby raises a " \
-             "TypeError here too.",
-        help: "Make `to_a` return an Array, or splat an Array built from the object."
+        summary: "can't convert {class} into Array ({class}\#{method} gives {result})",
+        why: "A splat (`*x`) spreads `x` through its `to_a`, and a multiple " \
+             "assignment takes `x` apart through its `to_ary`. Either must " \
+             "return an Array, or nil to take `x` as a single value. Ruby " \
+             "raises a TypeError here too.",
+        help: "Make the method return an Array, or use an Array built from the object."
       ),
 
       # --- L: limits reached ----------------------------------------

@@ -415,8 +415,7 @@ module Adjutant
         targets << parse_expression(0, resolve_assignment: false)
       end
       expect(TokenKind::Eq)
-      rhs = parse_multi_rhs
-      values = rhs.is_a?(ArrayLiteral) ? rhs.elements : [rhs]
+      values = parse_rhs_values
       targets.each { |target| register_local_if_identifier(target) }
       MultiAssign.new(targets, values, l, c)
     end
@@ -437,14 +436,21 @@ module Adjutant
     # a splat, which are gathered into an ArrayLiteral as Ruby gathers
     # them into an Array (`x = 1, 2`, `x = *a`).
     private def parse_multi_rhs : Node
-      first = parse_positional_arg
-      return first unless at_kind?(TokenKind::Comma) || first.is_a?(Splat)
-      values = [first] of Node
+      values = parse_rhs_values
+      first = values.first
+      return first if values.size == 1 && !first.is_a?(Splat)
+      ArrayLiteral.new(values, first.line, first.column)
+    end
+
+    # Parses an assignment's right-hand side as the values written: one,
+    # or several separated by commas, any of them a splat.
+    private def parse_rhs_values : Array(Node)
+      values = [parse_positional_arg] of Node
       while match(TokenKind::Comma)
         skip_newlines
         values << parse_positional_arg
       end
-      ArrayLiteral.new(values, first.line, first.column)
+      values
     end
 
     # --- Pratt expression parser --------------------------------------------

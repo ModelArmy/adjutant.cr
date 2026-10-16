@@ -140,7 +140,7 @@ module Adjutant
     SymbolCall # `&:name`'s body: pop an Array, call constants[c] on its first element with the rest as arguments
 
     # Multi-assign
-    MultiUnpack # a=target_count, b=value_count — normalise RHS on stack; splats a single Array value when b=1 and a>1
+    MultiUnpack # a=target_count — pop a value, push a values for the targets: what VM#multi_unpack_values takes it apart into, padded with nil or cut to fit
 
     # Misc
     GetMethodName # push current method name as symbol
