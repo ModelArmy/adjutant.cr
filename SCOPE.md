@@ -46,6 +46,16 @@ configuration.
   R-code in those branches, checking a class's ancestors for Exception
   as the script-class branch already does.
 
+- **A multiple assignment spreads a one-element Array literal.**
+  `a, b = [[1, 2]]` sets `a` to 1 and `b` to 2, where Ruby sets `a` to
+  `[1, 2]` and `b` to nil; so does `first, rest = [pair]`.
+  `parse_multi_assign` takes the elements of any ArrayLiteral on the
+  right as the values, so a literal the script wrote can't be told from
+  the list `parse_multi_rhs` gathers from `a, b = x, y`, and
+  `MultiUnpack` then spreads the lone element. Predicted by reading the
+  code. Fix: mark the gathered list apart from a written literal, and
+  take elements only from the gathered one.
+
 - **A splat ignores a private `to_a`.** MRI's conversion calls `to_a`
   even when it is private, so after a top-level `def to_a`, `[*5]` is
   what that method returns; `VM#splat_array` asks `script_responds_to?`,
@@ -253,6 +263,13 @@ still roughly ordered by how cheap/independent the fix is.
   reads `name (x), y` as a bare call whose first argument is `(x)`, as
   Ruby does (DEVELOPMENT.md, Parser). Predicted by reading the code.
   Fix: the same `Token#space_before?` test.
+
+- **`x -1` after a local `x` is read as a call.** In Ruby a local
+  before `-1` or `+1` makes the sign binary, so `x = 5; x -1` is 4.
+  `parse_identifier_or_call` checks `known_local?` before `[`, `&` and
+  `*`, but not before `signed_literal_starts_bare_call?`, so it builds
+  a call of `x` with `-1`, which raises NoMethodError. Predicted by
+  reading the code. Fix: the same `known_local?` test.
 
 - **`and` and `or` are accepted where Ruby's grammar takes an `arg`.**
   `when` lists, `return`, `next` and `break` values, Array and Hash
@@ -676,6 +693,16 @@ section).
   a prompt: many scripts legitimately branch on sensitive data.
 
 ### Static risk assessment
+
+- **Calls a script makes implicitly are not walked.** RiskWalker walks
+  a script method's body where a call names it, so a method reached
+  without a call by name escapes it: a splat's `to_a`, an
+  interpolation's `to_s`, an operator a script class defines. A
+  `to_a` that reads a file shows no risk at `[*obj]`. The Broker still
+  enforces grants when it runs. Predicted by reading the code. Fix:
+  where the receiver's type is known, walk the conversion or operator
+  method it would reach. What to report where it isn't is open, since
+  nearly every interpolation would qualify.
 
 - **LEGATE.md §10's static analyser isn't built.** No grant
   inference, exception gate, inclusion ledger or raise-set inference
