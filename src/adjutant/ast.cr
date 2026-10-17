@@ -117,10 +117,36 @@ module Adjutant
     end
   end
 
+  # `{...}`: its entries in order, each a HashPair or a DoubleSplat.
   class HashLiteral < Node
-    getter pairs : Array({Node, Node})
+    getter entries : Array(Node)
 
-    def initialize(@pairs, line, column)
+    def initialize(@entries, line, column)
+      super(line, column)
+    end
+
+    # The key-value pairs written, leaving out any double splat.
+    def pairs : Array({Node, Node})
+      entries.compact_map { |entry| {entry.key, entry.value} if entry.is_a?(HashPair) }
+    end
+  end
+
+  # One `key => value` or `key: value` entry of a Hash literal.
+  class HashPair < Node
+    getter key : Node
+    getter value : Node
+
+    def initialize(@key, @value, line, column)
+      super(line, column)
+    end
+  end
+
+  # `**value` among a call's keywords or a Hash literal's entries,
+  # spreading a Hash's pairs; `VM#double_splat_hash` converts its value.
+  class DoubleSplat < Node
+    getter value : Node
+
+    def initialize(@value, line, column)
       super(line, column)
     end
   end
@@ -288,7 +314,8 @@ module Adjutant
     getter method : String
     getter args : Array(Node)
     # Keyword arguments (`name: value`), which bind by name and so
-    # are kept apart from the positional `args`.
+    # are kept apart from the positional `args`, in order. A double
+    # splat among them is named `**`, its node a DoubleSplat.
     getter kwargs : Array({String, Node})
     getter block : BlockNode?
     getter? safe : Bool # &. safe navigation

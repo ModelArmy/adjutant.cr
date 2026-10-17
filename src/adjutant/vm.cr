@@ -592,10 +592,59 @@ module Adjutant
       converted = call_method(value, method, [] of Value, f.filename, f.line)
       return if converted.null?
       return converted if converted.array?
-      raise runtime_diagnostic(
-        Diagnostic.new(code: "R063", primary: frame_span(f),
-          data: {"class" => describe_value(value), "method" => method, "result" => describe_value(converted)}),
-        f, error_class: "TypeError")
+      raise bad_conversion(value, "Array", method, converted, f)
+    end
+
+    # R063, a TypeError: `value`'s `method` gave `converted`, which isn't
+    # the `target_type` it must convert into.
+    private def bad_conversion(value : Value, target_type : String, method : String, converted : Value, f : Frame) : RuntimeError
+      data = {"class" => describe_value(value), "type" => target_type, "method" => method, "result" => describe_value(converted)}
+      runtime_diagnostic(Diagnostic.new(code: "R063", primary: frame_span(f), data: data), f, error_class: "TypeError")
+    end
+
+    # `**value` as a new Hash, as MRI's `rb_to_hash_type` converts it: a
+    # Hash's pairs, else those of the Hash `to_hash` returns. nil spreads
+    # nothing among a call's keywords (`nil_empty`), as in Ruby 3.4.
+    # Anything else raises R065, a TypeError, or R063 when `to_hash`
+    # returns something other than a Hash. The copy carries the label of
+    # the Hash it copies.
+    private def double_splat_hash(value : Value, nil_empty : Bool, f : Frame) : Value
+      return Value.new(LabeledHash.new, nil) if nil_empty && value.null?
+      source = value.hash? ? value : convert_to_hash(value, f)
+      pairs = source.as_hash
+      Value.new(LabeledHash.new(pairs.dup_entries, pairs.label), pairs.label)
+    end
+
+    # `value`'s `to_hash`, which must return a Hash: R065, a TypeError,
+    # without one, and R063 for anything else it returns.
+    private def convert_to_hash(value : Value, f : Frame) : Value
+      unless script_responds_to?(value, "to_hash")
+        raise runtime_diagnostic(
+          Diagnostic.new(code: "R065", primary: frame_span(f), data: {"class" => describe_value(value)}),
+          f, error_class: "TypeError")
+      end
+      converted = call_method(value, "to_hash", [] of Value, f.filename, f.line)
+      return converted if converted.hash?
+      raise bad_conversion(value, "Hash", "to_hash", converted, f)
+    end
+
+    # The keywords a call stages from the Hash its double splats built:
+    # none for an empty Hash, as Ruby passes none for `**{}`. A key that
+    # isn't a Symbol raises R012, as no method here takes one.
+    private def keywords_from(built : Value, method : String, f : Frame) : Hash(String, Value)?
+      pairs = built.as_hash.dup_entries
+      return if pairs.empty?
+      keywords = {} of String => Value
+      pairs.each do |key, value|
+        unless key.symbol?
+          raise runtime_diagnostic(
+            Diagnostic.new(code: "R012", primary: frame_span(f),
+              data: {"name" => render_inspect(key, f.filename, f.line), "method" => method}),
+            f, error_class: "ArgumentError")
+        end
+        keywords[key.as_sym.name] = value
+      end
+      keywords
     end
 
     # `MatchAny`: whether any pattern of a `when` list's splat matches,
@@ -1108,6 +1157,8 @@ module Adjutant
             h = {} of String => Value
             pairs.each_slice(2) { |pair| h[pair[0].as_sym.name] = pair[1] }
             @pending_kwargs = h
+          when Op::SetKwargsHash
+            @pending_kwargs = keywords_from(pop, chunk.consts[inst.c].as_sym.name, f)
           when Op::Call, Op::SafeCall
             sym = chunk.consts[inst.c].as_sym
             argc = inst.a.to_i
@@ -1239,6 +1290,18 @@ module Adjutant
             joined_label = pairs.reduce(nil.as(RiskFlowLabel?)) { |acc, value| RiskFlowLabel.join(acc, value.label) }
             @risk_flow_log.record("MakeHash", pairs.map(&.label), joined_label, f.line)
             push(Value.new(LabeledHash.new(h, joined_label), joined_label))
+          when Op::ToHash
+            spread_source = pop
+            spread_hash = double_splat_hash(spread_source, inst.a == 1, f)
+            @risk_flow_log.record("ToHash", [spread_source.label], spread_hash.label, f.line)
+            push(spread_hash)
+          when Op::MergeHash
+            later = pop
+            earlier = pop
+            merged = earlier.as_hash.dup_entries.merge!(later.as_hash.dup_entries)
+            merged_label = RiskFlowLabel.join(earlier.label, later.label)
+            @risk_flow_log.record("MergeHash", [earlier.label, later.label], merged_label, f.line)
+            push(Value.new(LabeledHash.new(merged, merged_label), merged_label))
           when Op::MakeRange
             rend = pop
             rstart = pop

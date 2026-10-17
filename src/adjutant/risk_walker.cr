@@ -98,7 +98,7 @@ module Adjutant
         walk_assignment(node, env)
       when Call, SuperNode, SymbolProcCall
         walk_invocation(node, env)
-      when Binary, Unary, Splat, Ternary, InterpString, RegexLiteral, RangeLiteral, Index,
+      when Binary, Unary, Splat, DoubleSplat, Ternary, InterpString, RegexLiteral, RangeLiteral, Index,
            ReturnNode, BreakNode, NextNode, YieldNode
         walk_expression(node, env)
       when Identifier then walk_identifier(node, env)
@@ -128,7 +128,8 @@ module Adjutant
       case node
       when Binary then walk_binary(node, env)
       when Unary  then walk_node(node.expr, env)
-      when Splat  then walk_node(node.value, env)
+      when Splat, DoubleSplat
+        walk_node(node.value, env)
       when Ternary
         branches = [walk_node(node.then_branch, env.dup), walk_node(node.else_branch, env.dup)] of RiskNode
         RiskSequence.new([walk_node(node.cond, env), RiskChoice.new(branches, "ternary", node.line)] of RiskNode, node.line)
@@ -555,7 +556,10 @@ module Adjutant
         when ArrayLiteral
           node.elements.map { |elem| walk_node(elem, env).as(RiskNode) }
         when HashLiteral
-          node.pairs.flat_map { |k, v| [walk_node(k, env).as(RiskNode), walk_node(v, env).as(RiskNode)] }
+          node.entries.flat_map do |entry|
+            next [walk_node(entry, env).as(RiskNode)] unless entry.is_a?(HashPair)
+            [walk_node(entry.key, env).as(RiskNode), walk_node(entry.value, env).as(RiskNode)]
+          end
         else
           [] of RiskNode
         end

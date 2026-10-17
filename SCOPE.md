@@ -207,13 +207,28 @@ still roughly ordered by how cheap/independent the fix is.
   the SAME copy) — a genuinely different shape from `AttrAssign`, not
   a small extension to it.
 
-- **No double splat, and no `...` forwarding.** `f(**opts)` and
-  `{**defaults, k: v}` raise P002, and `def f(**opts)` raises P001.
-  `def f(...); g(...); end` doesn't parse either; it is Ruby's
-  spelling of `(*args, **opts, &blk)`, so it follows once the double
-  splat and a block parameter exist. Fix: as the splat does, a
-  `DoubleSplat` node, its value converted with `to_hash`, merged into
-  the call's keywords or the Hash literal in order.
+- **No `**opts` parameter, and no `...` forwarding.** `def f(**opts)`
+  raises P001, so a method can't collect keywords it doesn't name, and
+  a double splat's keys must be Symbols (R012). `def f(...); g(...);
+  end` doesn't parse either; it is Ruby's spelling of
+  `(*args, **opts, &blk)`, so it follows once a keyword-rest and a
+  block parameter exist. Fix: a keyword-rest Param that `bind_args`
+  fills with a Hash of the keywords no other parameter takes.
+
+- **Keywords never become a positional Hash.** Ruby passes keywords
+  to a method that declares none as a trailing positional Hash:
+  `def f(h) = h; f(a: 1)` gives `{a: 1}`, and so does `f(**{a: 1})`.
+  `check_unknown_keywords!` raises R012 instead. Predicted by reading
+  the code. Fix: in `bind_args`, for a method with no keyword or
+  keyword-rest parameter, append the keywords to the positional
+  arguments as one Hash with Symbol keys.
+
+- **`super` and `yield` take no keywords.** `super(k: 1)`,
+  `super(**opts)` and `yield k: 1` raise P001 or P002, since
+  `parse_paren_positional_args` and `parse_bare_positional_args` read
+  positional arguments only, and SuperNode and YieldNode hold no
+  keywords. Predicted by reading the code. Fix: parse them as a call's
+  arguments are, and stage them as `compile_kwargs` does.
 
 - **A splat is accepted only where a list spreads it.** Call arguments,
   `yield` and `super` arguments, Array literals, an assignment's values

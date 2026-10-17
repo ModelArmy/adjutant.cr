@@ -33,7 +33,7 @@ The build targets (`shard.yml`) are `test_runner`, `run_script`, `assess_script`
 
 ## How Adjutant works
 
-Adjutant is a bytecode interpreter for a subset of Ruby, meant for scripts written by models and run by an agent harness. Four goals shape it: safe execution of untrusted scripts, an auditable effect boundary, syntax a Ruby-trained model already knows, and information flow control. Anything it accepts must behave as Ruby does; see [UNSUPPORTED.md](./UNSUPPORTED.md) for what it rejects instead.
+Adjutant is a bytecode interpreter for a subset of Ruby, meant for scripts written by models and run by an agent harness. Four goals shape it: safe execution of untrusted scripts, an auditable effect boundary, syntax a Ruby-trained model already knows, and information flow control. Anything it accepts must behave as Ruby does; see [UNSUPPORTED.md](./UNSUPPORTED.md) for what it rejects instead. "Ruby" means Ruby 3.4: where versions differ, as for `f(**nil)`, Adjutant follows 3.4, and MRI's source is the reference for how.
 
 ### Pipeline overview
 
@@ -120,7 +120,7 @@ Heredocs (`<<ID`, `<<-ID`, `<<~ID`, the identifier optionally quoted) are resolv
 - `name(...)` is `name`'s own argument list; `name (6/3), 2` passes a parenthesized expression as a bare call's first argument.
 - `key: value` needs the colon touching the key.
 - `&` with space before and none after starts a block argument: `items.map &:upcase` passes `&:upcase`, while `a & b` and `a&b` are binary. After a bare name, `known_local?` decides, as for `name [x]`.
-- `*` with space before and none after starts a splat argument: `puts *lines` spreads `lines`, while `a * b` and `a*b` multiply. After a bare name, `known_local?` decides, as for `&`.
+- `*` with space before and none after starts a splat argument: `puts *lines` spreads `lines`, while `a * b` and `a*b` multiply. After a bare name, `known_local?` decides, as for `&`. `**` follows the same rule for a double splat: `f **opts` spreads `opts`, while `a ** b` raises to a power.
 
 **Line continuation.** A newline ends a statement unless the next line, past spaces and whole comment lines, starts with a `.` not followed by another `.`, or with `&.`. Then `Lexer#continues_method_chain?` treats the newline as whitespace and the method chain carries on, as Ruby 2.7's lexer does. A blank line ends a chain, and `..` at a line's start begins a range.
 
@@ -147,6 +147,8 @@ A block's scope has a `parent` chain mirroring the lexical nesting, ending at a 
 **Operator precedence** follows Ruby's table (`Parser::PRECEDENCE`): `and`/`or` lowest and equal, then assignment, `not`, `? :`, ranges, `||`, `&&`, equality, comparison, `|` and `^`, `&`, shifts, additive, multiplicative, then `**`, the one that groups to the right. Unary minus binds looser than `**` (`-2 ** 2` is -4, and `-x ** 2` is `-(x ** 2)`), while `!`, `~` and unary `+` bind tighter. `**` compiles to a call of the `**` method, as `<=>` does, so Integer and Float define it natively. An assignment's right-hand side, an index assignment's value, the arguments of a call, `yield`, `super` and `raise`, a ternary's branches and `not`'s operand stop before `and`/`or`. Equality operators and ranges don't associate, so chaining two raises P008.
 
 **Splats.** A list holding a `Splat` (a call's, `yield`'s or `super`'s arguments, an Array literal, an assignment's values) compiles to one new Array (`compile_spread`): each run of plain values becomes a `MakeArray`, each splat a `SplatArray`, and each part is joined to those before it by `Add`, which joins their labels. A call, `yield` or `super` then takes its positional arguments from that Array, marked by a spread bit on the instruction, and `MultiUnpack` takes it apart for the targets. `SplatArray` converts as MRI's `vm_splat_array` does (`VM#splat_array`): nil spreads nothing, an Array is copied, and anything else goes through its `to_a` if it has one, so `[*1..3]` is `[1, 2, 3]`. A `when` list's splat is converted the same way, then `MatchAny` tries each pattern in order.
+
+**Double splats.** A Hash literal or a call's keywords holding a `DoubleSplat` compile to one new Hash (`compile_hash_spread`): each run of pairs becomes a `MakeHash`, each double splat a `ToHash`, and each part is merged into those before it by `MergeHash`, so a later key wins, in the earlier key's place, and labels join. A call then stages that Hash's pairs as its keywords with `SetKwargsHash`; an empty one passes no keywords, so `f(**h)` behaves as if `h`'s pairs were written out. `ToHash` converts as MRI's `rb_to_hash_type` does (`VM#double_splat_hash`): a Hash is copied, anything else goes through its `to_hash`, and nil spreads nothing among a call's keywords but raises in a Hash literal, as in Ruby 3.4.
 
 **Procs.** Each method, block and lambda body compiles to a `ScriptProc` in the parent chunk's constant pool, carrying its AST (`ast_body`, `ast_params`) for the risk walker and for argument binding. `MakeProc` pushes it; with `a=1`, for a lambda, it wraps it in a `Proc` object with the closure it captured.
 

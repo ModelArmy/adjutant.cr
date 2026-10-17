@@ -515,11 +515,54 @@ module Adjutant
     end
 
     private def compile_hash(node : HashLiteral) : Nil
+      if node.entries.any?(DoubleSplat)
+        compile_hash_spread(node.entries, node.line, keywords: false)
+        return
+      end
       node.pairs.each do |k, v|
         compile_node(k)
         compile_node(v)
       end
       @chunk.emit(Op::MakeHash, node.line, a: node.pairs.size.to_u8)
+    end
+
+    # Pushes `entries` as one new Hash, in order: each run of pairs
+    # becomes a Hash (`MakeHash`), each double splat the Hash its value
+    # spreads (`ToHash`), and each part is merged into those before it
+    # (`MergeHash`), a later key winning. Among a call's `keywords`,
+    # `**nil` spreads nothing, as in Ruby 3.4.
+    private def compile_hash_spread(entries : Array(Node), line : Int32, keywords : Bool) : Nil
+      parts = 0
+      run = 0
+      entries.each do |entry|
+        if entry.is_a?(DoubleSplat)
+          parts = close_hash_run(run, parts, line)
+          run = 0
+          compile_node(entry.value)
+          @chunk.emit(Op::ToHash, entry.line, a: keywords ? 1_u8 : 0_u8)
+          parts = merge_part(parts, line)
+        elsif entry.is_a?(HashPair)
+          compile_node(entry.key)
+          compile_node(entry.value)
+          run += 1
+        end
+      end
+      close_hash_run(run, parts, line)
+    end
+
+    # Makes the `run` pairs on the stack a Hash and merges it, if there
+    # are any. Returns the parts now merged.
+    private def close_hash_run(run : Int32, parts : Int32, line : Int32) : Int32
+      return parts if run == 0
+      @chunk.emit(Op::MakeHash, line, a: run.to_u8)
+      merge_part(parts, line)
+    end
+
+    # Merges the Hash just pushed into the parts before it. Returns the
+    # parts now merged.
+    private def merge_part(parts : Int32, line : Int32) : Int32
+      @chunk.emit(Op::MergeHash, line) if parts > 0
+      parts + 1
     end
 
     private def compile_range(node : RangeLiteral) : Nil
@@ -912,15 +955,7 @@ module Adjutant
         compile_node(recv)
       end
       positional = compile_args(node.args, node.line)
-      # Keyword arguments: (name symbol, value) pairs, as for
-      # MakeHash, staged by SetKwargNames for the Call.
-      unless node.kwargs.empty?
-        node.kwargs.each do |(name, value)|
-          @chunk.emit(Op::Const, node.line, c: intern(name))
-          compile_node(value)
-        end
-        @chunk.emit(Op::SetKwargNames, node.line, a: node.kwargs.size.to_u8)
-      end
+      compile_kwargs(node)
       # A block is pushed by MakeProc and staged by SetBlock.
       if blk = node.block
         blk_params = blk.params.map(&.name)
@@ -951,6 +986,28 @@ module Adjutant
       argc = (positional + recv).to_u8
       op = node.safe? ? Op::SafeCall : Op::Call
       @chunk.emit(op, node.line, a: argc, b: safe_bit | recv_bit | spread_bit, c: sym_idx)
+    end
+
+    # Stages a call's keyword arguments for the Call: (name symbol,
+    # value) pairs, as for MakeHash, staged by SetKwargNames; or, with a
+    # double splat among them, one Hash built by `compile_hash_spread`
+    # and staged by SetKwargsHash.
+    private def compile_kwargs(node : Call) : Nil
+      return if node.kwargs.empty?
+      if node.kwargs.any? { |(name, _)| name == "**" }
+        entries = node.kwargs.map do |(name, value)|
+          next value.as(Node) if value.is_a?(DoubleSplat)
+          HashPair.new(SymbolLiteral.new(name, value.line, value.column), value, value.line, value.column).as(Node)
+        end
+        compile_hash_spread(entries, node.line, keywords: true)
+        @chunk.emit(Op::SetKwargsHash, node.line, c: intern(node.method))
+        return
+      end
+      node.kwargs.each do |(name, value)|
+        @chunk.emit(Op::Const, node.line, c: intern(name))
+        compile_node(value)
+      end
+      @chunk.emit(Op::SetKwargNames, node.line, a: node.kwargs.size.to_u8)
     end
 
     # Pushes a call's positional arguments: each in turn, or with a

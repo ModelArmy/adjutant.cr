@@ -43,6 +43,11 @@ module Adjutant
     # before a call that passes keywords; Call clears the staged pairs.
     SetKwargNames
 
+    # Stages keyword arguments for the next Call from a Hash built for a
+    # double splat: pops it and stages its pairs (VM#keywords_from).
+    # c = the call's method name, for R012.
+    SetKwargsHash
+
     # Pushes whether the current call passed the keyword named
     # constants[c]. Emitted only by the default-parameter prologue,
     # since a nil slot can't tell "omitted" from "passed nil".
@@ -94,6 +99,8 @@ module Adjutant
     MakeArray  # pop a elements → push Array
     SplatArray # pop a value → push a new Array of what `*value` spreads (VM#splat_array)
     MakeHash   # pop a*2 elements (alternating k,v) → push Hash
+    ToHash     # pop a value → push a new Hash of what `**value` spreads (VM#double_splat_hash); a=1 among a call's keywords, where nil spreads nothing
+    MergeHash  # pop a later Hash, then an earlier → push a new Hash of both, the later's values winning
     MakeRange  # pop end, pop start → push Range; a=1 for exclusive
     MakeRegex  # pop pattern String (already Concat'd if interpolated) → push Regexp; a=flag bitmask (Builtins::IGNORECASE|EXTENDED|MULTILINE)
 

@@ -594,12 +594,13 @@ module Adjutant
       ),
       "R063" => Entry.new(
         code: "R063",
-        summary: "can't convert {class} into Array ({class}\#{method} gives {result})",
-        why: "A splat (`*x`) spreads `x` through its `to_a`, and a multiple " \
-             "assignment takes `x` apart through its `to_ary`. Either must " \
-             "return an Array, or nil to take `x` as a single value. Ruby " \
-             "raises a TypeError here too.",
-        help: "Make the method return an Array, or use an Array built from the object."
+        summary: "can't convert {class} into {type} ({class}\#{method} gives {result})",
+        why: "A splat (`*x`) spreads `x` through its `to_a`, a multiple " \
+             "assignment takes `x` apart through its `to_ary`, and a double " \
+             "splat (`**x`) through its `to_hash`. Each must return a {type}; " \
+             "`to_a` and `to_ary` may also return nil to take `x` as a single " \
+             "value. Ruby raises a TypeError here too.",
+        help: "Make the method return a {type}, or use a {type} built from the object."
       ),
       "R064" => Entry.new(
         code: "R064",
@@ -609,6 +610,15 @@ module Adjutant
              "else too.",
         help: "Raise an exception class or object, such as " \
               "`raise ArgumentError, \"bad input\"`, or a String message."
+      ),
+      "R065" => Entry.new(
+        code: "R065",
+        summary: "no implicit conversion of {class} into Hash",
+        why: "A double splat (`**x`) spreads the pairs of `x`, so `x` must be " \
+             "a Hash or have a `to_hash` method. Among a call's keyword " \
+             "arguments, `**nil` passes none, as in Ruby 3.4. Ruby raises a " \
+             "TypeError here too.",
+        help: "Double-splat a Hash, or give the object a `to_hash` that returns one."
       ),
 
       # --- L: limits reached ----------------------------------------

@@ -875,6 +875,14 @@ module Adjutant
       at_kind?(TokenKind::Star) && @current.space_before? && operand_immediately_follows?
     end
 
+    # Whether the current `*` or `**` starts a bare call's splat or
+    # double splat rather than multiplying or raising to a power: space
+    # before it and none after, as for `-` and `&`.
+    private def spread_starts_bare_call? : Bool
+      (at_kind?(TokenKind::Star) || at_kind?(TokenKind::StarStar)) &&
+        @current.space_before? && operand_immediately_follows?
+    end
+
     # Parses a bare identifier as a local variable or a method call.
     private def parse_identifier_or_call(l : Int32, c : Int32) : Node
       tok = advance
@@ -896,9 +904,10 @@ module Adjutant
         # `name &:sym`: a block argument, unless `name` is a local,
         # when the `&` is binary, as in Ruby.
         parse_bare_call_args(name, l, c)
-      elsif splat_starts_bare_call? && !known_local?(name)
-        # `name *x`: a splat argument, unless `name` is a local, when
-        # the `*` multiplies, as in Ruby.
+      elsif spread_starts_bare_call? && !known_local?(name)
+        # `name *x` or `name **x`: a splat argument, unless `name` is a
+        # local, when the `*` multiplies and `**` raises to a power, as
+        # in Ruby.
         parse_bare_call_args(name, l, c)
       elsif signed_literal_starts_bare_call?
         # `name -x` or `name +x`; see
@@ -940,7 +949,7 @@ module Adjutant
     private def receiver_call_takes_bare_args? : Bool
       return false unless @current.space_before?
       return false if at_kind?(TokenKind::LParen)
-      signed_literal_starts_bare_call? || splat_starts_bare_call? || block_arg_follows_no_paren? ||
+      signed_literal_starts_bare_call? || spread_starts_bare_call? || block_arg_follows_no_paren? ||
         arg_follows_no_paren?
     end
 
@@ -998,7 +1007,9 @@ module Adjutant
     # a ternary's `? a : b` out. An argument stops before `and` and
     # `or`, as in Ruby, so `save x or raise` is `(save x) or raise`.
     private def parse_call_arg(args : Array(Node), kwargs : Array({String, Node})) : Nil
-      if at_kind?(TokenKind::Identifier) && peek_kind == TokenKind::Colon
+      if at_kind?(TokenKind::StarStar)
+        kwargs << {"**", parse_double_splat}
+      elsif at_kind?(TokenKind::Identifier) && peek_kind == TokenKind::Colon
         name = advance.lexeme
         advance # the Colon
         kwargs << {name, parse_expression(PREC_AND_OR)}
@@ -1012,6 +1023,14 @@ module Adjutant
     # and `f(a or b)` raises. A `*` starts a splat.
     private def parse_positional_arg : Node
       at_kind?(TokenKind::Star) ? parse_splat : parse_expression(PREC_AND_OR)
+    end
+
+    # Parses `**value` from its `**`. The value is an argument, so it
+    # stops before `and` and `or`.
+    private def parse_double_splat : DoubleSplat
+      l, c = line, col
+      advance # the `**`
+      DoubleSplat.new(parse_expression(PREC_AND_OR), l, c)
     end
 
     # Parses `*value` from its `*`. The value is an argument, so it
@@ -1203,18 +1222,21 @@ module Adjutant
       # A `{` in expression position is always a hash literal; a
       # block's `{` is consumed where a call is parsed.
       expect(TokenKind::LBrace)
-      pairs = [] of {Node, Node}
+      entries = [] of Node
       skip_newlines
       until at_kind?(TokenKind::RBrace) || at_kind?(TokenKind::EOF)
-        key = parse_hash_key
-        val = parse_expression(0)
-        pairs << {key, val}
+        if at_kind?(TokenKind::StarStar)
+          entries << parse_double_splat
+        else
+          key = parse_hash_key
+          entries << HashPair.new(key, parse_expression(0), key.line, key.column)
+        end
         skip_newlines
         break unless match(TokenKind::Comma)
         skip_newlines
       end
       expect(TokenKind::RBrace)
-      HashLiteral.new(pairs, l, c)
+      HashLiteral.new(entries, l, c)
     end
 
     # Parses a hash entry's key and its separator: `key => val` with
