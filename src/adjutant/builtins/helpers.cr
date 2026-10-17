@@ -39,9 +39,12 @@ module Adjutant::Builtins
   def self.define(cls : Adjutant::RubyClass, interp : Adjutant::Interpreter, name : String,
                   arity : Adjutant::ArityLike,
                   risk : Adjutant::RiskProfile = Adjutant::RiskProfile.none, is_private : Bool = false,
+                  labels_own_result : Bool = false,
                   &block : Array(Adjutant::Value), Adjutant::ScriptProc?, Adjutant::NativeCallContext -> Adjutant::Value) : Nil
     sym_id = interp.symbols.intern(name).value
-    cls.define_native_method(sym_id, risk, is_private: is_private, arity: arity) { |args, blk, ncc| block.call(args, blk, ncc) }
+    cls.define_native_method(sym_id, risk, is_private: is_private, arity: arity, labels_own_result: labels_own_result) do |args, blk, ncc|
+      block.call(args, blk, ncc)
+    end
   end
 
   # Registers a native singleton method on a builtin class, as
@@ -98,18 +101,29 @@ module Adjutant::Builtins
     ndigits > 0 ? Adjutant::Value.float(result, label) : Adjutant::Value.int(result, label)
   end
 
-  # The join of every value's label with `seed`, for a builtin that
-  # builds a new container from an existing one's contents. Pass the
-  # source container's label as `seed`: it can carry labels no current
-  # element does, and dropping them would under-label the result.
   # The block of a method that iterates, or U022 without one: Ruby
   # returns an Enumerator there, which Adjutant doesn't have.
   def self.require_block!(blk : Adjutant::ScriptProc?, method : String, ncc : Adjutant::NativeCallContext) : Adjutant::ScriptProc
     blk || ncc.raise_error("U022", {"method" => method}, "RuntimeError")
   end
 
+  # The join of every value's label with `seed`, for a builtin that
+  # builds a new container from an existing one's contents. Pass the
+  # source container's label as `seed`: it can carry labels no current
+  # element does, and dropping them would under-label the result.
   def self.joined_label(values : Array(Adjutant::Value), seed : Adjutant::RiskFlowLabel? = nil) : Adjutant::RiskFlowLabel?
     values.reduce(seed) { |acc, v| Adjutant::RiskFlowLabel.join(acc, v.label) }
+  end
+
+  # `base ** exponent` as Ruby computes it for Floats. A negative base
+  # with an exponent that isn't whole has a Complex answer in Ruby, so
+  # it raises U026 (RangeError). The test is Ruby's own, so a NaN
+  # exponent counts as not whole.
+  def self.float_power(base : Float64, exponent : Float64, ncc : Adjutant::NativeCallContext) : Float64
+    if base < 0 && exponent != exponent.round
+      ncc.raise_error("U026", {"kind" => "Complex"}, "RangeError")
+    end
+    base ** exponent
   end
 
   # The type name a native method's error message shows. Not the

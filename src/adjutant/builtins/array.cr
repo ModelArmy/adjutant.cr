@@ -98,7 +98,7 @@ module Adjutant::Builtins
       args.first
     end
 
-    define(cls, interp, "pop", arity: 0) do |args|
+    define(cls, interp, "pop", arity: 0, labels_own_result: true) do |args|
       arr = args.first.as_array
       arr.empty? ? Adjutant::Value.nil_value : arr.pop
     end
@@ -138,7 +138,7 @@ module Adjutant::Builtins
     # With no argument, the first element or nil. With `n`, an Array
     # of the first `n` elements; a negative `n` raises R031
     # (`ArgumentError`), as Ruby does.
-    define(cls, interp, "first", arity: 0..1) do |args, _blk, ncc|
+    define(cls, interp, "first", arity: 0..1, labels_own_result: true) do |args, _blk, ncc|
       recv = args.first
       arr = recv.as_array
       if n_val = args[1]?
@@ -151,7 +151,7 @@ module Adjutant::Builtins
       end
     end
 
-    define(cls, interp, "last", arity: 0..1) do |args, _blk, ncc|
+    define(cls, interp, "last", arity: 0..1, labels_own_result: true) do |args, _blk, ncc|
       recv = args.first
       arr = recv.as_array
       if n_val = args[1]?

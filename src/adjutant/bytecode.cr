@@ -43,19 +43,24 @@ module Adjutant
     # before a call that passes keywords; Call clears the staged pairs.
     SetKwargNames
 
+    # Stages keyword arguments for the next Call from a Hash built for a
+    # double splat: pops it and stages its pairs (VM#keywords_from).
+    # c = the call's method name, for R012.
+    SetKwargsHash
+
     # Pushes whether the current call passed the keyword named
     # constants[c]. Emitted only by the default-parameter prologue,
     # since a nil slot can't tell "omitted" from "passed nil".
     HasKwarg
 
-    Call     # call method constants[c], argc=a, b bit0=safe(&.), bit1=has_receiver
+    Call     # call method constants[c], argc=a, b bit0=safe(&.), bit1=has_receiver, bit2=spread: the last of the a values is an Array of the positional arguments
     SafeCall # &. nil-safe call
 
     # Calls the current method's name on the next class or module
     # after the method's lexical scope in the receiver's ancestors;
     # self is unchanged. b bit0 = zsuper (bare `super`): a is 0 and the
     # method's current parameter values are forwarded. Otherwise a
-    # arguments are popped as for Call.
+    # arguments are popped as for Call; b bit1 = spread, as Call's bit2.
     Super
 
     Ret         # return top of stack from current frame
@@ -91,10 +96,13 @@ module Adjutant
     Reraise
 
     # Collections
-    MakeArray # pop a elements → push Array
-    MakeHash  # pop a*2 elements (alternating k,v) → push Hash
-    MakeRange # pop end, pop start → push Range; a=1 for exclusive
-    MakeRegex # pop pattern String (already Concat'd if interpolated) → push Regexp; a=flag bitmask (Builtins::IGNORECASE|EXTENDED|MULTILINE)
+    MakeArray  # pop a elements → push Array
+    SplatArray # pop a value → push a new Array of what `*value` spreads (VM#splat_array)
+    MakeHash   # pop a*2 elements (alternating k,v) → push Hash
+    ToHash     # pop a value → push a new Hash of what `**value` spreads (VM#double_splat_hash); a=1 among a call's keywords, where nil spreads nothing
+    MergeHash  # pop a later Hash, then an earlier → push a new Hash of both, the later's values winning
+    MakeRange  # pop end, pop start → push Range; a=1 for exclusive
+    MakeRegex  # pop pattern String (already Concat'd if interpolated) → push Regexp; a=flag bitmask (Builtins::IGNORECASE|EXTENDED|MULTILINE)
 
     # Arithmetic
     Add
@@ -119,6 +127,12 @@ module Adjutant
     # Comparison
     Eq
     TripleEq # `a === b`; also compile_case's per-`when`-pattern check — see this op's own VM handler for the Class/Range/Regexp/Proc special-casing
+
+    # A `when` list's splat: pops an Array of patterns, then with a=1 the
+    # subject, and pushes whether any pattern === the subject, trying
+    # them in order; with a=0 (a `case` without a subject), whether any
+    # pattern is truthy.
+    MatchAny
     Lt
     Lte
     Gt
@@ -128,11 +142,12 @@ module Adjutant
     Concat # pop a strings → push concatenated string
 
     # Blocks / iterators
-    Yield      # yield to block with a args
+    Yield      # yield to block with a args; b bit0 = spread, as Call's bit2
     BlockBreak # break from a block iterator (value on stack)
+    SymbolCall # `&:name`'s body: pop an Array, call constants[c] on its first element with the rest as arguments
 
     # Multi-assign
-    MultiUnpack # a=target_count, b=value_count — normalise RHS on stack; splats a single Array value when b=1 and a>1
+    MultiUnpack # a=target_count, b=splat target's position + 1, or 0 for none — pop a value, push a values for the targets, as VM#deal_targets deals what VM#multi_unpack_values takes it apart into
 
     # Misc
     GetMethodName # push current method name as symbol
@@ -182,11 +197,24 @@ module Adjutant
     getter code : Array(Instruction)
     getter consts : Array(Value)
 
+    # The code that runs while an error is being handled: each rescue
+    # section and each ensure body, as `{start, stop}` instruction
+    # ranges, `stop` exclusive. A frame records the error each handles
+    # under its `start` (`Frame#caught`).
+    getter handling_ranges : Array({Int32, Int32})
+
     NO_TARGET = 0xFFFF_FFFF_u32
 
     def initialize
       @code = [] of Instruction
       @consts = [] of Value
+      @handling_ranges = [] of {Int32, Int32}
+    end
+
+    # Marks the instructions from `start` up to `stop` as code that
+    # handles an error.
+    def add_handling_range(start : Int32, stop : Int32) : Nil
+      @handling_ranges << {start, stop}
     end
 
     # Emit an instruction, returning its index.

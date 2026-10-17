@@ -99,6 +99,11 @@ module Adjutant
     property block_yield_outer : OuterChain?
     property own_yield_outer : OuterChain?
 
+    # The errors being handled in this frame, each under the start of
+    # the handling range (`Chunk#handling_ranges`) that handles it. Nil
+    # until the frame first handles one.
+    getter caught : Hash(Int32, Value)?
+
     # How many positional arguments the call passed, for GetArgc.
     # `locals.size` counts declared slots instead.
     property argc : Int32
@@ -106,6 +111,31 @@ module Adjutant
     # The keyword argument names the call passed, for HasKwarg; nil
     # when it passed none.
     property kwarg_names : Set(String)?
+
+    # Records `error` as the one the handling range starting at `start`
+    # handles.
+    def record_caught(start : Int32, error : Value) : Nil
+      (@caught ||= {} of Int32 => Value)[start] = error
+    end
+
+    # Forgets the error the handling range starting at `start` handled,
+    # for an ensure body entered without one.
+    def forget_caught(start : Int32) : Nil
+      @caught.try(&.delete(start))
+    end
+
+    # The error being handled where this frame is running: the one
+    # recorded for the innermost handling range around its current
+    # instruction that has one. Nil when there is none.
+    def handled_error : Value?
+      caught = @caught
+      return unless caught
+      at = @ip - 1
+      around = @chunk.handling_ranges.select { |(start, stop)| start <= at && at < stop }
+      around.sort_by! { |(start, _)| -start }
+      around.each { |(start, _)| caught[start]?.try { |error| return error } }
+      nil
+    end
 
     # What `yield` resolves to in this frame: a method's own block, or
     # for a block frame the block of the method it was written in.
@@ -262,6 +292,9 @@ module Adjutant
       # EndEnsure. An error raised inside the ensure body supersedes
       # it, as in Ruby. Cleared on every fresh catch.
       @pending_reraise = nil.as(Value?)
+      # The error the unwinder is entering an ensure body with, taken
+      # by that body's EnterEnsure, the next instruction to run.
+      @ensure_error = nil.as(Value?)
       # A `break` an ensure body was entered for, with the frame whose
       # call it ends, resumed by EndEnsure. An error raised inside the
       # ensure body supersedes it, as in Ruby.
@@ -276,6 +309,8 @@ module Adjutant
       # (`invoke_internal`, `call_method`), which still count toward
       # `call_depth_limit`.
       @outer_frame_count = 0
+      # The frame lists those nested runs set aside, innermost last.
+      @set_aside_frames = [] of Array(Frame)
     end
 
     # Runs a compiled top-level chunk and returns its value.
@@ -328,7 +363,7 @@ module Adjutant
         @current_block_yield = saved_cur_block_yield
         @current_block_yield_outer = saved_cur_block_yield_outer
         @pending_kwargs = saved_pending_kwargs
-        @outer_frame_count = saved_outer_frame_count
+        leave_nested_run!(saved_outer_frame_count)
       end
       result
     end
@@ -411,7 +446,7 @@ module Adjutant
         @current_block_yield = saved_cur_block_yield
         @current_block_yield_outer = saved_cur_block_yield_outer
         @pending_kwargs = saved_pending_kwargs
-        @outer_frame_count = saved_outer_frame_count
+        leave_nested_run!(saved_outer_frame_count)
       end
       result
     end
@@ -487,6 +522,143 @@ module Adjutant
         # Anything else: `==`, as Ruby's `Object#===` is.
         values_equal?(subject, pattern)
       end
+    end
+
+    # Pops a call's `argc` values. With `spread`, the last is an Array
+    # whose elements stand in for it as positional arguments.
+    private def pop_args(argc : Int32, spread : Bool) : Array(Value)
+      args = @stack.last(argc)
+      @stack.pop(argc) if argc > 0
+      return args unless spread
+      args[0, args.size - 1] + args.last.as_array.to_a
+    end
+
+    # What `*value` spreads, as MRI's `vm_splat_array` decides it, in a
+    # new Array: nothing for nil; an Array's elements; otherwise the
+    # Array `to_a` returns, or `value` alone when it has no `to_a` or
+    # `to_a` returns nil. A `to_a` returning anything else raises R063,
+    # a TypeError. The copy carries the label of the Array it copies.
+    private def splat_array(value : Value, f : Frame) : Value
+      return Value.new(LabeledArray.new, nil) if value.null?
+      source = value.array? ? value : convert_to_array(value, "to_a", f)
+      if source
+        items = source.as_array
+        Value.new(LabeledArray.new(items.dup_items, items.label), items.label)
+      else
+        Value.new(LabeledArray.new([value], value.label), value.label)
+      end
+    end
+
+    # What a multiple assignment's targets take from its one value, as
+    # MRI's `vm_expandarray` decides it: an Array's elements, else the
+    # elements of the Array `to_ary` returns, else the value alone, also
+    # when `to_ary` returns nil. A `to_ary` returning anything else
+    # raises R063, a TypeError.
+    private def multi_unpack_values(value : Value, f : Frame) : Array(Value)
+      return value.as_array.to_a if value.array?
+      converted = convert_to_array(value, "to_ary", f)
+      converted ? converted.as_array.to_a : [value]
+    end
+
+    # The values for `count` targets from `parts`, as MRI's
+    # `vm_expandarray` deals them. Without a splat target (`splat_at`
+    # below 0), in order, padded with nil. With one, the targets before
+    # it take from the front, padded with nil; those after it take the
+    # last of what remains, or, when too few remain, those from the
+    # front, padded with nil; and the splat target an Array of the rest,
+    # labelled with its elements' labels.
+    private def deal_targets(parts : Array(Value), count : Int32, splat_at : Int32) : Array(Value)
+      return Array(Value).new(count) { |index| parts[index]? || Value.nil_value } if splat_at < 0
+      before = Array(Value).new(splat_at) { |index| parts[index]? || Value.nil_value }
+      rest = parts.size > splat_at ? parts[splat_at..] : [] of Value
+      after_count = count - splat_at - 1
+      if rest.size < after_count
+        after = Array(Value).new(after_count) { |index| rest[index]? || Value.nil_value }
+        middle = [] of Value
+      else
+        after = rest[rest.size - after_count..]
+        middle = rest[0, rest.size - after_count]
+      end
+      label = middle.reduce(nil.as(RiskFlowLabel?)) { |acc, value| RiskFlowLabel.join(acc, value.label) }
+      before + [Value.new(LabeledArray.new(middle, label), label)] + after
+    end
+
+    # `value`'s `method` (`to_a` or `to_ary`) if it has one returning an
+    # Array, as MRI's `rb_check_convert_type_with_id` does; nil if it
+    # has none or it returns nil. Raises R063, a TypeError, if it
+    # returns anything else.
+    private def convert_to_array(value : Value, method : String, f : Frame) : Value?
+      return unless script_responds_to?(value, method)
+      converted = call_method(value, method, [] of Value, f.filename, f.line)
+      return if converted.null?
+      return converted if converted.array?
+      raise bad_conversion(value, "Array", method, converted, f)
+    end
+
+    # R063, a TypeError: `value`'s `method` gave `converted`, which isn't
+    # the `target_type` it must convert into.
+    private def bad_conversion(value : Value, target_type : String, method : String, converted : Value, f : Frame) : RuntimeError
+      data = {"class" => describe_value(value), "type" => target_type, "method" => method, "result" => describe_value(converted)}
+      runtime_diagnostic(Diagnostic.new(code: "R063", primary: frame_span(f), data: data), f, error_class: "TypeError")
+    end
+
+    # `**value` as a new Hash, as MRI's `rb_to_hash_type` converts it: a
+    # Hash's pairs, else those of the Hash `to_hash` returns. nil spreads
+    # nothing among a call's keywords (`nil_empty`), as in Ruby 3.4.
+    # Anything else raises R065, a TypeError, or R063 when `to_hash`
+    # returns something other than a Hash. The copy carries the label of
+    # the Hash it copies.
+    private def double_splat_hash(value : Value, nil_empty : Bool, f : Frame) : Value
+      return Value.new(LabeledHash.new, nil) if nil_empty && value.null?
+      source = value.hash? ? value : convert_to_hash(value, f)
+      pairs = source.as_hash
+      Value.new(LabeledHash.new(pairs.dup_entries, pairs.label), pairs.label)
+    end
+
+    # `value`'s `to_hash`, which must return a Hash: R065, a TypeError,
+    # without one, and R063 for anything else it returns.
+    private def convert_to_hash(value : Value, f : Frame) : Value
+      unless script_responds_to?(value, "to_hash")
+        raise runtime_diagnostic(
+          Diagnostic.new(code: "R065", primary: frame_span(f), data: {"class" => describe_value(value)}),
+          f, error_class: "TypeError")
+      end
+      converted = call_method(value, "to_hash", [] of Value, f.filename, f.line)
+      return converted if converted.hash?
+      raise bad_conversion(value, "Hash", "to_hash", converted, f)
+    end
+
+    # The keywords a call stages from the Hash its double splats built:
+    # none for an empty Hash, as Ruby passes none for `**{}`. A key that
+    # isn't a Symbol raises R012, as no method here takes one.
+    private def keywords_from(built : Value, method : String, f : Frame) : Hash(String, Value)?
+      pairs = built.as_hash.dup_entries
+      return if pairs.empty?
+      keywords = {} of String => Value
+      pairs.each do |key, value|
+        unless key.symbol?
+          raise runtime_diagnostic(
+            Diagnostic.new(code: "R012", primary: frame_span(f),
+              data: {"name" => render_inspect(key, f.filename, f.line), "method" => method}),
+            f, error_class: "ArgumentError")
+        end
+        keywords[key.as_sym.name] = value
+      end
+      keywords
+    end
+
+    # `MatchAny`: whether any pattern of a `when` list's splat matches,
+    # tried in order. The result carries the labels of the patterns and
+    # the subject, as `TripleEq`'s does.
+    private def exec_match_any(inst : Instruction, f : Frame) : Nil
+      patterns = pop
+      subject = inst.a == 1 ? pop : nil
+      matched = patterns.as_array.to_a.any? do |pattern|
+        subject ? triple_eq_matches?(pattern, subject) : pattern.truthy?
+      end
+      label = RiskFlowLabel.join(patterns.label, subject.try(&.label))
+      @risk_flow_log.record("MatchAny", [patterns.label, subject.try(&.label)], label, f.line)
+      push(Value.bool(matched, label))
     end
 
     # Whether `recv` has `method_name`, in the order `dispatch_call`
@@ -745,6 +917,26 @@ module Adjutant
         raise script_diagnostic("L002", {"limit" => @limits.call_depth_limit.to_s}, current_frame)
       end
       @outer_frame_count = depth
+      @set_aside_frames << @frames
+    end
+
+    # Ends what `enter_nested_run!` began, restoring `@outer_frame_count`
+    # to `saved`.
+    private def leave_nested_run!(saved : Int32) : Nil
+      @outer_frame_count = saved
+      @set_aside_frames.pop
+    end
+
+    # The error a bare `raise` re-raises: the one handled by the
+    # innermost rescue section or ensure body running, in this frame or
+    # any caller, frames set aside by nested runs included, as MRI's
+    # `errinfo_place` finds it. Nil when none is.
+    private def error_being_handled : Value?
+      @frames.reverse_each { |frame| frame.handled_error.try { |error| return error } }
+      @set_aside_frames.reverse_each do |frames|
+        frames.reverse_each { |frame| frame.handled_error.try { |error| return error } }
+      end
+      nil
     end
 
     # `self` in the current frame, which for a native function is the
@@ -965,14 +1157,14 @@ module Adjutant
             h = {} of String => Value
             pairs.each_slice(2) { |pair| h[pair[0].as_sym.name] = pair[1] }
             @pending_kwargs = h
+          when Op::SetKwargsHash
+            @pending_kwargs = keywords_from(pop, chunk.consts[inst.c].as_sym.name, f)
           when Op::Call, Op::SafeCall
             sym = chunk.consts[inst.c].as_sym
             argc = inst.a.to_i
             safe = inst.b & 0b01_u16 != 0
             has_receiver = inst.b & 0b10_u16 != 0
-
-            args = @stack.last(argc)
-            @stack.pop(argc) if argc > 0
+            args = pop_args(argc, spread: inst.b & 0b100_u16 != 0)
 
             depth_before = @frames.size
             # `ensure` clears the staged block and keywords even if the
@@ -994,9 +1186,7 @@ module Adjutant
             push(result) if @frames.size == depth_before
           when Op::Super
             zsuper = inst.b & 0b1_u16 != 0
-            argc = inst.a.to_i
-            args = @stack.last(argc)
-            @stack.pop(argc) if argc > 0
+            args = pop_args(inst.a.to_i, spread: inst.b & 0b10_u16 != 0)
 
             depth_before = @frames.size
             result = dispatch_super(f, args, f.filename, inst.line, zsuper: zsuper)
@@ -1039,6 +1229,7 @@ module Adjutant
             @risk_flow_log.record("Eq", [a.label, b.label], result.label, f.line)
             push(result)
           when Op::TripleEq then exec_binary(inst) { |subject, pattern| Value.bool(triple_eq_matches?(pattern, subject)) }
+          when Op::MatchAny then exec_match_any(inst, f)
           when Op::Lt       then exec_binary(inst) { |lhs, rhs| Value.bool(strict_compare(lhs, rhs, :<)) }
           when Op::Lte      then exec_binary(inst) { |lhs, rhs| Value.bool(strict_compare(lhs, rhs, :<=)) }
           when Op::Gt       then exec_binary(inst) { |lhs, rhs| Value.bool(strict_compare(lhs, rhs, :>)) }
@@ -1085,6 +1276,11 @@ module Adjutant
             joined_label = elements.reduce(nil.as(RiskFlowLabel?)) { |acc, value| RiskFlowLabel.join(acc, value.label) }
             @risk_flow_log.record("MakeArray", elements.map(&.label), joined_label, f.line)
             push(Value.new(LabeledArray.new(elements, joined_label), joined_label))
+          when Op::SplatArray
+            splat_source = pop
+            splatted = splat_array(splat_source, f)
+            @risk_flow_log.record("SplatArray", [splat_source.label], splatted.label, f.line)
+            push(splatted)
           when Op::MakeHash
             n = inst.a.to_i * 2
             pairs = @stack.last(n)
@@ -1094,6 +1290,18 @@ module Adjutant
             joined_label = pairs.reduce(nil.as(RiskFlowLabel?)) { |acc, value| RiskFlowLabel.join(acc, value.label) }
             @risk_flow_log.record("MakeHash", pairs.map(&.label), joined_label, f.line)
             push(Value.new(LabeledHash.new(h, joined_label), joined_label))
+          when Op::ToHash
+            spread_source = pop
+            spread_hash = double_splat_hash(spread_source, inst.a == 1, f)
+            @risk_flow_log.record("ToHash", [spread_source.label], spread_hash.label, f.line)
+            push(spread_hash)
+          when Op::MergeHash
+            later = pop
+            earlier = pop
+            merged = earlier.as_hash.dup_entries.merge!(later.as_hash.dup_entries)
+            merged_label = RiskFlowLabel.join(earlier.label, later.label)
+            @risk_flow_log.record("MergeHash", [earlier.label, later.label], merged_label, f.line)
+            push(Value.new(LabeledHash.new(merged, merged_label), merged_label))
           when Op::MakeRange
             rend = pop
             rstart = pop
@@ -1227,9 +1435,7 @@ module Adjutant
 
             # --- Block / yield --------------------------------------------------
           when Op::Yield
-            argc = inst.a.to_i
-            args = @stack.last(argc)
-            @stack.pop(argc) if argc > 0
+            args = pop_args(inst.a.to_i, spread: inst.b & 0b1_u16 != 0)
             blk = f.yield_target
             if blk
               depth_before = @frames.size
@@ -1241,6 +1447,15 @@ module Adjutant
             else
               raise script_diagnostic("R007", {"method" => yielding_method_name(f)}, f)
             end
+          when Op::SymbolCall
+            # Ruby's `Symbol#to_proc` raises an ArgumentError with no
+            # receiver; otherwise it calls as `recv.name(*rest)` would.
+            sym = chunk.consts[inst.c].as_sym
+            values = pop.as_array.to_a
+            raise_arity_error(0, "1+", "&:#{sym.name}", f.filename, inst.line) if values.empty?
+            depth_before = @frames.size
+            result = dispatch_call(sym.name, values, false, f.filename, inst.line, nil, true, self_val: f.self_val)
+            push(result) if @frames.size == depth_before
           when Op::BlockBreak
             val = pop
             # The call that received this block ends: the nearest method
@@ -1267,8 +1482,15 @@ module Adjutant
             clear_rescue_portion(f)
           when Op::EnterEnsure
             # Removes this construct's handler entry, however the
-            # ensure was reached.
+            # ensure was reached, and records the error it was entered
+            # with, if any, for a bare `raise` in its body.
             f.handlers.pop?
+            if entered_with = @ensure_error
+              @ensure_error = nil
+              f.record_caught(f.ip - 1, entered_with)
+            else
+              f.forget_caught(f.ip - 1)
+            end
           when Op::EndEnsure
             if pending = @pending_reraise
               @pending_reraise = nil
@@ -1295,16 +1517,8 @@ module Adjutant
             # --- Misc -----------------------------------------------------------
 
           when Op::MultiUnpack
-            tc = inst.a.to_i
-            vc = inst.b.to_i
-            values = @stack.last(vc)
-            @stack.pop(vc) if vc > 0
-            # One Array value spreads across several targets, as in
-            # Ruby: `a, b = [1, 2]` splats; `a, b = [1, 2], 3` doesn't.
-            values = values[0].as_array.to_a if vc == 1 && tc > 1 && values[0].array?
-            # Pads with nil or drops extras to match the targets.
-            padded = Array(Value).new(tc) { |i| i < values.size ? values[i] : Value.nil_value }
-            padded.each { |value| push(value) }
+            parts = multi_unpack_values(pop, f)
+            deal_targets(parts, inst.a.to_i, inst.b.to_i - 1).each { |part| push(part) }
           when Op::GetMethodName
             push(Value.string(f.proc.name))
           else
@@ -1326,6 +1540,7 @@ module Adjutant
           @pending_reraise = nil
           @pending_break = nil
           @pending_return = nil
+          @ensure_error = nil
 
           # Unwinds frames to the innermost handler, in this frame or a
           # caller. Within an entry the rescue target is tried before the
@@ -1367,12 +1582,15 @@ module Adjutant
             while @stack.size > handler_frame.stack_base
               @stack.pop
             end
+            caught_error = ex.error_value || Value.string(ex.message || "RuntimeError")
             if entering_ensure
               # EndEnsure re-raises this once the ensure body ends. An
               # error raised in the ensure body supersedes it.
-              @pending_reraise = ex.error_value || Value.string(ex.message || "RuntimeError")
+              @pending_reraise = caught_error
+              @ensure_error = caught_error
             else
-              @last_error = ex.error_value || Value.string(ex.message || "RuntimeError")
+              @last_error = caught_error
+              handler_frame.record_caught(handler_ip, caught_error)
             end
             handler_frame.ip = handler_ip
           else
@@ -1424,7 +1642,7 @@ module Adjutant
         @current_block_yield = saved_cur_block_yield
         @current_block_yield_outer = saved_cur_block_yield_outer
         @pending_kwargs = saved_pending_kwargs
-        @outer_frame_count = saved_outer_frame_count
+        leave_nested_run!(saved_outer_frame_count)
       end
     end
 
@@ -1747,7 +1965,7 @@ module Adjutant
 
       # 5. Builtin operations.
       if result = exec_builtin(name, args, filename, line, blk, has_receiver, kwargs: kwargs)
-        return result
+        return label_from_inputs(result, args, kwargs, name, line)
       end
 
       # Nothing resolved. A name Adjutant excludes (`send`, `eval`)
@@ -1781,6 +1999,25 @@ module Adjutant
     # undeclared keyword. Then runs the risk-flow check, which raises
     # RiskFlowRejectedError when policy rejects a labelled argument, or
     # an Ask is answered with Reject.
+    # `result`, labelled with the join of its inputs' labels when it has
+    # no label of its own: what a builtin computes from labelled values
+    # carries their label, as an operator's result does. An input
+    # container counts by its own label, so `arr.size` carries it; a
+    # method returning one of its elements as is declares
+    # `labels_own_result`, the element having a label of its own. A
+    # container result is left as returned: its label is a field of the
+    # container, so setting it here would relabel a container the script
+    # may share.
+    private def label_from_inputs(result : Value, args : Array(Value), kwargs : Hash(String, Value)?,
+                                  name : String, line : Int32) : Value
+      return result if result.label || result.array? || result.hash?
+      inputs = kwargs ? args + kwargs.values : args
+      label = inputs.reduce(nil.as(RiskFlowLabel?)) { |joined, input| RiskFlowLabel.join(joined, input.label) }
+      return result unless label
+      @risk_flow_log.record(name, inputs.map(&.label), label, line)
+      result.with_label(label)
+    end
+
     private def call_native(native : NativeCallable, args : Array(Value),
                             filename : String, line : Int32, blk : ScriptProc?, name : String,
                             has_receiver : Bool, kwargs : Hash(String, Value)? = nil) : Value
@@ -1788,7 +2025,8 @@ module Adjutant
       raise_arity_error(given, native.arity.to_s, name, filename, line) unless native.arity.accepts?(given)
       check_unknown_native_keywords!(kwargs, native.kwarg_names, name, filename, line)
       check_risk_flow(native, args, kwargs, name, filename, line)
-      NativeFunctionCall.new(self, native, filename, line, name, kwargs, args).call(args, blk)
+      result = NativeFunctionCall.new(self, native, filename, line, name, kwargs, args).call(args, blk)
+      native.labels_own_result? ? result : label_from_inputs(result, args, kwargs, name, line)
     rescue ex : BlockBreakSignal
       # A `break` in the block this call received ends the call with
       # the break's value, as in Ruby.
@@ -2267,7 +2505,7 @@ module Adjutant
       "equal?" => Arity.from(1), "dup" => Arity.from(0), "clone" => Arity.from(0),
       "==" => Arity.from(1), "!=" => Arity.from(1), "===" => Arity.from(1),
       "to_s" => Arity.from(0), "inspect" => Arity.from(0), "to_i" => Arity.from(0),
-      "to_f" => Arity.from(0), "length" => Arity.from(0), "size" => Arity.from(0),
+      "to_f" => Arity.from(0),
       "+" => Arity.from(1), "-" => Arity.from(1), "*" => Arity.from(1),
       "/" => Arity.from(1), "%" => Arity.from(1),
       "loop" => Arity.new(0, 0),
@@ -2324,39 +2562,8 @@ module Adjutant
           Value.new(LabeledArray.new(args.dup, joined_label), nil)
         end
       when "raise"
-        cls = nil
-        error_obj = nil
-        msg = if args.empty?
-                cls = builtin_class_by_name("RuntimeError")
-                "unhandled exception"
-              elsif (script_cls = args.first.as_rclass?) && script_cls.ancestors.any? { |ancestor| ancestor.name == "Exception" } &&
-                    (init = script_initialize(script_cls))
-                # `raise Oops, arg` for a class with a script
-                # `initialize`: built with `new(arg)`, as Ruby's
-                # `Oops.exception(arg)` is, so the `initialize` runs.
-                inst = RubyObject.new(script_cls)
-                invoke(init, args[1..], self_val: Value.robject(inst))
-                error_obj = inst
-                error_message(Value.robject(inst))
-              elsif args.first.rclass?
-                # `raise NameError, "boo"`: a class and a message.
-                cls = args.first.as_rclass
-                args[1]?.try(&.to_s) || cls.name
-              elsif (obj = args.first.as_robject?) && obj.instance_of?("Exception")
-                # `raise NameError.new("boo")`: an error object.
-                error_obj = obj # already exception instance
-                obj.to_s
-              else
-                # Anything else: a RuntimeError with it as the message.
-                cls = builtin_class_by_name("RuntimeError")
-                args.first.to_s
-              end
-        err_val = if error_obj
-                    Value.robject(error_obj)
-                  else
-                    cls ? make_error_object(cls, msg) : Value.string(msg)
-                  end
-        raise RuntimeError.new(msg, filename, line, error_value: err_val)
+        exception_value = exception_from(args, filename, line)
+        raise RuntimeError.new(error_message(exception_value), filename, line, error_value: exception_value)
       when "<=>"
         a = args[0]? || Value.nil_value
         b = args[1]? || Value.nil_value
@@ -2452,29 +2659,11 @@ module Adjutant
         recv = args.first? || Value.nil_value
         Value.string(recv.inspect)
       when "to_i"
-        recv = args.first? || Value.nil_value
-        case
-        when recv.int?    then recv
-        when recv.float?  then Value.int(recv.as_float.to_i64)
-        when recv.string? then Value.int(recv.as_string.to_i64? || 0_i64)
-        else                   Value.int(0_i64)
-        end
+        # nil's: every other builtin with a `to_i` defines it natively,
+        # and a receiver reaching here otherwise has none (NoMethodError).
+        Value.int(0_i64) if has_receiver && args.first.null?
       when "to_f"
-        recv = args.first? || Value.nil_value
-        case
-        when recv.float?  then recv
-        when recv.int?    then Value.float(recv.as_int.to_f64)
-        when recv.string? then Value.float(recv.as_string.to_f64? || 0.0)
-        else                   Value.float(0.0)
-        end
-      when "length", "size"
-        recv = args.first? || Value.nil_value
-        case
-        when recv.string? then Value.int(recv.as_string.size.to_i64)
-        when recv.array?  then Value.int(recv.as_array.size.to_i64)
-        when recv.hash?   then Value.int(recv.as_hash.size.to_i64)
-        else                   Value.int(0_i64)
-        end
+        Value.float(0.0) if has_receiver && args.first.null?
       when "+"
         ValueOps.add(args[0], args[1], error_raiser(current_frame))
       when "-"
@@ -2986,6 +3175,62 @@ module Adjutant
         obj.ivars[@symbols.intern(name).value] = value
       end
       Value.robject(obj)
+    end
+
+    # The error `raise` with `args` raises, as MRI's `make_exception`
+    # decides it. None re-raises the error being handled, else makes a
+    # RuntimeError, "unhandled exception"; a lone String is a
+    # RuntimeError's message; an exception class makes an instance with
+    # the arguments that follow; an exception object is raised as it is,
+    # or as a copy carrying the message that follows. Anything else
+    # raises R064, a TypeError.
+    private def exception_from(args : Array(Value), filename : String, line : Int32) : Value
+      first = args.first?
+      return error_being_handled || builtin_error("RuntimeError", "unhandled exception") unless first
+      return builtin_error("RuntimeError", first.as_string) if first.string? && args.size == 1
+      if (cls = first.as_rclass?) && exception_class?(cls)
+        return new_exception(cls, args[1..])
+      end
+      if (obj = first.as_robject?) && obj.instance_of?("Exception")
+        return first if args.size == 1
+        return exception_with_message(first, args[1], filename, line)
+      end
+      raise runtime_diagnostic(
+        Diagnostic.new(code: "R064", primary: Span.new(line: line, filename: filename)),
+        error_class: "TypeError")
+    end
+
+    # Whether `cls` is Exception or a class descending from it.
+    private def exception_class?(cls : RubyClass) : Bool
+      !cls.is_module? && cls.ancestors.any? { |ancestor| ancestor.name == "Exception" }
+    end
+
+    # An error object of the builtin class `class_name` with `message`;
+    # the message alone for a VM built without the class.
+    private def builtin_error(class_name : String, message : String) : Value
+      cls = builtin_class_by_name(class_name)
+      cls ? make_error_object(cls, message) : Value.string(message)
+    end
+
+    # A new instance of the exception class `cls`, as `cls.new(*rest)`:
+    # through its script `initialize` if it has one, else with the first
+    # of `rest` as its message, or the class's name without one.
+    private def new_exception(cls : RubyClass, rest : Array(Value)) : Value
+      if init = script_initialize(cls)
+        inst = Value.robject(RubyObject.new(cls))
+        invoke(init, rest, self_val: inst)
+        return inst
+      end
+      make_error_object(cls, rest.first?.try(&.to_s) || cls.name)
+    end
+
+    # A copy of the exception object `error` carrying `message`, as
+    # Ruby's `Exception#exception(message)` makes for `raise error,
+    # message`. The copy keeps the original's other attributes.
+    private def exception_with_message(error : Value, message : Value, filename : String, line : Int32) : Value
+      copy = copy_value(error, "clone", filename, line) || error
+      copy.as_robject.ivars[@symbols.intern("message").value] = Value.string(message.to_s)
+      copy
     end
 
     # The message of an error value: an object's `message` ivar, a

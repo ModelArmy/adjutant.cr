@@ -5,7 +5,8 @@ require "./helpers"
 
 module Adjutant::Builtins
   # Builds the `Float` class and its native methods. Arithmetic,
-  # comparison and `<=>` are opcodes or VM builtins, not methods.
+  # comparison and `<=>` are opcodes or VM builtins, not methods, apart
+  # from `**`.
   def self.bootstrap_float(interp : Adjutant::Interpreter) : Adjutant::RubyClass
     cls = Adjutant::RubyClass.new("Float")
 
@@ -15,6 +16,20 @@ module Adjutant::Builtins
 
     define(cls, interp, "to_s", arity: 0) do |args|
       Adjutant::Value.string(args.first.as_float.to_s)
+    end
+
+    # `**`, as Ruby's Float#** gives it: a Float, with both operands'
+    # labels, or U026 (RangeError) where Ruby's answer is a Complex.
+    define(cls, interp, "**", arity: 1) do |args, _blk, ncc|
+      exponent = args[1]
+      power = if exponent.int?
+                exponent.as_int.to_f64
+              elsif exponent.float?
+                exponent.as_float
+              else
+                ncc.raise_error("R005", {"operator" => "**", "type" => builtin_type_name(exponent)}, "TypeError")
+              end
+      Adjutant::Value.float(float_power(args.first.as_float, power, ncc), joined_label(args))
     end
 
     define(cls, interp, "to_i", arity: 0) do |args, _blk, ncc|

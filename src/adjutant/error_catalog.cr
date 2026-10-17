@@ -256,13 +256,13 @@ module Adjutant
       ),
       "R024" => Entry.new(
         code: "R024",
-        summary: "can't iterate from NilClass",
-        why: "`{method}` needs a real starting value to count up from — " \
-             "a beginless range (`..5`) has no start, so there's " \
-             "nothing to begin iterating at.",
-        help: "Only an endless range (`5..`) or an ordinary bounded " \
-              "range (`1..5`) can be iterated — a beginless range can " \
-              "still be used with `include?`/`===`, just not walked."
+        summary: "can't iterate from {class}",
+        why: "`{method}` counts up from the range's start, and a {class} " \
+             "start gives it nothing to count from: a beginless range " \
+             "(`..5`) has no start, and a Float has no next value.",
+        help: "Iterate or size a range that starts at an Integer, such " \
+              "as `1..5` or the endless `5..`. Any range can still be " \
+              "tested with `include?` or `===`."
       ),
       "R025" => Entry.new(
         code: "R025",
@@ -569,6 +569,57 @@ module Adjutant
         help: "Name a class after `<`, or include a module in the class " \
               "body instead."
       ),
+      "R060" => Entry.new(
+        code: "R060",
+        summary: "divided by 0",
+        why: "Zero raised to a negative power is one divided by zero, " \
+             "which has no value. Ruby raises a ZeroDivisionError here too.",
+        help: "Check that the base isn't zero before raising it to a " \
+              "negative power."
+      ),
+      "R061" => Entry.new(
+        code: "R061",
+        summary: "cannot exclude non Integer end value",
+        why: "The largest value of an exclusive range is the Integer just " \
+             "below its end, which only an Integer end has.",
+        help: "Make the range inclusive (`..`), or give it an Integer end."
+      ),
+      "R062" => Entry.new(
+        code: "R062",
+        summary: "cannot exclude end value with non Integer begin value",
+        why: "The largest value of an exclusive range is the Integer just " \
+             "below its end, which is only a member of the range when the " \
+             "range starts at an Integer too.",
+        help: "Start the range at an Integer, or make it inclusive (`..`)."
+      ),
+      "R063" => Entry.new(
+        code: "R063",
+        summary: "can't convert {class} into {type} ({class}\#{method} gives {result})",
+        why: "A splat (`*x`) spreads `x` through its `to_a`, a multiple " \
+             "assignment takes `x` apart through its `to_ary`, and a double " \
+             "splat (`**x`) through its `to_hash`. Each must return a {type}; " \
+             "`to_a` and `to_ary` may also return nil to take `x` as a single " \
+             "value. Ruby raises a TypeError here too.",
+        help: "Make the method return a {type}, or use a {type} built from the object."
+      ),
+      "R064" => Entry.new(
+        code: "R064",
+        summary: "exception class/object expected",
+        why: "`raise` takes an exception class, an exception object, or a " \
+             "String message on its own. Ruby raises a TypeError for anything " \
+             "else too.",
+        help: "Raise an exception class or object, such as " \
+              "`raise ArgumentError, \"bad input\"`, or a String message."
+      ),
+      "R065" => Entry.new(
+        code: "R065",
+        summary: "no implicit conversion of {class} into Hash",
+        why: "A double splat (`**x`) spreads the pairs of `x`, so `x` must be " \
+             "a Hash or have a `to_hash` method. Among a call's keyword " \
+             "arguments, `**nil` passes none, as in Ruby 3.4. Ruby raises a " \
+             "TypeError here too.",
+        help: "Double-splat a Hash, or give the object a `to_hash` that returns one."
+      ),
 
       # --- L: limits reached ----------------------------------------
       #
@@ -715,6 +766,16 @@ module Adjutant
         help: "Keep values within 64 bits, or use a Float where an " \
               "approximate value will do. A script can rescue the error " \
               "as a RangeError."
+      ),
+      "U026" => Entry.new(
+        code: "U026",
+        summary: "a {kind} result is not supported",
+        why: "Ruby's answer here is a {kind}, and Adjutant's numbers are " \
+             "Integers and Floats only (see UNSUPPORTED.md, U026).",
+        help: "For an approximate answer, use a Float base: `10.0 ** -2` " \
+              "is 0.01. A negative base with a fractional exponent has no " \
+              "real-number answer. A script can rescue the error as a " \
+              "RangeError."
       ),
       "U007" => Entry.new(
         code: "U007",
@@ -935,6 +996,13 @@ module Adjutant
         help: "Add parentheses, or join two comparisons with `&&`: " \
               "`a == b && b == c`."
       ),
+      "P009" => Entry.new(
+        code: "P009",
+        summary: "`{method}` is given two blocks",
+        why: "A call takes one block: a block argument such as `&:name`, " \
+             "or a literal block, not both.",
+        help: "Keep one of them."
+      ),
       "P006" => Entry.new(
         code: "P006",
         summary: "unexpected parameter order",
@@ -954,13 +1022,16 @@ module Adjutant
       ),
       "U001" => Entry.new(
         code: "U001",
-        summary: "block parameter capture (`&{param}`) is not supported",
-        why: "A block passed to a method can only be run synchronously, " \
-             "via `yield`, inside the call it was passed to. It never " \
-             "becomes a value, so it cannot be bound to the parameter " \
-             "`{param}`, stored, returned, or called later.",
-        help: "Run the block with `yield` inside `{method}`, or take a " \
-              "lambda as an ordinary parameter and call it with `.call`."
+        summary: "a block can't be a value (`&{param}`)",
+        why: "A block runs only through `yield`, inside the call it was " \
+             "passed to. It never becomes a value, so a parameter can't " \
+             "capture it to store, return or call later, and a call can't " \
+             "be given one from a variable or a lambda. Only a Symbol " \
+             "literal, as in `&:name`, stands for a block.",
+        help: "Inside a method, run the block with `yield`. When calling " \
+              "`{method}`, write the block out, or use `&:name` for a " \
+              "block that calls one method. A lambda can be passed as an " \
+              "ordinary argument and called with `.call`."
       ),
       "U011" => Entry.new(
         code: "U011",

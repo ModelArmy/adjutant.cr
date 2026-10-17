@@ -104,9 +104,11 @@ module Adjutant
     # `authorities` and `arity`. `arity` defaults to any count.
     def define_native_method(sym_id : Int32, risk : RiskProfile, kwarg_names : Set(String) = Set(String).new, is_private : Bool = false,
                              authorities : Set(Authority) = Set(Authority).new, arity : ArityLike = Arity.any,
+                             labels_own_result : Bool = false,
                              &block : Array(Value), ScriptProc?, NativeCallContext -> Value) : Nil
       func = NativeFunc.new { |args, blk, ncc| block.call(args, blk, ncc) }
-      @native_methods[sym_id] = NativeCallable.new(func, risk, kwarg_names, authorities, Arity.from(arity))
+      @native_methods[sym_id] = NativeCallable.new(func, risk, kwarg_names, authorities, Arity.from(arity),
+        labels_own_result: labels_own_result)
       if is_private
         @native_private_methods << sym_id
       else

@@ -53,18 +53,20 @@ module Adjutant
     end
 
     describe "multi-target assignment" do
-      it "compiles a, b = 1, 2 with MultiUnpack, target_count 2, value_count 2" do
-        chunk = compile("a, b = 1, 2")
-        inst = chunk.code.find { |i| i.op == Op::MultiUnpack }.not_nil!
-        inst.a.should eq 2
-        inst.b.should eq 2
+      it "gathers a, b = 1, 2 into one Array before MultiUnpack, for 2 targets" do
+        code = compile("a, b = 1, 2").code
+        make = code.index { |inst| inst.op == Op::MakeArray }
+        unpack = code.index { |inst| inst.op == Op::MultiUnpack }
+        (make && unpack && make < unpack).should be_true
+        unpack.try { |at| code[at].a.should eq 2 }
       end
 
-      it "compiles a, b = xs with value_count 1 (splat is the VM's job, not the compiler's)" do
-        chunk = compile("a, b = xs")
-        inst = chunk.code.find { |i| i.op == Op::MultiUnpack }.not_nil!
-        inst.a.should eq 2
-        inst.b.should eq 1
+      it "compiles a, b = xs as one value, kept as the assignment's value, before MultiUnpack" do
+        o = ops("a, b = xs")
+        o.should_not contain(Op::MakeArray)
+        unpack = o.index(Op::MultiUnpack)
+        unpack.should_not be_nil
+        unpack.try { |at| o[at - 1].should eq Op::Dup }
       end
     end
 

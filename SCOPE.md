@@ -21,7 +21,18 @@ after 1.0. Ordered for working through: security and policy defects
 first, then the Ruby divergences, then design work on policy and
 configuration.
 
-None open.
+- **Implicit conversions skip methods MRI would call.** MRI calls a
+  conversion method even when it is private, so after a top-level
+  `def to_a`, `[*5]` is what that method returns, and likewise `to_ary`
+  for `a, b = 5`. `VM#convert_to_array` asks `script_responds_to?`,
+  which counts public methods only, and gives `[5]`. And MRI raises
+  whatever any object's `exception` method returns, where
+  `VM#exception_from` accepts exception classes and objects only, so
+  `raise obj` for an object defining `exception` raises R064. Predicted
+  by reading the code; both rare. Fix: a lookup that counts private
+  methods and a call that skips the private check, as MRI's
+  `rb_check_funcall` does, and a call of `exception` on anything else
+  that defines it.
 
 ## Will Fix
 
@@ -78,23 +89,16 @@ still roughly ordered by how cheap/independent the fix is.
   `redo if` as an `if` block until this is fixed. Fix: let `redo` reach
   the modifier handling that `parse_expr_statement` does.
 
-- **`**` doesn't parse.** `2 ** 3` and `2.0 ** 3` raise P002 at the
-  second `*`: the lexer has no exponent token, and Integer has no
-  `pow` either. Ruby's `**` binds tighter than unary minus on its left
-  (`-2 ** 2` is -4) and is right-associative. Found translating
-  `spec/scripts/rubyspec/` and confirmed by probing. Fix: a `StarStar`
-  token, its precedence and associativity, and Integer and Float
-  methods.
-
-- **A multiple assignment takes only plain targets.** `a, *b = x`
-  and `a, (b, c) = x` raise P002 and P001, `a, = x` raises P002, and
-  `a, o.t = 1, 2` raises C001: a splat, a nested pattern, a trailing
-  comma and an attribute are all valid Ruby targets. `for` takes the
-  same targets, so `for i, *r in`, `for i, (j, k) in`, `for i, in` and
-  `for o.t in` fail the same way. Confirmed by
-  `spec/scripts/rubyspec/for.rb` and by probing. Fix:
-  `parse_multi_assign` and `emit_store`, then `MultiUnpack` for the
-  splat and the nesting.
+- **A multiple assignment takes only plain and splat targets.**
+  `a, (b, c) = x` raises P001, `a, = x` and the anonymous splat
+  `a, * = x` raise P002, and `a, o.t = 1, 2` raises C001: a nested
+  pattern, a trailing comma, a bare `*` and an attribute are all valid
+  Ruby targets. `for` takes none but plain targets, so
+  `for i, *r in`, `for i, (j, k) in`, `for i, in` and `for o.t in`
+  fail too. Confirmed by `spec/scripts/rubyspec/for.rb` and by
+  probing. Fix: `parse_multi_assign` and `emit_store`, then
+  `deal_targets` for the nesting; `for` could compile its targets as
+  a multiple assignment from one block parameter.
 
 - **`class` and `module` are statements whose value is nil.** In Ruby
   each is an expression giving its body's last value:
@@ -103,10 +107,12 @@ still roughly ordered by how cheap/independent the fix is.
   `spec/scripts/rubyspec/for.rb`, whose test ends with `true` until
   this is fixed, and by probing.
 
-- **`return`, `break` and `next` take one value.** `return 1, 2` and
-  `next 1, 2, 3` raise P002 at the comma; Ruby collects the values
+- **`return`, `break` and `next` take one value.** `return 1, 2`,
+  `next 1, 2, 3` and `return *a` raise P002; Ruby collects the values
   into an Array. `parse_return` and `parse_break` read one expression.
-  Confirmed by `spec/scripts/rubyspec/next.rb` and by probing.
+  Confirmed by `spec/scripts/rubyspec/next.rb` and by probing. Fix:
+  `parse_multi_rhs`, which gathers values and splats as an assignment's
+  right-hand side does.
 
 - **`super` takes no block.** `super { break 1 }` and `super do ... end`
   raise P002, and in `super() { 2 }` the `{` is read as a Hash
@@ -135,16 +141,6 @@ still roughly ordered by how cheap/independent the fix is.
   `Object.const_defined?(:Float)` is separate work, an ordinary native
   method.
 
-- **Leading-dot line continuation for a method chain isn't supported**
-  (`obj\n  .method\n  .method` — real Ruby 1.9+ syntax) — raises P002
-  (`.` can't start an expression here) rather than parsing. Found
-  2026-08-24 writing a multi-line `Legate::Stream` chain spec.
-  Genuinely common, readable Ruby style for a chain of 3+ calls, and
-  the kind of thing an LLM trained on real-world Ruby would reach for
-  by default — worth fixing since a script author hitting this gets a
-  parse error on ordinary-looking code, not silent wrongness, but
-  still a real everyday-syntax gap.
-
 - **`%W[]`/`%I[]` (interpolating word/symbol arrays) and `%q`/`%Q`/`%r`
   (the general delimited-literal forms) aren't supported — only plain
   `%w[]`/`%i[]` are.** Added 2026-08-19 alongside `%w[]`/`%i[]` itself
@@ -170,26 +166,7 @@ still roughly ordered by how cheap/independent the fix is.
   (`{ break; }`) until this is fixed. Fix: add `RBrace`, `KwEnd` and
   `KwElse` to that list.
 
-- **`&:symbol` proc-shorthand (`arr.map(&:length)`) isn't supported —
-  `&` can't start an expression there at all (P002).** Found
-  2026-08-26 writing a `Legate.lines` spec, reaching for
-  `.map(&:length)` out of habit and hitting a hard parse error rather
-  than a wrong answer. Common enough to matter: it's arguably THE most
-  reached-for block shorthand in idiomatic Ruby, ahead even of a
-  one-line `{ |x| x.foo }`, for exactly the "call one method on every
-  element" shape that turns up constantly in `Legate::Stream` chains
-  (`.select { }.map(&:foo)`-style code) — an LLM writing natural Ruby
-  will reach for this by default, same "everyday syntax block" bar
-  the leading-dot-chaining entry above was promoted on. Likely lands
-  as sugar at the parser/AST level: `&:name` desugars to the same
-  shape as a literal `{ |x| x.name }` block/`Proc` (real Ruby's
-  `Symbol#to_proc`), so — depending how block-arg-passing is
-  structured today — this may be closer to "recognize `&` followed by
-  a Symbol literal and synthesize the equivalent block AST node" than
-  new runtime machinery. Not yet traced to the exact parser callsite
-  (wherever `&blockarg` is currently parsed at a call site) or
-  confirmed whether `Proc`/`Symbol#to_proc` already exist as a target
-  to desugar onto.
+- **Do `class`/`module` bodies want the same implicit `rescue`/`else`/
   `ensure` treatment `def` bodies just got?** Open question, not a
   confirmed gap — flagged 2026-08-10 when `def`'s own version shipped
   (see `DEVELOPMENT.md`'s "Method-body (implicit) rescue" section).
@@ -230,39 +207,68 @@ still roughly ordered by how cheap/independent the fix is.
   the SAME copy) — a genuinely different shape from `AttrAssign`, not
   a small extension to it.
 
-- **Call-site splat/double-splat expansion (`foo(*args)`,
-  `foo(**opts)`), and `def foo(...); bar(...); end` argument-forwarding
-  shorthand.** Def-site `*args` collection already works; what's
-  missing is *spreading* an existing array/hash back out at a call
-  site — needed for delegation/wrapper patterns ("call this other
-  method with whatever I was given"), a common shape in agent-
-  generated code. Not yet traced to specific parser/compiler locations.
-  The `...` forwarding shorthand (found 2026-08-05 in the mruby
-  full-repo sweep, `test/t/syntax.rb`'s "argument forwarding") is
-  real Ruby 2.7+ sugar over the same underlying capability — once
-  call-site splat/double-splat exists, `...` is a terser spelling of
-  `(*args, **kwargs, &blk)`, not a separate mechanism; worth
-  implementing together or `...` shortly after, not as an independent
-  design question. The splat is missing everywhere outside a
-  parameter list, not only at a call site: `when *a`, `[0, *a]` and
-  `x, y = *a` raise P002 too (confirmed by
-  `spec/scripts/rubyspec/case.rb` and by probing).
+- **No `**opts` parameter, and no `...` forwarding.** `def f(**opts)`
+  raises P001, so a method can't collect keywords it doesn't name, and
+  a double splat's keys must be Symbols (R012). `def f(...); g(...);
+  end` doesn't parse either; it is Ruby's spelling of
+  `(*args, **opts, &blk)`, so it follows once a keyword-rest and a
+  block parameter exist. Fix: a keyword-rest Param that `bind_args`
+  fills with a Hash of the keywords no other parameter takes.
+
+- **Keywords never become a positional Hash.** Ruby passes keywords
+  to a method that declares none as a trailing positional Hash:
+  `def f(h) = h; f(a: 1)` gives `{a: 1}`, and so does `f(**{a: 1})`.
+  `check_unknown_keywords!` raises R012 instead. Predicted by reading
+  the code. Fix: in `bind_args`, for a method with no keyword or
+  keyword-rest parameter, append the keywords to the positional
+  arguments as one Hash with Symbol keys.
+
+- **`super` and `yield` take no keywords.** `super(k: 1)`,
+  `super(**opts)` and `yield k: 1` raise P001 or P002, since
+  `parse_paren_positional_args` and `parse_bare_positional_args` read
+  positional arguments only, and SuperNode and YieldNode hold no
+  keywords. Predicted by reading the code. Fix: parse them as a call's
+  arguments are, and stage them as `compile_kwargs` does.
+
+- **A splat is accepted only where a list spreads it.** Call arguments,
+  `yield` and `super` arguments, Array literals, an assignment's values
+  and `when` lists take `*x`; an index (`a[*i]`), a `rescue` list
+  (`rescue *ERRORS`) and an index assignment's value (`h[k] = *a`)
+  raise P002, as Ruby does not. Predicted by reading the code. Fix:
+  `parse_splat` at each site, then `compile_spread` and a spread index.
 - **An operator Symbol right after `:` in a ternary lexes as a Symbol.**
   The lexer reads `:+`, `:<=>` and the other operator Symbols wherever
   an expression can start, so `x ? a :-1` lexes `:-` as a Symbol and
   fails to parse. Ruby reads it as a ternary. Spacing it as
   `x ? a : -1` works. The fix is tracking an open `?` in the lexer.
 
-- **`raise`/`super` don't get the same space-before-`(` fix
-  `parse_identifier_or_call` got.** Flagged 2026-07-26 while fixing
-  `eq (6/3), 2` (see `DEVELOPMENT.md`'s Parser section) — `parse_raise`
-  and `parse_super` (`parser.cr`) both still have the identical
-  unconditional `if at_kind?(TokenKind::LParen)` pattern that bug was
-  in, so `raise (x), y`-shaped code would misparse the same way.
-  Deliberately not fixed alongside the reported bug (would have
-  silently widened that session's scope); pick up using
-  `Token#space_before?` the same way `parse_identifier_or_call` does,
-  if ever actually hit.
+- **`raise`, `super` and `yield` read a spaced `(` as their argument
+  list.** `parse_raise`, `parse_super` and `parse_yield` take any `(`
+  after the keyword as the start of the argument list, so
+  `raise (x), y` is predicted to misparse. `parse_identifier_or_call`
+  reads `name (x), y` as a bare call whose first argument is `(x)`, as
+  Ruby does (DEVELOPMENT.md, Parser). Predicted by reading the code.
+  Fix: the same `Token#space_before?` test.
+
+- **`x -1` after a local `x` is read as a call.** In Ruby a local
+  before `-1` or `+1` makes the sign binary, so `x = 5; x -1` is 4.
+  `parse_identifier_or_call` checks `known_local?` before `[`, `&` and
+  `*`, but not before `signed_literal_starts_bare_call?`, so it builds
+  a call of `x` with `-1`, which raises NoMethodError. Predicted by
+  reading the code. Fix: the same `known_local?` test.
+
+- **`and` and `or` are accepted where Ruby's grammar takes an `arg`.**
+  `when` lists, `return`, `next` and `break` values, Array and Hash
+  literal elements, index arguments, parameter defaults and `rescue`
+  class lists are parsed at precedence 0, so `when 1 or 2`,
+  `return a or b`, `[a or b]`, `h[a or b]`, `def f(x = a or b)` and
+  `rescue A or B` run where Ruby raises a SyntaxError. No program Ruby
+  accepts runs differently, so this only lets a mistaken script run.
+  Predicted by reading the code. Fix: `parse_positional_arg`, which
+  calls, `yield`, `super` and `raise` already use, in `parse_case`,
+  `parse_return`, `parse_break`, `parse_array_literal`,
+  `parse_hash_or_block_brace`, `parse_postfix`'s index branch,
+  `parse_param` and `parse_rescue_clause`.
 - **`for`/`while`'s do-ambiguity fix pattern not applied elsewhere.** The
   `@no_do_block` suppression flag (parser.cr) fixing `for x in a do`/
   `while cond do` mis-parsing was scoped to those two constructs. The
@@ -660,7 +666,29 @@ section).
   member, and the manifest's vocabulary must not depend on which
   providers are present.
 
+### Risk-flow tracking
+
+- **A branch decided by a labelled value leaves no record.** Adjutant
+  tracks explicit flows only (`research/IFC_DESIGN.md`), so `hit = c if
+  secrets.include?(c)` followed by sending `hit` leaks through control
+  flow, though nothing labelled leaves. `Op::JumpIfFalse` and
+  `Op::JumpIfTrue` record nothing in the risk-flow log, so not even an
+  audit after the run shows it. Fix: record a `Branch` event when a
+  conditional jump pops a labelled value, ideally one entry per line and
+  label with a count, since a loop repeats it. A record for review, not
+  a prompt: many scripts legitimately branch on sensitive data.
+
 ### Static risk assessment
+
+- **Calls a script makes implicitly are not walked.** RiskWalker walks
+  a script method's body where a call names it, so a method reached
+  without a call by name escapes it: a splat's `to_a`, an
+  interpolation's `to_s`, an operator a script class defines. A
+  `to_a` that reads a file shows no risk at `[*obj]`. The Broker still
+  enforces grants when it runs. Predicted by reading the code. Fix:
+  where the receiver's type is known, walk the conversion or operator
+  method it would reach. What to report where it isn't is open, since
+  nearly every interpolation would qualify.
 
 - **LEGATE.md §10's static analyser isn't built.** No grant
   inference, exception gate, inclusion ledger or raise-set inference

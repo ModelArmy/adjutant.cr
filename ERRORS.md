@@ -29,17 +29,20 @@ The letter describes the problem, not the part of Adjutant that noticed it.
 ## What an error looks like
 
 ```
-error[U001]: block parameter capture (`&blk`) is not supported
+error[U001]: a block can't be a value (`&blk`)
 script.rb:1:9
 1 | def foo(&blk)
   |         ^^^^
   |         not usable as a value
-why:  A block passed to a method can only be run synchronously, via
-      `yield`, inside the call it was passed to. It never becomes a value,
-      so it cannot be bound to the parameter `blk`, stored, returned, or
-      called later.
-help: Run the block with `yield` inside `foo`, or take a lambda as an
-      ordinary parameter and call it with `.call`.
+why:  A block runs only through `yield`, inside the call it was passed
+      to. It never becomes a value, so a parameter can't capture it to
+      store, return or call later, and a call can't be given one from a
+      variable or a lambda. Only a Symbol literal, as in `&:name`, stands
+      for a block.
+help: Inside a method, run the block with `yield`. When calling `foo`,
+      write the block out, or use `&:name` for a block that calls one
+      method. A lambda can be passed as an ordinary argument and called
+      with `.call`.
 ```
 
 Not every error has all of these. Some carry no source location, because
@@ -71,6 +74,7 @@ P005|A `begin` block can have only one `else` clause|—
 P006|Parameters out of Ruby's order                 |`name`                          
 P007|Two parameters with the same name              |`name`                          
 P008|A non-associative operator chained             |`operator`                      
+P009|A call given a block argument and a block      |`method`                        
 
 P003 points at two places: where the parser ran out of input, and the
 `def`, `class`, `if`, or other construct that was never closed. The second
@@ -121,7 +125,7 @@ R020|`Range#step` called with a step of 0                               |—
 R021|Invalid regex pattern                                              |`reason`                                   
 R022|A Regexp match method called with no string argument               |`method`                                   
 R023|A private method called via an explicit receiver from outside self |`method`, `target`                         
-R024|`Range#each`/`#to_a` called on a beginless range                   |`method`                                   
+R024|A Range iterated or sized from a nil or Float start                |`method`, `class`                          
 R025|`Range#step` called on a beginless range                           |—                                          
 R026|`Range#to_a` called on an endless range                            |—                                          
 R027|`Range#max` called on an endless range                             |—                                          
@@ -157,6 +161,12 @@ R056|An Array joined that contains itself                               |—
 R057|A MatchData group name the pattern lacks                           |`name`                                     
 R058|`clamp` given a minimum above its maximum                          |—                                          
 R059|A superclass that isn't a class                                    |`value`                                    
+R060|Zero raised to a negative Integer power                            |—                                          
+R061|`Range#max` of an exclusive range with a non-Integer end           |—                                          
+R062|`Range#max` of an exclusive range with a non-Integer start         |—                                          
+R063|`to_a`, `to_ary` or `to_hash` giving the wrong type                |`class`, `type`, `method`, `result`        
+R064|`raise` given something that is not an exception or a String       |—                                          
+R065|A double splat (`**x`) of a value with no `to_hash`                |`class`                                    
 
 Scripts can `rescue` these. R008 raises a `NameError`, matching Ruby;
 R011, R012, R015, and R018 raise `ArgumentError`, also matching Ruby;
@@ -170,8 +180,9 @@ R041, R042, R043, R044, R045, and R046 raise an `ArgumentError`, also
 matching Ruby; R047 raises a `NoMethodError`, R048 a `TypeError`, R049
 and R050 an `IndexError`, R051 a `RangeError`, R052 a `FrozenError`,
 R053, R054 and R055 a `TypeError`, R056 and R058 an `ArgumentError`,
-and R057 an `IndexError`, all matching Ruby; the rest raise
-`RuntimeError`.
+R057 an `IndexError`, R059, R061, R062, R063, R064 and R065 a
+`TypeError`, and R060 a `ZeroDivisionError`, all matching Ruby; the rest
+raise `RuntimeError`.
 
 Adjutant's constants are assign-once, which Ruby only warns about. R001 is
 that rule firing on an ordinary constant; reopening a class or module is
@@ -213,7 +224,7 @@ alternative in [UNSUPPORTED.md](./UNSUPPORTED.md).
 
 Code|Construct                                       |Placeholders     
 ----|------------------------------------------------|-----------------
-U001|`&blk` parameter capture                        |`param`, `method`
+U001|A block as a value (`&blk`, `&fn`)              |`param`, `method`
 U002|`Class.new` / `Module.new`                      |`class`          
 U003|Reopening a class or module                     |`name`           
 U004|Defining a method inside another method         |`definition`     
@@ -238,6 +249,7 @@ U022|Enumerator (a call without its block)           |`method`
 U023|Flip-flop (a range as a condition)              |—                
 U024|A method for one object (`def obj.name`)        |`receiver`       
 U025|An Integer outside 64 bits                      |—                
+U026|A Rational or Complex result                    |`kind`           
 
 U005 and U006 are reported when a name that would resolve to one of them
 resolves to nothing else. A script is still free to define its own method

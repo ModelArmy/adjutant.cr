@@ -40,6 +40,11 @@ module Adjutant
     # needs its parentheses.
     @no_pipe = false
 
+    # While true, `x[i] =` leaves its `=` to the multiple assignment
+    # whose target `x[i]` is. Set while parsing a target after the
+    # first: `b, x[0] = 5, 9`.
+    @parsing_target = false
+
     # The bare names known as locals in each open scope, used only to
     # parse `name [x]`: indexing if `name` is a local, otherwise a call
     # with an array argument, as in Ruby. A name becomes a local when
@@ -343,10 +348,11 @@ module Adjutant
     # An expression that may be followed by a modifier (if/unless/while/until).
     # Modifiers are checked AFTER assignment so `x -= 1 while x > 0` works.
     private def parse_expr_statement : Node
-      expr = parse_expression(0)
+      expr = at_kind?(TokenKind::Star) ? parse_splat_target : parse_expression(0)
       # A `,` after a statement's first expression can only begin a
-      # multiple assignment's target list: `a, b = ...`.
-      result = at_kind?(TokenKind::Comma) ? parse_multi_assign(expr) : expr
+      # multiple assignment's target list: `a, b = ...`. A splat target
+      # begins one too: `*init, last = ...`.
+      result = at_kind?(TokenKind::Comma) || expr.is_a?(Splat) ? parse_multi_assign(expr) : expr
       l, c = result.line, result.column
       case current_kind
       when TokenKind::KwIf
@@ -387,7 +393,7 @@ module Adjutant
         register_local_if_identifier(lhs)
         Assign.new(lhs, rhs, l, c)
       when TokenKind::PlusEq, TokenKind::MinusEq, TokenKind::StarEq,
-           TokenKind::SlashEq, TokenKind::PercentEq
+           TokenKind::SlashEq, TokenKind::PercentEq, TokenKind::StarStarEq
         op = advance.kind
         base_op = compound_base_op(op)
         rhs = parse_expression(PREC_AND_OR)
@@ -412,37 +418,67 @@ module Adjutant
       targets = [first] of Node
       while match(TokenKind::Comma)
         skip_newlines
-        targets << parse_expression(0, resolve_assignment: false)
+        # One splat target at most, as in Ruby: a second `*` can't
+        # start a target, so raises P002.
+        targets << (targets.none?(Splat) && at_kind?(TokenKind::Star) ? parse_splat_target : parse_target)
       end
       expect(TokenKind::Eq)
-      rhs = parse_multi_rhs
-      values = rhs.is_a?(ArrayLiteral) ? rhs.elements : [rhs]
-      targets.each { |target| register_local_if_identifier(target) }
+      values = parse_rhs_values
+      targets.each { |target| register_local_if_identifier(target.is_a?(Splat) ? target.value : target) }
       MultiAssign.new(targets, values, l, c)
+    end
+
+    # Parses a multiple assignment's target after the first, leaving
+    # the `=` that follows it to the multiple assignment.
+    private def parse_target : Node
+      saved = @parsing_target
+      begin
+        @parsing_target = true
+        parse_expression(0, resolve_assignment: false)
+      ensure
+        @parsing_target = saved
+      end
+    end
+
+    # Parses a splat target, `*target`, from its `*`: it takes the
+    # values the other targets leave, as an Array.
+    private def parse_splat_target : Splat
+      l, c = line, col
+      advance # the `*`
+      Splat.new(parse_target, l, c)
     end
 
     private def compound_base_op(op : TokenKind) : TokenKind
       case op
-      when TokenKind::PlusEq    then TokenKind::Plus
-      when TokenKind::MinusEq   then TokenKind::Minus
-      when TokenKind::StarEq    then TokenKind::Star
-      when TokenKind::SlashEq   then TokenKind::Slash
-      when TokenKind::PercentEq then TokenKind::Percent
-      else                           op
+      when TokenKind::PlusEq     then TokenKind::Plus
+      when TokenKind::MinusEq    then TokenKind::Minus
+      when TokenKind::StarEq     then TokenKind::Star
+      when TokenKind::StarStarEq then TokenKind::StarStar
+      when TokenKind::SlashEq    then TokenKind::Slash
+      when TokenKind::PercentEq  then TokenKind::Percent
+      else                            op
       end
     end
 
-    # Parse a comma-separated rhs; wraps in MultiAssign if needed.
+    # Parses an assignment's right-hand side: one value, or several, or
+    # a splat, which are gathered into an ArrayLiteral as Ruby gathers
+    # them into an Array (`x = 1, 2`, `x = *a`).
     private def parse_multi_rhs : Node
-      first = parse_expression(PREC_AND_OR)
-      return first unless at_kind?(TokenKind::Comma)
-      values = [first] of Node
+      values = parse_rhs_values
+      first = values.first
+      return first if values.size == 1 && !first.is_a?(Splat)
+      ArrayLiteral.new(values, first.line, first.column)
+    end
+
+    # Parses an assignment's right-hand side as the values written: one,
+    # or several separated by commas, any of them a splat.
+    private def parse_rhs_values : Array(Node)
+      values = [parse_positional_arg] of Node
       while match(TokenKind::Comma)
         skip_newlines
-        values << parse_expression(PREC_AND_OR)
+        values << parse_positional_arg
       end
-      # Wrap as an array literal used as multi-rhs
-      ArrayLiteral.new(values, first.line, first.column)
+      values
     end
 
     # --- Pratt expression parser --------------------------------------------
@@ -480,7 +516,13 @@ module Adjutant
       TokenKind::Star      => 12,
       TokenKind::Slash     => 12,
       TokenKind::Percent   => 12,
+      TokenKind::StarStar  => POW_PREC,
     }
+
+    # The precedence of `**`, the tightest binary operator. It groups to
+    # the right, and binds tighter than unary minus but looser than `!`,
+    # `~` and unary `+`.
+    POW_PREC = 13
 
     # The precedence of `and` and `or`. An assignment's right-hand
     # side, a call's arguments, a ternary's branches and `not`'s
@@ -503,7 +545,8 @@ module Adjutant
     private def assignment_token?(kind : TokenKind) : Bool
       kind.in?(
         TokenKind::Eq, TokenKind::PlusEq, TokenKind::MinusEq, TokenKind::StarEq,
-        TokenKind::SlashEq, TokenKind::PercentEq, TokenKind::OrAssign, TokenKind::AndAssign
+        TokenKind::SlashEq, TokenKind::PercentEq, TokenKind::StarStarEq, TokenKind::OrAssign,
+        TokenKind::AndAssign
       )
     end
 
@@ -545,10 +588,25 @@ module Adjutant
 
         advance
         skip_newlines
-        right = parse_expression(prec)
+        right = parse_expression(right_operand_precedence(op_tok.kind, prec))
         left = Binary.new(op_tok.kind, left, right, op_tok.line, op_tok.column)
       end
       left
+    end
+
+    # The precedence a binary operator's right operand must exceed. `**`
+    # groups to the right, so its right operand may hold another.
+    private def right_operand_precedence(kind : TokenKind, prec : Int32) : Int32
+      kind == TokenKind::StarStar ? prec - 1 : prec
+    end
+
+    # `base ** exponent` when `**` follows `base`, else `base`: for unary
+    # minus, which binds looser than `**`.
+    private def parse_power(base : Node) : Node
+      return base unless at_kind?(TokenKind::StarStar)
+      op_tok = advance
+      skip_newlines
+      Binary.new(TokenKind::StarStar, base, parse_expression(POW_PREC - 1), op_tok.line, op_tok.column)
     end
 
     private def chained_operator_error(op_tok : Token) : ParseError
@@ -567,6 +625,12 @@ module Adjutant
       )
     end
 
+    # An Integer or Float literal from the numeric token `tok`, spelled
+    # `lexeme`.
+    private def number_literal(tok : Token, lexeme : String, l : Int32 = tok.line, c : Int32 = tok.column) : Node
+      tok.kind == TokenKind::Integer ? IntLiteral.new(lexeme, l, c) : FloatLiteral.new(lexeme, l, c)
+    end
+
     private def parse_unary : Node
       l, c = line, col
       case current_kind
@@ -581,15 +645,14 @@ module Adjutant
         # negates the result of the call.
         if (current_kind == TokenKind::Integer || current_kind == TokenKind::Float) && !@current.space_before?
           lit_tok = advance
-          negated_lexeme = "-" + lit_tok.lexeme
-          literal = if lit_tok.kind == TokenKind::Integer
-                      IntLiteral.new(negated_lexeme, minus_l, minus_c)
-                    else
-                      FloatLiteral.new(negated_lexeme, minus_l, minus_c)
-                    end
-          parse_postfix(literal)
+          # Ruby negates after the power when `**` follows the literal
+          # directly: `-2 ** 2` is `-(2 ** 2)`.
+          if at_kind?(TokenKind::StarStar)
+            return Unary.new(TokenKind::Minus, parse_power(number_literal(lit_tok, lit_tok.lexeme)), minus_l, minus_c)
+          end
+          parse_postfix(number_literal(lit_tok, "-" + lit_tok.lexeme, minus_l, minus_c))
         else
-          Unary.new(TokenKind::Minus, parse_unary, minus_l, minus_c)
+          Unary.new(TokenKind::Minus, parse_power(parse_unary), minus_l, minus_c)
         end
       when TokenKind::Plus
         # Unary `+`, `!` and `~`, Ruby's tightest tier. Unlike `-`,
@@ -626,8 +689,9 @@ module Adjutant
           advance
           method_tok = @current
           advance
-          args, kwargs, blk = receiver_call_takes_bare_args? ? parse_bare_args_and_block : parse_call_args_and_block
-          node = Call.new(node, method_tok.lexeme, args, blk, safe, l, c, kwargs: kwargs)
+          method = method_tok.lexeme
+          args, kwargs, blk = receiver_call_takes_bare_args? ? parse_bare_args_and_block(method) : parse_call_args_and_block(method)
+          node = Call.new(node, method, args, blk, safe, l, c, kwargs: kwargs)
         when TokenKind::ColonColon
           advance
           name_tok = @current
@@ -644,9 +708,9 @@ module Adjutant
           length = match(TokenKind::Comma) ? parse_expression(0) : nil
           expect(TokenKind::RBracket)
           safe = false
-          if at_kind?(TokenKind::Eq)
+          if at_kind?(TokenKind::Eq) && !@parsing_target
             advance
-            val = parse_expression(0)
+            val = parse_expression(PREC_AND_OR)
             node = IndexAssign.new(node, idx, val, l, c, length)
           else
             node = Index.new(node, idx, safe, l, c, length)
@@ -804,6 +868,21 @@ module Adjutant
         @current.space_before? && operand_immediately_follows?
     end
 
+    # Whether the current `*` starts a bare call's splat argument rather
+    # than multiplying: space before it and none after (`puts *lines`),
+    # as for `-` and `&`. `a * b` and `a*b` multiply.
+    private def splat_starts_bare_call? : Bool
+      at_kind?(TokenKind::Star) && @current.space_before? && operand_immediately_follows?
+    end
+
+    # Whether the current `*` or `**` starts a bare call's splat or
+    # double splat rather than multiplying or raising to a power: space
+    # before it and none after, as for `-` and `&`.
+    private def spread_starts_bare_call? : Bool
+      (at_kind?(TokenKind::Star) || at_kind?(TokenKind::StarStar)) &&
+        @current.space_before? && operand_immediately_follows?
+    end
+
     # Parses a bare identifier as a local variable or a method call.
     private def parse_identifier_or_call(l : Int32, c : Int32) : Node
       tok = advance
@@ -812,7 +891,7 @@ module Adjutant
         # `name(...)`: its own argument list. With a space before the
         # `(`, as in `eq (6/3), 2`, the parenthesized expression is the
         # first argument of a bare call instead.
-        args, kwargs, blk = parse_call_args_and_block
+        args, kwargs, blk = parse_call_args_and_block(name)
         Call.new(nil, name, args, blk, false, l, c, kwargs: kwargs)
       elsif block_follows_no_paren?
         blk = parse_block
@@ -821,6 +900,15 @@ module Adjutant
         # `name [x]`: indexing if `name` is a local, otherwise a call
         # with an array argument, as in Ruby.
         known_local?(name) ? Identifier.new(name, l, c) : parse_bare_call_args(name, l, c)
+      elsif block_arg_follows_no_paren? && !known_local?(name)
+        # `name &:sym`: a block argument, unless `name` is a local,
+        # when the `&` is binary, as in Ruby.
+        parse_bare_call_args(name, l, c)
+      elsif spread_starts_bare_call? && !known_local?(name)
+        # `name *x` or `name **x`: a splat argument, unless `name` is a
+        # local, when the `*` multiplies and `**` raises to a power, as
+        # in Ruby.
+        parse_bare_call_args(name, l, c)
       elsif signed_literal_starts_bare_call?
         # `name -x` or `name +x`; see
         # `signed_literal_starts_bare_call?`.
@@ -836,22 +924,22 @@ module Adjutant
     # Parses a bare call's comma-separated arguments and optional
     # block.
     private def parse_bare_call_args(name : String, l : Int32, c : Int32) : Call
-      args, kwargs, blk = parse_bare_args_and_block
+      args, kwargs, blk = parse_bare_args_and_block(name)
       Call.new(nil, name, args, blk, false, l, c, kwargs: kwargs)
     end
 
     # Parses comma-separated arguments without parentheses, then an
-    # optional block.
-    private def parse_bare_args_and_block : {Array(Node), Array({String, Node}), BlockNode?}
+    # optional block. `method` is the called method's name, for
+    # diagnostics.
+    private def parse_bare_args_and_block(method : String) : {Array(Node), Array({String, Node}), BlockNode?}
       args = [] of Node
       kwargs = [] of {String, Node}
-      parse_call_arg(args, kwargs)
-      while match(TokenKind::Comma)
+      block_arg = parse_call_arg_or_block_arg(args, kwargs, method)
+      while block_arg.nil? && match(TokenKind::Comma)
         skip_newlines
-        parse_call_arg(args, kwargs)
+        block_arg = parse_call_arg_or_block_arg(args, kwargs, method)
       end
-      blk = parse_block if block_follows_no_paren?
-      {args, kwargs, blk}
+      {args, kwargs, parse_trailing_block(block_arg, method)}
     end
 
     # Whether a call with a receiver takes arguments without
@@ -861,7 +949,15 @@ module Adjutant
     private def receiver_call_takes_bare_args? : Bool
       return false unless @current.space_before?
       return false if at_kind?(TokenKind::LParen)
-      signed_literal_starts_bare_call? || arg_follows_no_paren?
+      signed_literal_starts_bare_call? || spread_starts_bare_call? || block_arg_follows_no_paren? ||
+        arg_follows_no_paren?
+    end
+
+    # Whether the current `&` starts a block argument without
+    # parentheses, as in `items.map &:upcase`: a space before it and
+    # none after. `a & b` and `a&b` are binary, as in Ruby.
+    private def block_arg_follows_no_paren? : Bool
+      at_kind?(TokenKind::Amp) && @current.space_before? && !@next.space_before?
     end
 
     private def block_follows_no_paren? : Bool
@@ -911,35 +1007,108 @@ module Adjutant
     # a ternary's `? a : b` out. An argument stops before `and` and
     # `or`, as in Ruby, so `save x or raise` is `(save x) or raise`.
     private def parse_call_arg(args : Array(Node), kwargs : Array({String, Node})) : Nil
-      if at_kind?(TokenKind::Identifier) && peek_kind == TokenKind::Colon
+      if at_kind?(TokenKind::StarStar)
+        kwargs << {"**", parse_double_splat}
+      elsif at_kind?(TokenKind::Identifier) && peek_kind == TokenKind::Colon
         name = advance.lexeme
         advance # the Colon
         kwargs << {name, parse_expression(PREC_AND_OR)}
       else
-        args << parse_expression(PREC_AND_OR)
+        args << parse_positional_arg
       end
     end
 
-    private def parse_call_args_and_block : {Array(Node), Array({String, Node}), BlockNode?}
+    # Parses one positional argument, which stops before `and` and `or`
+    # as an argument does in Ruby: `yield x or y` is `(yield x) or y`,
+    # and `f(a or b)` raises. A `*` starts a splat.
+    private def parse_positional_arg : Node
+      at_kind?(TokenKind::Star) ? parse_splat : parse_expression(PREC_AND_OR)
+    end
+
+    # Parses `**value` from its `**`. The value is an argument, so it
+    # stops before `and` and `or`.
+    private def parse_double_splat : DoubleSplat
+      l, c = line, col
+      advance # the `**`
+      DoubleSplat.new(parse_expression(PREC_AND_OR), l, c)
+    end
+
+    # Parses `*value` from its `*`. The value is an argument, so it
+    # stops before `and` and `or`.
+    private def parse_splat : Splat
+      l, c = line, col
+      advance # the `*`
+      Splat.new(parse_expression(PREC_AND_OR), l, c)
+    end
+
+    # Parses a call's parenthesized arguments, if any, then an optional
+    # block. `method` is the called method's name, for diagnostics.
+    private def parse_call_args_and_block(method : String) : {Array(Node), Array({String, Node}), BlockNode?}
       args = [] of Node
       kwargs = [] of {String, Node}
-      blk = nil
+      block_arg = nil
       if at_kind?(TokenKind::LParen)
         advance
         skip_newlines
         unless at_kind?(TokenKind::RParen)
-          parse_call_arg(args, kwargs)
-          while match(TokenKind::Comma)
+          block_arg = parse_call_arg_or_block_arg(args, kwargs, method)
+          while block_arg.nil? && match(TokenKind::Comma)
             skip_newlines
             break if at_kind?(TokenKind::RParen)
-            parse_call_arg(args, kwargs)
+            block_arg = parse_call_arg_or_block_arg(args, kwargs, method)
           end
         end
         skip_newlines
         expect(TokenKind::RParen)
       end
-      blk = parse_block if block_follows_no_paren?
-      {args, kwargs, blk}
+      {args, kwargs, parse_trailing_block(block_arg, method)}
+    end
+
+    # Parses one call argument as `parse_call_arg` does, unless it is a
+    # block argument (`&:name`), which it returns instead. A block
+    # argument ends the list, so an argument after it raises P001.
+    private def parse_call_arg_or_block_arg(args : Array(Node), kwargs : Array({String, Node}),
+                                            method : String) : BlockNode?
+      return parse_block_arg(method) if at_kind?(TokenKind::Amp)
+      parse_call_arg(args, kwargs)
+      nil
+    end
+
+    # Parses a block argument from its `&`. Only a Symbol literal can
+    # stand for a block, as `SymbolProcCall.block`; anything else would
+    # pass a block as a value, which raises U001.
+    private def parse_block_arg(method : String) : BlockNode
+      l, c = line, col
+      advance # the `&`
+      tok = @current
+      if tok.kind == TokenKind::Symbol
+        sym = parse_symbol_literal(advance, tok.line, tok.column)
+        return SymbolProcCall.block(sym.value, l, c) if sym.is_a?(SymbolLiteral)
+      end
+      raise ParseError.new(
+        Diagnostic.new(
+          code: "U001",
+          primary: Span.new(line: l, column: c, length: tok.lexeme.size + 1, label: "not usable as a block"),
+          data: {"method" => method, "param" => tok.lexeme}
+        )
+      )
+    end
+
+    # Parses the literal block after a call's arguments, if there is
+    # one, and returns it or else `block_arg`. A call given both raises
+    # P009.
+    private def parse_trailing_block(block_arg : BlockNode?, method : String) : BlockNode?
+      return block_arg unless block_follows_no_paren?
+      if block_arg
+        raise ParseError.new(
+          Diagnostic.new(
+            code: "P009",
+            primary: Span.new(line: line, column: col, length: caret_width(@current), label: "a second block"),
+            data: {"method" => method}
+          )
+        )
+      end
+      parse_block
     end
 
     private def parse_block : BlockNode
@@ -1040,7 +1209,7 @@ module Adjutant
       elements = [] of Node
       skip_newlines
       until at_kind?(TokenKind::RBracket) || at_kind?(TokenKind::EOF)
-        elements << parse_expression(0)
+        elements << (at_kind?(TokenKind::Star) ? parse_splat : parse_expression(0))
         skip_newlines
         break unless match(TokenKind::Comma)
         skip_newlines
@@ -1053,18 +1222,21 @@ module Adjutant
       # A `{` in expression position is always a hash literal; a
       # block's `{` is consumed where a call is parsed.
       expect(TokenKind::LBrace)
-      pairs = [] of {Node, Node}
+      entries = [] of Node
       skip_newlines
       until at_kind?(TokenKind::RBrace) || at_kind?(TokenKind::EOF)
-        key = parse_hash_key
-        val = parse_expression(0)
-        pairs << {key, val}
+        if at_kind?(TokenKind::StarStar)
+          entries << parse_double_splat
+        else
+          key = parse_hash_key
+          entries << HashPair.new(key, parse_expression(0), key.line, key.column)
+        end
         skip_newlines
         break unless match(TokenKind::Comma)
         skip_newlines
       end
       expect(TokenKind::RBrace)
-      HashLiteral.new(pairs, l, c)
+      HashLiteral.new(entries, l, c)
     end
 
     # Parses a hash entry's key and its separator: `key => val` with
@@ -1199,6 +1371,9 @@ module Adjutant
 
     private def parse_param : Param
       l, c = line, col
+      # A double splat (`**opts`) isn't supported; without this the `**`
+      # would be read as the parameter's name.
+      raise unexpected_token(TokenKind::Identifier) if at_kind?(TokenKind::StarStar)
       if at_kind?(TokenKind::Star)
         advance
         name = @current.lexeme
@@ -1434,10 +1609,10 @@ module Adjutant
       whens = [] of {Array(Node), Body}
       until at_any?(TokenKind::KwElse, TokenKind::KwEnd, TokenKind::EOF)
         expect(TokenKind::KwWhen)
-        patterns = [parse_expression(0)] of Node
+        patterns = [parse_when_pattern] of Node
         while match(TokenKind::Comma)
           skip_newlines
-          patterns << parse_expression(0)
+          patterns << parse_when_pattern
         end
         skip_terminators
         match(TokenKind::KwThen)
@@ -1452,6 +1627,11 @@ module Adjutant
       end
       close_block
       CaseNode.new(subject, whens, else_branch, l, c)
+    end
+
+    # Parses one pattern of a `when` list, or a splat of patterns.
+    private def parse_when_pattern : Node
+      at_kind?(TokenKind::Star) ? parse_splat : parse_expression(0)
     end
 
     # True when `return`, `break` or `next` is followed by its optional
@@ -1497,23 +1677,11 @@ module Adjutant
       expect(TokenKind::KwYield)
       args = [] of Node
       if at_kind?(TokenKind::LParen)
-        advance
-        skip_newlines
-        until at_kind?(TokenKind::RParen) || at_kind?(TokenKind::EOF)
-          args << parse_expression(0)
-          skip_newlines
-          break unless match(TokenKind::Comma)
-          skip_newlines
-        end
-        expect(TokenKind::RParen)
-      elsif arg_follows_no_paren?
+        args = parse_paren_positional_args
+      elsif arg_follows_no_paren? || splat_starts_bare_call?
         # Without the check, `x = yield + 1` would read `+ 1` as an
         # argument.
-        args << parse_expression(0)
-        while match(TokenKind::Comma)
-          skip_newlines
-          args << parse_expression(0)
-        end
+        args = parse_bare_positional_args
       end
       YieldNode.new(args, l, c)
     end
@@ -1522,26 +1690,11 @@ module Adjutant
       l, c = line, col
       expect(TokenKind::KwSuper)
       if at_kind?(TokenKind::LParen)
-        advance
-        skip_newlines
-        args = [] of Node
-        until at_kind?(TokenKind::RParen) || at_kind?(TokenKind::EOF)
-          args << parse_expression(0)
-          skip_newlines
-          break unless match(TokenKind::Comma)
-          skip_newlines
-        end
-        expect(TokenKind::RParen)
-        SuperNode.new(args, false, l, c)
-      elsif arg_follows_no_paren?
+        SuperNode.new(parse_paren_positional_args, false, l, c)
+      elsif arg_follows_no_paren? || splat_starts_bare_call?
         # `arg_follows_no_paren?` rejects `+` and `-`, so `super + 4`
         # adds to super's result instead of passing `+4`.
-        args = [parse_expression(0)] of Node
-        while match(TokenKind::Comma)
-          skip_newlines
-          args << parse_expression(0)
-        end
-        SuperNode.new(args, false, l, c)
+        SuperNode.new(parse_bare_positional_args, false, l, c)
       else
         # Bare `super` forwards the method's current parameter values
         # (zsuper), rather than calling with no arguments.
@@ -1555,15 +1708,38 @@ module Adjutant
       advance # consume 'raise'
       args = [] of Node
       if at_kind?(TokenKind::LParen)
-        args, _kwargs, _blk = parse_call_args_and_block
-      elsif arg_follows_no_paren?
-        args << parse_expression(0)
-        while match(TokenKind::Comma)
-          skip_newlines
-          args << parse_expression(0)
-        end
+        args, _kwargs, _blk = parse_call_args_and_block("raise")
+      elsif arg_follows_no_paren? || splat_starts_bare_call?
+        args = parse_bare_positional_args
       end
       Call.new(nil, "raise", args, nil, false, l, c)
+    end
+
+    # Parses a parenthesized list of positional arguments from its `(`,
+    # for `yield` and `super`.
+    private def parse_paren_positional_args : Array(Node)
+      expect(TokenKind::LParen)
+      skip_newlines
+      args = [] of Node
+      until at_kind?(TokenKind::RParen) || at_kind?(TokenKind::EOF)
+        args << parse_positional_arg
+        skip_newlines
+        break unless match(TokenKind::Comma)
+        skip_newlines
+      end
+      expect(TokenKind::RParen)
+      args
+    end
+
+    # Parses comma-separated positional arguments without parentheses,
+    # for `yield`, `super` and `raise`.
+    private def parse_bare_positional_args : Array(Node)
+      args = [parse_positional_arg] of Node
+      while match(TokenKind::Comma)
+        skip_newlines
+        args << parse_positional_arg
+      end
+      args
     end
 
     private def parse_begin : BeginNode

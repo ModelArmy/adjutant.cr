@@ -2,7 +2,7 @@
 
 Working notes between development sessions, kept current by whoever ends a session. Not user documentation.
 
-Last updated on `main`, after `language-tests` (#84) merged.
+Last updated on `parser-gaps`, before its PR.
 
 ## How to use this document
 
@@ -38,7 +38,7 @@ Key documents: `SCOPE.md` (known defects and gaps: Must Fix, Will Fix), `LEGATE.
 
 ## 3. The evidence method [Retain]
 
-1. **Adjutant is a proper subset of Ruby.** Anything it accepts and then runs differently from Ruby is a Must Fix defect, however rare. Adding a method or form Ruby lacks also breaks the subset. A construct Ruby accepts and Adjutant rejects is either a deliberate exclusion, with a U-code in `UNSUPPORTED.md`, or a gap that raises and is logged in Will Fix; never a silent difference. Dynamic classes, modules and meta-programming are the usual candidates for exclusion, and are discussed before deciding.
+1. **Adjutant is a proper subset of Ruby.** Anything it accepts and then runs differently from Ruby is a Must Fix defect, however rare. Adding a method or form Ruby lacks also breaks the subset. A construct Ruby accepts and Adjutant rejects is either a deliberate exclusion, with a U-code in `UNSUPPORTED.md`, or a gap that raises and is logged in Will Fix; never a silent difference. Dynamic classes, modules and meta-programming are the usual candidates for exclusion, and are discussed before deciding. UNSUPPORTED.md's standing principles give the test: a construct is excluded only if supporting it adds to what a model must reason about, or it is both rare and significant work; rarity alone only sets a gap's priority.
 2. **The model writes the answer; we write the checks.** A model marking its own work agrees with its own misconceptions.
 3. **Classify every exam failure as one of three causes:** the skill was wrong, the skill was silent, or the model ignored it. Only the first two justify editing the skill. Failures that turn out to be Adjutant defects go to the runtime instead.
 4. **Predict, park, confirm.** A defect found by reading the code goes into `SCOPE.md` unfixed. It is fixed when a spec or a model hits it; for a Must Fix, write that spec first.
@@ -82,21 +82,37 @@ Key documents: `SCOPE.md` (known defects and gaps: Must Fix, Will Fix), `LEGATE.
 31. **A reason given for excluding one form applies to its siblings.** U019 excludes `proc { }` partly because its `return` must leave the enclosing method; every ordinary block had the same need, and none met it. When a U-code's reason names a missing mechanism, check what else needs that mechanism.
 32. **An edit that cuts to the next list item can take a heading with it.** Removing the last Must Fix entry by cutting to the next `- **` also removed `## Will Fix` and its first `###`, across five commits nothing noticed. Cut to the next item or heading, whichever comes first, and diff the headings afterwards.
 
+33. **A decision recorded only in a spec's name is still a decision.** Before framing a choice as new, search the specs for the behaviour it would change: "deliberate", "not an oversight", or `should be_nil` on the same methods. Several specs held an earlier "metadata stays unlabelled" rule nobody had written elsewhere; missing them cost a round of the label work.
+34. **A default branch that answers "nothing" makes every omission silent.** RiskWalker's `else` gave any node kind without a case no risk, which hid every call inside an operator, a condition or an interpolation; `exec_builtin` answers 0 for `size` on a receiver without one. List the known-safe cases explicitly and make the default the loud or conservative answer: `walk_node` now reports an unknown node kind as unresolved.
+35. **Put a rule where every case passes, with a declared opt-out beside each exception.** Labelling each native's result by hand left about forty unlabelled; `VM#label_from_inputs` labels every builtin's result at its two exits, and a method that labels its own declares `labels_own_result: true` where a reviewer sees it.
+36. **Crystal types a block's collection by what the block returns, not by the callee's declared type.** `compact_map` over a method declared `: RiskNode` that returns a `RiskChoice` gave `Array(RiskChoice)`, which then refused a `RiskSequence`. Widen inside the block with `.as(RiskNode)`.
+37. **A fix that makes an analysis see more exposes its old imprecisions in new places.** Once RiskWalker walked conditions, a variable assigned on only some paths, which its Env deleted, read as a method call in every `if found`. Fix the imprecision in the same change (`merge_envs_into`, `keep_locals`), or the fix trades hidden risk for false alarms.
+38. **Where Ruby's behaviour has corners, follow MRI's C function step for step.** `range_max` checks emptiness before exclusivity and raises two different TypeErrors; the lexer's newline case skips comment lines but not blank ones. Reading the function gave every corner the spec needed in one pass, where guessing gave them one failure at a time.
+39. **Mirror a Ruby error only where Adjutant matches the rest of Ruby's behaviour.** Ruby raises "can't iterate from X" for any range start without `succ`, but Adjutant's Strings lack `succ`, so that message would tell a model Ruby can't iterate `"a".."c"`. R024 covers only the Float and nil starts, where Ruby agrees; the String gap stays a NoMethodError, logged in Will Fix.
+
 ---
 
 ## 5. State
 
-`main` carries `language-tests` (#84), which added Ruby's own specification to the script tests and fixed what it found, and, from #83, the worker and Supervisor, with a held pipe unable to hang the Supervisor (DEVELOPMENT.md, The Supervisor's fibers).
+`parser-gaps` carries over twenty commits beyond `main`, still open, to merge as one PR once the splat work below is done or split off. The parser gaps on it were chosen by what models write, not by how many imported tests they unblock: each SKILL.md §1 redirect line records a model reaching for the construct, and supporting it deletes the line.
 
-**`spec/scripts/rubyspec/`** holds ruby/spec's language specs (MIT, `LICENSE`), translated to the `assert` API: `if`, `unless`, `while`, `until`, `case`, `and`, `or`, `not`, `break`, `next`, `redo`, `loop` and `for`. Its README.md gives the translation rules. Each file passes on MRI and on Adjutant; 165 tests run and 143 are blocked, each under `# --- BLOCKED:` with a U-code or a SCOPE.md entry. `spec/scripts/mruby/` now carries mruby's licence too.
+**`&:name`** passes `Symbol#to_proc` as a call's block, with or without parentheses (`items.map &:upcase`, settled by spacing and `known_local?` as `-` and `[` are). It parses to a block with one splat parameter whose body is a `SymbolProcCall`, compiled to `Op::SymbolCall`, so an Array yielded alone is never spread. A literal block as well raises P009. U001 now covers `&` before anything but a Symbol literal at a call site, a variable holding a Symbol included, since only a literal names the method for the risk walker.
 
-The import's tools live only in Claude's sandbox, rebuilt each session: a converter for mspec's common patterns, a helper that blocks a test with its reason, a triage loop that blocks only for errors matching a known entry and stops at anything new, and an MRI version of the `assert` API (Ruby 3.2, which segfaults on `for x&.y in`).
+**`**` and `**=`** bind and group as in Ruby (`-2 ** 2` is -4, `2 ** 3 ** 2` is 512) and compile to a call of `Integer#**` or `Float#**`, as `<=>` does. U026 excludes Rational and Complex results, raised as a `RangeError` (`2 ** -1`, `(-8) ** 0.5`); `0 ** -1` raises R060, a ZeroDivisionError. `**` in a parameter list raises P001.
 
-**Fixed in #84:** `if … elsif` crashed when an earlier branch ran; `break` from a block skipped the `ensure`s it left and ended the wrong call; `return` in a block left only the block, now leaving its method across native calls (`BlockReturn`); two statements on one line needed no separator, so an unrecognised bare argument became a silent separate statement; a superclass was looked up among top-level constants only (now an expression, R059 for a non-class); `for` read its targets as local names; `loop` shared its scope, now compiled as `Kernel#loop` with a block; `redo` now restarts blocks, lambdas and `for`; `String#to_i` reads as Ruby; the test runner ran with no workers on one CPU.
+**Leading-dot chains.** A line starting with `.x` or `&.` continues the expression before it, past comment lines, as Ruby 2.7's lexer decides (`Lexer#continues_method_chain?`). A blank line ends a chain, and `..` at a line's start is still a range.
 
-**New exclusions:** U023 flip-flops, U024 a method for one object (`def obj.name`, and `def self.name` at top level), U025 Integers outside 64 bits, raised as a `RangeError` at run time. SKILL.md lists none of the three; `spec/skill/skill_spec.cr` records them as omitted. U014 (`class << self`) is now enforced, and a class or module name must be a constant; `class << self` used to define a class named `<<`. SKILL.md lost a line calling `0644` decimal, untrue since #66.
+**RiskWalker** walks every expression position: operands, conditions, interpolations, indexes, ranges, `return`/`next`/`break` values, `yield` arguments, `for`'s collection and parameter defaults. A short-circuit's right side, a ternary's branches, an `elsif` or `when` condition and a default are Choices. A node kind without a case is unresolved, not safe. A name assigned in a branch, loop or `begin` stays a local afterwards.
 
-Must Fix is empty. Will Fix gained the gaps the import found, chiefly under Parser / lexer gaps, and some missing methods.
+**Risk-flow labels** follow one rule, documented in DEVELOPMENT.md: whatever a builtin computes from labelled values carries their label, measurements, predicates and positions included (`secret.size`, `/x/.match?(secret)`, `arr.size` of a labelled Array). `VM#label_from_inputs` applies it at `call_native` and `exec_builtin`, counting an input container by its own label. Three kinds of method declare `labels_own_result: true` and label their own result: one returning an element as is (`Array#first`, `Hash#delete`, a Range's bounds), one describing a labelled object's source (`Stat#mode`, `Response#status`), and one using an input only on some paths (`String#sub`). Natives that yield or collect from labelled input label those values (`Integer#times`, a Range's iterators, `String#chars`).
+
+**Builtins that answered where Ruby doesn't.** `exec_builtin` answers `to_i` and `to_f` only for nil and has no `size` or `length` fallback, so other receivers raise NoMethodError. `Range#size`, `Symbol#length` and `#size`, and `Integer#size` exist. `Range#min` and `#max` follow MRI on empty and exclusive ranges, with R061 and R062 for the exclusive cases Ruby rejects. R024 is now "can't iterate from {class}" and covers a Float start too.
+
+SKILL.md lost its `&:name`, `**` and leading-dot redirects and lists the new methods, so the exam's results below predate the current skill. U026 is recorded in `skill_spec.cr` as omitted from it.
+
+**`spec/scripts/rubyspec/`**: 165 tests run and 163 are blocked, each under `# --- BLOCKED:`. Nothing on this branch unblocked any. The import's tools still live only in Claude's sandbox (§7).
+
+Must Fix is empty. Will Fix gained a Risk-flow tracking group, holding the branch log: a conditional jump on a labelled value records nothing, though that is the path an implicit leak takes.
 
 Model           |Latest result|Notes                                           
 ----------------|-------------|------------------------------------------------
@@ -104,19 +120,24 @@ qwen3.8 (27B)   |10/10        |Last sat before `fix-ruby-divergences`
 Muse Glimmer 30b|10/10        |Sat at `2bfa808`                                
 Ornith 1.5 (9B) |7/10         |Sat at `2bfa808`; 02, 06 and 08 are model errors
 
-All three predate #69, which renamed the classes the skill teaches, and the skill's `cp` and `H` lines. The task policies carry `risk_flow: none`, and the runner loads them as full policies. The next sitting is fresh, not a re-run. No current task produces an H code.
+All three predate #69, which renamed the classes the skill teaches, and this branch's skill changes. The task policies carry `risk_flow: none`, and the runner loads them as full policies. The next sitting is fresh, not a re-run. No current task produces an H code.
 
 ## 6. Next
 
-1. **Parser gaps that block the most imported tests**, each unblocking its tests as it lands: a splat outside a parameter list, with multiple assignment's other targets (about 23), loops as expressions (about 21), parentheses holding statements (about 15).
-2. **The next ruby/spec batch:** assignments (`variables`, `optional_assignments`), `def` and method calls, and blocks (`block`, `lambda`, `yield`).
-3. **Sit the exam fresh** on all three models, to confirm the renamed skill and the task policies' format.
-4. **Test the streamed-fetch lead on Windows** (SCOPE.md): restructure `Interpreter#eval`'s `ensure`, then un-pend the spec.
-5. **Exam tasks 11 to 13** (`spec/skill/TODO.md` §1); task 12 is a regression check.
-6. **Will Fix, style pass**, by subsection, on its own branch; **§10, the static analyser** (LEGATE.md §10.1); **generic provider loading**, once a second provider exists.
+1. **The splat**, in three steps, each as spec, fix, then its SKILL.md line removed in a commit of its own. Nothing outside a parameter list accepts a splat today; `MultiAssign` holds plain targets only.
+   1. A call argument (`f(*args)`), an Array literal (`[*a, *b]`), an assignment value (`a, b = *pair`) and a `when` list share one mechanism: `*x` becomes `x` as an Array by Ruby's rules (an Array as is, nil as `[]`, anything else as `[x]`), runs of plain elements become literal Arrays joined by the existing Array `+`, which joins labels, and a call takes its arguments from the Array through one new opcode.
+   2. An assignment target (`first, *rest = items`), by giving `MultiUnpack` a splat position.
+   3. The double splat (`f(**opts)`, `{**defaults, k: v}`).
+2. **Op-assign through an attribute** (`self.count += 1`), the last parser gap with a SKILL.md redirect.
+3. **Cheap gaps**: loops as expressions, whose runtime is done and which need only `parse_primary`'s dispatch (spec the `while` modifier and the `do` ambiguity first; it unblocks about 21 tests); `then` after `if`; bare `next` and `break` before `}`, `end` or `else`; `-> x { }`; `return a, b`; `%r{}`.
+4. **Probe two predicted misparses for silence**: `raise (x), y` and `super (a), b`, and `until cond do`. If either runs rather than raising, it is Must Fix.
+5. **Merge `parser-gaps`**, then sit the exam fresh on all three models, then the next ruby/spec batch (assignments, `def` and calls, blocks; `send_spec.rb` has the `&:name` tests), the streamed-fetch lead on Windows, and exam tasks 11 to 13.
+6. **Later**: the branch log (SCOPE.md, Risk-flow tracking), the Will Fix style pass, LEGATE.md §10's static analyser, generic provider loading.
 
 ## 7. Open decisions
 
+- **Element reads from a labelled container.** Summaries of a labelled container carry its label (rule (a)), but `arr.first` and `arr[0]` return the element with only its own label. The container's label can hold labels no current element does, so joining it would over-label; not joining it lets a value read out of a container that once held a secret leave unlabelled. Undecided.
+- **`defined?`.** A candidate for exclusion by the test in UNSUPPORTED.md: rarely written, and supporting it means a keyword and a check per kind of operand. SKILL.md already teaches the alternative.
 - **U019's reason.** UNSUPPORTED.md excludes `proc { }` chiefly for its non-local `return`, which blocks now have. Its lenient arity is still unbuilt, so the exclusion stands, but its reason needs restating, or the exclusion revisiting.
 - **SKILL.md and U025.** A model writing sums or timestamps could meet the 64-bit limit. Teach it in the skill (an exam re-sit), or leave it to the diagnostic?
 - **The import's tools.** Commit the converter and triage loop (say under `spec/scripts/rubyspec/tools/`), or keep rebuilding them per session?

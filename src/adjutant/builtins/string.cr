@@ -192,7 +192,7 @@ module Adjutant::Builtins
     define(cls, interp, "chars", arity: 0) do |args|
       recv = args.first
       # Each character carries the receiver's label.
-      Adjutant::Value.new(Adjutant::LabeledArray.new(recv.as_string.chars.map { |char| Adjutant::Value.string(char.to_s) }, recv.label), nil)
+      Adjutant::Value.new(Adjutant::LabeledArray.new(recv.as_string.chars.map { |char| Adjutant::Value.string(char.to_s, recv.label) }, recv.label), nil)
     end
 
     define(cls, interp, "start_with?", arity: 0..1) do |args|
@@ -311,12 +311,12 @@ module Adjutant::Builtins
     # and whatever was substituted: the replacement's, or each block
     # result's. The block's argument carries the receiver's and the
     # pattern's, being text taken from the receiver.
-    define(cls, interp, "sub", arity: 1..2) do |args, blk, ncc|
+    define(cls, interp, "sub", arity: 1..2, labels_own_result: true) do |args, blk, ncc|
       text, label = string_sub_or_gsub(args, blk, ncc, "sub", all: false)
       Adjutant::Value.string(text, label)
     end
 
-    define(cls, interp, "gsub", arity: 1..2) do |args, blk, ncc|
+    define(cls, interp, "gsub", arity: 1..2, labels_own_result: true) do |args, blk, ncc|
       text, label = string_sub_or_gsub(args, blk, ncc, "gsub", all: true)
       Adjutant::Value.string(text, label)
     end

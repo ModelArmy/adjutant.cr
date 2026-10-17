@@ -88,7 +88,7 @@ module Adjutant::Builtins
 
     # Removes `key` and returns its value; if absent, the block's
     # result, or nil. The receiver's label is unchanged.
-    define(cls, interp, "delete", arity: 1) do |args, blk, ncc|
+    define(cls, interp, "delete", arity: 1, labels_own_result: true) do |args, blk, ncc|
       h = args.first.as_hash
       key = args[1]? || Adjutant::Value.nil_value
       if val = h.delete(key)

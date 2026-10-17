@@ -47,6 +47,15 @@ module Adjutant::Builtins
       args.first
     end
 
+    # How many characters the Symbol's name has.
+    define(cls, interp, "length", arity: 0) do |args|
+      Adjutant::Value.int(args.first.as_sym.name.size.to_i64)
+    end
+
+    define(cls, interp, "size", arity: 0) do |args|
+      Adjutant::Value.int(args.first.as_sym.name.size.to_i64)
+    end
+
     cls
   end
 end
