@@ -508,10 +508,11 @@ module Adjutant
       RiskSequence.new([target_risk, value_risk] of RiskNode, node.line)
     end
 
-    # What a compound assignment evaluates before reading its target:
-    # the receiver and index of `x[i]`, and nothing for a local.
+    # What a compound assignment evaluates in reading its target: the
+    # receiver and index of `x[i]`, the receiver and getter of
+    # `recv.attr`, and nothing for a local.
     private def compound_target_risk(target : Node, env : TypeInference::Env) : RiskNode
-      target.is_a?(Index) ? walk_node(target, env) : RiskSequence.new([] of RiskNode, target.line)
+      target.is_a?(Index) || target.is_a?(Call) ? walk_node(target, env) : RiskSequence.new([] of RiskNode, target.line)
     end
 
     # `a, b = 1, 2`: each value is walked in order. Targets aren't

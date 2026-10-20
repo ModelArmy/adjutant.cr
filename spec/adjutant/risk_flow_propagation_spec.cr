@@ -263,20 +263,10 @@ module Adjutant
       end
     end
 
-    # Op::SetIndexFromValue (2026-08-08) — the compound/conditional/
-    # multi-assign-into-an-index sibling of Op::SetIndex directly
-    # above. Both opcodes call the exact same exec_set_index, so the
-    # accumulation behavior itself is not new — this describe block
-    # exists because, until now, NOTHING exercised that shared join
-    # logic from this opcode specifically. That gap is exactly how
-    # this session's SetIndexFromValue bug (target/index/value
-    # scrambled at runtime — see compiler.cr's emit_store `Index`
-    # case comment for the full trace) went unnoticed for as long as
-    # it did: a propagation test here would have caught the join
-    # running on garbage operands directly, independent of whether
-    # anyone happened to also write a purely functional regression
-    # for the same shape.
-    describe "Op::SetIndexFromValue (compound/conditional assignment into an index)" do
+    # A compound assignment into an index writes with SetIndex, and a
+    # MultiAssign index target with SetIndexFromValue; both call
+    # exec_set_index, so the label joins as for `x[i] = v` above.
+    describe "compound and multiple assignment into an index" do
       it "accumulates a tainted value's label onto the array via +=" do
         interp, _ = make_tainted_interp
         result = interp.eval(<<-RUBY)
@@ -330,16 +320,16 @@ module Adjutant
         result.label.not_nil!.sensitivity.should eq Sensitivity::High
       end
 
-      it "records a RiskFlowEvent for SetIndexFromValue, distinct from plain SetIndex" do
+      it "records one SetIndex RiskFlowEvent for the write, carrying the label" do
         interp, _ = make_tainted_interp
         interp.eval(<<-RUBY)
           arr = [1, 2, 3]
           arr[0] += tainted("/etc/passwd")
         RUBY
-        events = interp.risk_flow_log.events.select { |e| e.op == "SetIndexFromValue" }
+        events = interp.risk_flow_log.events.select { |e| e.op == "SetIndex" }
         events.size.should eq 1
         events.first.result.not_nil!.sensitivity.should eq Sensitivity::High
-        interp.risk_flow_log.events.any? { |e| e.op == "SetIndex" }.should be_false
+        interp.risk_flow_log.events.any? { |e| e.op == "SetIndexFromValue" }.should be_false
       end
 
       it "labels accumulate monotonically here too — a later clean += does not clear the array's label" do

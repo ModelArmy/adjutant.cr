@@ -31,24 +31,21 @@ module Adjutant
         o.should_not contain(Op::SetGlobal)
       end
 
-      # Found 2026-08-08 (see emit_store's own comment on the `Index`
-      # case, and Op::SetIndexFromValue's comment, bytecode.cr, for
-      # the full trace): compound/multi-assignment into an index
-      # target used to emit the SAME opcode (`Op::SetIndex`) that
-      # `x[i] = v` uses, despite pushing operands in the OPPOSITE
-      # order — completely scrambling `target`/`index`/`value` at
-      # runtime. Fixed with a dedicated opcode matching this call
-      # site's actual push order.
-      it "compiles x[i] += 1 to Op::SetIndexFromValue, not Op::SetIndex" do
+      # A compound assignment into an index pushes the receiver and
+      # index once, reads through copies of them (DupN, GetIndex), and
+      # writes through the originals with SetIndex.
+      it "compiles x[i] += 1 to one read through DupN and one SetIndex" do
         o = ops("x = [0]\nx[0] += 1")
-        o.should contain(Op::SetIndexFromValue)
-        o.should_not contain(Op::SetIndex)
+        o.count(Op::DupN).should eq 1
+        o.count(Op::SetIndex).should eq 1
+        o.should_not contain(Op::SetIndexFromValue)
       end
 
-      it "compiles x[i] ||= v to Op::SetIndexFromValue too" do
+      it "compiles x[i] ||= v the same way, with PopUnder for when it doesn't assign" do
         o = ops("x = [nil]\nx[0] ||= 5")
-        o.should contain(Op::SetIndexFromValue)
-        o.should_not contain(Op::SetIndex)
+        o.should contain(Op::PopUnder)
+        o.count(Op::SetIndex).should eq 1
+        o.should_not contain(Op::SetIndexFromValue)
       end
     end
 

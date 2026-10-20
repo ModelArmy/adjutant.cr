@@ -817,6 +817,16 @@ module Adjutant
     end
 
     private def compile_op_assign(node : OpAssign) : Nil
+      if compound = compound_target(node.target)
+        # `recv.attr += y` or `recv[i] += y`: each part of the target
+        # is evaluated once, read through copies, and written through.
+        parts = compile_target_parts(compound)
+        emit_target_read(compound, parts, node.line)
+        compile_node(node.value)
+        emit_binary_op(node.op, node.line)
+        emit_target_write(compound, node.line)
+        return
+      end
       # `x += y` compiles as `x = x + y`.
       declare_assigned_local(node.target)
       compile_node(node.target)
@@ -826,6 +836,10 @@ module Adjutant
     end
 
     private def compile_cond_assign(node : CondAssign) : Nil
+      if compound = compound_target(node.target)
+        compile_compound_cond_assign(node, compound)
+        return
+      end
       # `x ||= y` assigns only if x is falsy; `x &&= y` only if truthy.
       declare_assigned_local(node.target)
       compile_node(node.target)
@@ -1061,6 +1075,73 @@ module Adjutant
     # evaluated once, before the value. `SetAttr` pops value then
     # receiver and pushes the value back: an assignment's value is what
     # was assigned, not what the setter returns.
+    # `recv.attr ||= y` or `recv[i] &&= y`: the target's parts are
+    # evaluated once and its value read through copies of them. When
+    # that value decides against assigning, it is the result and the
+    # parts are dropped; otherwise `y` is written through the parts.
+    private def compile_compound_cond_assign(node : CondAssign, compound : Node) : Nil
+      parts = compile_target_parts(compound)
+      emit_target_read(compound, parts, node.line)
+      @chunk.emit(Op::Dup, node.line)
+      assign_op = node.op == TokenKind::OrAssign ? Op::JumpIfFalse : Op::JumpIfTrue
+      jmp_assign = @chunk.emit_jump(assign_op, node.line)
+      @chunk.emit(Op::PopUnder, node.line, a: parts.to_u8)
+      jmp_end = @chunk.emit_jump(Op::Jump, node.line)
+      @chunk.patch_jump(jmp_assign, @chunk.pos)
+      @chunk.emit(Op::Pop, node.line)
+      compile_node(node.value)
+      emit_target_write(compound, node.line)
+      @chunk.patch_jump(jmp_end, @chunk.pos)
+    end
+
+    # A compound assignment's target read and written through parts
+    # evaluated once: an Index, or an attribute (a Call with a receiver
+    # and no arguments or block). Nil for a variable, which has no
+    # parts, and for `&.`, which isn't supported here.
+    private def compound_target(target : Node) : Node?
+      case target
+      when Index
+        target unless target.safe?
+      when Call
+        target if target.receiver && !target.safe? && target.args.empty? && target.kwargs.empty? && target.block.nil?
+      end
+    end
+
+    # Pushes the parts `target` is read and written through, each once,
+    # as Ruby evaluates them: an attribute's receiver; an Index's
+    # receiver, index and length. Returns how many it pushed.
+    private def compile_target_parts(target : Node) : Int32
+      if target.is_a?(Index)
+        compile_node(target.target)
+        compile_node(target.index)
+        target.length.try { |length| compile_node(length) }
+        return target.length ? 3 : 2
+      end
+      target.as(Call).receiver.try { |receiver| compile_node(receiver) }
+      1
+    end
+
+    # Pushes `target`'s value, read through copies of its `parts` on the
+    # stack, which stay beneath it.
+    private def emit_target_read(target : Node, parts : Int32, line : Int32) : Nil
+      @chunk.emit(Op::DupN, line, a: parts.to_u8)
+      if target.is_a?(Index)
+        @chunk.emit(Op::GetIndex, line, a: index_arg_count(target.length))
+      else
+        @chunk.emit(Op::Call, line, a: 1_u8, b: 0b10_u16, c: intern(target.as(Call).method))
+      end
+    end
+
+    # Writes the value on top of the stack through `target`'s parts
+    # beneath it, leaving the value.
+    private def emit_target_write(target : Node, line : Int32) : Nil
+      if target.is_a?(Index)
+        @chunk.emit(Op::SetIndex, line, a: index_arg_count(target.length))
+      else
+        @chunk.emit(Op::SetAttr, line, c: intern("#{target.as(Call).method}="))
+      end
+    end
+
     private def compile_attr_assign(node : AttrAssign) : Nil
       compile_node(node.receiver)
       compile_node(node.value)

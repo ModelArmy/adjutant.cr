@@ -33,12 +33,9 @@ module Adjutant
     end
 
     describe "compound/conditional assignment into an index target" do
-      # Found 2026-08-08: this shape (`x[i] += 1`, `x[i] ||= v`, and
-      # a MultiAssign target that's an Index) went through a
-      # completely different, silently-broken code path from plain
-      # `x[i] = v` — see Op::SetIndexFromValue's own comment
-      # (bytecode.cr) for the full trace. No spec had ever exercised
-      # any of these three shapes before.
+      # `x[i] += 1`, `x[i] ||= v` and a MultiAssign index target each
+      # compile differently from `x[i] = v` (DEVELOPMENT.md, Compound
+      # assignment), so each is checked here.
       it "x[i] += 1 actually increments the element, not silently no-ops" do
         eval("x = [10]\nx[0] += 5\nx[0]").as_int.should eq 15_i64
       end

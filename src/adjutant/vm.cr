@@ -1000,6 +1000,12 @@ module Adjutant
             push(chunk.consts[inst.c])
           when Op::Pop
             @stack.pop if @stack.size > f.stack_base
+          when Op::DupN
+            @stack.concat(@stack.last(inst.a.to_i))
+          when Op::PopUnder
+            kept = pop
+            @stack.pop(inst.a.to_i)
+            push(kept)
           when Op::Dup
             push(peek)
             # --- Globals --------------------------------------------------------

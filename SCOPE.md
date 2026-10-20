@@ -182,30 +182,13 @@ still roughly ordered by how cheap/independent the fix is.
   `parse_rescue_else_ensure` helper, reusing the identical
   compile/runtime path with no new compiler or VM work either.
 
-- **`obj.attr += 1` / `obj.attr ||= x` / `obj.attr &&= x`** — compound
-  and conditional assignment through an attribute-setter call. Found
-  2026-08-08 landing plain `recv.attr = value` (the new `AttrAssign`
-  node, ast.cr/parser.cr/compiler.cr/vm.cr — see `DEVELOPMENT.md`'s
-  Parser section for the full trace). `Parser#maybe_assignment` only
-  builds `AttrAssign` for its plain-`=` branch; the `PlusEq`/`MinusEq`/
-  .../`OrAssign`/`AndAssign` branches immediately below still build an
-  ordinary `OpAssign`/`CondAssign` with the `Call` as `target`, which
-  `Compiler#emit_store`'s generic per-target-kind dispatch has no case
-  for — falls to the same `C001` ("cannot assign to a method call") it
-  always has. Not simply a matter of adding an `emit_store` `Call`
-  case the way `Index`'s case already exists: `OpAssign`/`CondAssign`
-  both read the target ONCE (`compile_node(node.target)`, at the very
-  top of `compile_op_assign`/`compile_cond_assign`) before computing
-  anything — for a `Call` target that means calling the GETTER — and
-  then need to call the SETTER afterward with the combined result,
-  which means the receiver expression needs evaluating exactly once
-  and reusing (not recompiling) for both the getter and setter calls,
-  the same single-evaluation requirement `AttrAssign` was built to
-  satisfy for plain `=`. Needs a dedicated desugar/AST shape of its
-  own (something that computes the receiver once, calls the getter
-  off a stack-held copy, computes the op, then calls the setter off
-  the SAME copy) — a genuinely different shape from `AttrAssign`, not
-  a small extension to it.
+- **Assignment through `&.` ignores or refuses the `&.`.**
+  `obj&.name = x` builds an AttrAssign without the safe flag, so a nil
+  `obj` raises NoMethodError where Ruby skips the call and gives nil;
+  `obj&.count += 1` and `h&.[](k) ||= v` fall to the variable path and
+  raise C001. Predicted by reading the code. Fix: a safe flag on
+  AttrAssign, and `compound_target` taking `&.` targets, both jumping
+  past the call when the receiver is nil, as `SafeCall` does.
 
 - **Keywords are named by Symbols only.** `f(**{"a" => 1})` raises
   R012, even where `f` takes `**opts`, which Ruby fills with the String

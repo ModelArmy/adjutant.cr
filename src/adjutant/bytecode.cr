@@ -10,9 +10,11 @@ module Adjutant
     Noop
 
     # Stack / constants
-    Const # push constants[c]
-    Pop   # discard top of stack
-    Dup   # duplicate top of stack
+    Const    # push constants[c]
+    Pop      # discard top of stack
+    Dup      # duplicate top of stack
+    DupN     # push copies of the top a values, in order
+    PopUnder # pop the top, drop the a values beneath it, push the top back
 
     # Variables
     GetGlobal # push globals[constants[c].as_sym.name]
@@ -32,7 +34,7 @@ module Adjutant
     GetIndex          # a=2: pop length; pop index, pop target → push target[index(, length)]
     SafeIndex         # like GetIndex but nil-safe
     SetIndex          # pop value; a=2: pop length; pop index, pop target → target[index(, length)] = value
-    SetIndexFromValue # a=2: pop length; pop index, pop target, pop value → target[index(, length)] = value (OpAssign/CondAssign/MultiAssign's Index-target path; see emit_store's own comment for why this needs a different pop order from SetIndex)
+    SetIndexFromValue # a=2: pop length; pop index, pop target, pop value → target[index(, length)] = value (emit_store's Index-target path, for a MultiAssign or a compound assignment through `&.[]`; see emit_store's own comment for why this needs a different pop order from SetIndex)
     SetAttr           # pop value, pop receiver → receiver.name=(value) (real method call); push value
 
     # Calls
