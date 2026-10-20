@@ -207,13 +207,18 @@ still roughly ordered by how cheap/independent the fix is.
   the SAME copy) — a genuinely different shape from `AttrAssign`, not
   a small extension to it.
 
-- **No `**opts` parameter, and no `...` forwarding.** `def f(**opts)`
-  raises P001, so a method can't collect keywords it doesn't name, and
-  a double splat's keys must be Symbols (R012). `def f(...); g(...);
-  end` doesn't parse either; it is Ruby's spelling of
-  `(*args, **opts, &blk)`, so it follows once a keyword-rest and a
-  block parameter exist. Fix: a keyword-rest Param that `bind_args`
-  fills with a Hash of the keywords no other parameter takes.
+- **Keywords are named by Symbols only.** `f(**{"a" => 1})` raises
+  R012, even where `f` takes `**opts`, which Ruby fills with the String
+  key; `keywords_from` rejects any key that isn't a Symbol, since
+  `@pending_kwargs` is keyed by name. Fix: carry the keywords as a
+  Hash of Values, with Symbol keys for keyword parameters.
+
+- **No anonymous rest parameters, `**nil`, or `...` forwarding.**
+  `def f(*)`, `def f(**)` and `def f(**nil)` don't parse, nor does
+  `def f(...); g(...); end`, Ruby's spelling of
+  `(*args, **opts, &blk)`. `...` also needs a block parameter (U001).
+  Fix: anonymous Params the forwarding call reads, and `**nil` as a
+  parameter that refuses every keyword.
 
 - **Keywords never become a positional Hash.** Ruby passes keywords
   to a method that declares none as a trailing positional Hash:

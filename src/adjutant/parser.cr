@@ -1327,7 +1327,8 @@ module Adjutant
     PARAM_STAGE_SPLAT    = 3
     PARAM_STAGE_TRAILING = 4
     PARAM_STAGE_KEYWORD  = 5
-    PARAM_STAGE_BLOCK    = 6
+    PARAM_STAGE_KWREST   = 6
+    PARAM_STAGE_BLOCK    = 7
 
     # Raises P006 for a parameter out of Ruby's order (required,
     # optional, one splat, required, keywords, block) and P007 for a
@@ -1343,24 +1344,31 @@ module Adjutant
       stage = 0
       seen = Set(String).new
       params.each do |param|
-        param_stage = if param.block_param?
-                        PARAM_STAGE_BLOCK
-                      elsif param.kwarg?
-                        PARAM_STAGE_KEYWORD
-                      elsif param.splat?
-                        PARAM_STAGE_SPLAT
-                      elsif param.default
-                        PARAM_STAGE_OPTIONAL
-                      elsif stage <= PARAM_STAGE_LEADING
-                        PARAM_STAGE_LEADING
-                      else
-                        PARAM_STAGE_TRAILING
-                      end
-        repeated = param_stage == stage && (param_stage == PARAM_STAGE_SPLAT || param_stage == PARAM_STAGE_BLOCK)
+        param_stage = param_stage_of(param, stage)
+        repeated = param_stage == stage && {PARAM_STAGE_SPLAT, PARAM_STAGE_KWREST, PARAM_STAGE_BLOCK}.includes?(param_stage)
         raise parameter_error("P006", param, "unexpected parameter order") if param_stage < stage || repeated
         stage = param_stage
         next if param.name.starts_with?('_')
         raise parameter_error("P007", param, "duplicated argument name") unless seen.add?(param.name)
+      end
+    end
+
+    # The stage `param` belongs to, after a parameter in `stage`.
+    private def param_stage_of(param : Param, stage : Int32) : Int32
+      if param.block_param?
+        PARAM_STAGE_BLOCK
+      elsif param.kwarg?
+        PARAM_STAGE_KEYWORD
+      elsif param.kwrest?
+        PARAM_STAGE_KWREST
+      elsif param.splat?
+        PARAM_STAGE_SPLAT
+      elsif param.default
+        PARAM_STAGE_OPTIONAL
+      elsif stage <= PARAM_STAGE_LEADING
+        PARAM_STAGE_LEADING
+      else
+        PARAM_STAGE_TRAILING
       end
     end
 
@@ -1371,9 +1379,15 @@ module Adjutant
 
     private def parse_param : Param
       l, c = line, col
-      # A double splat (`**opts`) isn't supported; without this the `**`
-      # would be read as the parameter's name.
-      raise unexpected_token(TokenKind::Identifier) if at_kind?(TokenKind::StarStar)
+      if at_kind?(TokenKind::StarStar)
+        # A keyword rest, `**opts`. One without a name, or `**nil`,
+        # isn't supported, so a name must follow.
+        advance
+        raise unexpected_token(TokenKind::Identifier) unless at_kind?(TokenKind::Identifier)
+        name = @current.lexeme
+        advance
+        return Param.new(name, nil, false, false, false, l, c, kwrest: true)
+      end
       if at_kind?(TokenKind::Star)
         advance
         name = @current.lexeme

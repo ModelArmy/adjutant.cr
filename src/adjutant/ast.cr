@@ -374,8 +374,9 @@ module Adjutant
     getter? splat : Bool       # *args
     getter? block_param : Bool # &block
     getter? kwarg : Bool       # name: or name: default
+    getter? kwrest : Bool      # **opts
 
-    def initialize(@name, @default, @splat, @block_param, @kwarg, line, column)
+    def initialize(@name, @default, @splat, @block_param, @kwarg, line, column, @kwrest = false)
       super(line, column)
     end
   end

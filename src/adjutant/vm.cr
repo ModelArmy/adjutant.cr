@@ -628,9 +628,10 @@ module Adjutant
       raise bad_conversion(value, "Hash", "to_hash", converted, f)
     end
 
-    # The keywords a call stages from the Hash its double splats built:
-    # none for an empty Hash, as Ruby passes none for `**{}`. A key that
-    # isn't a Symbol raises R012, as no method here takes one.
+    # The keywords a Hash's pairs pass: those of the Hash a call's double
+    # splats built, or of a keyword rest that bare `super` forwards. None
+    # for an empty Hash, as Ruby passes none for `**{}`. A key that isn't
+    # a Symbol raises R012, as keywords here are named by Symbols.
     private def keywords_from(built : Value, method : String, f : Frame) : Hash(String, Value)?
       pairs = built.as_hash.dup_entries
       return if pairs.empty?
@@ -1762,6 +1763,11 @@ module Adjutant
         elsif param.kwarg?
           kwargs ||= {} of String => Value
           kwargs[param.name] = val
+        elsif param.kwrest?
+          # Its pairs go as keywords, by `keywords_from`'s rules.
+          if val.hash? && (rest = keywords_from(val, f.proc.name, f))
+            kwargs = (kwargs || {} of String => Value).merge(rest)
+          end
         else
           args << val
         end
@@ -2285,7 +2291,7 @@ module Adjutant
       arr = args[0].as_array?
       params = proc.ast_params
       return args unless arr && params
-      positional = params.count { |param| !param.splat? && !param.kwarg? && !param.block_param? }
+      positional = params.count { |param| positional_param?(param) }
       spreads = positional > 1 || (positional == 1 && params.any?(&.splat?))
       spreads ? arr.to_a : args
     end
@@ -2320,7 +2326,21 @@ module Adjutant
         declared_kwargs << param.name
         bind_kwarg_param(frame, proc, param, slot, kwargs, caller_line)
       end
-      check_unknown_keywords!(kwargs, declared_kwargs, proc, frame, caller_line)
+      if rest_slot = ast_params.index(&.kwrest?)
+        frame.locals[rest_slot] = keyword_rest(kwargs, declared_kwargs) if rest_slot < frame.locals.size
+      else
+        check_unknown_keywords!(kwargs, declared_kwargs, proc, frame, caller_line)
+      end
+    end
+
+    # A keyword-rest parameter's value: a new Hash of the keywords in
+    # `kwargs` that aren't `declared`, with Symbol keys, in the order
+    # passed, labelled with their values' labels.
+    private def keyword_rest(kwargs : Hash(String, Value)?, declared : Set(String)) : Value
+      pairs = {} of Value => Value
+      kwargs.try(&.each { |name, value| pairs[Value.symbol(@symbols.intern(name))] = value unless declared.includes?(name) })
+      label = pairs.values.reduce(nil.as(RiskFlowLabel?)) { |acc, value| RiskFlowLabel.join(acc, value.label) }
+      Value.new(LabeledHash.new(pairs, label), label)
     end
 
     # Binds the positional parameters, steps 2 and 3 of `bind_args`:
@@ -2336,7 +2356,7 @@ module Adjutant
       pos = 0 # index into `args`
       optional_seen = 0
       ast_params.each_with_index do |param, slot|
-        next if slot >= frame.locals.size || param.kwarg? || param.block_param?
+        next if slot >= frame.locals.size || param.kwarg? || param.kwrest? || param.block_param?
         if param.splat?
           frame.locals[slot] = collect_splat(args, pos, splat_size, caller_line)
           pos += splat_size
@@ -2353,10 +2373,16 @@ module Adjutant
       end
     end
 
+    # Whether `param` takes a positional argument of its own: neither a
+    # splat, a keyword, a keyword rest nor a block parameter.
+    private def positional_param?(param : Param) : Bool
+      !param.splat? && !param.kwarg? && !param.kwrest? && !param.block_param?
+    end
+
     # The required and optional positional parameter counts, and
     # whether there is a splat. A block parameter (U001) counts as none.
     private def positional_counts(ast_params : Array(Param)) : {Int32, Int32, Bool}
-      positional = ast_params.reject { |param| param.splat? || param.kwarg? || param.block_param? }
+      positional = ast_params.select { |param| positional_param?(param) }
       required = positional.count(&.default.nil?)
       {required, positional.size - required, ast_params.any?(&.splat?)}
     end

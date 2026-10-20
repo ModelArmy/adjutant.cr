@@ -212,6 +212,12 @@ module Adjutant
       @chunk.emit(Op::Ret, line)
     end
 
+    # Whether `param` takes a positional argument of its own: neither a
+    # splat, a keyword, a keyword rest nor a block parameter.
+    private def positional_param?(param : Param) : Bool
+      !param.splat? && !param.kwarg? && !param.kwrest? && !param.block_param?
+    end
+
     # Emits, at the top of a proc's chunk, the code that evaluates
     # each omitted parameter's default, in declared order, so a
     # default can use earlier parameters: `def add(a, b = a + 1)`. Per
@@ -226,7 +232,7 @@ module Adjutant
     # optional one up to and including it, since `VM#bind_args` fills
     # required parameters first and optional ones left to right.
     protected def emit_default_prologue(params : Array(Param), slots : Array(Int32)) : Nil
-      required = params.count { |param| !param.splat? && !param.kwarg? && !param.block_param? && param.default.nil? }
+      required = params.count { |param| positional_param?(param) && param.default.nil? }
       optional_seen = 0
       params.each_with_index do |param, i|
         next unless default = param.default
