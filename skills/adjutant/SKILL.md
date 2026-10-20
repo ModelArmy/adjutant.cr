@@ -41,7 +41,6 @@ What is different, in order of importance:
 - `Hash.new(0)`, `counts[k] += 1` on a key not yet seen → `counts[k] = (counts[k] || 0) + 1`; a missing key is `nil`, and `nil + 1` is a NoMethodError
 - `"ab" * 3`, `"%d" % n`, `format` → Interpolation: `"#{n}"`
 - `str << "x"` → `str = str + "x"`
-- `obj.count += 1` → `obj.count = obj.count + 1`
 - `retry` → A `while` loop around `begin`/`rescue`, with an attempt counter
 - `def run(&blk)`, `block_given?` → `yield`, which returns the block's value: `x = yield 10`
 - `proc { }` → `lambda { }` or `-> { }`
