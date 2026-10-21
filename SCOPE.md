@@ -21,18 +21,17 @@ after 1.0. Ordered for working through: security and policy defects
 first, then the Ruby divergences, then design work on policy and
 configuration.
 
-- **`Exception#message` doesn't call `to_s`, and a nil message isn't
-  the class name.** Ruby's `message` returns `to_s`, so a subclass
-  overriding `to_s` changes its message; Adjutant's `message` reads
-  the stored message, so `e.message` ignores the override. Ruby's
-  `to_s` gives the class name when the message is nil, where
-  `Exception.new`, `Exception#initialize` and `VM#new_exception`
-  store `nil.to_s`: `raise ArgumentError, detail` with a nil `detail`
-  has the message `""`, not `"ArgumentError"`. Ruby's side is
-  confirmed from MRI's `exc_message` and `exc_to_s` (error.c);
-  Adjutant's is predicted. Spec:
-  `spec/adjutant/begin_rescue_ensure/exception_message_spec.cr`. Fix:
-  `message` calling `to_s`, and a nil message stored as none.
+- **Error messages quoting a value's content drop its label.** A
+  diagnostic that quotes a script value puts that value's text in the
+  message an exception carries, as an unlabelled String, so a rescue
+  can carry the text past the risk-flow check: `secret[0] = "x"`
+  raises FrozenError (R052, `vm_indexing.cr`) with `secret.inspect` in
+  its message, and `e.message` then reaches any sink unlabelled. R004
+  (`value::Name`), R013 (a `<=>` result), R016 and R034 (Float values)
+  quote their values too. Predicted by reading the code. Fix:
+  `runtime_diagnostic` taking the labels of the values a diagnostic
+  quotes and storing its message with their join, and a pass over the
+  catalog for every field that quotes a value.
 
 - **`raise` accepts arguments Ruby rejects.** MRI's `make_exception`
   gives an exception class only the message (`cls.exception(msg)`),

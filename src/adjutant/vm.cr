@@ -3198,9 +3198,15 @@ module Adjutant
     # `.message` on any error.
     private def make_error_object(cls : RubyClass, message : String,
                                   attributes : Hash(String, Value)? = nil) : Value
+      make_error_object(cls, Value.string(message), attributes)
+    end
+
+    # An error object of `cls` with `message`, a String Value carrying
+    # its label, or nil for none, so its `message` is the class name.
+    private def make_error_object(cls : RubyClass, message : Value?,
+                                  attributes : Hash(String, Value)? = nil) : Value
       obj = RubyObject.new(cls)
-      msg_sym = @symbols.intern("message")
-      obj.ivars[msg_sym.value] = Value.string(message)
+      obj.ivars[@symbols.intern("message").value] = message if message
       # Applied after `message`, so a "message" attribute overrides
       # it.
       attributes.try &.each do |name, value|
@@ -3219,7 +3225,7 @@ module Adjutant
     private def exception_from(args : Array(Value), filename : String, line : Int32) : Value
       first = args.first?
       return error_being_handled || builtin_error("RuntimeError", "unhandled exception") unless first
-      return builtin_error("RuntimeError", first.as_string) if first.string? && args.size == 1
+      return builtin_error("RuntimeError", first) if first.string? && args.size == 1
       if (cls = first.as_rclass?) && exception_class?(cls)
         return new_exception(cls, args[1..])
       end
@@ -3240,8 +3246,15 @@ module Adjutant
     # An error object of the builtin class `class_name` with `message`;
     # the message alone for a VM built without the class.
     private def builtin_error(class_name : String, message : String) : Value
+      builtin_error(class_name, Value.string(message))
+    end
+
+    # An error object of the builtin class `class_name` with `message`,
+    # a String Value carrying its label; the message alone for a VM
+    # built without the class.
+    private def builtin_error(class_name : String, message : Value) : Value
       cls = builtin_class_by_name(class_name)
-      cls ? make_error_object(cls, message) : Value.string(message)
+      cls ? make_error_object(cls, message) : message
     end
 
     # A new instance of the exception class `cls`, as `cls.new(*rest)`:
@@ -3253,7 +3266,7 @@ module Adjutant
         invoke(init, rest, self_val: inst)
         return inst
       end
-      make_error_object(cls, rest.first?.try(&.to_s) || cls.name)
+      make_error_object(cls, rest.first?.try { |msg| Builtins.exception_message(msg) })
     end
 
     # A copy of the exception object `error` carrying `message`, as
@@ -3261,7 +3274,13 @@ module Adjutant
     # message`. The copy keeps the original's other attributes.
     private def exception_with_message(error : Value, message : Value, filename : String, line : Int32) : Value
       copy = copy_value(error, "clone", filename, line) || error
-      copy.as_robject.ivars[@symbols.intern("message").value] = Value.string(message.to_s)
+      ivars = copy.as_robject.ivars
+      msg_id = @symbols.intern("message").value
+      if stored = Builtins.exception_message(message)
+        ivars[msg_id] = stored
+      else
+        ivars.delete(msg_id)
+      end
       copy
     end
 
