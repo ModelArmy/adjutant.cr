@@ -148,7 +148,7 @@ R043|`Legate.env` called with no `name` argument                        |—
 R044|Two values with no order between them were compared or sorted      |`left`, `right`                            
 R045|A block-taking method called with no block                         |`method`                                   
 R046|A method or lambda called with the wrong number of arguments       |`given`, `expected`, `method`              
-R047|A receiver without `[]` or `[]=` was indexed                       |`method`, `target`                         
+R047|A call of a method its receiver doesn't have, indexing included    |`method`, `target`                         
 R048|An index or length that isn't an Integer, Float or Range           |`conversion`                               
 R049|An Array index assigned to before the first element                |`index`, `minimum`                         
 R050|A negative length in `a[start, length] = value`                    |`length`                                   
