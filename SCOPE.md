@@ -21,25 +21,6 @@ after 1.0. Ordered for working through: security and policy defects
 first, then the Ruby divergences, then design work on policy and
 configuration.
 
-- **A spaced `(` after `raise`, `super`, `yield` or a receiver's
-  method opens its argument list.** In Ruby a space before the `(`
-  makes it the start of the first argument, as
-  `parse_identifier_or_call` already reads `name (x), y`.
-  `parse_raise`, `parse_super`, `parse_yield` and `parse_postfix`
-  (through `receiver_call_takes_bare_args?`) take any `(` as the
-  argument list, so what follows the `)` applies to the result:
-  `yield (2) * 10` yields 2, `super (x).to_s` passes `x`,
-  `raise ("a") + "b"` raises "a", `s.start_with? ("x") || t` is
-  `s.start_with?("x") || t`, and `r = yield (1), 2` assigns
-  `[yield(1), 2]`. Ruby passes the whole expression each time. At the
-  start of a statement, `raise (x), y` raises a parse error instead.
-  Ruby's side is confirmed from MRI's lexer (`parse.y`: after
-  `yield`, `super` or a method name, a spaced `(` is `tLPAREN_ARG`);
-  Adjutant's is predicted by reading the code. Spec:
-  `spec/adjutant/methods_and_calls/spaced_paren_spec.cr`. Fix: the
-  `Token#space_before?` test `parse_identifier_or_call` uses, at all
-  four sites.
-
 - **`Exception#message` doesn't call `to_s`, and a nil message isn't
   the class name.** Ruby's `message` returns `to_s`, so a subclass
   overriding `to_s` changes its message; Adjutant's `message` reads

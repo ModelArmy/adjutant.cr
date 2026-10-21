@@ -117,7 +117,7 @@ Heredocs (`<<ID`, `<<-ID`, `<<~ID`, the identifier optionally quoted) are resolv
 
 - `-` touching a numeric literal makes a negative literal: `-0.0.to_s` is `"-0.0"`, while `- 0.0.to_s` negates the call's result. `-a.to_s` is always `-(a.to_s)`.
 - A bare call's first argument may start with `-` or `+` only with space before and none after: `eq -1, -1` is a call, while `a - b`, `a-b` and `n - 1` are binary, whether or not `a` is a local.
-- `name(...)` is `name`'s own argument list; `name (6/3), 2` passes a parenthesized expression as a bare call's first argument.
+- `name(...)` is `name`'s own argument list; `name (6/3), 2` passes a parenthesized expression as a bare call's first argument. The same holds after `yield`, `super`, `raise` and a receiver's method, as Ruby's `tLPAREN_ARG` does: `yield (2) * 10` yields 20, and `s.start_with? ("x") || t` passes `("x") || t`.
 - `key: value` needs the colon touching the key.
 - `&` with space before and none after starts a block argument: `items.map &:upcase` passes `&:upcase`, while `a & b` and `a&b` are binary. After a bare name, `known_local?` decides, as for `name [x]`.
 - `*` with space before and none after starts a splat argument: `puts *lines` spreads `lines`, while `a * b` and `a*b` multiply. After a bare name, `known_local?` decides, as for `&`. `**` follows the same rule for a double splat: `f **opts` spreads `opts`, while `a ** b` raises to a power.

@@ -945,10 +945,10 @@ module Adjutant
     # Whether a call with a receiver takes arguments without
     # parentheses, as in `x.is_a? Foo` or `list.push 1, 2`: a space
     # after the method name, then what starts a bare call's argument.
-    # A `(` keeps its argument-list meaning, spaced or not.
+    # A spaced `(` starts the first argument, as in Ruby, so
+    # `s.start_with? ("x") || t` passes `("x") || t`.
     private def receiver_call_takes_bare_args? : Bool
       return false unless @current.space_before?
-      return false if at_kind?(TokenKind::LParen)
       signed_literal_starts_bare_call? || spread_starts_bare_call? || block_arg_follows_no_paren? ||
         arg_follows_no_paren?
     end
@@ -1690,7 +1690,7 @@ module Adjutant
       l, c = line, col
       expect(TokenKind::KwYield)
       args = [] of Node
-      if at_kind?(TokenKind::LParen)
+      if paren_args_follow?
         args = parse_paren_positional_args
       elsif arg_follows_no_paren? || splat_starts_bare_call?
         # Without the check, `x = yield + 1` would read `+ 1` as an
@@ -1703,7 +1703,7 @@ module Adjutant
     private def parse_super : SuperNode
       l, c = line, col
       expect(TokenKind::KwSuper)
-      if at_kind?(TokenKind::LParen)
+      if paren_args_follow?
         SuperNode.new(parse_paren_positional_args, false, l, c)
       elsif arg_follows_no_paren? || splat_starts_bare_call?
         # `arg_follows_no_paren?` rejects `+` and `-`, so `super + 4`
@@ -1716,12 +1716,19 @@ module Adjutant
       end
     end
 
+    # Whether a `(` touching the keyword before it opens `yield`'s,
+    # `super`'s or `raise`'s argument list. A spaced `(` starts the first
+    # argument instead, as in Ruby: `yield (2) * 10` yields 20.
+    private def paren_args_follow? : Bool
+      at_kind?(TokenKind::LParen) && !@current.space_before?
+    end
+
     # Parses `raise`, `raise "msg"` or `raise("msg")` into a Call to
     # the builtin `raise`.
     private def parse_raise(l : Int32, c : Int32) : Node
       advance # consume 'raise'
       args = [] of Node
-      if at_kind?(TokenKind::LParen)
+      if paren_args_follow?
         args, _kwargs, _blk = parse_call_args_and_block("raise")
       elsif arg_follows_no_paren? || splat_starts_bare_call?
         args = parse_bare_positional_args
