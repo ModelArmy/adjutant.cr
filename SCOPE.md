@@ -21,18 +21,83 @@ after 1.0. Ordered for working through: security and policy defects
 first, then the Ruby divergences, then design work on policy and
 configuration.
 
-- **Implicit conversions skip methods MRI would call.** MRI calls a
-  conversion method even when it is private, so after a top-level
-  `def to_a`, `[*5]` is what that method returns, and likewise `to_ary`
-  for `a, b = 5`. `VM#convert_to_array` asks `script_responds_to?`,
-  which counts public methods only, and gives `[5]`. And MRI raises
-  whatever any object's `exception` method returns, where
-  `VM#exception_from` accepts exception classes and objects only, so
-  `raise obj` for an object defining `exception` raises R064. Predicted
-  by reading the code; both rare. Fix: a lookup that counts private
-  methods and a call that skips the private check, as MRI's
-  `rb_check_funcall` does, and a call of `exception` on anything else
-  that defines it.
+- **A spaced `(` after `raise`, `super`, `yield` or a receiver's
+  method opens its argument list.** In Ruby a space before the `(`
+  makes it the start of the first argument, as
+  `parse_identifier_or_call` already reads `name (x), y`.
+  `parse_raise`, `parse_super`, `parse_yield` and `parse_postfix`
+  (through `receiver_call_takes_bare_args?`) take any `(` as the
+  argument list, so what follows the `)` applies to the result:
+  `yield (2) * 10` yields 2, `super (x).to_s` passes `x`,
+  `raise ("a") + "b"` raises "a", `s.start_with? ("x") || t` is
+  `s.start_with?("x") || t`, and `r = yield (1), 2` assigns
+  `[yield(1), 2]`. Ruby passes the whole expression each time. At the
+  start of a statement, `raise (x), y` raises a parse error instead.
+  Ruby's side is confirmed from MRI's lexer (`parse.y`: after
+  `yield`, `super` or a method name, a spaced `(` is `tLPAREN_ARG`);
+  Adjutant's is predicted by reading the code. Spec:
+  `spec/adjutant/methods_and_calls/spaced_paren_spec.cr`. Fix: the
+  `Token#space_before?` test `parse_identifier_or_call` uses, at all
+  four sites.
+
+- **`Exception#message` doesn't call `to_s`, and a nil message isn't
+  the class name.** Ruby's `message` returns `to_s`, so a subclass
+  overriding `to_s` changes its message; Adjutant's `message` reads
+  the stored message, so `e.message` ignores the override. Ruby's
+  `to_s` gives the class name when the message is nil, where
+  `Exception.new`, `Exception#initialize` and `VM#new_exception`
+  store `nil.to_s`: `raise ArgumentError, detail` with a nil `detail`
+  has the message `""`, not `"ArgumentError"`. Ruby's side is
+  confirmed from MRI's `exc_message` and `exc_to_s` (error.c);
+  Adjutant's is predicted. Spec:
+  `spec/adjutant/begin_rescue_ensure/exception_message_spec.cr`. Fix:
+  `message` calling `to_s`, and a nil message stored as none.
+
+- **`raise` accepts arguments Ruby rejects.** MRI's `make_exception`
+  gives an exception class only the message (`cls.exception(msg)`),
+  takes a third argument as a backtrace, which must be an Array of
+  Strings, a String or nil (else TypeError), and raises ArgumentError
+  for a fourth; `rb_f_raise` takes `cause:` and passes any other
+  keyword on as a further argument. `VM#new_exception` passes every
+  argument after the class to a script `initialize`, so
+  `raise Coded, "m", 3` raises a `Coded` with code 3 where Ruby's
+  `initialize` raises ArgumentError. Without a script `initialize` the
+  rest are dropped, so `raise ArgumentError, "m", 5` raises that
+  ArgumentError where Ruby raises TypeError, a fourth argument is
+  ignored where Ruby raises ArgumentError, and `parse_raise` drops the
+  keywords of `raise(...)`. Ruby's side is confirmed from
+  `make_exception`, `rb_f_raise` (eval.c) and `rb_check_backtrace`
+  (error.c); Adjutant's is predicted. Spec:
+  `spec/adjutant/begin_rescue_ensure/raise_arguments_spec.cr`. Fix:
+  pass the class only the message; check a third argument as
+  `rb_check_backtrace` does, keeping it nowhere until `backtrace`
+  exists (Will Fix, Data & builtin types); R046 for a fourth; and a
+  keyword raising, `cause:` until `cause` exists and any other as MRI
+  does.
+
+- **Conversions to an Array skip a private `to_a` or `to_ary`.** MRI
+  makes implicit conversions through `rb_check_funcall`, which calls
+  private methods (`CALL_FCALL`, vm_eval.c). The only private methods
+  a script can write are top-level ones (U008), which are methods of
+  Object, so after a top-level `def to_a`, `[*5]` is what it returns,
+  and likewise `to_ary` for `a, b = 5`. `VM#convert_to_array` asks
+  `script_responds_to?`, which counts public methods only, and gives
+  `[5]`. Ruby's side is confirmed from MRI's source; Adjutant's is
+  predicted. Spec: `spec/adjutant/implicit_conversion_spec.cr`. Fix:
+  a lookup that counts private methods and a call that skips the
+  private check, as `rb_check_funcall` does. The same lookup serves
+  the conversions that raise instead (Will Fix, Object model).
+
+- **A block spreads a lone Array, but never converts through
+  `to_ary`.** Ruby gives a block that takes several parameters a lone
+  argument's `to_ary` (`rb_check_array_type` in
+  `vm_callee_setup_block_arg`), so `[pair].map { |a, b| [a, b] }`
+  binds `a` and `b` from it. `VM#spread_block_args` spreads only an
+  Array, so `a` is the object and `b` nil. `for a, b in` takes the
+  same path. Ruby's side is confirmed from MRI's source; Adjutant's is
+  predicted. Spec: `spec/adjutant/implicit_conversion_spec.cr`. Fix:
+  `convert_to_array(arg, "to_ary", ...)` where `spread_block_args`
+  takes `as_array?`.
 
 ## Will Fix
 
@@ -230,14 +295,6 @@ still roughly ordered by how cheap/independent the fix is.
   fails to parse. Ruby reads it as a ternary. Spacing it as
   `x ? a : -1` works. The fix is tracking an open `?` in the lexer.
 
-- **`raise`, `super` and `yield` read a spaced `(` as their argument
-  list.** `parse_raise`, `parse_super` and `parse_yield` take any `(`
-  after the keyword as the start of the argument list, so
-  `raise (x), y` is predicted to misparse. `parse_identifier_or_call`
-  reads `name (x), y` as a bare call whose first argument is `(x)`, as
-  Ruby does (DEVELOPMENT.md, Parser). Predicted by reading the code.
-  Fix: the same `Token#space_before?` test.
-
 - **`x -1` after a local `x` is read as a call.** In Ruby a local
   before `-1` or `+1` makes the sign binary, so `x = 5; x -1` is 4.
   `parse_identifier_or_call` checks `known_local?` before `[`, `&` and
@@ -257,13 +314,14 @@ still roughly ordered by how cheap/independent the fix is.
   `parse_return`, `parse_break`, `parse_array_literal`,
   `parse_hash_or_block_brace`, `parse_postfix`'s index branch,
   `parse_param` and `parse_rescue_clause`.
-- **`for`/`while`'s do-ambiguity fix pattern not applied elsewhere.** The
-  `@no_do_block` suppression flag (parser.cr) fixing `for x in a do`/
-  `while cond do` mis-parsing was scoped to those two constructs. The
-  same shape of bug (`block_follows_no_paren?` mis-firing on a bare
-  identifier immediately before a construct's own `do`) was flagged as
-  likely present in `parse_until`/anywhere else accepting an optional
-  trailing `do` — not verified beyond `while`/`for`.
+- **A `do` block inside a loop header's brackets raises.**
+  `@no_do_block` holds for the whole of a `while`, `until` or `for`
+  header, so `while (items.any? do |i| i > 2 end)`, or a `do` block
+  inside a brace block in the header, raises a parse error. Ruby
+  suspends the loop's claim on `do` inside `(`, `[` and `{`
+  (`COND_PUSH(0)` in parse.y). Fix: save and clear the flag inside
+  each bracket, restoring it after, as `@no_pipe` is suspended inside
+  a nested block.
 
 ### Verified only up to compile time, never actually run
 
@@ -480,6 +538,16 @@ implicitly private" writeup for the distinction). `Class.new(kwargs)` →
 since shipped (see git history/`DEVELOPMENT.md`'s "Argument binding"
 section).
 
+- **Conversions that raise where Ruby converts.** Three conversions
+  MRI makes through `rb_check_funcall` raise a TypeError here: `**x`
+  with a private (top-level) `to_hash` raises R065, where
+  `rb_to_hash_type` calls it; `raise obj` for an object defining
+  `exception` raises R064, where `make_exception` raises what that
+  method returns; and `raise obj` for an object with `to_str` raises
+  R064, where `make_exception` raises a RuntimeError with that
+  message (`rb_check_string_type`). Fix: the private-method lookup
+  from Must Fix's Array conversion entry, and `VM#exception_from`
+  calling `exception` and `to_str` as `make_exception` does.
 
 ### Data & builtin types
 
@@ -541,6 +609,12 @@ section).
   per redirect hop, and `mv` per authority. If the cache's scope (per
   run, per origin and subject) needs the host's say, it changes the
   decision callback's contract, and belongs in Must Fix.
+
+- **No `Exception#cause` or `#backtrace`.** Ruby sets `cause` to the
+  error being handled when a rescue body raises, or to `raise`'s
+  `cause:`, and `backtrace` to the frames, or to `raise`'s third
+  argument. Neither method exists, so each raises R047. A check of
+  `raise`'s third argument and its keywords is in Must Fix.
 
 ### Standard library surface
 
