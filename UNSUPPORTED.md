@@ -93,7 +93,7 @@ Every entry below now reports its own code.
 
 ## 1. Unsupported language constructs
 
-### U001 — `&blk` parameter capture
+### U001 — A block as a value (`&blk`, `&fn`)
 
 Block literals are never first-class `Proc` values. Only a `Lambda` node
 (`->(){}`) or the `lambda { }` Kernel-method spelling (both wrap into the
@@ -126,11 +126,14 @@ ordinary `yield` — a separate mechanism — is untouched by the guard.
 Revisit as a new, separate scope item if a real script needs to hold and
 defer-call a block.
 
-**Also covers:** `&obj` calling `to_proc` on a non-`Symbol` receiver at
-a call site (found 2026-08-05 in the mruby full-repo sweep,
-`test/t/proc.rb`) — not a separate decision, just one more manifestation
-of the same underlying gap (no first-class block/proc capture), since
-`&obj` needs somewhere to bind the resulting proc.
+**Also covers:** `&` before anything but a Symbol literal at a call
+site, such as `items.map(&fn)` or `items.map(&name)`, which the parser
+rejects with U001. It would pass a block as a value, the same gap from
+the other side. `&:name` is the exception: it stands for the block
+`Symbol#to_proc` gives, whose one method call the risk walker can read
+from the text. A variable holding a Symbol is rejected even though Ruby
+accepts it, because only a literal names the method before the script
+runs.
 
 ### U002 — `Class.new` / `Module.new`
 
@@ -1045,6 +1048,32 @@ outside 64 bits (`Compiler#compile_int`). At run time the VM turns any
 64-bit overflow into U025, in its own operators and in natives alike
 (`VM#integer_overflow`), and `String#to_i` raises it for digits that
 don't fit.
+
+### U026 — Rational and Complex numbers
+
+Ruby's Rational and Complex types, and every operation whose Ruby
+result is one. In Adjutant that is `**` with a negative Integer
+exponent (`2 ** -1` is `(1/2)` in Ruby), and `**` with a negative base
+and an exponent that isn't whole (`(-8) ** 0.5` is a Complex). The
+literals `3r` and `2i`, `Rational()`, `Complex()` and `to_r` don't
+exist either.
+
+**Why:** an ordinary scoping cut, rare and costly by the test above.
+Scripts seldom want exact fractions or complex numbers, and a model
+that writes `10 ** -2` expects 0.01, not `(1/100)`. Either type would
+need arithmetic and comparison with Integer and Float in every
+combination, each with its own coercion rule: significant work, and
+more for a model to predict.
+
+**Instead:** use a Float base or exponent for an approximate answer:
+`10.0 ** -2` is 0.01. A negative base with a fractional exponent has no
+real-number answer. A script can rescue U026 as a `RangeError`, as for
+U025, since in both Ruby's answer is a value Adjutant can't hold.
+
+**Enforcement — enforced** for `**`: `Integer#**` and `Float#**` raise
+U026, through `Builtins.float_power` for a Complex answer. The literals
+and methods above don't exist, so they fail as any unknown syntax or
+method does.
 
 ---
 

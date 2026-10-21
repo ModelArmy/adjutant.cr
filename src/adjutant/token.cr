@@ -95,6 +95,7 @@ module Adjutant
     Plus
     Minus
     Star
+    StarStar # **
     Slash
     Percent
     Caret
@@ -123,6 +124,7 @@ module Adjutant
     PlusEq     # +=
     MinusEq    # -=
     StarEq     # *=
+    StarStarEq # **=
     SlashEq    # /=
     PercentEq  # %=
     OrAssign   # ||=

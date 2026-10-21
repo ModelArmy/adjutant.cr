@@ -117,10 +117,36 @@ module Adjutant
     end
   end
 
+  # `{...}`: its entries in order, each a HashPair or a DoubleSplat.
   class HashLiteral < Node
-    getter pairs : Array({Node, Node})
+    getter entries : Array(Node)
 
-    def initialize(@pairs, line, column)
+    def initialize(@entries, line, column)
+      super(line, column)
+    end
+
+    # The key-value pairs written, leaving out any double splat.
+    def pairs : Array({Node, Node})
+      entries.compact_map { |entry| {entry.key, entry.value} if entry.is_a?(HashPair) }
+    end
+  end
+
+  # One `key => value` or `key: value` entry of a Hash literal.
+  class HashPair < Node
+    getter key : Node
+    getter value : Node
+
+    def initialize(@key, @value, line, column)
+      super(line, column)
+    end
+  end
+
+  # `**value` among a call's keywords or a Hash literal's entries,
+  # spreading a Hash's pairs; `VM#double_splat_hash` converts its value.
+  class DoubleSplat < Node
+    getter value : Node
+
+    def initialize(@value, line, column)
       super(line, column)
     end
   end
@@ -209,6 +235,17 @@ module Adjutant
     end
   end
 
+  # `*value` in a list that spreads it: call arguments, an Array
+  # literal, an assignment's values or a `when` list. Only those lists
+  # hold one; `VM#splat_array` converts its value as Ruby's splat does.
+  class Splat < Node
+    getter value : Node
+
+    def initialize(@value, line, column)
+      super(line, column)
+    end
+  end
+
   class Ternary < Node
     getter cond : Node
     getter then_branch : Node
@@ -232,6 +269,10 @@ module Adjutant
     end
   end
 
+  # `a, b = values`. `values` are the right-hand side as written: one
+  # value, which the targets take apart, or several, any of them a
+  # splat, which are gathered into one Array first. One target may be
+  # a Splat, which takes the values the others leave.
   class MultiAssign < Node
     getter targets : Array(Node)
     getter values : Array(Node)
@@ -273,7 +314,8 @@ module Adjutant
     getter method : String
     getter args : Array(Node)
     # Keyword arguments (`name: value`), which bind by name and so
-    # are kept apart from the positional `args`.
+    # are kept apart from the positional `args`, in order. A double
+    # splat among them is named `**`, its node a DoubleSplat.
     getter kwargs : Array({String, Node})
     getter block : BlockNode?
     getter? safe : Bool # &. safe navigation
@@ -332,8 +374,9 @@ module Adjutant
     getter? splat : Bool       # *args
     getter? block_param : Bool # &block
     getter? kwarg : Bool       # name: or name: default
+    getter? kwrest : Bool      # **opts
 
-    def initialize(@name, @default, @splat, @block_param, @kwarg, line, column)
+    def initialize(@name, @default, @splat, @block_param, @kwarg, line, column, @kwrest = false)
       super(line, column)
     end
   end
@@ -376,6 +419,26 @@ module Adjutant
 
     def initialize(@params, @body, line, column)
       super(line, column)
+    end
+  end
+
+  # The body of the block a block argument `&:name` stands for, as
+  # Ruby's `Symbol#to_proc` gives: calls `method` on the block's first
+  # argument, passing the rest. The block's one parameter, a splat named
+  # `ARGS`, collects them all, so an Array yielded alone is never spread.
+  class SymbolProcCall < Node
+    ARGS = "<&>"
+
+    getter method : String
+
+    def initialize(@method, line, column)
+      super(line, column)
+    end
+
+    # The block `&:method` stands for.
+    def self.block(method : String, line : Int32, column : Int32) : BlockNode
+      param = Param.new(ARGS, nil, true, false, false, line, column)
+      BlockNode.new([param], Body.new([new(method, line, column)] of Node, line, column), line, column)
     end
   end
 

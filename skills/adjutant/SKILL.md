@@ -36,16 +36,11 @@ What is different, in order of importance:
 - `arr.count { ... }` → `arr.select { ... }.size`
 - `arr.find { ... }` → `arr.select { ... }.first`
 - `arr.group_by { ... }` → A Hash of Arrays built in `each`
-- `arr.map(&:name)` → `arr.map { |x| x.name }`
 - `hash.map`, `select`, `sort_by`, `find` → `hash.to_a.map { |pair| ... }` or `hash.each { |k, v| ... }`
 - `hash.fetch(k, d)`, `dig` → `hash.key?(k) ? hash[k] : d`; chain `[]`
 - `Hash.new(0)`, `counts[k] += 1` on a key not yet seen → `counts[k] = (counts[k] || 0) + 1`; a missing key is `nil`, and `nil + 1` is a NoMethodError
 - `"ab" * 3`, `"%d" % n`, `format` → Interpolation: `"#{n}"`
 - `str << "x"` → `str = str + "x"`
-- `x ** 2` → `x * x`
-- `obj.count += 1` → `obj.count = obj.count + 1`
-- `foo(*args)` → Pass the Array itself
-- `.method` at the start of a line → End the previous line with `.` instead
 - `retry` → A `while` loop around `begin`/`rescue`, with an attempt counter
 - `def run(&blk)`, `block_given?` → `yield`, which returns the block's value: `x = yield 10`
 - `proc { }` → `lambda { }` or `-> { }`
@@ -72,19 +67,19 @@ These are complete lists. `<`, `<=`, `>`, `>=` order numbers with numbers, Strin
 
 **Every object**: `nil?` `is_a?` `kind_of?` `class` `respond_to?` `equal?` `dup` `clone` `to_s` `inspect`
 
-**Integer**: `+ - * / %` `& | ^ << >>` `abs` `ceil` `floor` `round` `truncate` `even?` `odd?` `zero?` `next` `succ` `times` `to_i` `to_f` `to_s`
+**Integer**: `+ - * / % **` `& | ^ << >>` `abs` `ceil` `floor` `round` `truncate` `even?` `odd?` `zero?` `next` `succ` `size` `times` `to_i` `to_f` `to_s`
 
-**Float**: `+ - * / %` `abs` `ceil` `floor` `round` `truncate` `finite?` `infinite?` `nan?` `to_i` `to_f` `to_s`
+**Float**: `+ - * / % **` `abs` `ceil` `floor` `round` `truncate` `finite?` `infinite?` `nan?` `to_i` `to_f` `to_s`
 
 **String**: `+` `[i]` `[range]` `[start, length]` `[substring]` `[regexp]` `=~` `length` `size` `empty?` `upcase` `downcase` `capitalize` `strip` `chomp` `reverse` `chars` `each_line` `split` `include?` `start_with?` `end_with?` `index` `rindex` `sub` `gsub` `match` `to_i` `to_f` `to_sym`
 
-**Symbol**: `to_s` `to_sym`
+**Symbol**: `length` `size` `to_s` `to_sym`
 
 **Array**: `[i]` `[range]` `[start, length]` `[i]=` `[range]=` `<<` `+` `push` `pop` `first` `first(n)` `last` `last(n)` `length` `size` `empty?` `include?` `each` `map` `select` `reject` `inject` `reduce` `inject(:+)` `all?` `any?` `min` `max` `sort` `sort { |a, b| }` `sort_by` `reverse` `join(sep)`
 
 **Hash**: `[k]` `[k]=` `each { |k, v| }` `keys` `values` `key?` `has_key?` `include?` `delete` `merge` `length` `size` `empty?` `to_a`
 
-**Range**: `each` `step` `to_a` `first` `last` `begin` `end` `min` `max` `include?` `member?` `exclude_end?`
+**Range**: `each` `step` `to_a` `first` `last` `begin` `end` `min` `max` `size` `include?` `member?` `exclude_end?`
 
 **Regexp**: `=~` `match` `match?` `source` `options` `casefold?`. **MatchData**: `[n]` `captures` `pre_match` `post_match` `begin` `end` `string`
 

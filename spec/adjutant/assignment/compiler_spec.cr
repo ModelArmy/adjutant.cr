@@ -31,40 +31,39 @@ module Adjutant
         o.should_not contain(Op::SetGlobal)
       end
 
-      # Found 2026-08-08 (see emit_store's own comment on the `Index`
-      # case, and Op::SetIndexFromValue's comment, bytecode.cr, for
-      # the full trace): compound/multi-assignment into an index
-      # target used to emit the SAME opcode (`Op::SetIndex`) that
-      # `x[i] = v` uses, despite pushing operands in the OPPOSITE
-      # order — completely scrambling `target`/`index`/`value` at
-      # runtime. Fixed with a dedicated opcode matching this call
-      # site's actual push order.
-      it "compiles x[i] += 1 to Op::SetIndexFromValue, not Op::SetIndex" do
+      # A compound assignment into an index pushes the receiver and
+      # index once, reads through copies of them (DupN, GetIndex), and
+      # writes through the originals with SetIndex.
+      it "compiles x[i] += 1 to one read through DupN and one SetIndex" do
         o = ops("x = [0]\nx[0] += 1")
-        o.should contain(Op::SetIndexFromValue)
-        o.should_not contain(Op::SetIndex)
+        o.count(Op::DupN).should eq 1
+        o.count(Op::SetIndex).should eq 1
+        o.should_not contain(Op::SetIndexFromValue)
       end
 
-      it "compiles x[i] ||= v to Op::SetIndexFromValue too" do
+      it "compiles x[i] ||= v the same way, with PopUnder for when it doesn't assign" do
         o = ops("x = [nil]\nx[0] ||= 5")
-        o.should contain(Op::SetIndexFromValue)
-        o.should_not contain(Op::SetIndex)
+        o.should contain(Op::PopUnder)
+        o.count(Op::SetIndex).should eq 1
+        o.should_not contain(Op::SetIndexFromValue)
       end
     end
 
     describe "multi-target assignment" do
-      it "compiles a, b = 1, 2 with MultiUnpack, target_count 2, value_count 2" do
-        chunk = compile("a, b = 1, 2")
-        inst = chunk.code.find { |i| i.op == Op::MultiUnpack }.not_nil!
-        inst.a.should eq 2
-        inst.b.should eq 2
+      it "gathers a, b = 1, 2 into one Array before MultiUnpack, for 2 targets" do
+        code = compile("a, b = 1, 2").code
+        make = code.index { |inst| inst.op == Op::MakeArray }
+        unpack = code.index { |inst| inst.op == Op::MultiUnpack }
+        (make && unpack && make < unpack).should be_true
+        unpack.try { |at| code[at].a.should eq 2 }
       end
 
-      it "compiles a, b = xs with value_count 1 (splat is the VM's job, not the compiler's)" do
-        chunk = compile("a, b = xs")
-        inst = chunk.code.find { |i| i.op == Op::MultiUnpack }.not_nil!
-        inst.a.should eq 2
-        inst.b.should eq 1
+      it "compiles a, b = xs as one value, kept as the assignment's value, before MultiUnpack" do
+        o = ops("a, b = xs")
+        o.should_not contain(Op::MakeArray)
+        unpack = o.index(Op::MultiUnpack)
+        unpack.should_not be_nil
+        unpack.try { |at| o[at - 1].should eq Op::Dup }
       end
     end
 

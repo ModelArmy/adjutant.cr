@@ -96,8 +96,11 @@ module Adjutant
         walk_control_flow(node, env)
       when Assign, OpAssign, CondAssign, MultiAssign, IndexAssign, AttrAssign
         walk_assignment(node, env)
-      when Call       then walk_call(node, env)
-      when SuperNode  then walk_super(node, env)
+      when Call, SuperNode, SymbolProcCall
+        walk_invocation(node, env)
+      when Binary, Unary, Splat, DoubleSplat, Ternary, InterpString, RegexLiteral, RangeLiteral, Index,
+           ReturnNode, BreakNode, NextNode, YieldNode
+        walk_expression(node, env)
       when Identifier then walk_identifier(node, env)
       when Body       then walk_body(node, env)
       when DefNode    then walk_def(node)
@@ -105,11 +108,67 @@ module Adjutant
       when ModuleNode then walk_module(node)
       when ArrayLiteral, HashLiteral
         walk_collection_literal(node, env)
-      else
-        # No risk of its own; inferred so the Env stays current.
+      when NilLiteral, BoolLiteral, IntLiteral, FloatLiteral, StringLiteral, StringFragment,
+           SymbolLiteral, RegexFragment, Constant, TopLevel, ConstPath, IVar, CVar, SelfNode,
+           MethodName, Lambda, RedoNode, RetryNode, RequireNode, AliasNode
+        # No risk of its own; inferred so the Env stays current. A
+        # Lambda's body is walked where it is called or passed.
         @inference.infer_node(node, env)
         RiskSequence.new([] of RiskNode, node.line)
+      else
+        # A node kind this walker has no case for: surfaced as
+        # unresolved rather than read as safe.
+        RiskUnresolved.new("#{node.class.name.split("::").last} (not walked)", node.line)
       end
+    end
+
+    # An expression holding others: each part, in the order it runs. The
+    # parts that may not run are a Choice beside an empty branch.
+    private def walk_expression(node : Node, env : TypeInference::Env) : RiskNode
+      case node
+      when Binary then walk_binary(node, env)
+      when Unary  then walk_node(node.expr, env)
+      when Splat, DoubleSplat
+        walk_node(node.value, env)
+      when Ternary
+        branches = [walk_node(node.then_branch, env.dup), walk_node(node.else_branch, env.dup)] of RiskNode
+        RiskSequence.new([walk_node(node.cond, env), RiskChoice.new(branches, "ternary", node.line)] of RiskNode, node.line)
+      when InterpString, RegexLiteral
+        walk_sequence(node.parts, env, node.line)
+      when RangeLiteral
+        walk_sequence([node.start_node, node.end_node].compact, env, node.line)
+      when Index
+        walk_sequence([node.target, node.index, node.length].compact, env, node.line)
+      when ReturnNode, BreakNode, NextNode
+        walk_sequence([node.value].compact, env, node.line)
+      when YieldNode
+        walk_sequence(node.args, env, node.line)
+      else
+        RiskSequence.new([] of RiskNode, node.line)
+      end
+    end
+
+    # A Binary's operands. The right of `||`, `&&`, `or` and `and` runs
+    # only for some values of the left, so it is a Choice.
+    private def walk_binary(node : Binary, env : TypeInference::Env) : RiskNode
+      left = walk_node(node.left, env)
+      right =
+        if node.op.in?(TokenKind::OrOr, TokenKind::AndAnd, TokenKind::KwOr, TokenKind::KwAnd)
+          maybe(walk_node(node.right, env.dup), "short-circuit", node.line)
+        else
+          walk_node(node.right, env)
+        end
+      RiskSequence.new([left, right] of RiskNode, node.line)
+    end
+
+    # `risk`, which may not happen: a Choice between it and nothing.
+    private def maybe(risk : RiskNode, origin : String, line : Int32) : RiskNode
+      RiskChoice.new([risk, RiskSequence.new([] of RiskNode, line)] of RiskNode, origin, line)
+    end
+
+    # `nodes`, walked in order as one Sequence.
+    private def walk_sequence(nodes : Array(Node), env : TypeInference::Env, line : Int32) : RiskNode
+      RiskSequence.new(nodes.map { |child| walk_node(child, env).as(RiskNode) }, line)
     end
 
     private def walk_control_flow(node : Node, env : TypeInference::Env) : RiskNode
@@ -117,13 +176,28 @@ module Adjutant
       when IfNode        then walk_if(node, env)
       when UnlessNode    then walk_unless(node, env)
       when CaseNode      then walk_case(node, env)
-      when WhileNode     then walk_iterated(node.body, env, node.line)
+      when WhileNode     then walk_while(node, env)
       when LoopNode      then walk_iterated(node.body, env, node.line)
-      when ForNode       then walk_iterated(node.body, env, node.line, node.targets.compact_map(&.as?(Identifier).try(&.name)))
+      when ForNode       then walk_for(node, env)
       when ModifierIf    then walk_modifier_if(node, env)
       when ModifierWhile then walk_modifier_while(node, env)
       when BeginNode     then walk_begin(node, env)
       else                    RiskSequence.new([] of RiskNode, node.line)
+      end
+    end
+
+    private def walk_invocation(node : Node, env : TypeInference::Env) : RiskNode
+      case node
+      when Call
+        walk_call(node, env)
+      when SuperNode
+        walk_super(node, env)
+      when SymbolProcCall
+        # `&:name` calls `name` on whatever the callee yields, which
+        # is never known here.
+        walk_receiver_call(Call.new(nil, node.method, [] of Node, nil, false, node.line, node.column), UnknownType.new)
+      else
+        RiskSequence.new([] of RiskNode, node.line)
       end
     end
 
@@ -143,31 +217,66 @@ module Adjutant
     # bindings are not merged into the Env, so they read as unknown
     # afterwards.
     private def walk_unless(node : UnlessNode, env : TypeInference::Env) : RiskNode
+      cond_risk = walk_node(node.cond, env)
       branches = [] of RiskNode
-      branches << walk_body(node.then_branch, env.dup)
+      then_env = env.dup
+      branches << walk_body(node.then_branch, then_env)
       if else_branch = node.else_branch
-        branches << walk_body(else_branch, env.dup)
+        else_env = env.dup
+        branches << walk_body(else_branch, else_env)
+        keep_locals(env, else_env)
       else
         branches << RiskSequence.new([] of RiskNode, node.line)
       end
-      RiskChoice.new(branches, "unless", node.line)
+      keep_locals(env, then_env)
+      RiskSequence.new([cond_risk, RiskChoice.new(branches, "unless", node.line)] of RiskNode, node.line)
+    end
+
+    # A `while` or `until` loop: the condition repeats with the body.
+    private def walk_while(node : WhileNode, env : TypeInference::Env) : RiskNode
+      inner_env = env.dup
+      cond_risk = walk_node(node.cond, inner_env)
+      body_risk = walk_body(node.body, inner_env)
+      keep_locals(env, inner_env)
+      RiskSequence.new([cond_risk, body_risk] of RiskNode, node.line, iterated: true)
+    end
+
+    # A `for` loop: its collection runs once, then the body repeats.
+    private def walk_for(node : ForNode, env : TypeInference::Env) : RiskNode
+      iter_risk = walk_node(node.iter, env)
+      body_env = env.dup
+      node.targets.each { |target| body_env[target.name] = UnknownType.new if target.is_a?(Identifier) }
+      body_risk = walk_body(node.body, body_env)
+      keep_locals(env, body_env)
+      RiskSequence.new([iter_risk, RiskSequence.new([body_risk] of RiskNode, node.line, iterated: true)] of RiskNode, node.line)
+    end
+
+    # Marks each local `inner` bound as a local of `env` too, of unknown
+    # type where `env` didn't have it. `while`, `for`, `unless`, `begin`
+    # and the modifiers open no scope, so a name assigned in them is a
+    # local afterwards, holding nil if its assignment never ran.
+    private def keep_locals(env : TypeInference::Env, inner : TypeInference::Env) : Nil
+      inner.each_key { |name| env[name] = UnknownType.new unless env.has_key?(name) }
     end
 
     # `expr if cond` and `expr unless cond`: a Choice between running
     # `expr` once and not at all.
     private def walk_modifier_if(node : ModifierIf, env : TypeInference::Env) : RiskNode
+      cond_risk = walk_node(node.cond, env)
       body_env = env.dup
       body_risk = walk_node(node.body, body_env)
-      RiskChoice.new([body_risk, RiskSequence.new([] of RiskNode, node.line)] of RiskNode,
-        node.negated? ? "unless" : "if", node.line)
+      keep_locals(env, body_env)
+      RiskSequence.new([cond_risk, maybe(body_risk, node.negated? ? "unless" : "if", node.line)] of RiskNode, node.line)
     end
 
     # `expr while cond` and `expr until cond`: an unknown number of
     # repeats, as for `while`.
     private def walk_modifier_while(node : ModifierWhile, env : TypeInference::Env) : RiskNode
       inner_env = env.dup
+      cond_risk = walk_node(node.cond, inner_env)
       body_risk = walk_node(node.body, inner_env)
-      RiskSequence.new([body_risk] of RiskNode, node.line, iterated: true)
+      keep_locals(env, inner_env)
+      RiskSequence.new([cond_risk, body_risk] of RiskNode, node.line, iterated: true)
     end
 
     # A Choice between the body (then `else`) and each rescue clause,
@@ -182,10 +291,14 @@ module Adjutant
       # outer Env, since the body may have stopped anywhere.
       success_risk =
         if else_body = node.else_body
-          RiskSequence.new([body_risk, walk_body(else_body, body_env.dup)] of RiskNode, node.line)
+          else_env = body_env.dup
+          else_risk = walk_body(else_body, else_env)
+          keep_locals(env, else_env)
+          RiskSequence.new([body_risk, else_risk] of RiskNode, node.line)
         else
           body_risk
         end
+      keep_locals(env, body_env)
 
       try_result =
         if node.rescue_clauses.empty?
@@ -200,6 +313,7 @@ module Adjutant
               rescue_env[rescue_var] = UnknownType.new
             end
             branches << walk_body(clause.body, rescue_env)
+            keep_locals(env, rescue_env)
           end
           # Exactly one branch runs.
           RiskChoice.new(branches, "rescue", node.line)
@@ -208,6 +322,7 @@ module Adjutant
       if ensure_body = node.ensure_body
         ensure_env = env.dup
         ensure_risk = walk_body(ensure_body, ensure_env)
+        keep_locals(env, ensure_env)
         RiskSequence.new([try_result, ensure_risk] of RiskNode, node.line)
       else
         try_result
@@ -375,20 +490,29 @@ module Adjutant
     # `x += expr`: `expr` is walked for risk. The target's type after
     # the operation isn't tracked, so it reads as unknown.
     private def walk_op_assign(node : OpAssign, env : TypeInference::Env) : RiskNode
+      target_risk = compound_target_risk(node.target, env)
       value_risk = walk_node(node.value, env)
       if (target = node.target).is_a?(Identifier)
         env.delete(target.name)
       end
-      value_risk
+      RiskSequence.new([target_risk, value_risk] of RiskNode, node.line)
     end
 
     # `x ||= expr` / `x &&= expr` — same shape as OpAssign.
     private def walk_cond_assign(node : CondAssign, env : TypeInference::Env) : RiskNode
+      target_risk = compound_target_risk(node.target, env)
       value_risk = walk_node(node.value, env)
       if (target = node.target).is_a?(Identifier)
         env.delete(target.name)
       end
-      value_risk
+      RiskSequence.new([target_risk, value_risk] of RiskNode, node.line)
+    end
+
+    # What a compound assignment evaluates in reading its target: the
+    # receiver and index of `x[i]`, the receiver and getter of
+    # `recv.attr`, and nothing for a local.
+    private def compound_target_risk(target : Node, env : TypeInference::Env) : RiskNode
+      target.is_a?(Index) || target.is_a?(Call) ? walk_node(target, env) : RiskSequence.new([] of RiskNode, target.line)
     end
 
     # `a, b = 1, 2`: each value is walked in order. Targets aren't
@@ -396,7 +520,8 @@ module Adjutant
     private def walk_multi_assign(node : MultiAssign, env : TypeInference::Env) : RiskNode
       children = node.values.map { |value| walk_node(value, env).as(RiskNode) }
       node.targets.each do |target|
-        env.delete(target.name) if target.is_a?(Identifier)
+        assigned = target.is_a?(Splat) ? target.value : target
+        env.delete(assigned.name) if assigned.is_a?(Identifier)
       end
       RiskSequence.new(children, node.line)
     end
@@ -432,7 +557,10 @@ module Adjutant
         when ArrayLiteral
           node.elements.map { |elem| walk_node(elem, env).as(RiskNode) }
         when HashLiteral
-          node.pairs.flat_map { |k, v| [walk_node(k, env).as(RiskNode), walk_node(v, env).as(RiskNode)] }
+          node.entries.flat_map do |entry|
+            next [walk_node(entry, env).as(RiskNode)] unless entry.is_a?(HashPair)
+            [walk_node(entry.key, env).as(RiskNode), walk_node(entry.value, env).as(RiskNode)]
+          end
         else
           [] of RiskNode
         end
@@ -440,13 +568,16 @@ module Adjutant
     end
 
     private def walk_if(node : IfNode, env : TypeInference::Env) : RiskNode
+      # The condition always runs. An `elsif` condition runs only once
+      # those before it have failed, so it leads its own branch.
+      cond_risk = walk_node(node.cond, env)
       branches = [] of RiskNode
       then_env = env.dup
       branches << walk_body(node.then_branch, then_env)
 
-      node.elsif_branches.each do |(_cond, body)|
+      node.elsif_branches.each do |(cond, body)|
         b_env = env.dup
-        branches << walk_body(body, b_env)
+        branches << RiskSequence.new([walk_node(cond, b_env), walk_body(body, b_env)] of RiskNode, node.line)
       end
 
       if else_branch = node.else_branch
@@ -458,14 +589,19 @@ module Adjutant
 
       # Merges branch bindings into the Env for later siblings.
       @inference.infer_if(node, env)
-      RiskChoice.new(branches, "if", node.line)
+      RiskSequence.new([cond_risk, RiskChoice.new(branches, "if", node.line)] of RiskNode, node.line)
     end
 
     private def walk_case(node : CaseNode, env : TypeInference::Env) : RiskNode
+      # The subject always runs. A `when`'s conditions run only once
+      # those before it have failed, so they lead its branch.
+      subject_risk = node.subject.try { |subject| walk_node(subject, env) } || RiskSequence.new([] of RiskNode, node.line)
       branches = [] of RiskNode
-      node.whens.each do |(_conds, body)|
+      node.whens.each do |(conds, body)|
         b_env = env.dup
-        branches << walk_body(body, b_env)
+        children = conds.map { |cond| walk_node(cond, b_env).as(RiskNode) }
+        children << walk_body(body, b_env)
+        branches << RiskSequence.new(children, node.line)
       end
       if else_branch = node.else_branch
         else_env = env.dup
@@ -474,7 +610,7 @@ module Adjutant
         branches << RiskSequence.new([] of RiskNode, node.line)
       end
       @inference.infer_case(node, env)
-      RiskChoice.new(branches, "case", node.line)
+      RiskSequence.new([subject_risk, RiskChoice.new(branches, "case", node.line)] of RiskNode, node.line)
     end
 
     private def walk_iterated(body : Body, env : TypeInference::Env, line : Int32, vars : Array(String) = [] of String) : RiskNode
@@ -617,10 +753,20 @@ module Adjutant
       @in_progress_lambdas << node
       lambda_env = TypeInference::Env.new
       node.params.each { |param| lambda_env[param.name] = UnknownType.new }
-      result = walk_body(node.body, lambda_env)
+      result = walk_with_defaults(node.params, node.body, lambda_env, node.line)
       @in_progress_lambdas.delete(node)
       @lambda_cache[node] = result
       result
+    end
+
+    # `body`, after the default values of `params`. Each default runs
+    # only when its argument is left out, so each is a Choice.
+    private def walk_with_defaults(params : Array(Param), body : Body, env : TypeInference::Env, line : Int32) : RiskNode
+      defaults = params.compact_map do |param|
+        param.default.try { |default| maybe(walk_node(default, env), "default argument", default.line).as(RiskNode) }
+      end
+      body_risk = walk_body(body, env)
+      defaults.empty? ? body_risk : RiskSequence.new(defaults << body_risk, line)
     end
 
     # `M::A`, for labels only.
@@ -797,7 +943,7 @@ module Adjutant
       @current_method_proc = proc
       method_env = TypeInference::Env.new
       proc.params.each { |param| method_env[param] = UnknownType.new }
-      result = walk_body(ast_body, method_env)
+      result = walk_with_defaults(proc.ast_params || [] of Param, ast_body, method_env, call_line)
       @current_self_class = previous_self_class
       @current_self_is_singleton = previous_is_singleton
       @current_method_proc = previous_method_proc
