@@ -620,6 +620,17 @@ module Adjutant
              "TypeError here too.",
         help: "Double-splat a Hash, or give the object a `to_hash` that returns one."
       ),
+      "R066" => Entry.new(
+        code: "R066",
+        summary: "backtrace must be an Array of String",
+        why: "`raise`'s third argument is the error's backtrace, so it must " \
+             "be an Array of Strings, a String or nil, as in Ruby, which " \
+             "raises a TypeError here too. A keyword other than `cause:` " \
+             "given to `raise(...)` arrives here as well, since Ruby passes " \
+             "it on as a Hash argument.",
+        help: "Put the message second and nothing after it; build any " \
+              "detail into the message."
+      ),
 
       # --- L: limits reached ----------------------------------------
       #

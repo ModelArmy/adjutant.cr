@@ -3239,22 +3239,37 @@ module Adjutant
     # decides it. None re-raises the error being handled, else makes a
     # RuntimeError, "unhandled exception"; a lone String is a
     # RuntimeError's message; an exception class makes an instance with
-    # the arguments that follow; an exception object is raised as it is,
-    # or as a copy carrying the message that follows. Anything else
-    # raises R064, a TypeError.
+    # only the message that follows, if any; an exception object is
+    # raised as it is, or as a copy carrying the message that follows.
+    # A third argument is the backtrace, checked by `check_backtrace!`.
+    # Anything else raises R064, a TypeError.
     private def exception_from(args : Array(Value), filename : String, line : Int32) : Value
       first = args.first?
       return error_being_handled || builtin_error("RuntimeError", "unhandled exception") unless first
       return builtin_error("RuntimeError", first) if first.string? && args.size == 1
-      if (cls = first.as_rclass?) && exception_class?(cls)
-        return new_exception(cls, args[1..])
-      end
-      if (obj = first.as_robject?) && obj.instance_of?("Exception")
-        return first if args.size == 1
-        return exception_with_message(first, args[1], filename, line)
-      end
+      error =
+        if (cls = first.as_rclass?) && exception_class?(cls)
+          new_exception(cls, args[1, 1])
+        elsif (obj = first.as_robject?) && obj.instance_of?("Exception")
+          args.size == 1 ? first : exception_with_message(first, args[1], filename, line)
+        else
+          raise runtime_diagnostic(
+            Diagnostic.new(code: "R064", primary: Span.new(line: line, filename: filename)),
+            error_class: "TypeError")
+        end
+      check_backtrace!(args[2]?, filename, line)
+      error
+    end
+
+    # Raises R066, a TypeError, unless `backtrace` is what MRI's
+    # `rb_check_backtrace` accepts: none, nil, a String or an Array of
+    # Strings. Adjutant keeps no backtrace, so an accepted one is set
+    # aside.
+    private def check_backtrace!(backtrace : Value?, filename : String, line : Int32) : Nil
+      return if backtrace.nil? || backtrace.null? || backtrace.string?
+      return if backtrace.as_array?.try { |items| !items.any? { |item| !item.string? } }
       raise runtime_diagnostic(
-        Diagnostic.new(code: "R064", primary: Span.new(line: line, filename: filename)),
+        Diagnostic.new(code: "R066", primary: Span.new(line: line, filename: filename)),
         error_class: "TypeError")
     end
 

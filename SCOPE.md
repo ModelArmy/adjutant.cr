@@ -31,28 +31,6 @@ configuration.
   Fix: carry the keyword Hash's label with its names, and pass it to
   `runtime_diagnostic` at each site.
 
-- **`raise` accepts arguments Ruby rejects.** MRI's `make_exception`
-  gives an exception class only the message (`cls.exception(msg)`),
-  takes a third argument as a backtrace, which must be an Array of
-  Strings, a String or nil (else TypeError), and raises ArgumentError
-  for a fourth; `rb_f_raise` takes `cause:` and passes any other
-  keyword on as a further argument. `VM#new_exception` passes every
-  argument after the class to a script `initialize`, so
-  `raise Coded, "m", 3` raises a `Coded` with code 3 where Ruby's
-  `initialize` raises ArgumentError. Without a script `initialize` the
-  rest are dropped, so `raise ArgumentError, "m", 5` raises that
-  ArgumentError where Ruby raises TypeError, a fourth argument is
-  ignored where Ruby raises ArgumentError, and `parse_raise` drops the
-  keywords of `raise(...)`. Ruby's side is confirmed from
-  `make_exception`, `rb_f_raise` (eval.c) and `rb_check_backtrace`
-  (error.c); Adjutant's is predicted. Spec:
-  `spec/adjutant/begin_rescue_ensure/raise_arguments_spec.cr`. Fix:
-  pass the class only the message; check a third argument as
-  `rb_check_backtrace` does, keeping it nowhere until `backtrace`
-  exists (Will Fix, Data & builtin types); R046 for a fourth; and a
-  keyword raising, `cause:` until `cause` exists and any other as MRI
-  does.
-
 - **Conversions to an Array skip a private `to_a` or `to_ary`.** MRI
   makes implicit conversions through `rb_check_funcall`, which calls
   private methods (`CALL_FCALL`, vm_eval.c). The only private methods
@@ -591,8 +569,9 @@ section).
 - **No `Exception#cause` or `#backtrace`.** Ruby sets `cause` to the
   error being handled when a rescue body raises, or to `raise`'s
   `cause:`, and `backtrace` to the frames, or to `raise`'s third
-  argument. Neither method exists, so each raises R047. A check of
-  `raise`'s third argument and its keywords is in Must Fix.
+  argument. Neither method exists, so each raises R047. `raise` checks
+  its third argument as Ruby does and sets it aside, and raises R012
+  for `cause:`.
 
 ### Standard library surface
 

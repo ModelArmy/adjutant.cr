@@ -1724,16 +1724,34 @@ module Adjutant
     end
 
     # Parses `raise`, `raise "msg"` or `raise("msg")` into a Call to
-    # the builtin `raise`.
+    # the builtin `raise`. Keywords other than `cause:` go on as a Hash
+    # argument, as MRI's `rb_f_raise` passes them; `cause:` stays a
+    # keyword, which `raise` rejects (R012) until exceptions have a
+    # cause.
     private def parse_raise(l : Int32, c : Int32) : Node
       advance # consume 'raise'
       args = [] of Node
+      kwargs = [] of {String, Node}
       if paren_args_follow?
-        args, _kwargs, _blk = parse_call_args_and_block("raise")
+        args, kwargs, _blk = parse_call_args_and_block("raise")
       elsif arg_follows_no_paren? || splat_starts_bare_call?
         args = parse_bare_positional_args
       end
-      Call.new(nil, "raise", args, nil, false, l, c)
+      if !kwargs.empty? && kwargs.none? { |name, _| name == "cause" }
+        args << keywords_as_hash(kwargs, l, c)
+        kwargs = [] of {String, Node}
+      end
+      Call.new(nil, "raise", args, nil, false, l, c, kwargs)
+    end
+
+    # A Hash literal of `kwargs`, each name a Symbol key and a double
+    # splat kept as one.
+    private def keywords_as_hash(kwargs : Array({String, Node}), l : Int32, c : Int32) : HashLiteral
+      entries = kwargs.map do |name, node|
+        next node if name == "**"
+        HashPair.new(SymbolLiteral.new(name, node.line, node.column), node, node.line, node.column).as(Node)
+      end
+      HashLiteral.new(entries, l, c)
     end
 
     # Parses a parenthesized list of positional arguments from its `(`,
