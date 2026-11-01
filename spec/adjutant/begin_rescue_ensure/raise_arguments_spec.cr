@@ -81,5 +81,45 @@ module Adjutant
         raised_by(%(raise "boom", "more")).should eq %([TypeError, "exception class/object expected"])
       end
     end
+
+    describe "with arguments MRI rejects" do
+      it "gives an exception class only the message, so a script initialize taking more raises ArgumentError" do
+        setup = <<-RUBY
+        class Coded < StandardError
+          def initialize(message, code)
+            super(message)
+            @code = code
+          end
+        end
+        RUBY
+        raised_by(%(raise Coded, "bad", 3), setup)
+          .should eq %([ArgumentError, "wrong number of arguments (given 1, expected 2)"])
+      end
+
+      it "raises TypeError for a third argument that isn't a backtrace" do
+        [%(raise ArgumentError, "bad", 5), %(raise ArgumentError.new("a"), "bad", 5)].each do |expr|
+          raised_by(expr).should start_with("[TypeError, ")
+        end
+      end
+
+      it "takes a third argument that is a backtrace" do
+        [%(raise ArgumentError, "bad", ["here"]), %(raise ArgumentError, "bad", "here"), %(raise ArgumentError, "bad", nil)].each do |expr|
+          raised_by(expr).should eq %([ArgumentError, "bad"])
+        end
+      end
+
+      it "raises ArgumentError for a fourth argument" do
+        raised_by(%(raise ArgumentError, "bad", nil, 4))
+          .should eq %([ArgumentError, "wrong number of arguments (given 4, expected 0..3)"])
+      end
+
+      it "passes a keyword other than cause: on as a backtrace, which raises TypeError" do
+        raised_by(%(raise(ArgumentError, "bad", code: 3))).should start_with("[TypeError, ")
+      end
+
+      it "raises ArgumentError for cause:, until exceptions have a cause" do
+        raised_by(%(raise(TypeError, "bad", cause: nil))).should start_with("[ArgumentError, ")
+      end
+    end
   end
 end
