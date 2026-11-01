@@ -21,17 +21,15 @@ after 1.0. Ordered for working through: security and policy defects
 first, then the Ruby divergences, then design work on policy and
 configuration.
 
-- **Error messages quoting a value's content drop its label.** A
-  diagnostic that quotes a script value puts that value's text in the
-  message an exception carries, as an unlabelled String, so a rescue
-  can carry the text past the risk-flow check: `secret[0] = "x"`
-  raises FrozenError (R052, `vm_indexing.cr`) with `secret.inspect` in
-  its message, and `e.message` then reaches any sink unlabelled. R004
-  (`value::Name`), R013 (a `<=>` result), R016 and R034 (Float values)
-  quote their values too. Predicted by reading the code. Fix:
-  `runtime_diagnostic` taking the labels of the values a diagnostic
-  quotes and storing its message with their join, and a pass over the
-  catalog for every field that quotes a value.
+- **An unknown keyword's name drops its label.** Keywords travel
+  by String name, so a Symbol key made from a labelled value loses its
+  label on the way, and R012 quotes it unlabelled:
+  `f(**{secret.to_sym => 1})` for an `f` without that keyword puts
+  the secret in `e.message`. The three R012 sites are
+  `check_unknown_keywords!`, `reject_kwargs!` and
+  `check_unknown_native_keywords!`. Predicted by reading the code.
+  Fix: carry the keyword Hash's label with its names, and pass it to
+  `runtime_diagnostic` at each site.
 
 - **`raise` accepts arguments Ruby rejects.** MRI's `make_exception`
   gives an exception class only the message (`cls.exception(msg)`),

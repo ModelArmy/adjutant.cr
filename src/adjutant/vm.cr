@@ -641,7 +641,7 @@ module Adjutant
           raise runtime_diagnostic(
             Diagnostic.new(code: "R012", primary: frame_span(f),
               data: {"name" => render_inspect(key, f.filename, f.line), "method" => method}),
-            f, error_class: "ArgumentError")
+            f, error_class: "ArgumentError", label: RiskFlowLabel.join(built.label, key.label))
         end
         keywords[key.as_sym.name] = value
       end
@@ -1094,7 +1094,7 @@ module Adjutant
             sym = chunk.consts[inst.c].as_sym
             ns_val = pop
             unless ns = ns_val.as_rclass?
-              raise script_diagnostic("R004", {"value" => ns_val.to_s}, f)
+              raise script_diagnostic("R004", {"value" => ns_val.to_s}, f, label: ns_val.label)
             end
             val = ns.constants[sym.value]?
             unless val
@@ -2973,25 +2973,41 @@ module Adjutant
     end
 
     # `runtime_error` carrying a Diagnostic for the host. The script's
-    # error object gets only the summary as its message. Spans have a
-    # line and no column, since Frame records none. `error_class` is
-    # what a script rescues and must match Ruby's choice, whatever the
-    # code.
+    # error object gets only the summary as its message, labelled
+    # `label`: the join of the labels of the values the summary quotes.
+    # Spans have a line and no column, since Frame records none.
+    # `error_class` is what a script rescues and must match Ruby's
+    # choice, whatever the code.
     private def runtime_diagnostic(diag : Diagnostic, frame : Frame = current_frame,
-                                   cause = nil, error_class : String = "RuntimeError") : RuntimeError
+                                   cause = nil, error_class : String = "RuntimeError",
+                                   label : RiskFlowLabel? = nil) : RuntimeError
       cls = builtin_class_by_name(error_class)
-      err_val = cls ? make_error_object(cls, diag.summary) : nil
+      err_val = cls ? make_error_object(cls, Value.string(diag.summary, label)) : nil
       RuntimeError.new(diag, frame, cause, error_value: err_val)
     end
 
+    # `ex`, with its error object's message also labelled `label`, for
+    # a message built from values labelled `label`.
+    private def label_error_message(ex : RuntimeError, label : RiskFlowLabel?) : RuntimeError
+      return ex unless label && (obj = ex.error_value.try(&.as_robject?))
+      msg_id = @symbols.intern("message").value
+      if message = obj.ivars[msg_id]?
+        obj.ivars[msg_id] = message.with_label(RiskFlowLabel.join(message.label, label))
+      end
+      ex
+    end
+
     # Raises a catalog diagnostic for a native method, at the call
-    # site `filename` and `line`. See `NativeCallContext#raise_error`.
+    # site `filename` and `line`, its message labelled `label`. See
+    # `NativeCallContext#raise_error`.
     protected def raise_native_error(code : String, data : Hash(String, String),
-                                     error_class : String, filename : String, line : Int32) : NoReturn
+                                     error_class : String, filename : String, line : Int32,
+                                     label : RiskFlowLabel? = nil) : NoReturn
       raise runtime_diagnostic(
         Diagnostic.new(code: code, primary: Span.new(line: line, filename: filename), data: data),
         current_frame,
-        error_class: error_class
+        error_class: error_class,
+        label: label
       )
     end
 
@@ -3001,8 +3017,9 @@ module Adjutant
     # `NativeCallContext#raise_error_class`.
     protected def raise_native_error_class(message : String, error_class : RubyClass,
                                            filename : String, line : Int32,
-                                           attributes : Hash(String, Value)? = nil) : NoReturn
-      err_val = make_error_object(error_class, message, attributes)
+                                           attributes : Hash(String, Value)? = nil,
+                                           label : RiskFlowLabel? = nil) : NoReturn
+      err_val = make_error_object(error_class, Value.string(message, label), attributes)
       raise RuntimeError.new(message, filename, line, error_value: err_val)
     end
 
@@ -3042,10 +3059,12 @@ module Adjutant
 
     # Shorthand for the ordinary script-fault diagnostics, which all
     # have the same shape: a code, some substitutions, and the frame.
-    private def script_diagnostic(code : String, data : Hash(String, String), frame : Frame) : RuntimeError
+    private def script_diagnostic(code : String, data : Hash(String, String), frame : Frame,
+                                  label : RiskFlowLabel? = nil) : RuntimeError
       runtime_diagnostic(
         Diagnostic.new(code: code, primary: frame_span(frame), data: data),
-        frame
+        frame,
+        label: label
       )
     end
 
@@ -3157,7 +3176,8 @@ module Adjutant
               primary: frame_span(current_frame),
               data: {"reason" => ex.message || "invalid pattern"}
             ),
-            error_class: "RegexpError"
+            error_class: "RegexpError",
+            label: label
           )
         end
       obj = RegexpObject.new(cls, regex)

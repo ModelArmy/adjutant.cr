@@ -1,10 +1,25 @@
 module Adjutant
   class VM
     # `target[idx]`, or `target[idx, length]` with `length`, with Ruby's
-    # result for each receiver. `safe` gives nil for a nil target.
+    # result for each receiver. `safe` gives nil for a nil target. An
+    # error's message carries the labels of the operands it may quote.
     private def exec_get_index(target : Value, idx : Value, length : Value?, safe : Bool,
                                filename : String, line : Int32) : Value
       return Value.nil_value if safe && target.null?
+      get_index(target, idx, length, filename, line)
+    rescue ex : RuntimeError
+      raise label_error_message(ex, index_operands_label(target, idx, length))
+    end
+
+    # The join of the labels of an index operation's operands: the
+    # receiver, whose size an error may quote, and the index and length.
+    private def index_operands_label(target : Value, idx : Value, length : Value?) : RiskFlowLabel?
+      RiskFlowLabel.join(RiskFlowLabel.join(target.label, idx.label), length.try(&.label))
+    end
+
+    # `target[idx]` for `exec_get_index`, by the receiver's kind.
+    private def get_index(target : Value, idx : Value, length : Value?,
+                          filename : String, line : Int32) : Value
       case
       when target.array?
         array_get_index(target.as_array, idx, length, filename, line)
@@ -109,8 +124,18 @@ module Adjutant
     end
 
     # `target[idx] = val`, or `target[idx, length] = val` with `length`.
+    # An error's message carries the labels of the operands it may
+    # quote.
     private def exec_set_index(target : Value, idx : Value, length : Value?, val : Value,
                                filename : String, line : Int32) : Nil
+      set_index(target, idx, length, val, filename, line)
+    rescue ex : RuntimeError
+      raise label_error_message(ex, index_operands_label(target, idx, length))
+    end
+
+    # `target[idx] = val` for `exec_set_index`, by the receiver's kind.
+    private def set_index(target : Value, idx : Value, length : Value?, val : Value,
+                          filename : String, line : Int32) : Nil
       case
       when target.array?
         array_set_index(target.as_array, idx, length, val, filename, line)

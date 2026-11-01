@@ -83,18 +83,32 @@ module Adjutant
     def check_flow_at(authority : Authority, subject : String,
                       labels : Array(RiskFlowLabel)? = nil) : Nil
       return unless @callable.checks_flow_at_subject? && @callable.authorities.includes?(authority)
-      labels ||= (@args + (@kwargs.try(&.values) || [] of Value)).compact_map(&.label)
+      labels ||= inputs.compact_map(&.label)
       @vm.check_flow_at(labels, authority, subject, @name, @callable.risk, filename, line)
     end
 
+    # The error's message carries the labels of the call's inputs,
+    # which it may quote, as a native's result does.
     def raise_error(code : String, data : Hash(String, String) = {} of String => String,
                     error_class : String = "RuntimeError") : NoReturn
-      @vm.raise_native_error(code, data, error_class, filename, line)
+      @vm.raise_native_error(code, data, error_class, filename, line, inputs_label)
     end
 
+    # The error's message carries the labels of the call's inputs, as
+    # for `raise_error`.
     def raise_error_class(message : String, error_class : RubyClass,
                           attributes : Hash(String, Value)? = nil) : NoReturn
-      @vm.raise_native_error_class(message, error_class, filename, line, attributes)
+      @vm.raise_native_error_class(message, error_class, filename, line, attributes, inputs_label)
+    end
+
+    # The call's arguments, receiver first, and keyword values.
+    private def inputs : Array(Value)
+      @args + (@kwargs.try(&.values) || [] of Value)
+    end
+
+    # The join of the labels of the call's inputs.
+    private def inputs_label : RiskFlowLabel?
+      inputs.reduce(nil.as(RiskFlowLabel?)) { |joined, input| RiskFlowLabel.join(joined, input.label) }
     end
   end
 end
