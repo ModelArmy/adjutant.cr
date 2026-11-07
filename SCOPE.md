@@ -33,30 +33,6 @@ configuration.
   should check first. Fix: a `find_any_singleton_method` walking
   `singleton_ancestors`, as `dispatch_super` does.
 
-- **Conversions to an Array skip a private `to_a` or `to_ary`.** MRI
-  makes implicit conversions through `rb_check_funcall`, which calls
-  private methods (`CALL_FCALL`, vm_eval.c). The only private methods
-  a script can write are top-level ones (U008), which are methods of
-  Object, so after a top-level `def to_a`, `[*5]` is what it returns,
-  and likewise `to_ary` for `a, b = 5`. `VM#convert_to_array` asks
-  `script_responds_to?`, which counts public methods only, and gives
-  `[5]`. Ruby's side is confirmed from MRI's source; Adjutant's is
-  predicted. Spec: `spec/adjutant/implicit_conversion_spec.cr`. Fix:
-  a lookup that counts private methods and a call that skips the
-  private check, as `rb_check_funcall` does. The same lookup serves
-  the conversions that raise instead (Will Fix, Object model).
-
-- **A block spreads a lone Array, but never converts through
-  `to_ary`.** Ruby gives a block that takes several parameters a lone
-  argument's `to_ary` (`rb_check_array_type` in
-  `vm_callee_setup_block_arg`), so `[pair].map { |a, b| [a, b] }`
-  binds `a` and `b` from it. `VM#spread_block_args` spreads only an
-  Array, so `a` is the object and `b` nil. `for a, b in` takes the
-  same path. Ruby's side is confirmed from MRI's source; Adjutant's is
-  predicted. Spec: `spec/adjutant/implicit_conversion_spec.cr`. Fix:
-  `convert_to_array(arg, "to_ary", ...)` where `spread_block_args`
-  takes `as_array?`.
-
 ## Will Fix
 
 Real gaps, not currently blocking anything, no active design conversation
@@ -496,17 +472,14 @@ implicitly private" writeup for the distinction). `Class.new(kwargs)` →
 since shipped (see git history/`DEVELOPMENT.md`'s "Argument binding"
 section).
 
-- **Conversions that raise where Ruby converts.** Three conversions
-  MRI makes through `rb_check_funcall` raise a TypeError here: `**x`
-  with a private (top-level) `to_hash` raises R065, where
-  `rb_to_hash_type` calls it; `raise obj` for an object defining
-  `exception` raises R064, where `make_exception` raises what that
-  method returns; and `raise obj` for an object with `to_str` raises
-  R064, where `make_exception` raises a RuntimeError with that
-  message (`rb_check_string_type`). Fix: the private-method lookup
-  from Must Fix's Array conversion entry, and `VM#exception_from`
-  calling `exception` and `to_str` as `make_exception` does.
-
+- **`raise` with an object that converts raises a TypeError.** Two
+  conversions MRI's `make_exception` makes through `rb_check_funcall`
+  raise R064 here: for an object defining `exception`, MRI raises
+  what that method returns, and for an object with `to_str`, a
+  RuntimeError with that message (`rb_check_string_type`).
+  `VM#exception_from` takes only an exception or a String. Fix:
+  `exception_from` calling each through `implicitly_responds_to?` and
+  `call_method(..., as_self: true)`, as `convert_to_array` does.
 ### Data & builtin types
 
 - **`Array` has no `#count` at all** (`#length`/`#size` exist, `#count`

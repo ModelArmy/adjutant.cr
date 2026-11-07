@@ -595,10 +595,11 @@ module Adjutant
     # `value`'s `method` (`to_a` or `to_ary`) if it has one returning an
     # Array, as MRI's `rb_check_convert_type_with_id` does; nil if it
     # has none or it returns nil. Raises R063, a TypeError, if it
-    # returns anything else.
+    # returns anything else. A private method counts, as MRI makes the
+    # call through `rb_check_funcall` (`implicitly_responds_to?`).
     private def convert_to_array(value : Value, method : String, f : Frame) : Value?
-      return unless script_responds_to?(value, method)
-      converted = call_method(value, method, [] of Value, f.filename, f.line)
+      return unless implicitly_responds_to?(value, method)
+      converted = call_method(value, method, [] of Value, f.filename, f.line, as_self: true)
       return if converted.null?
       return converted if converted.array?
       raise bad_conversion(value, "Array", method, converted, f)
@@ -625,14 +626,15 @@ module Adjutant
     end
 
     # `value`'s `to_hash`, which must return a Hash: R065, a TypeError,
-    # without one, and R063 for anything else it returns.
+    # without one, and R063 for anything else it returns. A private
+    # `to_hash` counts, as for `convert_to_array`.
     private def convert_to_hash(value : Value, f : Frame) : Value
-      unless script_responds_to?(value, "to_hash")
+      unless implicitly_responds_to?(value, "to_hash")
         raise runtime_diagnostic(
           Diagnostic.new(code: "R065", primary: frame_span(f), data: {"class" => describe_value(value)}),
           f, error_class: "TypeError")
       end
-      converted = call_method(value, "to_hash", [] of Value, f.filename, f.line)
+      converted = call_method(value, "to_hash", [] of Value, f.filename, f.line, as_self: true)
       return converted if converted.hash?
       raise bad_conversion(value, "Hash", "to_hash", converted, f)
     end
@@ -756,6 +758,18 @@ module Adjutant
       else
         false
       end
+    end
+
+    # Whether `recv` has an instance method `method_name`, public or
+    # private, for an implicit conversion: MRI's `rb_check_funcall`
+    # calls private methods (`CALL_FCALL`), so a top-level `def to_a`,
+    # a private method of Object, converts any object. A class receiver
+    # counts its singleton methods, as `script_responds_to?` does.
+    private def implicitly_responds_to?(recv : Value, method_name : String) : Bool
+      return script_responds_to?(recv, method_name) if recv.rclass?
+      return false unless sym = @symbols.lookup(method_name)
+      cls = recv.as_robject?.try(&.rclass) || @interpreter.try(&.builtin_class_for(recv))
+      !cls.try(&.find_any_method(sym.value)).nil?
     end
 
     # Whether the instance method `sym_id` of `cls` that a call would
@@ -1629,7 +1643,8 @@ module Adjutant
     # `invoke_internal`, and counts toward the same limits; a native
     # one returns directly.
     protected def call_method(recv : Value, name : String, args : Array(Value),
-                              filename : String = "<native>", line : Int32 = 0) : Value
+                              filename : String = "<native>", line : Int32 = 0,
+                              as_self : Bool = false) : Value
       saved_frames = @frames
       saved_stack = @stack
       saved_cur_block = @current_block
@@ -1647,7 +1662,10 @@ module Adjutant
       @frames = [sentinel]
       @stack = Array(Value).new(256)
       begin
-        result = dispatch_call(name, [recv] + args, safe: false, filename: filename, line: line, has_receiver: true)
+        # `as_self` calls as `recv` itself would, so a private method
+        # runs, as MRI's `rb_check_funcall` does for a conversion.
+        result = dispatch_call(name, [recv] + args, safe: false, filename: filename, line: line, has_receiver: true,
+          self_val: as_self ? recv : nil)
         # A native result is complete. A script method pushed a frame,
         # which `execute` runs; its result comes back through
         # `execute`'s `@stack.last? || result` fallback, since Ret
@@ -1809,6 +1827,16 @@ module Adjutant
       {args, kwargs}
     end
 
+    # Whether `caller_self` is `recv`: the same object, or an equal
+    # builtin value.
+    private def same_self?(caller_self : Value, recv : Value) : Bool
+      if (caller_obj = caller_self.as_robject?) && (recv_obj = recv.as_robject?)
+        caller_obj.same?(recv_obj)
+      else
+        !caller_self.robject? && !recv.robject? && caller_self == recv
+      end
+    end
+
     # Raises R023 (NoMethodError) if the method `sym_id` resolved to
     # on `cls` is private and the receiver is not self at the call
     # site. By identity, so `self.hello` is allowed, as in Ruby.
@@ -1817,8 +1845,7 @@ module Adjutant
                                       native : Bool) : Nil
       is_private = native ? cls.find_native_method_private?(sym_id) : cls.find_method_private?(sym_id)
       return unless is_private
-      caller_self = self_val.try(&.as_robject?)
-      return if caller_self && caller_self.same?(recv.as_robject)
+      return if self_val && same_self?(self_val, recv)
       raise runtime_diagnostic(
         Diagnostic.new(
           code: "R023",
@@ -1934,10 +1961,14 @@ module Adjutant
           end
         elsif interp = @interpreter
           # A builtin value (Integer, String, ...) uses its builtin
-          # class.
+          # class, whose ancestors reach Object and its script methods.
           if (cls = interp.builtin_class_for(recv)) && (sym_id = @symbols.lookup(name).try(&.value))
-            if native = cls.find_native_method(sym_id)
-              return call_native(native, args, filename, line, blk, "#{cls.name}##{name}", has_receiver: true, kwargs: kwargs)
+            case method = cls.find_any_method(sym_id)
+            when ScriptProc
+              raise_if_private_call(cls, sym_id, name, recv, self_val, filename, line, native: false)
+              return call_script_proc(method, args[1..], filename, blk, nil, self_val: recv, block_outer: blk_outer, kwargs: kwargs, block_yield: blk_yield, block_yield_outer: blk_yield_outer)
+            when NativeCallable
+              return call_native(method, args, filename, line, blk, "#{cls.name}##{name}", has_receiver: true, kwargs: kwargs)
             end
           end
         end
@@ -2313,7 +2344,9 @@ module Adjutant
       Value.nil_value # sentinel; Op::Ret will push the real return value
     end
 
-    # Returns the arguments a block binds, spreading a lone Array across
+    # Returns the arguments a block binds, spreading a lone Array, or
+    # the Array a lone argument's `to_ary` returns (MRI's
+    # `vm_callee_setup_block_arg` through `rb_check_array_type`), across
     # the block's parameters when it declares more than one, as Ruby
     # does: `pairs.each { |k, v| }` binds each pair's two elements, and
     # `|a, *rest|` takes the first element and the rest. A block with one
@@ -2324,12 +2357,12 @@ module Adjutant
     private def spread_block_args(proc : ScriptProc, args : Array(Value),
                                   kwargs : Hash(String, Value)? = nil) : Array(Value)
       return args unless proc.is_block? && args.size == 1 && (kwargs.nil? || kwargs.empty?)
-      arr = args[0].as_array?
       params = proc.ast_params
-      return args unless arr && params
+      return args unless params
       positional = params.count { |param| positional_param?(param) }
-      spreads = positional > 1 || (positional == 1 && params.any?(&.splat?))
-      spreads ? arr.to_a : args
+      return args unless positional > 1 || (positional == 1 && params.any?(&.splat?))
+      arr = args[0].as_array? || convert_to_array(args[0], "to_ary", current_frame).try(&.as_array)
+      arr ? arr.to_a : args
     end
 
     # Binds a call's arguments into `frame.locals`, as Ruby does:
