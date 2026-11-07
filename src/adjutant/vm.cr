@@ -257,6 +257,11 @@ module Adjutant
     SENTINEL_CHUNK = Chunk.new
     SENTINEL_PROC  = ScriptProc.new(SENTINEL_CHUNK, "<native>")
 
+    # How many keyword Hashes with labelled names the VM remembers. A
+    # call binds its keywords straight after they are built, so only the
+    # last few can still be bound.
+    KEYWORD_NAME_LABELS_KEPT = 8
+
     getter instruction_count : UInt64
     getter globals : Hash(Int32, Value)
     getter risk_flow_log : RiskFlowLog
@@ -285,6 +290,10 @@ module Adjutant
       # Keyword arguments staged by SetKwargNames for the next Call,
       # which clears them. Nil when the call has none.
       @pending_kwargs = nil.as(Hash(String, Value)?)
+      # The label of the names of each recent keyword Hash built from
+      # labelled values, by the Hash's identity, newest last. A name is a
+      # plain String, with no label of its own; see `keyword_names_label`.
+      @keyword_name_labels = [] of {Hash(String, Value), RiskFlowLabel}
       # The most recently caught error, for PushError: an error object,
       # or a message string when none was built.
       @last_error = Value.nil_value
@@ -631,11 +640,15 @@ module Adjutant
     # The keywords a Hash's pairs pass: those of the Hash a call's double
     # splats built, or of a keyword rest that bare `super` forwards. None
     # for an empty Hash, as Ruby passes none for `**{}`. A key that isn't
-    # a Symbol raises R012, as keywords here are named by Symbols.
+    # a Symbol raises R012, as keywords here are named by Symbols. The
+    # names carry the labels of the Hash and its keys: the Hash's, since
+    # a native may build a labelled Hash whose keys carry none, though it
+    # also covers the values.
     private def keywords_from(built : Value, method : String, f : Frame) : Hash(String, Value)?
       pairs = built.as_hash.dup_entries
       return if pairs.empty?
       keywords = {} of String => Value
+      label_keyword_names(keywords, pairs.keys.reduce(built.label) { |joined, key| RiskFlowLabel.join(joined, key.label) })
       pairs.each do |key, value|
         unless key.symbol?
           raise runtime_diagnostic(
@@ -1760,7 +1773,7 @@ module Adjutant
       return {[] of Value, nil} unless ast_params
 
       args = [] of Value
-      kwargs = nil
+      kwargs = nil.as(Hash(String, Value)?)
       ast_params.each_with_index do |param, slot|
         next if param.block_param? # can't occur (U001), skipped defensively
         val = slot < f.locals.size ? f.locals[slot] : Value.nil_value
@@ -1770,9 +1783,12 @@ module Adjutant
           kwargs ||= {} of String => Value
           kwargs[param.name] = val
         elsif param.kwrest?
-          # Its pairs go as keywords, by `keywords_from`'s rules.
+          # Its pairs go as keywords, by `keywords_from`'s rules, their
+          # names keeping their label.
           if val.hash? && (rest = keywords_from(val, f.proc.name, f))
-            kwargs = (kwargs || {} of String => Value).merge(rest)
+            kwargs ||= {} of String => Value
+            rest.each { |name, value| kwargs[name] = value }
+            label_keyword_names(kwargs, RiskFlowLabel.join(keyword_names_label(kwargs), keyword_names_label(rest)))
           end
         else
           args << val
@@ -2341,12 +2357,39 @@ module Adjutant
 
     # A keyword-rest parameter's value: a new Hash of the keywords in
     # `kwargs` that aren't `declared`, with Symbol keys, in the order
-    # passed, labelled with their values' labels.
+    # passed, labelled with their values' labels and their names'. Each
+    # key carries its names' label, so the keywords keep it when the
+    # Hash is splatted on.
     private def keyword_rest(kwargs : Hash(String, Value)?, declared : Set(String)) : Value
+      names_label = keyword_names_label(kwargs)
       pairs = {} of Value => Value
-      kwargs.try(&.each { |name, value| pairs[Value.symbol(@symbols.intern(name))] = value unless declared.includes?(name) })
-      label = pairs.values.reduce(nil.as(RiskFlowLabel?)) { |acc, value| RiskFlowLabel.join(acc, value.label) }
+      kwargs.try do |given|
+        given.each do |name, value|
+          next if declared.includes?(name)
+          pairs[Value.symbol(@symbols.intern(name)).with_label(names_label)] = value
+        end
+      end
+      label = pairs.values.reduce(names_label) { |acc, value| RiskFlowLabel.join(acc, value.label) }
       Value.new(LabeledHash.new(pairs, label), label)
+    end
+
+    # Records `label` as the label of `kwargs`' names, for
+    # `keyword_names_label`. Nothing for no label.
+    private def label_keyword_names(kwargs : Hash(String, Value), label : RiskFlowLabel?) : Nil
+      return unless label
+      @keyword_name_labels.shift if @keyword_name_labels.size >= KEYWORD_NAME_LABELS_KEPT
+      @keyword_name_labels << {kwargs, label}
+    end
+
+    # The label of `kwargs`' names: that of the values they came from,
+    # if `kwargs` is one of the keyword Hashes recently built from
+    # labelled ones; nil otherwise.
+    private def keyword_names_label(kwargs : Hash(String, Value)?) : RiskFlowLabel?
+      return unless kwargs
+      @keyword_name_labels.reverse_each do |held, label|
+        return label if held.same?(kwargs)
+      end
+      nil
     end
 
     # Binds the positional parameters, steps 2 and 3 of `bind_args`:
@@ -2481,7 +2524,8 @@ module Adjutant
           data: {"name" => unknown, "method" => proc.name}
         ),
         current_frame,
-        error_class: "ArgumentError"
+        error_class: "ArgumentError",
+        label: keyword_names_label(kwargs)
       )
     end
 
@@ -2496,7 +2540,8 @@ module Adjutant
           data: {"name" => kwargs.first_key, "method" => method}
         ),
         current_frame,
-        error_class: "ArgumentError"
+        error_class: "ArgumentError",
+        label: keyword_names_label(kwargs)
       )
     end
 
@@ -2514,7 +2559,8 @@ module Adjutant
           data: {"name" => unknown, "method" => method}
         ),
         current_frame,
-        error_class: "ArgumentError"
+        error_class: "ArgumentError",
+        label: keyword_names_label(kwargs)
       )
     end
 
