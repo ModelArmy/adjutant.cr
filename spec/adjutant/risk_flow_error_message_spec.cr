@@ -66,6 +66,53 @@ module Adjutant
       error_unlabelled_messages(sources).should be_empty
     end
 
+    describe "naming an unknown keyword made from a labelled value" do
+      it "carries the label for a script method, a native and a class without initialize" do
+        sources = {
+          "def connect(host: 1)\n  host\nend\nconnect(**{t_str.to_sym => 1})",
+          %("ab".upcase(**{t_str.to_sym => 1})),
+          "class Plain\nend\nPlain.new(**{t_str.to_sym => 1})",
+        }
+        error_unlabelled_messages(sources).should be_empty
+      end
+
+      it "carries the label through a keyword rest splatted on" do
+        src = <<-RUBY
+        def open_socket(port: 1)
+          port
+        end
+
+        def connect(**opts)
+          open_socket(**opts)
+        end
+        connect(**{t_str.to_sym => 1})
+        RUBY
+        error_unlabelled_messages({src}).should be_empty
+      end
+
+      it "carries the label through a keyword rest that bare super forwards" do
+        src = <<-RUBY
+        class Base
+          def go(port: 1)
+            port
+          end
+        end
+
+        class Child < Base
+          def go(**opts)
+            super
+          end
+        end
+        Child.new.go(**{t_str.to_sym => 1})
+        RUBY
+        error_unlabelled_messages({src}).should be_empty
+      end
+
+      it "stays unlabelled for a name from a Hash with nothing labelled" do
+        error_message_value("def connect(host: 1)\n  host\nend\nconnect(**{nope: 1})").label.should be_nil
+      end
+    end
+
     it "stays unlabelled when nothing it was built from is labelled" do
       error_message_value("[1, 2][-9, 1] = 3").label.should be_nil
       error_message_value("5.to_s(37)").label.should be_nil
