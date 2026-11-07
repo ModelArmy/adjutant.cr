@@ -22,7 +22,7 @@ Key documents: `SCOPE.md` (known defects and gaps: Must Fix, Will Fix), `LEGATE.
 
 ## 2. Working conventions [Retain]
 
-1. **Division of work.** Claude clones the repo and presents edited files for review; the human saves, tests, commits and pushes. Fewer than ten modified files, present the files, keeping their repo directories when two share a name; ten or more, one patch per commit, checked with `git apply --check` against the branch head. A follow-up to a patch already applied is its own incremental patch. Claude sets up no toolchain unless the human asks, as for the ruby/spec import, where Crystal and Ruby in Claude's sandbox check each translated file on both. Claude proposes a one-line commit message when a change is ready, and a PR description when a branch is: two sections, "What?" and "Why?", giving outcomes and motivations and leaving out what the commits and code already show.
+1. **Division of work.** Claude clones the repo and presents edited files for review; the human saves, tests, commits and pushes. Fewer than ten modified files, present the files, keeping their repo directories when two share a name; ten or more, one patch per commit, checked with `git apply --check` against the branch head. A follow-up to a patch already applied is its own incremental patch. Claude sets up no toolchain unless the human asks, as for the ruby/spec import, where Crystal and Ruby in Claude's sandbox check each translated file on both, or for debugging a failure. Crystal installs from its GitHub release (`crystal-<version>-1-linux-x86_64.tar.gz`, the human's version), then `shards install`; ameba builds from `lib/ameba/bin/ameba.cr`, and CI lints `src/` only. `worker_process_spec.cr` errors until the samples are built (`ops build`), and a Linux sandbox runs one example macOS doesn't (`read_spec.cr`'s `/proc` test). The sandbox can reset between turns: keep delivered files in the outputs directory until they are pushed. Claude proposes a one-line commit message when a change is ready, and a PR description when a branch is: two sections, "What?" and "Why?", giving outcomes and motivations and leaving out what the commits and code already show.
 2. **Pull before delivering.** Pull at the start of a turn and again just before building the files or patches, since the human may push in between.
 3. **Branches.** Runtime fixes go on a sub-branch or directly on the working branch, at the human's call. Either way, a commit never mixes Crystal changes with exam or skill changes.
 4. **`SCOPE.md` entries are removed when resolved**, not marked resolved. History belongs in the commit log; rationale goes in `DEVELOPMENT.md` only when a future contributor needs it.
@@ -93,30 +93,36 @@ Key documents: `SCOPE.md` (known defects and gaps: Must Fix, Will Fix), `LEGATE.
 41. **A node the parser builds must be one the script couldn't have written, or say so.** `parse_multi_rhs` gathered `a, b = x, y` into an ArrayLiteral, the same node `a, b = [[1, 2]]` writes, so the written one was spread. A multiple assignment now keeps its values as written. When the parser synthesizes, keep the original list or give the node its own marker (`Call#kwargs`' `**` name).
 42. **Before changing what an opcode does or carries, search the specs for its name.** Compiler and risk-flow specs pinned `MultiUnpack`'s value count and `SetIndexFromValue` as the compound-index store, and each change failed them in a second round.
 43. **Evaluate each part of an assignment target once.** Ruby reads `recv[i] += v` and `recv.attr ||= v` through a receiver and index it evaluated once. Recompiling the target for the write called `counts[words.shift] += 1`'s `shift` twice; parts now go on the stack once and are read through copies (`DupN`).
+44. **Crystal reads `{%` as the start of a macro tag.** A tuple whose first element is a `%(...)` literal, `{%(a), %(b)}`, doesn't parse; use an array, or a space after `{`. Likewise `LabeledArray` isn't `Enumerable`: it has `any?`, `each` and `map`, not `all?`.
+45. **Crystal can't yet subclass `Hash(String, Value)`** ("can't use Value as generic type argument yet"). To carry a fact beside a Hash that many signatures pass along, record it by the Hash's identity, as `VM#label_keyword_names` does, or wrap the Hash and change the signatures.
+46. **Run a new spec against the unfixed code and read every failure, expected or not.** A guard in the conversion spec errored where it should have passed, and exposed that a script method anywhere up the chain beat a native one nearer, for instance and class methods alike, and that a native method called on self got no receiver. None was the defect being specced.
+47. **Text built from a value is a flow.** An exception's message was built from labelled values as an unlabelled String, through `raise`'s message, a diagnostic quoting a value, and a keyword's name, so `rescue => e` and `e.message` carried a secret past the risk-flow check. A conversion to text needs a rule carrying the label (DEVELOPMENT.md, Risk-flow tracking), and a Crystal String, which has no label of its own, needs the label kept beside it.
+48. **Two lookups tried in turn are one lookup in the wrong order.** `find_method`, then `find_native_method`, let a script method far up the ancestors beat a native one nearer. Walk the ancestors once and ask each level for both kinds (`find_any_method`, `find_any_singleton_method`).
+49. **After a commit, check each file is itself.** One commit stored `vm.cr`'s source as `SCOPE.md`, and only a later merge conflict showed it. `git show --stat` and each changed file's first lines catch it.
 
 ---
 
 ## 5. State
 
-`parser-gaps` carries 45 commits beyond `main`, still open, to merge as one PR. Its parser gaps were chosen by what models write, not by how many imported tests they unblock: each SKILL.md §1 redirect records a model reaching for a construct, and supporting it deletes the line. No parser-gap redirect is left.
+`parser-gaps` carries 66 commits beyond `main`, still open, to merge as one PR. Its parser gaps were chosen by what models write, not by how many imported tests they unblock: each SKILL.md §1 redirect records a model reaching for a construct, and supporting it deletes the line. No parser-gap redirect is left.
 
 **Ruby 3.4 is the baseline** (DEVELOPMENT.md): where versions differ, Adjutant follows 3.4, and MRI's source is the reference for how.
 
-**Earlier on the branch:** `&:name` as a block; `**` and `**=`; leading-dot method chains; RiskWalker walking every expression position, with an unknown node kind unresolved rather than safe; one rule for risk-flow labels (`VM#label_from_inputs`); builtins that answered where Ruby doesn't now raise.
+**Earlier on the branch:** `&:name` as a block; `**` and `**=`; leading-dot method chains; RiskWalker walking every expression position, with an unknown node kind unresolved rather than safe; one rule for risk-flow labels (`VM#label_from_inputs`); builtins that answered where Ruby doesn't now raise; splats, splat targets and multiple assignment as MRI deals them; double splats and keyword rest; a bare `raise` re-raising the error being handled (lesson 40); compound assignment through attributes and indexes (lesson 43); `yield`, `super` and `raise` arguments stopping before `and`/`or`.
 
-**Splats** (`*x`) spread in call, `yield` and `super` arguments, Array literals, assignment values and `when` lists, converted as MRI's `vm_splat_array` does, through `to_a` (`VM#splat_array`). A bare call takes one by spacing, as for `-` and `&`. **Splat targets** (`first, *rest = items`) are dealt values as MRI's `expandarray` deals them (`VM#deal_targets`), and an index is a target anywhere in the list. **Multiple assignment** takes one value apart through `to_ary`, never spreads a written one-element Array literal, and is its right-hand side as an expression.
+**This session**, from probing the predicted misparses and confirming the Must Fix entries:
 
-**Double splats** (`**x`) spread a Hash into a call's keywords or a Hash literal, merged in order with a later key winning, converted through `to_hash`; `f(**nil)` passes nothing, as in 3.4. **Keyword rest** (`**opts`) collects the keywords no keyword parameter takes, and bare `super` forwards it, so `def f(*args, **opts) = g(*args, **opts)` delegates.
+- **Spaced parens.** A spaced `(` after `raise`, `super`, `yield` or a receiver's method starts the first argument, as Ruby's `tLPAREN_ARG`: `yield (2) * 10` yields 20.
+- **Exceptions.** `Exception#message` returns `to_s`; a nil message is the class name; `inspect` follows MRI's `exc_inspect`. `raise` gives an exception class only the message, checks a third argument as a backtrace (R066) and sets it aside, passes keywords other than `cause:` on as a Hash, and rejects `cause:` (R012) until exceptions have one.
+- **Risk flow through error messages.** A message carries the labels of the values it may quote: a raised message's own, a native's inputs', an index operation's operands', and a keyword name's, through a keyword rest and bare `super` (`label_keyword_names`). A script's own error raised in a block over labelled data stays unlabelled, as Adjutant tracks values, not control.
+- **Method lookup.** The nearest ancestor's method wins, script or native, for instance and class methods, in dispatch and in RiskWalker (lesson 48). A builtin value reaches Object's script methods. A native method called on an implicit self gets self as its receiver (`NativeCallable#takes_receiver?`), so `inspect` or `message` inside a script method works.
+- **Implicit conversions** call private methods, as `rb_check_funcall` does (`implicitly_responds_to?`, `call_method(..., as_self: true)`): `to_a`, `to_ary` and `to_hash`. A block converts a lone argument through `to_ary`.
 
-**`raise`.** A bare `raise` re-raises the error being handled, from a rescue body, a method or block it calls, or an `ensure` entered by an exception, as MRI's `errinfo_place` finds it (lesson 40). `raise` takes what MRI's `make_exception` takes; `raise err, "msg"` raises a copy carrying the message, and anything else raises R064, a TypeError.
+New diagnostics on the branch: R063 (a conversion method giving the wrong type), R064, R065 (a double splat of a value with no `to_hash`), R066 (a backtrace that isn't an Array of Strings).
 
-**Compound assignment** through an attribute (`obj.count += 1`, `||=`, `&&=`) works, and through an index each part of the target is now evaluated once (lesson 43). Arguments to `yield`, `super` and `raise`, and an index assignment's value, stop before `and`/`or`.
+**`spec/scripts/rubyspec/`**: 165 tests run and 163 are blocked, under 143 `# --- BLOCKED:` markers, a marker often covering several tests. The splat unblocks about 23 of them, not yet unblocked (§6).
 
-New diagnostics: R063 (a conversion method giving the wrong type), R064, R065 (a double splat of a value with no `to_hash`).
-
-**`spec/scripts/rubyspec/`**: 165 tests run and 163 are blocked, each under `# --- BLOCKED:`. The splat unblocks about 23 of them, not yet unblocked, since that needs Crystal and Ruby in Claude's sandbox (§7).
-
-Must Fix holds one predicted entry: implicit conversions skip a private `to_a` or `to_ary`, and an object's own `exception` method. Will Fix gained, among others: keywords never becoming a positional Hash; `super` and `yield` taking no keywords; keywords named by Symbols only; assignment through `&.`; `x -1` after a local; and implicit calls (a splat's `to_a`, an interpolation's `to_s`) unwalked by RiskWalker.
+**Must Fix is empty.** Will Fix gained, among others: a `do` block inside a loop header's brackets; `Exception#cause` and `#backtrace`; `raise obj` for an object with `exception` or `to_str`. Earlier: keywords never becoming a positional Hash; `super` and `yield` taking no keywords; keywords named by Symbols only; assignment through `&.`; `x -1` after a local; and implicit calls (a splat's `to_a`, an interpolation's `to_s`) unwalked by RiskWalker.
 
 Model           |Latest result|Notes                                           
 ----------------|-------------|------------------------------------------------
@@ -129,10 +135,9 @@ All three predate #69, which renamed the classes the skill teaches, and this bra
 ## 6. Next
 
 1. **Cheap gaps**: loops as expressions, whose runtime is done and which need only `parse_primary`'s dispatch (spec the `while` modifier and the `do` ambiguity first; it unblocks about 21 tests); `then` after `if`; bare `next` and `break` before `}`, `end` or `else`; `-> x { }`; `return a, b` and `return *a`; `%r{}`.
-2. **Probe the predicted misparses for silence**: `raise (x), y`, `super (a), b` and `yield (a), b`, and `until cond do`. If one runs rather than raising, it is Must Fix.
-3. **Unblock the ruby/spec tests** the splat now passes, with Crystal and Ruby in Claude's sandbox.
-4. **Merge `parser-gaps`**, with a PR description, then sit the exam fresh on all three models, then the next ruby/spec batch (assignments, `def` and calls, blocks; `send_spec.rb` has the `&:name` tests), the streamed-fetch lead on Windows, and exam tasks 11 to 13.
-5. **Later**: keywords as a positional Hash and keywords for `super` and `yield`; `...` forwarding, after a block parameter (U001); the branch log (SCOPE.md, Risk-flow tracking); the Will Fix style pass; LEGATE.md §10's static analyser; generic provider loading.
+2. **Unblock the ruby/spec tests** the splat now passes, with Crystal and Ruby in Claude's sandbox.
+3. **Merge `parser-gaps`**, with a PR description, then sit the exam fresh on all three models, then the next ruby/spec batch (assignments, `def` and calls, blocks; `send_spec.rb` has the `&:name` tests), the streamed-fetch lead on Windows, and exam tasks 11 to 13.
+4. **Later**: keywords as a positional Hash and keywords for `super` and `yield`; `...` forwarding, after a block parameter (U001); the branch log (SCOPE.md, Risk-flow tracking); the Will Fix style pass; LEGATE.md §10's static analyser; generic provider loading.
 
 ## 7. Open decisions
 
