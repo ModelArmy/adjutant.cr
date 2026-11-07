@@ -183,18 +183,15 @@ module Adjutant
     end
 
     # Merges `branch_envs` into `env`: a variable present in every
-    # branch merges with `TypeHint.merge`; one missing from any branch
-    # is dropped, so reads as unknown.
+    # branch merges with `TypeHint.merge`. One missing from any branch
+    # is still a local afterwards, as in Ruby, holding nil where its
+    # assignment didn't run, so it stays with an unknown type.
     private def merge_envs_into(env : Env, branch_envs : Array(Env)) : Nil
       return if branch_envs.empty?
       all_keys = branch_envs.flat_map(&.keys).uniq!
       all_keys.each do |key|
         hints = branch_envs.map { |branch_env| branch_env[key]? }
-        if hints.all?
-          env[key] = hints.compact.reduce { |merged, hint| TypeHint.merge(merged, hint) }
-        else
-          env.delete(key)
-        end
+        env[key] = hints.all? ? hints.compact.reduce { |merged, hint| TypeHint.merge(merged, hint) } : UnknownType.new
       end
     end
   end

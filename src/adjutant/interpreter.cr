@@ -251,7 +251,7 @@ module Adjutant
                       &block : Array(Value), ScriptProc?, NativeCallContext -> Value) : Nil
       sym = @symbols.intern(name)
       object_class.define_native_method(sym.value, risk, kwarg_names, is_private: is_private,
-        authorities: authorities, arity: arity, &block)
+        authorities: authorities, arity: arity, takes_receiver: false, &block)
     end
 
     # The native function registered under `sym_id`, from Object's

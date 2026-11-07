@@ -14,6 +14,10 @@ module Adjutant
         "IndexError"
       rescue NoMethodError
         "NoMethodError"
+      rescue TypeError
+        "TypeError"
+      rescue RangeError
+        "RangeError"
       end
       RUBY
   end
@@ -136,6 +140,79 @@ module Adjutant
     it "compare nested Ranges with Ruby's ==" do
       builtin_outcome("", "[1..2] == [1..2]").should eq "true"
       builtin_outcome("", "{a: 1..2} == {a: 1..2}").should eq "true"
+    end
+  end
+
+  describe "size, length, to_i and to_f" do
+    it "count a Range's elements, as Ruby does" do
+      builtin_outcome("", "(1..10).size").should eq "10"
+      builtin_outcome("", "(1...10).size").should eq "9"
+      builtin_outcome("", "(5..1).size").should eq "0"
+      builtin_outcome("", "(1..).size").should eq "Infinity"
+      builtin_outcome("", %(("a".."c").size)).should eq "nil"
+    end
+
+    it "count a Symbol's characters" do
+      builtin_outcome("", ":abc.length").should eq "3"
+      builtin_outcome("", ":abc.size").should eq "3"
+    end
+
+    it "give an Integer's size in bytes" do
+      builtin_outcome("", "5.size").should eq "8"
+    end
+
+    it "still count a String's characters" do
+      builtin_outcome("", %("abc".size)).should eq "3"
+      builtin_outcome("", %("abc".length)).should eq "3"
+    end
+
+    it "convert nil, as Ruby does" do
+      builtin_outcome("", "nil.to_i").should eq "0"
+      builtin_outcome("", "nil.to_f").should eq "0.0"
+    end
+
+    it "raise NoMethodError on a receiver Ruby doesn't define them for" do
+      {"nil.size", "nil.length", "true.size", "true.to_i", "false.to_f", ":a.to_i", ":a.to_f",
+       "[1].to_i", "[1].to_f", "{a: 1}.to_i", "(1..2).to_i", "(1..2).to_f"}.each do |expr|
+        builtin_outcome("", expr).should eq "NoMethodError"
+      end
+    end
+  end
+
+  describe "Range#min and #max" do
+    it "give the start and end of a range that isn't empty" do
+      builtin_outcome("", "(1..5).min").should eq "1"
+      builtin_outcome("", "(1..5).max").should eq "5"
+      builtin_outcome("", "(1...10).min").should eq "1"
+      builtin_outcome("", "(1.0..2.5).max").should eq "2.5"
+      builtin_outcome("", %(("a".."c").max)).should eq %("c")
+    end
+
+    it "give the last Integer below an exclusive end" do
+      builtin_outcome("", "(1...10).max").should eq "9"
+    end
+
+    it "give nil for an empty range" do
+      {"(5..1).min", "(5..1).max", "(1...1).min", "(1...1).max", "(2.5..1.0).max"}.each do |expr|
+        builtin_outcome("", expr).should eq "nil"
+      end
+    end
+
+    it "raise TypeError for an exclusive range they can't step back through" do
+      builtin_outcome("", "(1...2.5).max").should eq "TypeError"
+      builtin_outcome("", "(1.0...2).max").should eq "TypeError"
+    end
+
+    it "still raise RangeError without the bound they read" do
+      builtin_outcome("", "(..5).min").should eq "RangeError"
+      builtin_outcome("", "(1..).max").should eq "RangeError"
+    end
+  end
+
+  describe "iterating a Range from a Float start" do
+    it "raises TypeError, as Ruby does" do
+      builtin_outcome("", "(1.0..3).to_a").should eq "TypeError"
+      builtin_outcome("", "(1.0..3).each { }").should eq "TypeError"
     end
   end
 end

@@ -104,9 +104,11 @@ module Adjutant
     # `authorities` and `arity`. `arity` defaults to any count.
     def define_native_method(sym_id : Int32, risk : RiskProfile, kwarg_names : Set(String) = Set(String).new, is_private : Bool = false,
                              authorities : Set(Authority) = Set(Authority).new, arity : ArityLike = Arity.any,
+                             labels_own_result : Bool = false, takes_receiver : Bool = true,
                              &block : Array(Value), ScriptProc?, NativeCallContext -> Value) : Nil
       func = NativeFunc.new { |args, blk, ncc| block.call(args, blk, ncc) }
-      @native_methods[sym_id] = NativeCallable.new(func, risk, kwarg_names, authorities, Arity.from(arity))
+      @native_methods[sym_id] = NativeCallable.new(func, risk, kwarg_names, authorities, Arity.from(arity),
+        labels_own_result: labels_own_result, takes_receiver: takes_receiver)
       if is_private
         @native_private_methods << sym_id
       else
@@ -135,6 +137,22 @@ module Adjutant
       cls = self
       while cls
         if m = cls.find_own_or_extended_native_method(sym_id)
+          return m
+        end
+        cls = cls.superclass
+      end
+      nil
+    end
+
+    # The class method a call of `sym_id` on this class runs, as Ruby
+    # resolves it: that of the nearest class whose singleton side
+    # defines it, script or native, its extended modules included, with
+    # a script method first within one level. So Time's native `now`
+    # wins over a `def Object.now`.
+    def find_any_singleton_method(sym_id : Int32) : (ScriptProc | NativeCallable)?
+      cls = self
+      while cls
+        if m = cls.find_own_or_extended_any_method(sym_id)
           return m
         end
         cls = cls.superclass
@@ -194,6 +212,32 @@ module Adjutant
         cls = cls.superclass
       end
       nil
+    end
+
+    # The method an instance's call of `sym_id` runs, as Ruby resolves
+    # it: that of the first ancestor defining it, script or native,
+    # with a script method first within one level, as a script `def`
+    # replaces a native of the same class. So a native of Range wins
+    # over a top-level `def` of the same name, a method of Object.
+    def find_any_method(sym_id : Int32) : (ScriptProc | NativeCallable)?
+      cls = self
+      while cls
+        if m = cls.find_own_or_included_any_method(sym_id)
+          return m
+        end
+        cls = cls.superclass
+      end
+      nil
+    end
+
+    # Whether the method `find_any_method` returns for `sym_id` is
+    # private; false when there is none.
+    def find_any_method_private?(sym_id : Int32) : Bool
+      case find_any_method(sym_id)
+      when ScriptProc     then find_method_private?(sym_id)
+      when NativeCallable then find_native_method_private?(sym_id)
+      else                     false
+      end
     end
 
     # Whether the method `find_method` returns for `sym_id` is private.
@@ -261,6 +305,20 @@ module Adjutant
       nil
     end
 
+    # `find_own_or_included_method` for either kind, a script method
+    # first at each level.
+    protected def find_own_or_included_any_method(sym_id : Int32) : (ScriptProc | NativeCallable)?
+      if m = @methods[sym_id]? || @native_methods[sym_id]?
+        return m
+      end
+      @included_modules.reverse_each do |mod|
+        if m = mod.find_own_or_included_any_method(sym_id)
+          return m
+        end
+      end
+      nil
+    end
+
     # `find_own_or_included_method_private?` for native methods.
     protected def find_own_or_included_native_method_private?(sym_id : Int32) : Bool?
       return @native_private_methods.includes?(sym_id) if @native_methods.has_key?(sym_id)
@@ -294,6 +352,20 @@ module Adjutant
       end
       @extended_modules.reverse_each do |mod|
         if m = mod.find_own_or_included_native_method(sym_id)
+          return m
+        end
+      end
+      nil
+    end
+
+    # `find_own_or_extended_method` for either kind, a script method
+    # first at each level.
+    protected def find_own_or_extended_any_method(sym_id : Int32) : (ScriptProc | NativeCallable)?
+      if m = @singleton_methods[sym_id]? || @native_singleton_methods[sym_id]?
+        return m
+      end
+      @extended_modules.reverse_each do |mod|
+        if m = mod.find_own_or_included_any_method(sym_id)
           return m
         end
       end

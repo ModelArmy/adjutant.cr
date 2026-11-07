@@ -40,6 +40,7 @@ module Adjutant
     "U023" => "flip-flops are rare in scripts; the diagnostic names the fix",
     "U024" => "methods on one object are rare in scripts; the diagnostic names the fix",
     "U025" => "integers past 64 bits are rare in scripts; the diagnostic names the fix",
+    "U026" => "Rational and Complex results are rare in scripts; the diagnostic names the fix",
   }
 
   private def self.skill_legate_verb_names : Array(String)

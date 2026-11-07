@@ -212,6 +212,12 @@ module Adjutant
       @chunk.emit(Op::Ret, line)
     end
 
+    # Whether `param` takes a positional argument of its own: neither a
+    # splat, a keyword, a keyword rest nor a block parameter.
+    private def positional_param?(param : Param) : Bool
+      !param.splat? && !param.kwarg? && !param.kwrest? && !param.block_param?
+    end
+
     # Emits, at the top of a proc's chunk, the code that evaluates
     # each omitted parameter's default, in declared order, so a
     # default can use earlier parameters: `def add(a, b = a + 1)`. Per
@@ -226,7 +232,7 @@ module Adjutant
     # optional one up to and including it, since `VM#bind_args` fills
     # required parameters first and optional ones left to right.
     protected def emit_default_prologue(params : Array(Param), slots : Array(Int32)) : Nil
-      required = params.count { |param| !param.splat? && !param.kwarg? && !param.block_param? && param.default.nil? }
+      required = params.count { |param| positional_param?(param) && param.default.nil? }
       optional_seen = 0
       params.each_with_index do |param, i|
         next unless default = param.default
@@ -299,6 +305,7 @@ module Adjutant
       when NextNode       then compile_next(node)
       when RedoNode       then compile_redo(node)
       when YieldNode      then compile_yield(node)
+      when SymbolProcCall then compile_symbol_proc_call(node)
       when SuperNode      then compile_super(node)
       when BeginNode      then compile_begin(node)
       when RetryNode      then compile_retry(node)
@@ -462,16 +469,106 @@ module Adjutant
     end
 
     private def compile_array(node : ArrayLiteral) : Nil
+      if spreads?(node.elements)
+        compile_spread(node.elements, node.line)
+        return
+      end
       node.elements.each { |e| compile_node(e) }
       @chunk.emit(Op::MakeArray, node.line, a: node.elements.size.to_u8)
     end
 
+    # Whether `nodes` holds a splat, and so compiles to one Array
+    # through `compile_spread`.
+    private def spreads?(nodes : Array(Node)) : Bool
+      nodes.any?(Splat)
+    end
+
+    # Pushes `nodes` as one new Array, in order: each run of plain
+    # values becomes an Array (`MakeArray`), each splat the Array its
+    # value spreads (`SplatArray`), and each part after the first is
+    # joined to those before with `Add`, which joins their labels.
+    private def compile_spread(nodes : Array(Node), line : Int32) : Nil
+      parts = 0
+      run = 0
+      nodes.each do |node|
+        if node.is_a?(Splat)
+          parts = close_run(run, parts, line)
+          run = 0
+          compile_node(node.value)
+          @chunk.emit(Op::SplatArray, node.line)
+          parts = join_part(parts, line)
+        else
+          compile_node(node)
+          run += 1
+        end
+      end
+      close_run(run, parts, line)
+    end
+
+    # Makes the `run` plain values on the stack an Array and joins it,
+    # if there are any. Returns the parts now joined.
+    private def close_run(run : Int32, parts : Int32, line : Int32) : Int32
+      return parts if run == 0
+      @chunk.emit(Op::MakeArray, line, a: run.to_u8)
+      join_part(parts, line)
+    end
+
+    # Joins the Array just pushed to the parts before it. Returns the
+    # parts now joined.
+    private def join_part(parts : Int32, line : Int32) : Int32
+      @chunk.emit(Op::Add, line) if parts > 0
+      parts + 1
+    end
+
     private def compile_hash(node : HashLiteral) : Nil
+      if node.entries.any?(DoubleSplat)
+        compile_hash_spread(node.entries, node.line, keywords: false)
+        return
+      end
       node.pairs.each do |k, v|
         compile_node(k)
         compile_node(v)
       end
       @chunk.emit(Op::MakeHash, node.line, a: node.pairs.size.to_u8)
+    end
+
+    # Pushes `entries` as one new Hash, in order: each run of pairs
+    # becomes a Hash (`MakeHash`), each double splat the Hash its value
+    # spreads (`ToHash`), and each part is merged into those before it
+    # (`MergeHash`), a later key winning. Among a call's `keywords`,
+    # `**nil` spreads nothing, as in Ruby 3.4.
+    private def compile_hash_spread(entries : Array(Node), line : Int32, keywords : Bool) : Nil
+      parts = 0
+      run = 0
+      entries.each do |entry|
+        if entry.is_a?(DoubleSplat)
+          parts = close_hash_run(run, parts, line)
+          run = 0
+          compile_node(entry.value)
+          @chunk.emit(Op::ToHash, entry.line, a: keywords ? 1_u8 : 0_u8)
+          parts = merge_part(parts, line)
+        elsif entry.is_a?(HashPair)
+          compile_node(entry.key)
+          compile_node(entry.value)
+          run += 1
+        end
+      end
+      close_hash_run(run, parts, line)
+    end
+
+    # Makes the `run` pairs on the stack a Hash and merges it, if there
+    # are any. Returns the parts now merged.
+    private def close_hash_run(run : Int32, parts : Int32, line : Int32) : Int32
+      return parts if run == 0
+      @chunk.emit(Op::MakeHash, line, a: run.to_u8)
+      merge_part(parts, line)
+    end
+
+    # Merges the Hash just pushed into the parts before it. Returns the
+    # parts now merged.
+    private def merge_part(parts : Int32, line : Int32) : Int32
+      @chunk.emit(Op::MergeHash, line) if parts > 0
+      parts + 1
     end
 
     private def compile_range(node : RangeLiteral) : Nil
@@ -589,8 +686,21 @@ module Adjutant
       else
         compile_node(node.left)
         compile_node(node.right)
-        @chunk.emit(binary_op(node.op), node.line)
+        emit_binary_op(node.op, node.line)
       end
+    end
+
+    # Applies `op` to the two values on the stack. `**` is a method call
+    # on the left value, as `<=>` is, so that Integer and Float define it
+    # and `2.**(3)` and `inject(:**)` reach the same code.
+    private def emit_binary_op(op : TokenKind, line : Int32) : Nil
+      unless op == TokenKind::StarStar
+        @chunk.emit(binary_op(op), line)
+        return
+      end
+      @chunk.emit(Op::Const, line, c: @chunk.add_const(Value.nil_value))
+      @chunk.emit(Op::SetBlock, line)
+      @chunk.emit(Op::Call, line, a: 2_u8, b: 0b10_u16, c: intern("**"))
     end
 
     private def compile_short_circuit_or(node : Binary) : Nil
@@ -707,15 +817,29 @@ module Adjutant
     end
 
     private def compile_op_assign(node : OpAssign) : Nil
+      if compound = compound_target(node.target)
+        # `recv.attr += y` or `recv[i] += y`: each part of the target
+        # is evaluated once, read through copies, and written through.
+        parts = compile_target_parts(compound)
+        emit_target_read(compound, parts, node.line)
+        compile_node(node.value)
+        emit_binary_op(node.op, node.line)
+        emit_target_write(compound, node.line)
+        return
+      end
       # `x += y` compiles as `x = x + y`.
       declare_assigned_local(node.target)
       compile_node(node.target)
       compile_node(node.value)
-      @chunk.emit(binary_op(node.op), node.line)
+      emit_binary_op(node.op, node.line)
       emit_store(node.target, node.line)
     end
 
     private def compile_cond_assign(node : CondAssign) : Nil
+      if compound = compound_target(node.target)
+        compile_compound_cond_assign(node, compound)
+        return
+      end
       # `x ||= y` assigns only if x is falsy; `x &&= y` only if truthy.
       declare_assigned_local(node.target)
       compile_node(node.target)
@@ -749,16 +873,25 @@ module Adjutant
       scope.local_host.define(name)
     end
 
+    # Pushes the right-hand side as one value, which is also the
+    # assignment's value, as in Ruby: one value as itself, several or
+    # any splat gathered into an Array. MultiUnpack takes a copy apart
+    # for the targets.
     private def compile_multi_assign(node : MultiAssign) : Nil
-      node.values.each { |v| compile_node(v) }
-      tc = node.targets.size.to_u8
-      vc = node.values.size.to_u8
-      @chunk.emit(Op::MultiUnpack, node.line, a: tc, b: vc.to_u16)
+      values = node.values
+      first = values.first
+      if values.size == 1 && !first.is_a?(Splat)
+        compile_node(first)
+      else
+        compile_array(ArrayLiteral.new(values, node.line, node.column))
+      end
+      @chunk.emit(Op::Dup, node.line)
+      splat_at = node.targets.index { |target| target.is_a?(Splat) }
+      @chunk.emit(Op::MultiUnpack, node.line, a: node.targets.size.to_u8, b: splat_at ? (splat_at + 1).to_u16 : 0_u16)
       node.targets.reverse_each do |target|
-        emit_store(target, node.line)
+        emit_store(target.is_a?(Splat) ? target.value : target, node.line)
         @chunk.emit(Op::Pop, node.line)
       end
-      emit_nil(node.line)
     end
 
     # Stores the value on top of the stack into `target`. Constants are
@@ -841,16 +974,8 @@ module Adjutant
       if recv = node.receiver
         compile_node(recv)
       end
-      node.args.each { |arg| compile_node(arg) }
-      # Keyword arguments: (name symbol, value) pairs, as for
-      # MakeHash, staged by SetKwargNames for the Call.
-      unless node.kwargs.empty?
-        node.kwargs.each do |(name, value)|
-          @chunk.emit(Op::Const, node.line, c: intern(name))
-          compile_node(value)
-        end
-        @chunk.emit(Op::SetKwargNames, node.line, a: node.kwargs.size.to_u8)
-      end
+      positional = compile_args(node.args, node.line)
+      compile_kwargs(node)
       # A block is pushed by MakeProc and staged by SetBlock.
       if blk = node.block
         blk_params = blk.params.map(&.name)
@@ -876,10 +1001,52 @@ module Adjutant
       sym_idx = intern(node.method)
       safe_bit = node.safe? ? 0b01_u16 : 0_u16
       recv_bit = node.receiver ? 0b10_u16 : 0_u16
+      spread_bit = spreads?(node.args) ? 0b100_u16 : 0_u16
       recv = node.receiver ? 1_u8 : 0_u8
-      argc = (node.args.size + recv).to_u8
+      argc = (positional + recv).to_u8
       op = node.safe? ? Op::SafeCall : Op::Call
-      @chunk.emit(op, node.line, a: argc, b: safe_bit | recv_bit, c: sym_idx)
+      @chunk.emit(op, node.line, a: argc, b: safe_bit | recv_bit | spread_bit, c: sym_idx)
+    end
+
+    # Stages a call's keyword arguments for the Call: (name symbol,
+    # value) pairs, as for MakeHash, staged by SetKwargNames; or, with a
+    # double splat among them, one Hash built by `compile_hash_spread`
+    # and staged by SetKwargsHash.
+    private def compile_kwargs(node : Call) : Nil
+      return if node.kwargs.empty?
+      if node.kwargs.any? { |(name, _)| name == "**" }
+        entries = node.kwargs.map do |(name, value)|
+          next value.as(Node) if value.is_a?(DoubleSplat)
+          HashPair.new(SymbolLiteral.new(name, value.line, value.column), value, value.line, value.column).as(Node)
+        end
+        compile_hash_spread(entries, node.line, keywords: true)
+        @chunk.emit(Op::SetKwargsHash, node.line, c: intern(node.method))
+        return
+      end
+      node.kwargs.each do |(name, value)|
+        @chunk.emit(Op::Const, node.line, c: intern(name))
+        compile_node(value)
+      end
+      @chunk.emit(Op::SetKwargNames, node.line, a: node.kwargs.size.to_u8)
+    end
+
+    # Pushes a call's positional arguments: each in turn, or with a
+    # splat among them, one Array of them all (`compile_spread`), which
+    # the call spreads. Returns how many values were pushed.
+    private def compile_args(args : Array(Node), line : Int32) : Int32
+      if spreads?(args)
+        compile_spread(args, line)
+        return 1
+      end
+      args.each { |arg| compile_node(arg) }
+      args.size
+    end
+
+    # The body of `&:name`'s block: its collected arguments, then the
+    # call SymbolCall makes on the first of them.
+    private def compile_symbol_proc_call(node : SymbolProcCall) : Nil
+      compile_identifier(Identifier.new(SymbolProcCall::ARGS, node.line, node.column))
+      @chunk.emit(Op::SymbolCall, node.line, c: intern(node.method))
     end
 
     private def compile_index(node : Index) : Nil
@@ -908,6 +1075,73 @@ module Adjutant
     # evaluated once, before the value. `SetAttr` pops value then
     # receiver and pushes the value back: an assignment's value is what
     # was assigned, not what the setter returns.
+    # `recv.attr ||= y` or `recv[i] &&= y`: the target's parts are
+    # evaluated once and its value read through copies of them. When
+    # that value decides against assigning, it is the result and the
+    # parts are dropped; otherwise `y` is written through the parts.
+    private def compile_compound_cond_assign(node : CondAssign, compound : Node) : Nil
+      parts = compile_target_parts(compound)
+      emit_target_read(compound, parts, node.line)
+      @chunk.emit(Op::Dup, node.line)
+      assign_op = node.op == TokenKind::OrAssign ? Op::JumpIfFalse : Op::JumpIfTrue
+      jmp_assign = @chunk.emit_jump(assign_op, node.line)
+      @chunk.emit(Op::PopUnder, node.line, a: parts.to_u8)
+      jmp_end = @chunk.emit_jump(Op::Jump, node.line)
+      @chunk.patch_jump(jmp_assign, @chunk.pos)
+      @chunk.emit(Op::Pop, node.line)
+      compile_node(node.value)
+      emit_target_write(compound, node.line)
+      @chunk.patch_jump(jmp_end, @chunk.pos)
+    end
+
+    # A compound assignment's target read and written through parts
+    # evaluated once: an Index, or an attribute (a Call with a receiver
+    # and no arguments or block). Nil for a variable, which has no
+    # parts, and for `&.`, which isn't supported here.
+    private def compound_target(target : Node) : Node?
+      case target
+      when Index
+        target unless target.safe?
+      when Call
+        target if target.receiver && !target.safe? && target.args.empty? && target.kwargs.empty? && target.block.nil?
+      end
+    end
+
+    # Pushes the parts `target` is read and written through, each once,
+    # as Ruby evaluates them: an attribute's receiver; an Index's
+    # receiver, index and length. Returns how many it pushed.
+    private def compile_target_parts(target : Node) : Int32
+      if target.is_a?(Index)
+        compile_node(target.target)
+        compile_node(target.index)
+        target.length.try { |length| compile_node(length) }
+        return target.length ? 3 : 2
+      end
+      target.as(Call).receiver.try { |receiver| compile_node(receiver) }
+      1
+    end
+
+    # Pushes `target`'s value, read through copies of its `parts` on the
+    # stack, which stay beneath it.
+    private def emit_target_read(target : Node, parts : Int32, line : Int32) : Nil
+      @chunk.emit(Op::DupN, line, a: parts.to_u8)
+      if target.is_a?(Index)
+        @chunk.emit(Op::GetIndex, line, a: index_arg_count(target.length))
+      else
+        @chunk.emit(Op::Call, line, a: 1_u8, b: 0b10_u16, c: intern(target.as(Call).method))
+      end
+    end
+
+    # Writes the value on top of the stack through `target`'s parts
+    # beneath it, leaving the value.
+    private def emit_target_write(target : Node, line : Int32) : Nil
+      if target.is_a?(Index)
+        @chunk.emit(Op::SetIndex, line, a: index_arg_count(target.length))
+      else
+        @chunk.emit(Op::SetAttr, line, c: intern("#{target.as(Call).method}="))
+      end
+    end
+
     private def compile_attr_assign(node : AttrAssign) : Nil
       compile_node(node.receiver)
       compile_node(node.value)
@@ -1338,12 +1572,11 @@ module Adjutant
         patterns.each_with_index do |pat, _i|
           if node.subject
             # The stack is `[subject, pattern]`, the order `TripleEq`
-            # pops.
+            # and `MatchAny` pop.
             @chunk.emit(Op::Dup, node.line)
-            compile_node(pat)
-            @chunk.emit(Op::TripleEq, node.line)
+            compile_when_pattern(pat, node.line, with_subject: true)
           else
-            compile_node(pat)
+            compile_when_pattern(pat, node.line, with_subject: false)
           end
           pattern_patches << @chunk.emit_jump(Op::JumpIfTrue, node.line)
         end
@@ -1362,6 +1595,20 @@ module Adjutant
         emit_nil(node.line)
       end
       end_patches.each { |patch| @chunk.patch_jump(patch, @chunk.pos) }
+    end
+
+    # Pushes whether one `when` pattern matches: the pattern === the
+    # subject below it, or, without a subject, the pattern's truth. A
+    # splat matches if any pattern it spreads does (`MatchAny`).
+    private def compile_when_pattern(pat : Node, line : Int32, with_subject : Bool) : Nil
+      if pat.is_a?(Splat)
+        compile_node(pat.value)
+        @chunk.emit(Op::SplatArray, pat.line)
+        @chunk.emit(Op::MatchAny, line, a: with_subject ? 1_u8 : 0_u8)
+      else
+        compile_node(pat)
+        @chunk.emit(Op::TripleEq, line) if with_subject
+      end
     end
 
     # In a method or lambda, `return` leaves it. In a block it leaves
@@ -1492,8 +1739,9 @@ module Adjutant
     end
 
     private def compile_yield(node : YieldNode) : Nil
-      node.args.each { |arg| compile_node(arg) }
-      @chunk.emit(Op::Yield, node.line, a: node.args.size.to_u8)
+      argc = compile_args(node.args, node.line)
+      spread_bit = spreads?(node.args) ? 0b1_u16 : 0_u16
+      @chunk.emit(Op::Yield, node.line, a: argc.to_u8, b: spread_bit)
     end
 
     private def compile_super(node : SuperNode) : Nil
@@ -1504,8 +1752,9 @@ module Adjutant
         @chunk.emit(Op::Super, node.line, b: 1_u16)
         return
       end
-      node.args.each { |arg| compile_node(arg) }
-      @chunk.emit(Op::Super, node.line, a: node.args.size.to_u8)
+      argc = compile_args(node.args, node.line)
+      spread_bit = spreads?(node.args) ? 0b10_u16 : 0_u16
+      @chunk.emit(Op::Super, node.line, a: argc.to_u8, b: spread_bit)
     end
 
     # --- Exception handling -------------------------------------------------
@@ -1542,10 +1791,11 @@ module Adjutant
         if ea = ensure_at
           @chunk.patch_jump(ea, @chunk.pos)
         end
-        @chunk.emit(Op::EnterEnsure, node.line)
+        ensure_start = @chunk.emit(Op::EnterEnsure, node.line)
         compile_body(ensure_body)
         # The ensure body's value is discarded.
         @chunk.emit(Op::Pop, node.line)
+        @chunk.add_handling_range(ensure_start, @chunk.pos)
         # Re-raises the error the ensure was entered with, if any.
         @chunk.emit(Op::EndEnsure, node.line)
       end
@@ -1572,6 +1822,7 @@ module Adjutant
     private def compile_rescue_clauses(node : BeginNode, try_at : Int32) : Nil
       jmp_past_rescue = @chunk.emit_jump(Op::Jump, node.line)
       @chunk.patch_jump(try_at, @chunk.pos)
+      rescue_start = @chunk.pos
 
       match_done_jumps = [] of Int32
       node.rescue_clauses.each do |clause|
@@ -1587,6 +1838,7 @@ module Adjutant
 
       match_done_jumps.each { |j| @chunk.patch_jump(j, @chunk.pos) }
       @chunk.patch_jump(jmp_past_rescue, @chunk.pos)
+      @chunk.add_handling_range(rescue_start, @chunk.pos)
     end
 
     # Emits one clause's class test and returns the jump taken when

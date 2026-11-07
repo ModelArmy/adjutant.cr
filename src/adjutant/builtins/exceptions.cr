@@ -51,12 +51,18 @@ module Adjutant::Builtins
   private def self.new_exception(interp : Interpreter, cls : RubyClass, args : Array(Value)) : RubyObject
     inst = RubyObject.new(cls)
     # `args[0]` is the class.
-    if msg = args[1]?
-      msg = Value.string(msg.to_s, msg.label) unless msg.string?
-      msg_sym = interp.symbols.intern("message")
-      inst.ivars[msg_sym.value] = msg
+    if (msg = args[1]?) && (stored = exception_message(msg))
+      inst.ivars[interp.symbols.intern("message").value] = stored
     end
     inst
+  end
+
+  # What an exception keeps as its message, given `msg`: nothing for
+  # nil, so `to_s` is the class name, as in Ruby; a String as it is;
+  # anything else as its `to_s`. Each keeps `msg`'s risk-flow label.
+  def self.exception_message(msg : Value) : Value?
+    return if msg.null?
+    msg.string? ? msg : Value.string(msg.to_s, msg.label)
   end
 
   # Defines Exception, with its `message`.
@@ -79,9 +85,8 @@ module Adjutant::Builtins
     # Sets the message, for `super(message)` from a script subclass's
     # `initialize`. With no message, `message` is the class name.
     define(cls, interp, "initialize", arity: 0..1, is_private: true) do |args|
-      if msg = args[1]?
-        msg = Value.string(msg.to_s, msg.label) unless msg.string?
-        args.first.as_robject.ivars[interp.symbols.intern("message").value] = msg
+      if (msg = args[1]?) && (stored = exception_message(msg))
+        args.first.as_robject.ivars[interp.symbols.intern("message").value] = stored
       end
       Value.nil_value
     end
@@ -93,14 +98,28 @@ module Adjutant::Builtins
     end
 
     # `#<ClassName: message>`, using the object's own `to_s`, so an
-    # override applies; `#<ClassName: ClassName>` with no message.
+    # override applies, as MRI's `exc_inspect`: the class name alone
+    # for an empty message, and the message inspected when it holds a
+    # newline. Keeps the message's risk-flow label.
     define(cls, interp, "inspect", arity: 0) do |args, _blk, ncc|
-      obj = args.first.as_robject
-      message = ncc.call_method(args.first, "to_s", [] of Value).as_string
-      Value.string("#<#{obj.rclass.name}: #{message}>")
+      name = args.first.as_robject.rclass.name
+      message = ncc.call_method(args.first, "to_s", [] of Value)
+      text = message.as_string
+      shown = if text.empty?
+                name
+              elsif text.includes?('\n')
+                "#<#{name}:#{message.inspect}>"
+              else
+                "#<#{name}: #{text}>"
+              end
+      Value.string(shown, message.label)
     end
 
-    __define_getter(cls, interp, "message", Value.string(obj.rclass.name))
+    # `to_s`, as Ruby's `message` is, so a subclass's own `to_s` is its
+    # message.
+    define(cls, interp, "message", arity: 0) do |args, _blk, ncc|
+      ncc.call_method(args.first, "to_s", [] of Value)
+    end
 
     cls
   end

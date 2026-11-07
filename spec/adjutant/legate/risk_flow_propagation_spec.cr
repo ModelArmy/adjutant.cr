@@ -133,10 +133,10 @@ module Adjutant
         result.as_array.to_a.first.label.should_not be_nil
       end
 
-      it "#absolute? and #under? stay unlabeled — metadata, not extracted data (deliberate, not an oversight)" do
+      it "#absolute? and #under? carry the label, being predicates over the labelled path" do
         interp = make_legate_ifc_interp
-        interp.eval(%(Legate::Path.new(tainted_str("/etc/passwd")).absolute?)).label.should be_nil
-        interp.eval(<<-RUBY).label.should be_nil
+        interp.eval(%(Legate::Path.new(tainted_str("/etc/passwd")).absolute?)).label.should_not be_nil
+        interp.eval(<<-RUBY).label.should_not be_nil
         Legate::Path.new(tainted_str("/etc/passwd")).under?(Legate::Path.new("/etc"))
         RUBY
       end
@@ -157,7 +157,7 @@ module Adjutant
     end
 
     describe "Legate::Stat/Entry/Match/Response — broker-side .build propagation" do
-      it "Stat: size and the outer object carry the label; type/mode (metadata) don't" do
+      it "Stat: size and the outer object carry the label; type/mode, facts about the source, don't" do
         interp = interp_with_labeled_value_triggers
         result = interp.eval("labeled_stat")
         result.label.should_not be_nil
@@ -173,12 +173,12 @@ module Adjutant
         interp.eval("labeled_entry.type").label.should be_nil
       end
 
-      it "Match: text/before/after carry the label; line_no (metadata) doesn't" do
+      it "Match: text/before/after and line_no carry the label, line_no being a position in labelled content" do
         interp = interp_with_labeled_value_triggers
         interp.eval("labeled_match.text").label.should_not be_nil
         interp.eval("labeled_match.before").label.should_not be_nil
         interp.eval("labeled_match.before").as_array.to_a.first.label.should_not be_nil
-        interp.eval("labeled_match.line_no").label.should be_nil
+        interp.eval("labeled_match.line_no").label.should_not be_nil
       end
 
       it "Response: header VALUES and the outer object carry the label; status/url don't" do

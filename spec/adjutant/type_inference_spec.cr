@@ -123,7 +123,7 @@ module Adjutant
         end
       RUBY
       _, env = inference.infer_body(body, TypeInference::Env.new)
-      env["x"]?.should be_nil
+      env["x"]?.should be_a(UnknownType)
     end
 
     it "a var assigned before an if, and left untouched in one branch, stays Known" do

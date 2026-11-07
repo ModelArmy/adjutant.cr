@@ -21,11 +21,11 @@ module Adjutant
         transport = Helpers.fetch(legate, interp, "TransportError")
         malformed = Helpers.fetch(legate, interp, "MalformedError")
 
-        Builtins.define(cls, interp, "status", arity: 0) { |args| args.first.as_robject.ivars[status_sym] }
-        Builtins.define(cls, interp, "ok?", arity: 0) { |args| Value.bool(ok?(args.first.as_robject.ivars[status_sym].as_int)) }
+        Builtins.define(cls, interp, "status", arity: 0, labels_own_result: true) { |args| args.first.as_robject.ivars[status_sym] }
+        Builtins.define(cls, interp, "ok?", arity: 0, labels_own_result: true) { |args| Value.bool(ok?(args.first.as_robject.ivars[status_sym].as_int)) }
         Builtins.define(cls, interp, "headers", arity: 0) { |args| args.first.as_robject.ivars[headers_sym] }
         Builtins.define(cls, interp, "body", arity: 0) { |args| args.first.as_robject.ivars[body_sym] }
-        Builtins.define(cls, interp, "url", arity: 0) { |args| args.first.as_robject.ivars[url_sym] }
+        Builtins.define(cls, interp, "url", arity: 0, labels_own_result: true) { |args| args.first.as_robject.ivars[url_sym] }
 
         # Parses a String body as JSON into Hashes and Arrays. Not a
         # general JSON API for scripts.
