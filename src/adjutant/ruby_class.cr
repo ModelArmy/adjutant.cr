@@ -144,6 +144,22 @@ module Adjutant
       nil
     end
 
+    # The class method a call of `sym_id` on this class runs, as Ruby
+    # resolves it: that of the nearest class whose singleton side
+    # defines it, script or native, its extended modules included, with
+    # a script method first within one level. So Time's native `now`
+    # wins over a `def Object.now`.
+    def find_any_singleton_method(sym_id : Int32) : (ScriptProc | NativeCallable)?
+      cls = self
+      while cls
+        if m = cls.find_own_or_extended_any_method(sym_id)
+          return m
+        end
+        cls = cls.superclass
+      end
+      nil
+    end
+
     # Ruby's `Module#ancestors`: this class, each included module's
     # ancestors (last included first), then the superclass's
     # ancestors. A module reachable twice appears twice. `super`
@@ -336,6 +352,20 @@ module Adjutant
       end
       @extended_modules.reverse_each do |mod|
         if m = mod.find_own_or_included_native_method(sym_id)
+          return m
+        end
+      end
+      nil
+    end
+
+    # `find_own_or_extended_method` for either kind, a script method
+    # first at each level.
+    protected def find_own_or_extended_any_method(sym_id : Int32) : (ScriptProc | NativeCallable)?
+      if m = @singleton_methods[sym_id]? || @native_singleton_methods[sym_id]?
+        return m
+      end
+      @extended_modules.reverse_each do |mod|
+        if m = mod.find_own_or_included_any_method(sym_id)
           return m
         end
       end

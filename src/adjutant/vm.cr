@@ -1952,11 +1952,11 @@ module Adjutant
           # instance methods meant for its instances.
           cls = recv.as_rclass
           if sym_id = @symbols.lookup(name).try(&.value)
-            if method = cls.find_singleton_method(sym_id)
+            case method = cls.find_any_singleton_method(sym_id)
+            when ScriptProc
               return call_script_proc(method, args[1..], filename, blk, nil, self_val: recv, block_outer: blk_outer, kwargs: kwargs, block_yield: blk_yield, block_yield_outer: blk_yield_outer)
-            end
-            if native = cls.find_native_singleton_method(sym_id)
-              return call_native(native, args, filename, line, blk, "#{cls.name}.#{name}", has_receiver: true, kwargs: kwargs)
+            when NativeCallable
+              return call_native(method, args, filename, line, blk, "#{cls.name}.#{name}", has_receiver: true, kwargs: kwargs)
             end
           end
         elsif interp = @interpreter
@@ -2005,11 +2005,11 @@ module Adjutant
             # which is how `puts` and native functions resolve in a
             # body. Its own instance methods are for its instances,
             # so are not searched.
-            if singleton = self_rclass.find_singleton_method(sym_id)
+            case singleton = self_rclass.find_any_singleton_method(sym_id)
+            when ScriptProc
               return call_script_proc(singleton, args, filename, blk, nil, self_val: self_val, block_outer: blk_outer, kwargs: kwargs, block_yield: blk_yield, block_yield_outer: blk_yield_outer)
-            end
-            if native_singleton = self_rclass.find_native_singleton_method(sym_id)
-              return call_native(native_singleton, args, filename, line, blk, display_name_for_implicit_self(name), has_receiver: false, kwargs: kwargs)
+            when NativeCallable
+              return call_native(singleton, args, filename, line, blk, display_name_for_implicit_self(name), has_receiver: false, kwargs: kwargs)
             end
             if meta = self_rclass.rclass
               case method = meta.find_any_method(sym_id)

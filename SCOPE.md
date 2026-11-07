@@ -21,18 +21,6 @@ after 1.0. Ordered for working through: security and policy defects
 first, then the Ruby divergences, then design work on policy and
 configuration.
 
-- **Class-method lookup takes a script method from any superclass
-  before a native one nearer.** `find_singleton_method` walks the
-  whole superclass chain before `find_native_singleton_method` is
-  tried, in `dispatch_call` and the static walker, so a script class
-  method on an ancestor wins over a native one of the receiver's own
-  class, where Ruby takes the nearest. The instance-method lookup had
-  the same fault, fixed by `find_any_method`. Predicted by reading the
-  code; reachable only if a script can define a class method on an
-  ancestor of a builtin class with native class methods, which a probe
-  should check first. Fix: a `find_any_singleton_method` walking
-  `singleton_ancestors`, as `dispatch_super` does.
-
 ## Will Fix
 
 Real gaps, not currently blocking anything, no active design conversation
