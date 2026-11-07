@@ -841,11 +841,9 @@ module Adjutant
           return RiskLeaf.new(native.risk, method, line)
         end
       else
-        if script_method = cls.find_method(sym_id)
-          return walk_script_method(script_method, line, cls)
-        end
-        if native = cls.find_native_method(sym_id)
-          return RiskLeaf.new(native.risk, method, line)
+        case found = cls.find_any_method(sym_id)
+        when ScriptProc     then return walk_script_method(found, line, cls)
+        when NativeCallable then return RiskLeaf.new(found.risk, method, line)
         end
       end
       nil
@@ -906,12 +904,10 @@ module Adjutant
       sym = @interp.symbols.lookup(node.method)
       return RiskUnresolved.new("#{cls.name}##{node.method}", node.line) unless sym
 
-      if script_method = cls.find_method(sym.value)
-        walk_script_method(script_method, node.line, cls)
-      elsif native = cls.find_native_method(sym.value)
-        RiskLeaf.new(native.risk, "#{cls.name}##{node.method}", node.line)
-      else
-        RiskUnresolved.new("#{cls.name}##{node.method}", node.line)
+      case found = cls.find_any_method(sym.value)
+      when ScriptProc     then walk_script_method(found, node.line, cls)
+      when NativeCallable then RiskLeaf.new(found.risk, "#{cls.name}##{node.method}", node.line)
+      else                     RiskUnresolved.new("#{cls.name}##{node.method}", node.line)
       end
     end
 

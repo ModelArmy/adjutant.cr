@@ -291,18 +291,21 @@ config:
 ---
 flowchart LR
     A[call] --> B{has receiver bit?}
-    B -->|no| S[self's class: find_method, find_native_method]
-    B -->|yes, RubyObject or builtin value| D[its class: find_method, find_native_method]
+    B -->|no| S[self's class: find_any_method]
+    B -->|yes, RubyObject| D[its class: find_any_method]
+    B -->|yes, builtin value| D2[its builtin class: find_native_method]
     B -->|yes, RubyClass| F[its singleton tables]
     S -->|not found| C[builtins, else NoMethodError or NameError]
     D -->|found| E[call_script_proc or call_native]
+    D2 -->|found| E
     F -->|found| E
     S -->|found| E
     D -->|not found| X[excluded name? U-code, else NoMethodError]
+    D2 -->|not found| X
     F -->|not found| X
 ```
 
-A call with a receiver resolves on the receiver: an object or builtin value against its class's instance tables, a class against its singleton tables. Each lookup (`find_method`, `find_native_method`, and the singleton pair) checks a class's own table, then its included modules (last included first, recursively), then moves to the superclass. A name that resolves nowhere and that Adjutant excludes (`send`, `eval`) raises its U-code; otherwise NoMethodError.
+A call with a receiver resolves on the receiver: an object or builtin value against its class's instance tables, a class against its singleton tables. Each lookup (`find_method`, `find_native_method`, and the singleton pair) checks a class's own table, then its included modules (last included first, recursively), then moves to the superclass. An instance's call uses `find_any_method`, which does the same for both kinds at once, a script method first within one level, so the nearest ancestor wins whichever kind it defines, as in Ruby: Range's native `first` wins over a top-level `def first`, a method of Object. The static walker resolves the same way. A name that resolves nowhere and that Adjutant excludes (`send`, `eval`) raises its U-code; otherwise NoMethodError.
 
 **Visibility.** A top-level `def` is private, as in Ruby; a native method can register private with `is_private`. Private means callable without a receiver or with `self.` only (R023). Scripts can't declare visibility (U008). Privacy is decided by the definition that wins lookup.
 
@@ -554,7 +557,7 @@ flowchart TD
     Recv -->|Constant or ConstPath, other method| SingLookup{{find_singleton_method / find_native_singleton_method}}
     SingLookup -->|found| SingRisk[method's own RiskNode / RiskProfile]
     SingLookup -->|not found| Unresolved
-    Recv -->|known instance type| ClassLookup["find_method / find_native_method"]
+    Recv -->|known instance type| ClassLookup["find_any_method"]
     Recv -->|unknown type| Unresolved[RiskUnresolved]
     ClassLookup -->|ScriptProc| Memo{{cached?}}
     Memo -->|yes| Cached[reuse RiskNode]

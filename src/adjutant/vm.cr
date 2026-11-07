@@ -758,12 +758,11 @@ module Adjutant
       end
     end
 
-    # Whether `cls` has a public script or native instance method
-    # `sym_id`; a private one (a top-level `def`, `lambda`) can't be
+    # Whether the instance method `sym_id` of `cls` that a call would
+    # run is public; a private one (a top-level `def`, `lambda`) can't be
     # called with a receiver, so it doesn't count, as in Ruby.
     private def public_instance_method?(cls : RubyClass, sym_id : Int32) : Bool
-      (!!cls.find_method(sym_id) && !cls.find_method_private?(sym_id)) ||
-        (!!cls.find_native_method(sym_id) && !cls.find_native_method_private?(sym_id))
+      !cls.find_any_method(sym_id).nil? && !cls.find_any_method_private?(sym_id)
     end
 
     # The class whose cvars `f` reads: self's class for an instance,
@@ -1756,6 +1755,19 @@ module Adjutant
         block_yield: f.block_yield, block_yield_outer: f.block_yield_outer)
     end
 
+    # Calls `native`, found for a call on an implicit self: a method
+    # gets self as its receiver, as a call with one would; a function
+    # gets the arguments alone.
+    private def call_native_on_self(native : NativeCallable, self_val : Value, args : Array(Value),
+                                    filename : String, line : Int32, blk : ScriptProc?, name : String,
+                                    kwargs : Hash(String, Value)?) : Value
+      if native.takes_receiver?
+        call_native(native, [self_val] + args, filename, line, blk, display_name_for_implicit_self(name), has_receiver: true, kwargs: kwargs)
+      else
+        call_native(native, args, filename, line, blk, display_name_for_implicit_self(name), has_receiver: false, kwargs: kwargs)
+      end
+    end
+
     # Calls the native method `super` found on `candidate`.
     private def call_super_native(native : NativeCallable, call_args : Array(Value), call_kwargs : Hash(String, Value)?,
                                   f : Frame, filename : String, line : Int32, candidate : RubyClass, name : String) : Value
@@ -1899,13 +1911,13 @@ module Adjutant
         if recv.robject?
           cls = recv.as_robject.rclass
           if sym_id = @symbols.lookup(name).try(&.value)
-            if method = cls.find_method(sym_id)
+            case method = cls.find_any_method(sym_id)
+            when ScriptProc
               raise_if_private_call(cls, sym_id, name, recv, self_val, filename, line, native: false)
               return call_script_proc(method, args[1..], filename, blk, nil, self_val: recv, block_outer: blk_outer, kwargs: kwargs, block_yield: blk_yield, block_yield_outer: blk_yield_outer)
-            end
-            if native = cls.find_native_method(sym_id)
+            when NativeCallable
               raise_if_private_call(cls, sym_id, name, recv, self_val, filename, line, native: true)
-              return call_native(native, args, filename, line, blk, "#{cls.name}##{name}", has_receiver: true, kwargs: kwargs)
+              return call_native(method, args, filename, line, blk, "#{cls.name}##{name}", has_receiver: true, kwargs: kwargs)
             end
           end
         elsif recv.rclass?
@@ -1949,11 +1961,11 @@ module Adjutant
 
             # self is an object: its class's instance methods.
             cls = obj.rclass
-            if method = cls.find_method(sym_id)
+            case method = cls.find_any_method(sym_id)
+            when ScriptProc
               return call_script_proc(method, args, filename, blk, nil, self_val: self_val, block_outer: blk_outer, kwargs: kwargs, block_yield: blk_yield, block_yield_outer: blk_yield_outer)
-            end
-            if native = cls.find_native_method(sym_id)
-              return call_native(native, args, filename, line, blk, display_name_for_implicit_self(name), has_receiver: false, kwargs: kwargs)
+            when NativeCallable
+              return call_native_on_self(method, self_val, args, filename, line, blk, name, kwargs)
             end
           elsif self_rclass = self_val.as_rclass?
             # self is a class or module (in its body). First its own
@@ -1969,11 +1981,13 @@ module Adjutant
               return call_native(native_singleton, args, filename, line, blk, display_name_for_implicit_self(name), has_receiver: false, kwargs: kwargs)
             end
             if meta = self_rclass.rclass
-              if method = meta.find_method(sym_id)
+              case method = meta.find_any_method(sym_id)
+              when ScriptProc
                 return call_script_proc(method, args, filename, blk, nil, self_val: self_val, block_outer: blk_outer, kwargs: kwargs, block_yield: blk_yield, block_yield_outer: blk_yield_outer)
-              end
-              if native = meta.find_native_method(sym_id)
-                return call_native(native, args, filename, line, blk, display_name_for_implicit_self(name), has_receiver: false, kwargs: kwargs)
+              when NativeCallable
+                # Module's natives for a body, such as `include`, read
+                # self from the context rather than a receiver.
+                return call_native(method, args, filename, line, blk, display_name_for_implicit_self(name), has_receiver: false, kwargs: kwargs)
               end
             end
           end
