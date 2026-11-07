@@ -1,3365 +1,1020 @@
-require "./bytecode"
-require "./symbol_table"
-require "./value"
-require "./value_ops"
-require "./ast"
-require "./risk_flow_policy"
-require "./risk_flow_decision"
-require "./builtins/regexp"
-require "./fatal_signal"
-
-module Adjutant
-  # A compiled method, lambda or block body, storable as a Value.
-  class ScriptProc
-    getter chunk : Chunk
-    getter name : String
-    getter params : Array(String)
-    getter local_count : Int32
-    getter? is_block : Bool
-
-    # The AST the proc was compiled from, nil when there is none.
-    # `ast_body` is read only by RiskWalker; `ast_params` by
-    # `VM#bind_args` for defaults, splats and keywords.
-    getter ast_body : Body?
-    getter ast_params : Array(Param)?
-
-    # For a block, the method it was written in, named by R007's
-    # message instead of `<block>`.
-    getter home_method : String?
-
-    # The class or module the proc was defined in, set by DefMethod.
-    # Nil for top-level methods and for blocks.
-    property lexical_scope : RubyClass?
-
-    def initialize(@chunk, @name, @params = [] of String, @local_count = 0, @is_block = false,
-                   @ast_body = nil, @ast_params = nil, @home_method = nil)
-    end
-  end
-
-  # The pending rescue and ensure targets of one begin/rescue/ensure
-  # construct while its body runs. One entry holds both, so entries
-  # from different constructs unwind in the order they were entered.
-  class HandlerEntry
-    property rescue_ip : Int32?
-    property ensure_ip : Int32?
-
-    def initialize(@rescue_ip = nil, @ensure_ip = nil)
-    end
-  end
-
-  # A closure's enclosing scopes, nearest first: depth 0 is the frame
-  # that created the closure. Each entry is that frame's own `locals`
-  # array, not a copy, so writes reach the real variable.
-  alias OuterChain = Array(Array(Value))
-
-  class Frame
-    getter proc : ScriptProc
-    getter chunk : Chunk
-    property ip : Int32
-    property line : Int32
-    property stack_base : Int32
-    getter filename : String
-    property block : ScriptProc?
-    # Begin constructs open in this frame, innermost last. Try (or
-    # SetEnsure, for an ensure-only construct) pushes; SetEnsure adds
-    # its target to the entry Try just pushed; EndTry clears the rescue
-    # target; EnterEnsure pops the entry.
-    getter handlers : Array(HandlerEntry)
-
-    # Local variable slots, sized from `ScriptProc#local_count`.
-    getter locals : Array(Value)
-
-    # For a block or lambda frame, the enclosing scopes it closes
-    # over; nil for a method frame.
-    property outer_locals : OuterChain?
-
-    # `self` in this frame: the receiver in a method, the class or
-    # module in its body, `main` at top level.
-    property self_val : Value
-
-    # The class or module for constant lookup. A method frame takes
-    # its proc's; a block frame takes its caller's.
-    property lexical_scope : RubyClass?
-
-    # The scopes the block passed to this call closes over, captured
-    # by SetBlock where the block was written. `yield` gives them to
-    # the block as its `outer_locals`. Nil when no block was passed.
-    property block_outer_locals : OuterChain?
-
-    # `yield`'s target in the two cases `@block` can't give it.
-    # `block_yield` is the yield target of the method the attached
-    # block was written in, captured by SetBlock and handed on when
-    # this frame yields. `own_yield` is that target once received:
-    # what `yield` means inside a block frame.
-    property block_yield : ScriptProc?
-    property own_yield : ScriptProc?
-
-    # The closure scopes to run each yield target with, carried
-    # alongside it.
-    property block_yield_outer : OuterChain?
-    property own_yield_outer : OuterChain?
-
-    # The errors being handled in this frame, each under the start of
-    # the handling range (`Chunk#handling_ranges`) that handles it. Nil
-    # until the frame first handles one.
-    getter caught : Hash(Int32, Value)?
-
-    # How many positional arguments the call passed, for GetArgc.
-    # `locals.size` counts declared slots instead.
-    property argc : Int32
-
-    # The keyword argument names the call passed, for HasKwarg; nil
-    # when it passed none.
-    property kwarg_names : Set(String)?
-
-    # Records `error` as the one the handling range starting at `start`
-    # handles.
-    def record_caught(start : Int32, error : Value) : Nil
-      (@caught ||= {} of Int32 => Value)[start] = error
-    end
-
-    # Forgets the error the handling range starting at `start` handled,
-    # for an ensure body entered without one.
-    def forget_caught(start : Int32) : Nil
-      @caught.try(&.delete(start))
-    end
-
-    # The error being handled where this frame is running: the one
-    # recorded for the innermost handling range around its current
-    # instruction that has one. Nil when there is none.
-    def handled_error : Value?
-      caught = @caught
-      return unless caught
-      at = @ip - 1
-      around = @chunk.handling_ranges.select { |(start, stop)| start <= at && at < stop }
-      around.sort_by! { |(start, _)| -start }
-      around.each { |(start, _)| caught[start]?.try { |error| return error } }
-      nil
-    end
-
-    # What `yield` resolves to in this frame: a method's own block, or
-    # for a block frame the block of the method it was written in.
-    # Ruby resolves `yield` lexically, so `items.each { |x| yield x }`
-    # reaches the enclosing method's block rather than finding none.
-    def yield_target : ScriptProc?
-      @proc.is_block? ? @own_yield : @block
-    end
-
-    # The closure context to invoke `yield_target` with.
-    def yield_outer : OuterChain?
-      @proc.is_block? ? @own_yield_outer : @block_outer_locals
-    end
-
-    def initialize(@proc, @chunk, @stack_base, @filename, @block = nil, outer : OuterChain? = nil,
-                   @self_val : Value = Value.nil_value, @lexical_scope : RubyClass? = nil,
-                   @block_outer_locals : OuterChain? = nil, @argc : Int32 = 0,
-                   @block_yield : ScriptProc? = nil, @own_yield : ScriptProc? = nil,
-                   @block_yield_outer : OuterChain? = nil, @own_yield_outer : OuterChain? = nil)
-      @ip = 0
-      @line = 0
-      @handlers = [] of HandlerEntry
-      @locals = Array(Value).new(@proc.local_count, Value.nil_value)
-      @outer_locals = outer
-    end
-  end
-
-  # Execution limits — zero means unlimited.
-  struct ExecutionLimits
-    property instruction_limit : UInt64
-    property call_depth_limit : Int32
-
-    def initialize(
-      @instruction_limit = 0_u64,
-      @call_depth_limit = 256,
-    )
-    end
-  end
-
-  # RuntimeError raised when a script throws or hits a limit.
-  class RuntimeError < Exception
-    getter line : Int32
-    getter filename : String
-    # The error object a script rescues, when one was built;
-    # otherwise the error is represented by `message`.
-    getter error_value : Value?
-
-    # The structured report of a failure Adjutant classified. Nil for
-    # an error the script raised itself (`raise "boom"`, a re-raise),
-    # whose message belongs to the script's author; keep it nilable.
-    # `error_value` is what the script rescues; this is what the host
-    # reads.
-    getter diagnostic : Diagnostic?
-
-    def initialize(message : String, @filename = "<script>", @line = 0, cause = nil, @error_value = nil)
-      @diagnostic = nil
-      super(message, cause)
-    end
-
-    def initialize(message : String, frame : Frame, cause = nil, @error_value = nil)
-      @filename = frame.filename
-      @line = frame.line
-      @diagnostic = nil
-      super(message, cause)
-    end
-
-    def initialize(diagnostic : Diagnostic, frame : Frame, cause = nil, @error_value = nil)
-      @diagnostic = diagnostic
-      @filename = frame.filename
-      @line = frame.line
-      super(diagnostic.to_line, cause)
-    end
-
-    # For errors raised with no frame, such as a failed `require`.
-    def initialize(diagnostic : Diagnostic, @filename : String, @line : Int32,
-                   cause = nil, @error_value = nil)
-      @diagnostic = diagnostic
-      super(diagnostic.to_line, cause)
-    end
-  end
-
-  # Unwinds a `break` from a block to the native call running the
-  # block, `VM#call_native`, the only place that rescues it. The
-  # innermost native call catches it, so in
-  # `outer.each { inner.each { break } }` only the inner `each` ends.
-  # Not a RuntimeError, so no script `rescue` can catch it.
-  # A `return` in a block that has left the frames of this run, as
-  # when the block was run by a native method. It carries the value to
-  # the run that holds `home`, the locals of the frame it leaves.
-  class BlockReturnSignal < Exception
-    getter value : Value
-    getter home : Array(Value)
-
-    def initialize(@value, @home)
-      super("block return")
-    end
-  end
-
-  class BlockBreakSignal < Exception
-    getter value : Value
-
-    def initialize(@value)
-      super("break outside call_native — internal, should never surface to a script")
-    end
-  end
-
-  # The bytecode VM: one instance per script execution, holding the
-  # value stack, frames, globals and execution state.
-  class VM
-    MAX_STACK = 4096
-
-    # Instructions between checks of the run's wall clock, a power of
-    # two so the test is a mask.
-    WALL_CLOCK_INTERVAL = 1024_u64
-
-    # An empty chunk for the sentinel frame `call_method` runs under,
-    # which carries a filename and line but no code. Never mutated, so
-    # one instance is shared.
-    SENTINEL_CHUNK = Chunk.new
-    SENTINEL_PROC  = ScriptProc.new(SENTINEL_CHUNK, "<native>")
-
-    getter instruction_count : UInt64
-    getter globals : Hash(Int32, Value)
-    getter risk_flow_log : RiskFlowLog
-    getter risk_flow_policy : RiskFlowPolicy
-    getter on_risk_flow_decision : RiskFlowDecisionRequest -> RiskFlowDecision
-
-    def initialize(
-      @symbols : SymbolTable,
-      @limits : ExecutionLimits = ExecutionLimits.new,
-      @effect : EffectHandler? = nil,
-      @interpreter : Interpreter? = nil,
-      @globals : Hash(Int32, Value) = {} of Int32 => Value,
-      @risk_flow_log : RiskFlowLog = RiskFlowLog.new,
-      @risk_flow_policy : RiskFlowPolicy = RiskFlowPolicy.reject_all,
-      @on_risk_flow_decision : RiskFlowDecisionRequest -> RiskFlowDecision = ->(_req : RiskFlowDecisionRequest) { RiskFlowDecision::Reject },
-    )
-      @stack = Array(Value).new(256)
-      @frames = [] of Frame
-      @instruction_count = 0_u64
-      @current_block = nil.as(ScriptProc?)
-      # The closure scopes of `@current_block`, captured by SetBlock
-      # and passed to the callee as `Frame#block_outer_locals`.
-      @current_block_locals = nil.as(OuterChain?)
-      @current_block_yield = nil.as(ScriptProc?)
-      @current_block_yield_outer = nil.as(OuterChain?)
-      # Keyword arguments staged by SetKwargNames for the next Call,
-      # which clears them. Nil when the call has none.
-      @pending_kwargs = nil.as(Hash(String, Value)?)
-      # The most recently caught error, for PushError: an error object,
-      # or a message string when none was built.
-      @last_error = Value.nil_value
-      # The error an ensure body was entered with, re-raised by
-      # EndEnsure. An error raised inside the ensure body supersedes
-      # it, as in Ruby. Cleared on every fresh catch.
-      @pending_reraise = nil.as(Value?)
-      # The error the unwinder is entering an ensure body with, taken
-      # by that body's EnterEnsure, the next instruction to run.
-      @ensure_error = nil.as(Value?)
-      # A `break` an ensure body was entered for, with the frame whose
-      # call it ends, resumed by EndEnsure. An error raised inside the
-      # ensure body supersedes it, as in Ruby.
-      @pending_break = nil.as({Value, Frame?}?)
-      # A block's `return` an ensure body was entered for, with the
-      # locals of the frame it leaves, resumed by EndEnsure.
-      @pending_return = nil.as({Value, Array(Value)}?)
-      # Containers being rendered, for `guard_rendering`. VM-wide,
-      # since a recursive `inspect` re-enters the VM at each level.
-      @rendering_ids = Set(UInt64).new
-      # Frames set aside by the nested runs in progress
-      # (`invoke_internal`, `call_method`), which still count toward
-      # `call_depth_limit`.
-      @outer_frame_count = 0
-      # The frame lists those nested runs set aside, innermost last.
-      @set_aside_frames = [] of Array(Frame)
-    end
-
-    # Runs a compiled top-level chunk and returns its value.
-    def run(chunk : Chunk, filename : String = "<script>", local_count : Int32 = 0) : Value
-      # A host wiring error, not a RuntimeError: no script is running
-      # to rescue it.
-      unless @frames.empty?
-        raise HostStateError.new(Diagnostic.new(code: "H005"))
-      end
-      main_proc = ScriptProc.new(chunk, "<main>", local_count: local_count)
-      # Top-level self is `main`, an Object, as in Ruby. A VM built
-      # without an Interpreter has no Object class, so uses nil, and a
-      # top-level `def` there has nothing to attach to.
-      self_val = @interpreter.try { |i| Value.robject(i.main) } || Value.nil_value
-      push_frame(main_proc, filename, self_val: self_val)
-      execute
-    end
-
-    # Runs a file `require` loaded as a top-level script inside this
-    # VM, with its own frames and stack as in `invoke_internal`, so its
-    # instructions and frames count toward the requiring script's
-    # limits.
-    protected def run_required(chunk : Chunk, filename : String, local_count : Int32) : Value
-      saved_frames = @frames
-      saved_stack = @stack
-      saved_cur_block = @current_block
-      saved_cur_block_locals = @current_block_locals
-      saved_cur_block_yield = @current_block_yield
-      saved_cur_block_yield_outer = @current_block_yield_outer
-      saved_pending_kwargs = @pending_kwargs
-      saved_outer_frame_count = @outer_frame_count
-      enter_nested_run!
-      begin
-        @frames = [] of Frame
-        @stack = Array(Value).new(256)
-        @current_block = nil
-        @current_block_locals = nil
-        @current_block_yield = nil
-        @current_block_yield_outer = nil
-        @pending_kwargs = nil
-        main_proc = ScriptProc.new(chunk, "<main>", local_count: local_count)
-        self_val = @interpreter.try { |i| Value.robject(i.main) } || Value.nil_value
-        push_frame(main_proc, filename, self_val: self_val)
-        result = execute
-      ensure
-        @frames = saved_frames
-        @stack = saved_stack
-        @current_block = saved_cur_block
-        @current_block_locals = saved_cur_block_locals
-        @current_block_yield = saved_cur_block_yield
-        @current_block_yield_outer = saved_cur_block_yield_outer
-        @pending_kwargs = saved_pending_kwargs
-        leave_nested_run!(saved_outer_frame_count)
-      end
-      result
-    end
-
-    # Runs a block passed to a native function (its `blk`), closing
-    # over the current frame. That frame is the block's defining frame,
-    # since a block is only run during the call that received it; if
-    # blocks could ever be captured (U001), this would no longer hold.
-    # For a stored Proc, use `invoke_proc`.
-    protected def invoke(proc : ScriptProc, args : Array(Value), self_val : Value? = nil,
-                         kwargs : Hash(String, Value)? = nil) : Value
-      invoke_internal(proc, spread_block_args(proc, args, kwargs), self_val, outer_locals: nil, kwargs: kwargs)
-    end
-
-    # Runs a stored Proc object with the closure it captured. Raises
-    # H004 if `proc_obj` is not a Proc.
-    protected def invoke_proc(proc_obj : RubyObject, args : Array(Value), self_val : Value? = nil) : Value
-      unless proc_obj.rclass == builtin_class_by_name("Proc")
-        # H004, not an I code: the caller is a host native function
-        # passing the wrong value. It reaches the reader as N001
-        # through `call_native`, which names the failing function.
-        raise HostArgumentError.new(
-          Diagnostic.new(code: "H004", data: {"found" => proc_obj.rclass.name})
-        )
-      end
-      sproc = proc_obj.ivars[@symbols.intern("__sproc").value].as_proc
-      invoke_internal(sproc, args, self_val, outer_locals: proc_obj.outer_locals, lambda_call: true)
-    end
-
-    # Returns a live block as a Proc object closing over the current
-    # frame, as `->(){}` at the same spot would; `lambda { }` uses it.
-    # The Proc gets no label of its own.
-    protected def wrap_block_as_proc(blk : ScriptProc, filename : String, line : Int32) : Value
-      f = current_frame
-      make_lambda_object(blk, nil, [f.locals] + (f.outer_locals || [] of Array(Value)), filename, line)
-    end
-
-    # Runs `proc` in an isolated frame and value stack and returns its
-    # result. `outer_locals` is the closure to run it with, or nil for
-    # the current frame and the scopes it closes over. `lambda_call`
-    # checks arity strictly for a block-compiled proc, as a lambda
-    # needs. Its instructions and frames count toward the same limits
-    # as the caller's.
-    private def invoke_internal(proc : ScriptProc, args : Array(Value), self_val : Value? = nil,
-                                outer_locals : OuterChain? = nil, kwargs : Hash(String, Value)? = nil,
-                                lambda_call : Bool = false) : Value
-      saved_frames = @frames
-      saved_stack = @stack
-      saved_cur_block = @current_block
-      saved_cur_block_locals = @current_block_locals
-      saved_cur_block_yield = @current_block_yield
-      saved_cur_block_yield_outer = @current_block_yield_outer
-      saved_pending_kwargs = @pending_kwargs
-      saved_outer_frame_count = @outer_frame_count
-      enter_nested_run!
-      begin
-        f = current_frame # before replacing @frames
-        inherited_self = self_val || f.self_val
-        inherited_lexical = proc.lexical_scope || f.lexical_scope
-        # The current frame plus its own enclosing scopes, so a block
-        # run inside another block reaches both.
-        effective_outer = outer_locals || ([f.locals] + (f.outer_locals || [] of Array(Value)))
-        @frames = [] of Frame
-        # A fresh value stack as well as a fresh frame list: Ret
-        # pushes its result only when frames remain, so with shared
-        # stacks a nested call would return whatever the caller had
-        # on top, such as a half-built array literal's element.
-        @stack = Array(Value).new(256)
-        # A block run by a native method yields to what its defining
-        # frame would, since that frame's call is still in progress.
-        call_script_proc(proc, args, f.filename, nil, effective_outer, self_val: inherited_self,
-          lexical_scope: inherited_lexical, lexical_override: true, kwargs: kwargs,
-          own_yield: f.yield_target, own_yield_outer: f.yield_outer, lambda_call: lambda_call)
-        result = execute
-      ensure
-        @frames = saved_frames
-        @stack = saved_stack
-        @current_block = saved_cur_block
-        @current_block_locals = saved_cur_block_locals
-        @current_block_yield = saved_cur_block_yield
-        @current_block_yield_outer = saved_cur_block_yield_outer
-        @pending_kwargs = saved_pending_kwargs
-        leave_nested_run!(saved_outer_frame_count)
-      end
-      result
-    end
-
-    # Sets the global `name`.
-    def set_global(name : String, value : Value) : Nil
-      sym = @symbols.intern(name)
-      @globals[sym.value] = value
-    end
-
-    # Whether `recv` is an instance of `target` or of a class that
-    # inherits from or includes it. For a class receiver the chain
-    # starts at its class: `Integer.is_a?(Class)` is true.
-    # ameba:disable Naming/PredicateName - deliberately named to echo is_a?/kind_of?, not a generic predicate
-    private def is_a_target?(recv : Value, target : RubyClass?) : Bool
-      start_cls = recv.as_robject?.try(&.rclass) ||
-                  recv.as_rclass?.try(&.rclass) ||
-                  @interpreter.try(&.builtin_class_for(recv))
-      return false unless start_cls && target
-      return true if start_cls.ancestors.includes?(target)
-      # A class that extends a module is an instance of it, as its
-      # singleton class includes it in Ruby.
-      !!recv.as_rclass?.try(&.singleton_ancestors.any? { |(cls, singleton)| !singleton && cls == target })
-    end
-
-    # Whether `v` is a Range instance, by class, not by its ivars.
-    private def range_receiver?(v : Value) : Bool
-      obj = v.as_robject?
-      !!(obj && obj.rclass == builtin_class_by_name("Range"))
-    end
-
-    # Range#===: `min <= x` and `x < max` (or `x <= max` for an
-    # inclusive range), through `compare` so a custom `<=>` applies. A
-    # nil bound is satisfied without comparing. The `__min`, `__max`
-    # and `__exclusive` ivars must match `make_range_object` and
-    # `builtins/range.cr`.
-    private def range_include?(range : Value, x : Value) : Bool
-      obj = range.as_robject
-      min = obj.ivars[@symbols.intern("__min").value]
-      max = obj.ivars[@symbols.intern("__max").value]
-      exclusive = obj.ivars[@symbols.intern("__exclusive").value].as_bool
-      return false unless min.null? || compare(x, min, :>=)
-      return true if max.null?
-      exclusive ? compare(x, max, :<) : compare(x, max, :<=)
-    end
-
-    # Whether `v` is a Proc instance, by class, not by its ivars.
-    private def proc_receiver?(v : Value) : Bool
-      obj = v.as_robject?
-      !!(obj && obj.rclass == builtin_class_by_name("Proc"))
-    end
-
-    # Ruby's `pattern === subject`, for TripleEq, which bare `a === b`
-    # and `case`/`when` both compile to. Not method dispatch: `===` is
-    # fixed, like `==`, so a new type's matching rule is a branch here.
-    # So `/re/.===(s)`, like `a.==(b)`, is an undefined method.
-    private def triple_eq_matches?(pattern : Value, subject : Value) : Bool
-      if cls = pattern.as_rclass?
-        # `Class#===`: is `subject` an instance of it.
-        is_a_target?(subject, cls)
-      elsif range_receiver?(pattern)
-        # `Range#===`: is `subject` within the bounds.
-        range_include?(pattern, subject)
-      elsif (robj = pattern.as_robject?) && robj.is_a?(RegexpObject)
-        # `Regexp#===`: does the pattern match `subject`.
-        str = subject.as_string?
-        str ? robj.regex.matches?(str) : false
-      elsif proc_receiver?(pattern)
-        # `Proc#===`: the truthiness of calling it with `subject`, as
-        # in `when ->(x) { x.even? }`.
-        invoke_proc(pattern.as_robject, [subject]).truthy?
-      else
-        # Anything else: `==`, as Ruby's `Object#===` is.
-        values_equal?(subject, pattern)
-      end
-    end
-
-    # Pops a call's `argc` values. With `spread`, the last is an Array
-    # whose elements stand in for it as positional arguments.
-    private def pop_args(argc : Int32, spread : Bool) : Array(Value)
-      args = @stack.last(argc)
-      @stack.pop(argc) if argc > 0
-      return args unless spread
-      args[0, args.size - 1] + args.last.as_array.to_a
-    end
-
-    # What `*value` spreads, as MRI's `vm_splat_array` decides it, in a
-    # new Array: nothing for nil; an Array's elements; otherwise the
-    # Array `to_a` returns, or `value` alone when it has no `to_a` or
-    # `to_a` returns nil. A `to_a` returning anything else raises R063,
-    # a TypeError. The copy carries the label of the Array it copies.
-    private def splat_array(value : Value, f : Frame) : Value
-      return Value.new(LabeledArray.new, nil) if value.null?
-      source = value.array? ? value : convert_to_array(value, "to_a", f)
-      if source
-        items = source.as_array
-        Value.new(LabeledArray.new(items.dup_items, items.label), items.label)
-      else
-        Value.new(LabeledArray.new([value], value.label), value.label)
-      end
-    end
-
-    # What a multiple assignment's targets take from its one value, as
-    # MRI's `vm_expandarray` decides it: an Array's elements, else the
-    # elements of the Array `to_ary` returns, else the value alone, also
-    # when `to_ary` returns nil. A `to_ary` returning anything else
-    # raises R063, a TypeError.
-    private def multi_unpack_values(value : Value, f : Frame) : Array(Value)
-      return value.as_array.to_a if value.array?
-      converted = convert_to_array(value, "to_ary", f)
-      converted ? converted.as_array.to_a : [value]
-    end
-
-    # The values for `count` targets from `parts`, as MRI's
-    # `vm_expandarray` deals them. Without a splat target (`splat_at`
-    # below 0), in order, padded with nil. With one, the targets before
-    # it take from the front, padded with nil; those after it take the
-    # last of what remains, or, when too few remain, those from the
-    # front, padded with nil; and the splat target an Array of the rest,
-    # labelled with its elements' labels.
-    private def deal_targets(parts : Array(Value), count : Int32, splat_at : Int32) : Array(Value)
-      return Array(Value).new(count) { |index| parts[index]? || Value.nil_value } if splat_at < 0
-      before = Array(Value).new(splat_at) { |index| parts[index]? || Value.nil_value }
-      rest = parts.size > splat_at ? parts[splat_at..] : [] of Value
-      after_count = count - splat_at - 1
-      if rest.size < after_count
-        after = Array(Value).new(after_count) { |index| rest[index]? || Value.nil_value }
-        middle = [] of Value
-      else
-        after = rest[rest.size - after_count..]
-        middle = rest[0, rest.size - after_count]
-      end
-      label = middle.reduce(nil.as(RiskFlowLabel?)) { |acc, value| RiskFlowLabel.join(acc, value.label) }
-      before + [Value.new(LabeledArray.new(middle, label), label)] + after
-    end
-
-    # `value`'s `method` (`to_a` or `to_ary`) if it has one returning an
-    # Array, as MRI's `rb_check_convert_type_with_id` does; nil if it
-    # has none or it returns nil. Raises R063, a TypeError, if it
-    # returns anything else.
-    private def convert_to_array(value : Value, method : String, f : Frame) : Value?
-      return unless script_responds_to?(value, method)
-      converted = call_method(value, method, [] of Value, f.filename, f.line)
-      return if converted.null?
-      return converted if converted.array?
-      raise bad_conversion(value, "Array", method, converted, f)
-    end
-
-    # R063, a TypeError: `value`'s `method` gave `converted`, which isn't
-    # the `target_type` it must convert into.
-    private def bad_conversion(value : Value, target_type : String, method : String, converted : Value, f : Frame) : RuntimeError
-      data = {"class" => describe_value(value), "type" => target_type, "method" => method, "result" => describe_value(converted)}
-      runtime_diagnostic(Diagnostic.new(code: "R063", primary: frame_span(f), data: data), f, error_class: "TypeError")
-    end
-
-    # `**value` as a new Hash, as MRI's `rb_to_hash_type` converts it: a
-    # Hash's pairs, else those of the Hash `to_hash` returns. nil spreads
-    # nothing among a call's keywords (`nil_empty`), as in Ruby 3.4.
-    # Anything else raises R065, a TypeError, or R063 when `to_hash`
-    # returns something other than a Hash. The copy carries the label of
-    # the Hash it copies.
-    private def double_splat_hash(value : Value, nil_empty : Bool, f : Frame) : Value
-      return Value.new(LabeledHash.new, nil) if nil_empty && value.null?
-      source = value.hash? ? value : convert_to_hash(value, f)
-      pairs = source.as_hash
-      Value.new(LabeledHash.new(pairs.dup_entries, pairs.label), pairs.label)
-    end
-
-    # `value`'s `to_hash`, which must return a Hash: R065, a TypeError,
-    # without one, and R063 for anything else it returns.
-    private def convert_to_hash(value : Value, f : Frame) : Value
-      unless script_responds_to?(value, "to_hash")
-        raise runtime_diagnostic(
-          Diagnostic.new(code: "R065", primary: frame_span(f), data: {"class" => describe_value(value)}),
-          f, error_class: "TypeError")
-      end
-      converted = call_method(value, "to_hash", [] of Value, f.filename, f.line)
-      return converted if converted.hash?
-      raise bad_conversion(value, "Hash", "to_hash", converted, f)
-    end
-
-    # The keywords a Hash's pairs pass: those of the Hash a call's double
-    # splats built, or of a keyword rest that bare `super` forwards. None
-    # for an empty Hash, as Ruby passes none for `**{}`. A key that isn't
-    # a Symbol raises R012, as keywords here are named by Symbols. The
-    # names carry the labels of the Hash and its keys: the Hash's, since
-    # a native may build a labelled Hash whose keys carry none, though it
-    # also covers the values.
-    private def keywords_from(built : Value, method : String, f : Frame) : Hash(String, Value)?
-      pairs = built.as_hash.dup_entries
-      return if pairs.empty?
-      keywords = Keywords.new
-      keywords.names_label = pairs.keys.reduce(built.label) { |joined, key| RiskFlowLabel.join(joined, key.label) }
-      pairs.each do |key, value|
-        unless key.symbol?
-          raise runtime_diagnostic(
-            Diagnostic.new(code: "R012", primary: frame_span(f),
-              data: {"name" => render_inspect(key, f.filename, f.line), "method" => method}),
-            f, error_class: "ArgumentError", label: RiskFlowLabel.join(built.label, key.label))
-        end
-        keywords[key.as_sym.name] = value
-      end
-      keywords
-    end
-
-    # `MatchAny`: whether any pattern of a `when` list's splat matches,
-    # tried in order. The result carries the labels of the patterns and
-    # the subject, as `TripleEq`'s does.
-    private def exec_match_any(inst : Instruction, f : Frame) : Nil
-      patterns = pop
-      subject = inst.a == 1 ? pop : nil
-      matched = patterns.as_array.to_a.any? do |pattern|
-        subject ? triple_eq_matches?(pattern, subject) : pattern.truthy?
-      end
-      label = RiskFlowLabel.join(patterns.label, subject.try(&.label))
-      @risk_flow_log.record("MatchAny", [patterns.label, subject.try(&.label)], label, f.line)
-      push(Value.bool(matched, label))
-    end
-
-    # Whether `recv` has `method_name`, in the order `dispatch_call`
-    # resolves it, without calling it.
-    # Operations `exec_builtin` performs for any receiver, which
-    # `respond_to?` reports.
-    UNIVERSAL_METHODS = Set{"nil?", "is_a?", "kind_of?", "class", "respond_to?", "equal?",
-                            "dup", "clone", "to_s", "inspect", "==", "!=", "===", "!", "<=>"}
-
-    # `respond_to?`: a method dispatch finds, an operation every object
-    # has, an operator the receiver's type has, or `superclass` on a
-    # class.
-    private def value_responds_to?(recv : Value, method_name : String) : Bool
-      script_responds_to?(recv, method_name) || UNIVERSAL_METHODS.includes?(method_name) ||
-        operator_defined?(recv, method_name) ||
-        (method_name == "superclass" && !!recv.as_rclass?.try { |cls| !cls.is_module? })
-    end
-
-    # A script `initialize` that `cls` or a superclass defines, if any.
-    private def script_initialize(cls : RubyClass) : ScriptProc?
-      @symbols.lookup("initialize").try { |sym| cls.find_method(sym.value) }
-    end
-
-    # Ruby's `equal?`: the same object for a String, container, object
-    # or class; equal content for an immediate.
-    private def identical?(a : Value, b : Value) : Bool
-      ra = a.raw
-      rb = b.raw
-      if ra.is_a?(Reference) && rb.is_a?(Reference)
-        ra.same?(rb)
-      else
-        a == b
-      end
-    end
-
-    # `dup` and `clone`, which are the same here as nothing is frozen
-    # but Strings. An object gets `RubyObject#shallow_copy`, then its
-    # `initialize_copy(original)` if defined; one that can't be copied
-    # raises R054 (TypeError). An Array or Hash is copied shallowly.
-    # An immediate or String is returned as is, as for Ruby's frozen
-    # values. A class or Proc has no copy here, so dispatch raises
-    # NoMethodError.
-    private def copy_value(recv : Value, method : String, filename : String, line : Int32) : Value?
-      if obj = recv.as_robject?
-        return if obj.rclass == builtin_class_by_name("Proc")
-        copy = obj.shallow_copy
-        unless copy
-          raise runtime_diagnostic(
-            Diagnostic.new(code: "R054", primary: Span.new(line: line, filename: filename),
-              data: {"method" => method, "class" => obj.rclass.name}),
-            current_frame, error_class: "TypeError")
-        end
-        copy_val = Value.robject(copy)
-        if (sym_id = @symbols.lookup("initialize_copy").try(&.value)) && (method_proc = obj.rclass.find_method(sym_id))
-          invoke(method_proc, [recv], self_val: copy_val)
-        end
-        copy_val
-      elsif recv.array?
-        arr = recv.as_array
-        Value.new(LabeledArray.new(arr.dup_items, arr.label), recv.label)
-      elsif recv.hash?
-        h = recv.as_hash
-        Value.new(LabeledHash.new(h.dup_entries, h.label), recv.label)
-      elsif recv.rclass? || recv.proc?
-        nil
-      else
-        recv
-      end
-    end
-
-    private def script_responds_to?(recv : Value, method_name : String) : Bool
-      sym = @symbols.lookup(method_name)
-      return false unless sym
-      sym_id = sym.value
-      if obj = recv.as_robject?
-        public_instance_method?(obj.rclass, sym_id)
-      elsif cls = recv.as_rclass?
-        !!(cls.find_singleton_method(sym_id) || cls.find_native_singleton_method(sym_id))
-      elsif cls = @interpreter.try(&.builtin_class_for(recv))
-        public_instance_method?(cls, sym_id)
-      else
-        false
-      end
-    end
-
-    # Whether `cls` has a public script or native instance method
-    # `sym_id`; a private one (a top-level `def`, `lambda`) can't be
-    # called with a receiver, so it doesn't count, as in Ruby.
-    private def public_instance_method?(cls : RubyClass, sym_id : Int32) : Bool
-      (!!cls.find_method(sym_id) && !cls.find_method_private?(sym_id)) ||
-        (!!cls.find_native_method(sym_id) && !cls.find_native_method_private?(sym_id))
-    end
-
-    # The class whose cvars `f` reads: self's class for an instance,
-    # self for a class or module body. Raises outside a class context,
-    # as Ruby does.
-    private def cvar_class(f : Frame) : RubyClass
-      if obj = f.self_val.as_robject?
-        return obj.rclass
-      end
-      if cls = f.self_val.as_rclass?
-        return cls
-      end
-      raise runtime_diagnostic(
-        Diagnostic.new(code: "R002", primary: frame_span(f)), f
-      )
-    end
-
-    # Reads `@name` from `self`: an object's ivars, or a class's own
-    # class-level ivars. Nil when unset, or when self is neither.
-    private def read_ivar(self_val : Value, sym_id : Int32) : Value
-      if obj = self_val.as_robject?
-        return obj.ivars[sym_id]? || Value.nil_value
-      end
-      if cls = self_val.as_rclass?
-        return cls.get_ivar(sym_id) || Value.nil_value
-      end
-      Value.nil_value
-    end
-
-    # Writes `@name` to `self`, as `read_ivar` reads it. Does nothing
-    # when self is neither an object nor a class.
-    private def write_ivar(self_val : Value, sym_id : Int32, val : Value) : Nil
-      if obj = self_val.as_robject?
-        obj.ivars[sym_id] = val
-        return
-      end
-      if cls = self_val.as_rclass?
-        cls.set_ivar(sym_id, val)
-      end
-    end
-
-    # The method a `yield` belongs to, for R007: for a block frame,
-    # the method the block was written in.
-    private def yielding_method_name(f : Frame) : String
-      return f.proc.name unless f.proc.is_block?
-      # Recorded by the compiler: a block run by a native method has
-      # no frame for its method on this frame stack.
-      f.proc.home_method || f.proc.name
-    end
-
-    private def push_frame(proc : ScriptProc, filename : String, block : ScriptProc? = nil, stack_base : Int32 = @stack.size,
-                           outer : OuterChain? = nil, self_val : Value = Value.nil_value, lexical_scope : RubyClass? = nil,
-                           block_outer_locals : OuterChain? = nil, argc : Int32 = 0,
-                           block_yield : ScriptProc? = nil, own_yield : ScriptProc? = nil,
-                           block_yield_outer : OuterChain? = nil, own_yield_outer : OuterChain? = nil) : Frame
-      if @limits.call_depth_limit > 0 && @outer_frame_count + @frames.size >= @limits.call_depth_limit
-        raise script_diagnostic("L002", {"limit" => @limits.call_depth_limit.to_s}, current_frame)
-      end
-      frame = Frame.new(proc, proc.chunk, stack_base, filename, block, outer, self_val, lexical_scope, block_outer_locals, argc,
-        block_yield, own_yield, block_yield_outer, own_yield_outer)
-      @frames.push(frame)
-      frame
-    end
-
-    # Unwinds a `break` from a block to `target`, the frame of the call
-    # that received the block, running each `ensure` it leaves,
-    # innermost first, as Ruby does.
-    #
-    # Steps:
-    # 1. In the current frame, enter the innermost open `ensure`, if
-    #    any, leaving the unwind for EndEnsure to resume.
-    # 2. At `target`, end its call: pop it and push `value` to its
-    #    caller.
-    # 3. With no target, stop at the first method frame and push
-    #    `value` there. Ruby raises LocalJumpError.
-    # 4. Otherwise pop the frame and go on. When no frames remain, the
-    #    block was run by a native method, and BlockBreakSignal ends
-    #    that call with `value`.
-    private def unwind_break(value : Value, target : Frame?) : Nil
-      loop do
-        frame = current_frame
-        if ensure_ip = break_ensure_ip(frame)
-          (@stack.size - frame.stack_base).times { @stack.pop } if @stack.size > frame.stack_base
-          @pending_break = {value, target}
-          frame.ip = ensure_ip
-          return
-        end
-        if target.nil? && !frame.proc.is_block?
-          push(value)
-          return
-        end
-        (@stack.size - frame.stack_base).times { @stack.pop } if @stack.size > frame.stack_base
-        pop_frame
-        if target && frame.same?(target)
-          push(value) unless @frames.empty?
-          return
-        end
-        raise BlockBreakSignal.new(value) if @frames.empty?
-      end
-    end
-
-    # Unwinds a block's `return` to `home`, the locals of the method or
-    # lambda frame it leaves, running each `ensure` on the way,
-    # innermost first, as Ruby does. Returns the value when that frame
-    # was the last of this run, for `execute` to return; nil otherwise.
-    #
-    # Steps:
-    # 1. In the current frame, enter the innermost open `ensure`, if
-    #    any, leaving the unwind for EndEnsure to resume.
-    # 2. Pop the frame. If it was the home frame, push `value` to its
-    #    caller, or return it when no frames remain.
-    # 3. When no frames remain short of home, the block was run by a
-    #    native method: BlockReturnSignal carries the value out to the
-    #    run that holds the home frame.
-    private def unwind_return(value : Value, home : Array(Value)) : Value?
-      loop do
-        frame = current_frame
-        if ensure_ip = break_ensure_ip(frame)
-          (@stack.size - frame.stack_base).times { @stack.pop } if @stack.size > frame.stack_base
-          @pending_return = {value, home}
-          frame.ip = ensure_ip
-          return
-        end
-        (@stack.size - frame.stack_base).times { @stack.pop } if @stack.size > frame.stack_base
-        pop_frame
-        if frame.locals.same?(home)
-          return value if @frames.empty?
-          push(value)
-          return
-        end
-        raise BlockReturnSignal.new(value, home) if @frames.empty?
-      end
-    end
-
-    # The `ensure` target of the innermost construct open in `frame`
-    # that has one. A `break` passes a rescue by, so constructs with
-    # only a rescue are dropped, and a rescue beside the `ensure` is
-    # cleared. Nil when no `ensure` is open.
-    private def break_ensure_ip(frame : Frame) : Int32?
-      while entry = frame.handlers.last?
-        if ensure_ip = entry.ensure_ip
-          entry.rescue_ip = nil
-          return ensure_ip
-        end
-        frame.handlers.pop
-      end
-    end
-
-    private def pop_frame : Frame
-      @frames.pop
-    end
-
-    private def current_frame : Frame
-      @frames.last
-    end
-
-    # Sets the current frames aside for a nested run from native code,
-    # counting them toward `call_depth_limit`, so recursion through
-    # native code (a block run by `each`, each element's `inspect`)
-    # meets the limit as direct recursion does. The caller restores
-    # `@outer_frame_count` when the run ends.
-    private def enter_nested_run! : Nil
-      depth = @outer_frame_count + @frames.size
-      if @limits.call_depth_limit > 0 && depth >= @limits.call_depth_limit
-        raise script_diagnostic("L002", {"limit" => @limits.call_depth_limit.to_s}, current_frame)
-      end
-      @outer_frame_count = depth
-      @set_aside_frames << @frames
-    end
-
-    # Ends what `enter_nested_run!` began, restoring `@outer_frame_count`
-    # to `saved`.
-    private def leave_nested_run!(saved : Int32) : Nil
-      @outer_frame_count = saved
-      @set_aside_frames.pop
-    end
-
-    # The error a bare `raise` re-raises: the one handled by the
-    # innermost rescue section or ensure body running, in this frame or
-    # any caller, frames set aside by nested runs included, as MRI's
-    # `errinfo_place` finds it. Nil when none is.
-    private def error_being_handled : Value?
-      @frames.reverse_each { |frame| frame.handled_error.try { |error| return error } }
-      @set_aside_frames.reverse_each do |frames|
-        frames.reverse_each { |frame| frame.handled_error.try { |error| return error } }
-      end
-      nil
-    end
-
-    # `self` in the current frame, which for a native function is the
-    # calling frame. For calls with an implicit receiver, such as
-    # `include Foo` in a class body, whose `args` carry none.
-    protected def current_self_val : Value
-      current_frame.self_val
-    end
-
-    private def push(v : Value) : Nil
-      raise script_diagnostic("L003", {"limit" => MAX_STACK.to_s}, current_frame) if @stack.size >= MAX_STACK
-      @stack.push(v)
-    end
-
-    private def pop : Value
-      if @stack.size <= current_frame.stack_base
-        raise runtime_diagnostic(
-          Diagnostic.new(code: "I003", primary: frame_span(current_frame))
-        )
-      end
-      @stack.pop
-    end
-
-    private def peek : Value
-      @stack.last
-    end
-
-    private def tick : Nil
-      @instruction_count += 1
-      if @limits.instruction_limit > 0 && @instruction_count > @limits.instruction_limit
-        raise script_diagnostic("L004", {"limit" => @limits.instruction_limit.to_s}, current_frame)
-      end
-      # A loop with no effects never reaches `Broker#authorize`, the
-      # other place the wall clock is checked.
-      if (@instruction_count & (WALL_CLOCK_INTERVAL - 1)) == 0
-        @interpreter.try(&.effect_broker.budget.check_wall_clock!)
-      end
-    end
-
-    # ameba:disable Metrics/CyclomaticComplexity
-    private def execute : Value
-      result = Value.nil_value
-
-      loop do
-        break if @frames.empty?
-        f = current_frame
-        chunk = f.chunk
-
-        break if f.ip >= chunk.code.size
-
-        inst = chunk.code[f.ip]
-        f.ip += 1
-        f.line = inst.line
-        tick
-
-        begin
-          case inst.op
-          when Op::Noop
-          when Op::Const
-            push(chunk.consts[inst.c])
-          when Op::Pop
-            @stack.pop if @stack.size > f.stack_base
-          when Op::DupN
-            @stack.concat(@stack.last(inst.a.to_i))
-          when Op::PopUnder
-            kept = pop
-            @stack.pop(inst.a.to_i)
-            push(kept)
-          when Op::Dup
-            push(peek)
-            # --- Globals --------------------------------------------------------
-
-          when Op::GetGlobal
-            sym = chunk.consts[inst.c].as_sym
-            gval = @globals[sym.value]?
-            if gval && !gval.proc?
-              # A global's value: a class, or a name a block
-              # assigned.
-              push(gval)
-            else
-              # Not a local or global: an implicit zero-argument call
-              # on self (a top-level `def` is a method of Object), then
-              # native functions and builtins, else NameError.
-              depth_before = @frames.size
-              result = dispatch_call(sym.name, [] of Value, safe: false,
-                filename: f.filename, line: inst.line, self_val: f.self_val)
-              push(result) if @frames.size == depth_before
-            end
-          when Op::SetGlobal
-            sym = chunk.consts[inst.c].as_sym
-            val = pop
-            @globals[sym.value] = val
-            push(val)
-
-            # --- Instance / class variables ------------------------------------
-            # Ivars belong to self: an object's ivars, or a class's
-            # class-level ivars, which are separate slots. Cvars belong
-            # to self's class and are found up the superclass chain;
-            # outside a class context they raise.
-
-          when Op::GetIvar
-            sym = chunk.consts[inst.c].as_sym
-            push(read_ivar(f.self_val, sym.value))
-          when Op::SetIvar
-            sym = chunk.consts[inst.c].as_sym
-            val = pop
-            write_ivar(f.self_val, sym.value, val)
-            push(val)
-          when Op::GetCvar
-            sym = chunk.consts[inst.c].as_sym
-            cls = cvar_class(f)
-            push(cls.get_cvar(sym.value) || Value.nil_value)
-          when Op::SetCvar
-            sym = chunk.consts[inst.c].as_sym
-            val = pop
-            cvar_class(f).set_cvar(sym.value, val)
-            push(val)
-
-            # --- Constants -------------------------------------------------------
-            # Looked up in the enclosing class or module (self in a
-            # class body, else the proc's lexical scope), then at top
-            # level.
-
-          when Op::GetConstant
-            sym = chunk.consts[inst.c].as_sym
-            start = f.self_val.as_rclass? || f.lexical_scope
-            val = start.try(&.find_constant(sym.value)) || @globals[sym.value]?
-            unless val
-              raise undefined_constant(sym.name, f)
-            end
-            push(val)
-          when Op::SetConstant
-            sym = chunk.consts[inst.c].as_sym
-            val = pop
-            target = f.self_val.as_rclass? || f.lexical_scope
-            # Reassigning a constant raises, where Ruby only warns.
-            # A stricter rule, so a subset: the risk walker can trust
-            # a constant's value. Top-level constants live in
-            # `@globals`; those in a class or module body in its
-            # `constants`.
-            if target
-              if existing = target.constants[sym.value]?
-                raise constant_reassignment(existing, val, "#{target.name}::#{sym.name}", f)
-              end
-              target.constants[sym.value] = val
-            else
-              if existing = @globals[sym.value]?
-                raise constant_reassignment(existing, val, sym.name, f)
-              end
-              @globals[sym.value] = val
-            end
-            push(val)
-          when Op::GetConstantFrom
-            sym = chunk.consts[inst.c].as_sym
-            ns_val = pop
-            unless ns = ns_val.as_rclass?
-              raise script_diagnostic("R004", {"value" => ns_val.to_s}, f, label: ns_val.label)
-            end
-            val = ns.constants[sym.value]?
-            unless val
-              raise undefined_constant("#{ns.name}::#{sym.name}", f, bare_name: sym.name)
-            end
-            push(val)
-          when Op::GetGlobalConstant
-            sym = chunk.consts[inst.c].as_sym
-            val = @globals[sym.value]?
-            unless val
-              raise undefined_constant(sym.name, f)
-            end
-            push(val)
-
-            # --- Stack ops ------------------------------------------------------
-          when Op::GetIndex, Op::SafeIndex
-            length = inst.a == 2 ? pop : nil
-            idx = pop
-            target = pop
-            push(exec_get_index(target, idx, length, safe: inst.op.safe_index?, filename: f.filename, line: inst.line))
-          when Op::SetIndex
-            val = pop
-            length = inst.a == 2 ? pop : nil
-            idx = pop
-            target = pop
-            exec_set_index(target, idx, length, val, f.filename, inst.line)
-            @risk_flow_log.record("SetIndex", [target.label, val.label], target.label, f.line)
-            push(val)
-          when Op::SetIndexFromValue
-            # The stack is `[value, target, index(, length)]`: the
-            # value was pushed first, the reverse of SetIndex.
-            length = inst.a == 2 ? pop : nil
-            idx = pop
-            target = pop
-            val = pop
-            exec_set_index(target, idx, length, val, f.filename, inst.line)
-            @risk_flow_log.record("SetIndexFromValue", [target.label, val.label], target.label, f.line)
-            push(val)
-          when Op::SetAttr
-            # `call_method` runs a script setter to completion here,
-            # so its return value can be discarded for `val`.
-            sym = chunk.consts[inst.c].as_sym
-            val = pop
-            recv = pop
-            call_method(recv, sym.name, [val], f.filename, f.line)
-            @risk_flow_log.record("SetAttr", [recv.label, val.label], val.label, f.line)
-            push(val)
-
-            # --- Calls ----------------------------------------------------------
-          when Op::SetBlock
-            v = pop
-            @current_block = v.proc? ? v.as_proc.as(ScriptProc) : nil
-            # The block closes over this frame and the scopes this
-            # frame closes over, captured now, before the callee runs.
-            @current_block_locals = @current_block ? [f.locals] + (f.outer_locals || [] of Array(Value)) : nil
-            # Captured here, not read at yield time: the block's target
-            # is the one in force where it was written.
-            @current_block_yield = @current_block ? f.yield_target : nil
-            @current_block_yield_outer = @current_block ? f.yield_outer : nil
-          when Op::SetKwargNames
-            # `@stack.last(n)` is in push order, so the pairs read as
-            # (name, value). Each value keeps its own label; nothing
-            # new is built, so nothing is logged.
-            n = inst.a.to_i * 2
-            pairs = @stack.last(n)
-            @stack.pop(n) if n > 0
-            h = {} of String => Value
-            pairs.each_slice(2) { |pair| h[pair[0].as_sym.name] = pair[1] }
-            @pending_kwargs = h
-          when Op::SetKwargsHash
-            @pending_kwargs = keywords_from(pop, chunk.consts[inst.c].as_sym.name, f)
-          when Op::Call, Op::SafeCall
-            sym = chunk.consts[inst.c].as_sym
-            argc = inst.a.to_i
-            safe = inst.b & 0b01_u16 != 0
-            has_receiver = inst.b & 0b10_u16 != 0
-            args = pop_args(argc, spread: inst.b & 0b100_u16 != 0)
-
-            depth_before = @frames.size
-            # `ensure` clears the staged block and keywords even if the
-            # call raises; otherwise the next Call would inherit them,
-            # such as a rescue clause's `is_a?` test failing with R012.
-            result = begin
-              dispatch_call(sym.name, args, safe, f.filename, inst.line, @current_block, has_receiver,
-                blk_outer: @current_block_locals, self_val: f.self_val, kwargs: @pending_kwargs,
-                blk_yield: @current_block_yield, blk_yield_outer: @current_block_yield_outer)
-            ensure
-              @current_block = nil
-              @current_block_locals = nil
-              @current_block_yield = nil
-              @current_block_yield_outer = nil
-              @pending_kwargs = nil
-            end
-            # A script method pushed a frame; its Ret pushes the
-            # result.
-            push(result) if @frames.size == depth_before
-          when Op::Super
-            zsuper = inst.b & 0b1_u16 != 0
-            args = pop_args(inst.a.to_i, spread: inst.b & 0b10_u16 != 0)
-
-            depth_before = @frames.size
-            result = dispatch_super(f, args, f.filename, inst.line, zsuper: zsuper)
-            push(result) if @frames.size == depth_before
-          when Op::BlockReturn
-            val = pop
-            if home = f.outer_locals.try(&.[inst.a.to_i - 1]?)
-              if returned = unwind_return(val, home)
-                result = returned
-              end
-            else
-              # No scope to leave beyond this frame: return from it.
-              f.stack_base.upto(@stack.size - 1) { @stack.pop } if @stack.size > f.stack_base
-              pop_frame
-              @frames.empty? ? (result = val) : push(val)
-            end
-          when Op::Ret
-            result = pop
-            # Drops this frame's leftover stack values.
-            f.stack_base.upto(@stack.size - 1) { @stack.pop } if @stack.size > f.stack_base
-            pop_frame
-            push(result) unless @frames.empty?
-
-            # --- Arithmetic -----------------------------------------------------
-          when Op::Add    then exec_binary(inst) { |lhs, rhs| exec_add(lhs, rhs, f) }
-          when Op::Sub    then exec_binary(inst) { |lhs, rhs| exec_sub(lhs, rhs, f) }
-          when Op::Mul    then exec_binary(inst) { |lhs, rhs| ValueOps.op(lhs, rhs, :*, error_raiser(f)) }
-          when Op::Div    then exec_binary(inst) { |lhs, rhs| exec_div(lhs, rhs, f) }
-          when Op::Mod    then exec_binary(inst) { |lhs, rhs| ValueOps.mod(lhs, rhs, error_raiser(f)) }
-          when Op::BitAnd then exec_binary(inst) { |lhs, rhs| ValueOps.int_op(lhs, rhs, :&, error_raiser(f)) }
-          when Op::BitOr  then exec_binary(inst) { |lhs, rhs| ValueOps.int_op(lhs, rhs, :|, error_raiser(f)) }
-          when Op::Xor    then exec_binary(inst) { |lhs, rhs| ValueOps.int_op(lhs, rhs, :^, error_raiser(f)) }
-          when Op::Shl    then exec_binary(inst) { |lhs, rhs| ValueOps.shl(lhs, rhs, error_raiser(f)) }
-          when Op::Shr    then exec_binary(inst) { |lhs, rhs| ValueOps.int_op(lhs, rhs, :>>, error_raiser(f)) }
-            # --- Comparison -----------------------------------------------------
-
-          when Op::Eq
-            b, a = pop, pop
-            result = Value.bool(values_equal?(a, b), RiskFlowLabel.join(a.label, b.label))
-            @risk_flow_log.record("Eq", [a.label, b.label], result.label, f.line)
-            push(result)
-          when Op::TripleEq then exec_binary(inst) { |subject, pattern| Value.bool(triple_eq_matches?(pattern, subject)) }
-          when Op::MatchAny then exec_match_any(inst, f)
-          when Op::Lt       then exec_binary(inst) { |lhs, rhs| Value.bool(strict_compare(lhs, rhs, :<)) }
-          when Op::Lte      then exec_binary(inst) { |lhs, rhs| Value.bool(strict_compare(lhs, rhs, :<=)) }
-          when Op::Gt       then exec_binary(inst) { |lhs, rhs| Value.bool(strict_compare(lhs, rhs, :>)) }
-          when Op::Gte      then exec_binary(inst) { |lhs, rhs| Value.bool(strict_compare(lhs, rhs, :>=)) }
-            # --- Unary ----------------------------------------------------------
-
-          when Op::Not
-            push(Value.bool(pop.falsy?))
-          when Op::Neg
-            v = pop
-            case
-            when v.int?   then push(Value.int(-v.as_int))
-            when v.float? then push(Value.float(-v.as_float))
-            else               raise script_diagnostic("R005", {"operator" => "-", "type" => describe_value(v)}, f)
-            end
-          when Op::Pos
-            # Unary `+` on an Integer or Float returns it unchanged, and
-            # raises on anything else, like Neg.
-            v = pop
-            case
-            when v.int?, v.float? then push(v)
-            else                       raise script_diagnostic("R005", {"operator" => "+", "type" => describe_value(v)}, f)
-            end
-          when Op::BitNot
-            v = pop
-            raise script_diagnostic("R005", {"operator" => "~", "type" => describe_value(v)}, f) unless v.int?
-            push(Value.int(~v.as_int))
-
-            # --- Jumps ----------------------------------------------------------
-          when Op::Jump
-            f.ip = inst.c.to_i
-          when Op::JumpIfFalse
-            v = pop
-            f.ip = inst.c.to_i if v.falsy?
-          when Op::JumpIfTrue
-            v = pop
-            f.ip = inst.c.to_i if v.truthy?
-
-            # --- Collections ----------------------------------------------------
-          when Op::MakeArray
-            n = inst.a.to_i
-            elements = @stack.last(n).dup
-            @stack.pop(n) if n > 0
-            joined_label = elements.reduce(nil.as(RiskFlowLabel?)) { |acc, value| RiskFlowLabel.join(acc, value.label) }
-            @risk_flow_log.record("MakeArray", elements.map(&.label), joined_label, f.line)
-            push(Value.new(LabeledArray.new(elements, joined_label), joined_label))
-          when Op::SplatArray
-            splat_source = pop
-            splatted = splat_array(splat_source, f)
-            @risk_flow_log.record("SplatArray", [splat_source.label], splatted.label, f.line)
-            push(splatted)
-          when Op::MakeHash
-            n = inst.a.to_i * 2
-            pairs = @stack.last(n)
-            @stack.pop(n) if n > 0
-            h = {} of Value => Value
-            pairs.each_slice(2) { |pair| h[pair[0]] = pair[1] }
-            joined_label = pairs.reduce(nil.as(RiskFlowLabel?)) { |acc, value| RiskFlowLabel.join(acc, value.label) }
-            @risk_flow_log.record("MakeHash", pairs.map(&.label), joined_label, f.line)
-            push(Value.new(LabeledHash.new(h, joined_label), joined_label))
-          when Op::ToHash
-            spread_source = pop
-            spread_hash = double_splat_hash(spread_source, inst.a == 1, f)
-            @risk_flow_log.record("ToHash", [spread_source.label], spread_hash.label, f.line)
-            push(spread_hash)
-          when Op::MergeHash
-            later = pop
-            earlier = pop
-            merged = earlier.as_hash.dup_entries.merge!(later.as_hash.dup_entries)
-            merged_label = RiskFlowLabel.join(earlier.label, later.label)
-            @risk_flow_log.record("MergeHash", [earlier.label, later.label], merged_label, f.line)
-            push(Value.new(LabeledHash.new(merged, merged_label), merged_label))
-          when Op::MakeRange
-            rend = pop
-            rstart = pop
-            exclusive = inst.a == 1_u8
-            joined_label = RiskFlowLabel.join(rstart.label, rend.label)
-            @risk_flow_log.record("MakeRange", [rstart.label, rend.label], joined_label, f.line)
-            push(make_range_object(rstart, rend, exclusive, joined_label))
-          when Op::MakeRegex
-            pattern_val = pop
-            push(make_regexp_object(pattern_val.as_string, inst.a.to_i32, pattern_val.label))
-          when Op::Concat
-            n = inst.a.to_i
-            parts = @stack.last(n)
-            @stack.pop(n) if n > 0
-            str = parts.map { |part| render_to_s(part, f.filename, f.line) }.join
-            joined_label = parts.reduce(nil.as(RiskFlowLabel?)) { |acc, part| RiskFlowLabel.join(acc, part.label) }
-            @risk_flow_log.record("Concat", parts.map(&.label), joined_label, f.line)
-            push(Value.string(str, joined_label))
-
-            # --- Local variables ------------------------------------------------
-          when Op::GetLocal
-            slot = inst.c.to_i
-            push(slot < f.locals.size ? f.locals[slot] : Value.nil_value)
-          when Op::SetLocal
-            val = pop
-            slot = inst.c.to_i
-            if slot < f.locals.size
-              f.locals[slot] = val
-            else
-              f.locals << val
-            end
-            push(val)
-          when Op::GetArgc
-            push(Value.int(f.argc))
-          when Op::HasKwarg
-            name = chunk.consts[inst.c].as_sym.name
-            push(Value.bool(f.kwarg_names.try(&.includes?(name)) || false))
-          when Op::GetOuter
-            depth = inst.a.to_i
-            slot = inst.c.to_i
-            outer = f.outer_locals
-            level = outer && depth < outer.size ? outer[depth] : nil
-            push(level && slot < level.size ? level[slot] : Value.nil_value)
-          when Op::SetOuter
-            val = pop
-            depth = inst.a.to_i
-            slot = inst.c.to_i
-            outer = f.outer_locals
-            level = outer && depth < outer.size ? outer[depth] : nil
-            level[slot] = val if level && slot < level.size
-            push(val)
-          when Op::MakeProc
-            sproc_val = chunk.consts[inst.c]
-            if inst.a == 1_u8
-              # The lambda closes over this frame and the scopes this
-              # frame closes over, captured where it is written.
-              push(make_lambda_object(sproc_val.as_proc, sproc_val.label, [f.locals] + (f.outer_locals || [] of Array(Value)), f.filename, f.line))
-            else
-              push(sproc_val)
-            end
-            # --- Class / module ---------------------------------------------
-          when Op::GetClass
-            push(f.self_val)
-          when Op::SetClass
-            f.self_val = pop
-          when Op::MakeClass
-            name_sym = chunk.consts[inst.c].as_sym
-            superclass = nil
-            if inst.b == Compiler::SUPER_ON_STACK
-              super_val = pop
-              super_cls = super_val.as_rclass?
-              if super_cls.nil? || super_cls.is_module?
-                raise runtime_diagnostic(
-                  Diagnostic.new(code: "R059", primary: frame_span(f), data: {"value" => describe_value(super_val)}),
-                  f, error_class: "TypeError")
-              end
-              superclass = super_cls
-            end
-            # A class with no `<` inherits from Object. Nil only for a
-            # VM built without an Interpreter.
-            superclass ||= @interpreter.try(&.object_class)
-            new_cls = RubyClass.new(name_sym.name, superclass, is_module: false)
-            new_cls.rclass = @interpreter.try(&.class_class)
-            new_cls.lexical_parent = f.self_val.as_rclass?
-            push(Value.rclass(new_cls))
-          when Op::MakeModule
-            name_sym = chunk.consts[inst.c].as_sym
-            new_mod = RubyClass.new(name_sym.name, nil, is_module: true)
-            # A module's class is Class, as in Ruby.
-            new_mod.rclass = @interpreter.try(&.class_class)
-            new_mod.lexical_parent = f.self_val.as_rclass?
-            push(Value.rclass(new_mod))
-          when Op::DefMethod
-            proc_val = pop
-            name_sym = chunk.consts[inst.c].as_sym
-            # `def` defines on self's class: self itself in a class or
-            # module body, otherwise self's class, so a top-level `def`
-            # becomes a method of Object.
-            owner_rclass = f.self_val.as_rclass?
-            owner = owner_rclass || f.self_val.as_robject?.try(&.rclass)
-            unless owner
-              raise script_diagnostic("R006", {"definition" => "def #{name_sym.name}"}, f)
-            end
-            proc = proc_val.as_proc
-            proc.lexical_scope = owner
-            # A `def` run with an object as self can only be at top
-            # level, since the compiler rejects nested defs, so it is
-            # private, as in Ruby: callable bare or as `self.hello`,
-            # not with another receiver.
-            owner.define_method(name_sym.value, proc, is_private: owner_rclass.nil?)
-            push(Value.nil_value)
-          when Op::DefSingleton
-            recv = pop
-            proc_val = pop
-            name_sym = chunk.consts[inst.c].as_sym
-            # Only a class or module takes a singleton method. Any other
-            # object, `main` included, would get a method of its own
-            # (U024); the compiler has already rejected receivers that
-            # aren't `self` or a constant.
-            owner = recv.as_rclass?
-            unless owner
-              if recv.as_robject?
-                raise script_diagnostic("U024", {"receiver" => chunk.consts[inst.b].as_sym.name}, f)
-              end
-              raise script_diagnostic("R006", {"definition" => "def self.#{name_sym.name}"}, f)
-            end
-            proc = proc_val.as_proc
-            proc.lexical_scope = owner
-            owner.define_singleton_method(name_sym.value, proc)
-            push(Value.nil_value)
-
-            # --- Block / yield --------------------------------------------------
-          when Op::Yield
-            args = pop_args(inst.a.to_i, spread: inst.b & 0b1_u16 != 0)
-            blk = f.yield_target
-            if blk
-              depth_before = @frames.size
-              # The block closes over where it was written, not this
-              # frame.
-              result = call_script_proc(blk, spread_block_args(blk, args), f.filename, nil, f.yield_outer,
-                own_yield: f.block_yield, own_yield_outer: f.block_yield_outer)
-              push(result) if @frames.size == depth_before
-            else
-              raise script_diagnostic("R007", {"method" => yielding_method_name(f)}, f)
-            end
-          when Op::SymbolCall
-            # Ruby's `Symbol#to_proc` raises an ArgumentError with no
-            # receiver; otherwise it calls as `recv.name(*rest)` would.
-            sym = chunk.consts[inst.c].as_sym
-            values = pop.as_array.to_a
-            raise_arity_error(0, "1+", "&:#{sym.name}", f.filename, inst.line) if values.empty?
-            depth_before = @frames.size
-            result = dispatch_call(sym.name, values, false, f.filename, inst.line, nil, true, self_val: f.self_val)
-            push(result) if @frames.size == depth_before
-          when Op::BlockBreak
-            val = pop
-            # The call that received this block ends: the nearest method
-            # frame whose block it is.
-            target = @frames.reverse_each.find { |frame| !frame.proc.is_block? && frame.block.same?(f.proc) }
-            unwind_break(val, target)
-
-            # --- Exception handling ---------------------------------------
-          when Op::Try
-            raise internal_diagnostic("I002", {"target" => "Try"}, f) if inst.c == Chunk::NO_TARGET
-            f.handlers.push(HandlerEntry.new(rescue_ip: inst.c.to_i))
-          when Op::SetEnsure
-            raise internal_diagnostic("I002", {"target" => "SetEnsure"}, f) if inst.c == Chunk::NO_TARGET
-            if inst.b == 1_u16
-              # The same construct as the Try just before: add to its
-              # entry.
-              if top = f.handlers.last?
-                top.ensure_ip = inst.c.to_i
-              end
-            else
-              f.handlers.push(HandlerEntry.new(ensure_ip: inst.c.to_i))
-            end
-          when Op::EndTry
-            clear_rescue_portion(f)
-          when Op::EnterEnsure
-            # Removes this construct's handler entry, however the
-            # ensure was reached, and records the error it was entered
-            # with, if any, for a bare `raise` in its body.
-            f.handlers.pop?
-            if entered_with = @ensure_error
-              @ensure_error = nil
-              f.record_caught(f.ip - 1, entered_with)
-            else
-              f.forget_caught(f.ip - 1)
-            end
-          when Op::EndEnsure
-            if pending = @pending_reraise
-              @pending_reraise = nil
-              raise RuntimeError.new(error_message(pending), f, error_value: pending)
-            elsif pending_break = @pending_break
-              @pending_break = nil
-              unwind_break(*pending_break)
-            elsif pending_return = @pending_return
-              @pending_return = nil
-              if returned = unwind_return(*pending_return)
-                result = returned
-              end
-            end
-          when Op::Throw
-            val = pop
-            msg = val.string? ? val.as_string : val.to_s
-            raise runtime_error(msg, f)
-          when Op::Reraise
-            val = pop
-            raise RuntimeError.new(error_message(val), f, error_value: val)
-          when Op::PushError
-            # The caught error: an error object, or a message string.
-            push(@last_error)
-            # --- Misc -----------------------------------------------------------
-
-          when Op::MultiUnpack
-            parts = multi_unpack_values(pop, f)
-            deal_targets(parts, inst.a.to_i, inst.b.to_i - 1).each { |part| push(part) }
-          when Op::GetMethodName
-            push(Value.string(f.proc.name))
-          else
-            raise internal_diagnostic("I001", {"opcode" => inst.op.to_s}, f)
-          end
-        rescue ex : BlockReturnSignal
-          # A block's `return` that left a nested run: resumed here if
-          # its home frame is in this run, passed on otherwise.
-          raise ex unless @frames.any?(&.locals.same?(ex.home))
-          if returned = unwind_return(ex.value, ex.home)
-            result = returned
-          end
-        rescue error : RuntimeError | OverflowError
-          # Integer arithmetic past 64 bits is U025, which the script
-          # can rescue as a RangeError.
-          ex = error.is_a?(RuntimeError) ? error : integer_overflow(f)
-          # A new error supersedes any re-raise, break or return still
-          # pending.
-          @pending_reraise = nil
-          @pending_break = nil
-          @pending_return = nil
-          @ensure_error = nil
-
-          # Unwinds frames to the innermost handler, in this frame or a
-          # caller. Within an entry the rescue target is tried before the
-          # ensure target, so a more nested construct always wins.
-          handler_frame = nil.as(Frame?)
-          handler_ip = 0
-          entering_ensure = false
-          while !@frames.empty?
-            candidate = current_frame
-            found_on_this_frame = false
-            while top = candidate.handlers.last?
-              if rip = top.rescue_ip
-                handler_frame = candidate
-                handler_ip = rip
-                # Pops the entry too when it has no ensure, as EndTry
-                # does.
-                clear_rescue_portion(candidate)
-                found_on_this_frame = true
-                break
-              elsif eip = top.ensure_ip
-                handler_frame = candidate
-                handler_ip = eip
-                entering_ensure = true
-                # EnterEnsure pops the entry.
-                found_on_this_frame = true
-                break
-              else
-                candidate.handlers.pop # shouldn't happen; defensive
-              end
-            end
-            break if found_on_this_frame
-            break if @frames.size == 1 # never pop the outermost frame here
-            sb = candidate.stack_base
-            (@stack.size - sb).times { @stack.pop } if @stack.size > sb
-            pop_frame
-          end
-
-          if handler_frame
-            while @stack.size > handler_frame.stack_base
-              @stack.pop
-            end
-            caught_error = ex.error_value || Value.string(ex.message || "RuntimeError")
-            if entering_ensure
-              # EndEnsure re-raises this once the ensure body ends. An
-              # error raised in the ensure body supersedes it.
-              @pending_reraise = caught_error
-              @ensure_error = caught_error
-            else
-              @last_error = caught_error
-              handler_frame.record_caught(handler_ip, caught_error)
-            end
-            handler_frame.ip = handler_ip
-          else
-            raise ex
-          end
-        end
-      end
-
-      @stack.last? || result
-    end
-
-    # --- Dispatch -----------------------------------------------------------
-
-    # Calls `recv.name(*args)` from native code and returns the
-    # result, as `x.name(...)` in a script would. A script method runs
-    # to completion in isolated frames and stack, as in
-    # `invoke_internal`, and counts toward the same limits; a native
-    # one returns directly.
-    protected def call_method(recv : Value, name : String, args : Array(Value),
-                              filename : String = "<native>", line : Int32 = 0) : Value
-      saved_frames = @frames
-      saved_stack = @stack
-      saved_cur_block = @current_block
-      saved_cur_block_locals = @current_block_locals
-      saved_cur_block_yield = @current_block_yield
-      saved_cur_block_yield_outer = @current_block_yield_outer
-      saved_pending_kwargs = @pending_kwargs
-      saved_outer_frame_count = @outer_frame_count
-      enter_nested_run!
-      # A sentinel frame gives `current_frame` a filename and line for
-      # diagnostics if nothing resolves; its empty chunk ends
-      # `execute`'s loop.
-      sentinel = Frame.new(SENTINEL_PROC, SENTINEL_CHUNK, 0, filename)
-      sentinel.line = line
-      @frames = [sentinel]
-      @stack = Array(Value).new(256)
-      begin
-        result = dispatch_call(name, [recv] + args, safe: false, filename: filename, line: line, has_receiver: true)
-        # A native result is complete. A script method pushed a frame,
-        # which `execute` runs; its result comes back through
-        # `execute`'s `@stack.last? || result` fallback, since Ret
-        # doesn't push while the sentinel remains.
-        @frames.size <= 1 ? result : execute
-      ensure
-        @frames = saved_frames
-        @stack = saved_stack
-        @current_block = saved_cur_block
-        @current_block_locals = saved_cur_block_locals
-        @current_block_yield = saved_cur_block_yield
-        @current_block_yield_outer = saved_cur_block_yield_outer
-        @pending_kwargs = saved_pending_kwargs
-        leave_nested_run!(saved_outer_frame_count)
-      end
-    end
-
-    # The name an implicit-self call shows in errors and risk-flow
-    # requests: as written, `delete_file`, not `Object#delete_file`.
-    private def display_name_for_implicit_self(name : String) : String
-      name
-    end
-
-    # Runs a `super` call. The method name is the current frame's.
-    # Resolution searches self's ancestors (or singleton ancestors,
-    # for a class method) after the current method's lexical scope,
-    # so an included module between a class and its superclass is
-    # found. self is unchanged. A proc with no lexical scope finds
-    # nothing.
-    # ameba:disable Metrics/CyclomaticComplexity - two resolution paths (instance vs. the pre-existing singleton fallback), not tangled logic
-    private def dispatch_super(f : Frame, args : Array(Value), filename : String, line : Int32,
-                               zsuper : Bool = false) : Value
-      proc = f.proc
-      name = proc.name
-      call_args, call_kwargs =
-        if zsuper
-          zsuper_bindings(f, filename, line)
-        else
-          {args, nil}
-        end
-      lex = proc.lexical_scope
-      sym_id = lex ? @symbols.lookup(name).try(&.value) : nil
-
-      # From self's own class, which may be a subclass of where this
-      # method is defined. A class-method `super` is the branch below.
-      if lex && sym_id && (obj = f.self_val.as_robject?)
-        chain = obj.rclass.ancestors
-        idx = chain.index(lex)
-        if idx
-          chain[(idx + 1)..].each do |candidate|
-            if method = candidate.methods[sym_id]?
-              return call_script_method(method, call_args, call_kwargs, f, filename)
-            end
-            if native = candidate.native_methods[sym_id]?
-              return call_super_native(native, call_args, call_kwargs, f, filename, line, candidate, name)
-            end
-          end
-        end
-      elsif lex && sym_id && (self_cls = f.self_val.as_rclass?)
-        # The singleton side: each entry says whether to search its
-        # singleton table (self and superclasses) or its instance table
-        # (extended modules).
-        chain = self_cls.singleton_ancestors
-        idx = chain.index { |(c, _)| c == lex }
-        if idx
-          chain[(idx + 1)..].each do |(candidate, use_singleton_table)|
-            if use_singleton_table
-              if method = candidate.singleton_methods[sym_id]?
-                return call_script_method(method, call_args, call_kwargs, f, filename)
-              end
-              if native = candidate.native_singleton_methods[sym_id]?
-                return call_super_native(native, call_args, call_kwargs, f, filename, line, candidate, name)
-              end
-            else
-              if method = candidate.methods[sym_id]?
-                return call_script_method(method, call_args, call_kwargs, f, filename)
-              end
-              if native = candidate.native_methods[sym_id]?
-                return call_super_native(native, call_args, call_kwargs, f, filename, line, candidate, name)
-              end
-            end
-          end
-        end
-      end
-
-      # NoMethodError, as Ruby: "super: no superclass method".
-      raise runtime_diagnostic(
-        Diagnostic.new(
-          code: "R014",
-          primary: Span.new(line: line, filename: filename),
-          data: {"method" => name}
-        ),
-        error_class: "NoMethodError"
-      )
-    end
-
-    # Calls the script method `super` found, forwarding the current
-    # self and block.
-    private def call_script_method(method : ScriptProc, call_args : Array(Value), call_kwargs : Hash(String, Value)?,
-                                   f : Frame, filename : String) : Value
-      # The current method's block is passed on, as in Ruby, with
-      # the closure it was attached with.
-      call_script_proc(method, call_args, filename, f.block,
-        self_val: f.self_val, block_outer: f.block_outer_locals, kwargs: call_kwargs,
-        block_yield: f.block_yield, block_yield_outer: f.block_yield_outer)
-    end
-
-    # Calls the native method `super` found on `candidate`.
-    private def call_super_native(native : NativeCallable, call_args : Array(Value), call_kwargs : Hash(String, Value)?,
-                                  f : Frame, filename : String, line : Int32, candidate : RubyClass, name : String) : Value
-      # Native methods take the receiver as `args.first`.
-      call_native(native, [f.self_val] + call_args, filename, line, f.block, "#{candidate.name}##{name}",
-        has_receiver: true, kwargs: call_kwargs)
-    end
-
-    # The arguments bare `super` forwards: each parameter's current
-    # value, in declared order. A splat's elements go as separate
-    # arguments, keywords as keywords. A proc with no `ast_params`
-    # forwards nothing.
-    private def zsuper_bindings(f : Frame, filename : String, line : Int32) : {Array(Value), Hash(String, Value)?}
-      ast_params = f.proc.ast_params
-      return {[] of Value, nil} unless ast_params
-
-      args = [] of Value
-      kwargs = nil.as(Keywords?)
-      ast_params.each_with_index do |param, slot|
-        next if param.block_param? # can't occur (U001), skipped defensively
-        val = slot < f.locals.size ? f.locals[slot] : Value.nil_value
-        if param.splat?
-          val.as_array?.try(&.each { |item| args << item })
-        elsif param.kwarg?
-          kwargs ||= Keywords.new
-          kwargs[param.name] = val
-        elsif param.kwrest?
-          # Its pairs go as keywords, by `keywords_from`'s rules, their
-          # names keeping their label.
-          if val.hash? && (rest = keywords_from(val, f.proc.name, f))
-            kwargs ||= Keywords.new
-            rest.each { |name, value| kwargs[name] = value }
-            kwargs.names_label = RiskFlowLabel.join(kwargs.names_label, Keywords.names_label_of(rest))
-          end
-        else
-          args << val
-        end
-      end
-      {args, kwargs.as(Hash(String, Value)?)}
-    end
-
-    # Raises R023 (NoMethodError) if the method `sym_id` resolved to
-    # on `cls` is private and the receiver is not self at the call
-    # site. By identity, so `self.hello` is allowed, as in Ruby.
-    private def raise_if_private_call(cls : RubyClass, sym_id : Int32, name : String,
-                                      recv : Value, self_val : Value?, filename : String, line : Int32,
-                                      native : Bool) : Nil
-      is_private = native ? cls.find_native_method_private?(sym_id) : cls.find_method_private?(sym_id)
-      return unless is_private
-      caller_self = self_val.try(&.as_robject?)
-      return if caller_self && caller_self.same?(recv.as_robject)
-      raise runtime_diagnostic(
-        Diagnostic.new(
-          code: "R023",
-          primary: Span.new(line: line, filename: filename),
-          data: {"method" => name, "target" => "an instance of #{cls.name}"}
-        ),
-        error_class: "NoMethodError"
-      )
-    end
-
-    # A value's `to_s`, as `puts`, `print` and interpolation render it.
-    # Objects, Arrays, Hashes, and classes with their own `to_s`
-    # dispatch to it; other values can't override it (U003), so render
-    # directly.
-    private def render_to_s(value : Value, filename : String, line : Int32) : String
-      case
-      when value.string? then value.as_string
-      when value.int?    then value.as_int.to_s
-      when value.float?  then value.as_float.to_s
-      when value.bool?   then value.as_bool.to_s
-      when value.null?   then ""
-      when value.symbol? then value.as_sym.name
-      when value.rclass?
-        if rclass_override?(value.as_rclass, "to_s")
-          call_method(value, "to_s", [] of Value, filename, line).as_string
-        else
-          value.to_s
-        end
-      else call_method(value, "to_s", [] of Value, filename, line).as_string
-      end
-    end
-
-    # A value's `inspect`, dispatched as for `render_to_s`.
-    private def render_inspect(value : Value, filename : String, line : Int32) : String
-      if value.robject? || value.array? || value.hash? ||
-         (value.rclass? && rclass_override?(value.as_rclass, "inspect"))
-        call_method(value, "inspect", [] of Value, filename, line).as_string
-      else
-        value.inspect
-      end
-    end
-
-    # Whether `cls` defines its own singleton `name`. Checked before
-    # dispatching, so an override's own exception propagates. Without
-    # one, the default rendering applies.
-    private def rclass_override?(cls : RubyClass, name : String) : Bool
-      sym_id = @symbols.lookup(name).try(&.value)
-      return false unless sym_id
-      !!(cls.find_singleton_method(sym_id) || cls.find_native_singleton_method(sym_id))
-    end
-
-    # See `NativeCallContext#guard_rendering`.
-    def guard_rendering(obj_id : UInt64, cycle_result : String, & : -> String) : String
-      return cycle_result if @rendering_ids.includes?(obj_id)
-      @rendering_ids << obj_id
-      begin
-        yield
-      ensure
-        @rendering_ids.delete(obj_id)
-      end
-    end
-
-    # ameba:disable Metrics/CyclomaticComplexity - Clear steps, better together
-    private def dispatch_call(name : String,
-                              args : Array(Value),
-                              safe : Bool,
-                              filename : String, line : Int32,
-                              blk : ScriptProc? = nil,
-                              has_receiver : Bool = false,
-                              blk_outer : OuterChain? = nil,
-                              self_val : Value? = nil,
-                              kwargs : Hash(String, Value)? = nil,
-                              blk_yield : ScriptProc? = nil,
-                              blk_yield_outer : OuterChain? = nil) : Value
-      # 1. Safe navigation: a nil receiver skips the call.
-      if safe && !args.empty? && args.first.null?
-        return Value.nil_value
-      end
-
-      # 2. An explicit receiver: its own methods and `.new`, ahead of
-      # functions of the same name.
-      if has_receiver && !args.empty?
-        recv = args.first
-        if recv.rclass? && name == "new"
-          # Keywords reach a script `initialize` through `bind_args`.
-          # A native `new` without `kwarg_names`, or a class without
-          # `initialize`, rejects them (R012).
-          return construct(recv.as_rclass, args[1..], filename, line, blk, kwargs: kwargs)
-        end
-        if recv.robject?
-          cls = recv.as_robject.rclass
-          if sym_id = @symbols.lookup(name).try(&.value)
-            if method = cls.find_method(sym_id)
-              raise_if_private_call(cls, sym_id, name, recv, self_val, filename, line, native: false)
-              return call_script_proc(method, args[1..], filename, blk, nil, self_val: recv, block_outer: blk_outer, kwargs: kwargs, block_yield: blk_yield, block_yield_outer: blk_yield_outer)
-            end
-            if native = cls.find_native_method(sym_id)
-              raise_if_private_call(cls, sym_id, name, recv, self_val, filename, line, native: true)
-              return call_native(native, args, filename, line, blk, "#{cls.name}##{name}", has_receiver: true, kwargs: kwargs)
-            end
-          end
-        elsif recv.rclass?
-          # A class receiver uses its singleton methods, not the
-          # instance methods meant for its instances.
-          cls = recv.as_rclass
-          if sym_id = @symbols.lookup(name).try(&.value)
-            if method = cls.find_singleton_method(sym_id)
-              return call_script_proc(method, args[1..], filename, blk, nil, self_val: recv, block_outer: blk_outer, kwargs: kwargs, block_yield: blk_yield, block_yield_outer: blk_yield_outer)
-            end
-            if native = cls.find_native_singleton_method(sym_id)
-              return call_native(native, args, filename, line, blk, "#{cls.name}.#{name}", has_receiver: true, kwargs: kwargs)
-            end
-          end
-        elsif interp = @interpreter
-          # A builtin value (Integer, String, ...) uses its builtin
-          # class.
-          if (cls = interp.builtin_class_for(recv)) && (sym_id = @symbols.lookup(name).try(&.value))
-            if native = cls.find_native_method(sym_id)
-              return call_native(native, args, filename, line, blk, "#{cls.name}##{name}", has_receiver: true, kwargs: kwargs)
-            end
-          end
-        end
-      end
-
-      # 3. An implicit receiver: self's own class first, as in Ruby.
-      # Top-level `def`s and `define_native` functions are methods of
-      # Object, so this finds them from anywhere.
-      unless has_receiver
-        if self_val && (sym_id = @symbols.lookup(name).try(&.value))
-          if obj = self_val.as_robject?
-            # Top-level `include` mixes into Object, as Ruby's `main`
-            # does, ahead of any `def include`. Top-level `extend` is
-            # not handled and falls through to U018.
-            if name == "include" && !args.empty? &&
-               (interp = @interpreter) && obj.same?(interp.main) &&
-               (mod = args.first.as_rclass?)
-              obj.rclass.include_module(mod)
-              return self_val
-            end
-
-            # self is an object: its class's instance methods.
-            cls = obj.rclass
-            if method = cls.find_method(sym_id)
-              return call_script_proc(method, args, filename, blk, nil, self_val: self_val, block_outer: blk_outer, kwargs: kwargs, block_yield: blk_yield, block_yield_outer: blk_yield_outer)
-            end
-            if native = cls.find_native_method(sym_id)
-              return call_native(native, args, filename, line, blk, display_name_for_implicit_self(name), has_receiver: false, kwargs: kwargs)
-            end
-          elsif self_rclass = self_val.as_rclass?
-            # self is a class or module (in its body). First its own
-            # singleton methods (`def self.foo`), then the instance
-            # methods of its class (Class or Module) up to Object,
-            # which is how `puts` and native functions resolve in a
-            # body. Its own instance methods are for its instances,
-            # so are not searched.
-            if singleton = self_rclass.find_singleton_method(sym_id)
-              return call_script_proc(singleton, args, filename, blk, nil, self_val: self_val, block_outer: blk_outer, kwargs: kwargs, block_yield: blk_yield, block_yield_outer: blk_yield_outer)
-            end
-            if native_singleton = self_rclass.find_native_singleton_method(sym_id)
-              return call_native(native_singleton, args, filename, line, blk, display_name_for_implicit_self(name), has_receiver: false, kwargs: kwargs)
-            end
-            if meta = self_rclass.rclass
-              if method = meta.find_method(sym_id)
-                return call_script_proc(method, args, filename, blk, nil, self_val: self_val, block_outer: blk_outer, kwargs: kwargs, block_yield: blk_yield, block_yield_outer: blk_yield_outer)
-              end
-              if native = meta.find_native_method(sym_id)
-                return call_native(native, args, filename, line, blk, display_name_for_implicit_self(name), has_receiver: false, kwargs: kwargs)
-              end
-            end
-          end
-        end
-      end
-
-      # 4. A ScriptProc in the globals. Nothing currently stores one
-      # there; kept as a fallback.
-      sym = @symbols.lookup(name)
-      if sym
-        gval = @globals[sym.value]?
-        if gval && gval.proc?
-          sproc = gval.as_proc.as(ScriptProc)
-          return call_script_proc(sproc, args, filename, blk, nil, self_val: self_val, block_outer: blk_outer, kwargs: kwargs, block_yield: blk_yield, block_yield_outer: blk_yield_outer)
-        end
-      end
-
-      # 5. Builtin operations.
-      if result = exec_builtin(name, args, filename, line, blk, has_receiver, kwargs: kwargs)
-        return label_from_inputs(result, args, kwargs, name, line)
-      end
-
-      # Nothing resolved. A name Adjutant excludes (`send`, `eval`)
-      # gets its U-code, so the reader doesn't retry variations. Checked
-      # only now, so a script's own `def send` still works.
-      if code = ErrorCatalog::EXCLUDED_METHODS[name]?
-        raise excluded_construct(code, name, filename, line)
-      end
-
-      # With a receiver, arguments or a block it can only be a method,
-      # so NoMethodError (R047); a bare name could be a variable, so
-      # NameError (R008), as in Ruby.
-      if has_receiver || !args.empty? || blk
-        raise undefined_method_error(name, has_receiver ? args.first : (self_val || current_frame.self_val), filename, line)
-      end
-      raise runtime_diagnostic(
-        Diagnostic.new(
-          code: "R008",
-          primary: Span.new(line: line, filename: filename),
-          data: {"name" => name}
-        ),
-        current_frame,
-        error_class: "NameError"
-      )
-    end
-
-    # Calls a native function or method, turning any Crystal exception
-    # into N001. `has_receiver` says whether `args` starts with the
-    # receiver, which the arity check doesn't count. Raises R046 for a
-    # positional count outside the native's arity and R012 for an
-    # undeclared keyword. Then runs the risk-flow check, which raises
-    # RiskFlowRejectedError when policy rejects a labelled argument, or
-    # an Ask is answered with Reject.
-    # `result`, labelled with the join of its inputs' labels when it has
-    # no label of its own: what a builtin computes from labelled values
-    # carries their label, as an operator's result does. An input
-    # container counts by its own label, so `arr.size` carries it; a
-    # method returning one of its elements as is declares
-    # `labels_own_result`, the element having a label of its own. A
-    # container result is left as returned: its label is a field of the
-    # container, so setting it here would relabel a container the script
-    # may share.
-    private def label_from_inputs(result : Value, args : Array(Value), kwargs : Hash(String, Value)?,
-                                  name : String, line : Int32) : Value
-      return result if result.label || result.array? || result.hash?
-      inputs = kwargs ? args + kwargs.values : args
-      label = inputs.reduce(nil.as(RiskFlowLabel?)) { |joined, input| RiskFlowLabel.join(joined, input.label) }
-      return result unless label
-      @risk_flow_log.record(name, inputs.map(&.label), label, line)
-      result.with_label(label)
-    end
-
-    private def call_native(native : NativeCallable, args : Array(Value),
-                            filename : String, line : Int32, blk : ScriptProc?, name : String,
-                            has_receiver : Bool, kwargs : Hash(String, Value)? = nil) : Value
-      given = has_receiver ? args.size - 1 : args.size
-      raise_arity_error(given, native.arity.to_s, name, filename, line) unless native.arity.accepts?(given)
-      check_unknown_native_keywords!(kwargs, native.kwarg_names, name, filename, line)
-      check_risk_flow(native, args, kwargs, name, filename, line)
-      result = NativeFunctionCall.new(self, native, filename, line, name, kwargs, args).call(args, blk)
-      native.labels_own_result? ? result : label_from_inputs(result, args, kwargs, name, line)
-    rescue ex : BlockBreakSignal
-      # A `break` in the block this call received ends the call with
-      # the break's value, as in Ruby.
-      ex.value
-    rescue ex : BlockReturnSignal
-      # A block's `return` passes through to the run holding its home.
-      raise ex
-    rescue OverflowError
-      # Integer arithmetic past 64 bits in a native: U025, as in the VM.
-      raise integer_overflow(current_frame, filename, line)
-    rescue ex : FatalSignal
-      # A FatalSignal (a denied grant, an exhausted budget) passes
-      # through unchanged, past every `rescue`, including
-      # `rescue Exception`. This clause only keeps the catch-all below
-      # from wrapping it.
-      raise ex
-    rescue ex : AmbiguousRiskFlowPolicyError
-      # A policy tie (H003) is the host's configuration error, so it
-      # passes through as a FatalSignal does: a script must not rescue
-      # past a broken policy.
-      raise ex
-    rescue ex : RuntimeError
-      raise ex
-    rescue ex
-      # N, not R: Adjutant can't tell whether the script or the host
-      # function is at fault.
-      raise runtime_diagnostic(
-        Diagnostic.new(
-          code: "N001",
-          primary: Span.new(line: line, filename: filename),
-          data: {
-            "function" => name,
-            "message"  => ex.message || ex.class.to_s,
-          }
-        ),
-        current_frame,
-        cause: ex
-      )
-    end
-
-    # The automatic risk-flow check: each labelled argument against
-    # each authority the callable is a sink for, with the subject
-    # unknown. A no-op for callables with no authorities, and for
-    # those that check at each subject instead
-    # (`NativeCallable#checks_flow_at_subject?`). Keyed on
-    # authorities, not the RiskProfile, so describing an effect never
-    # changes enforcement.
-    private def check_risk_flow(native : NativeCallable, args : Array(Value), kwargs : Hash(String, Value)?,
-                                name : String, filename : String, line : Int32) : Nil
-      return if native.authorities.empty? || native.checks_flow_at_subject?
-      kwarg_values = kwargs.try(&.values)
-      labeled_args = args.any?(&.label)
-      labeled_kwargs = kwarg_values.try(&.any?(&.label)) || false
-      return unless labeled_args || labeled_kwargs
-
-      matches = [] of RiskFlowMatch
-      native.authorities.each do |authority|
-        # Keyword values are checked as positional ones are.
-        (args + (kwarg_values || [] of Value)).each do |arg|
-          label = arg.label
-          next unless label
-          label.tags.each do |provenance_tag|
-            action, rule = @risk_flow_policy.action_for(authority, provenance_tag, nil)
-            next if action.allow?
-            matches << RiskFlowMatch.new(action, rule, provenance_tag)
-          end
-        end
-      end
-      return if matches.empty?
-
-      resolve_risk_flow_matches(matches, name, native.risk, native.authorities, filename, line)
-    end
-
-    # The check behind `NativeCallContext#check_flow_at`: each tag in
-    # `labels` reaching `subject` with `authority`.
-    def check_flow_at(labels : Array(RiskFlowLabel), authority : Authority, subject : String, name : String,
-                      risk : RiskProfile, filename : String, line : Int32) : Nil
-      matches = [] of RiskFlowMatch
-      labels.each do |label|
-        label.tags.each do |provenance_tag|
-          action, rule = @risk_flow_policy.action_for(authority, provenance_tag, subject)
-          next if action.allow?
-          matches << RiskFlowMatch.new(action, rule, provenance_tag)
-        end
-      end
-      return if matches.empty?
-
-      resolve_risk_flow_matches(matches, name, risk, Set{authority}, filename, line, subject)
-    end
-
-    # The explicit risk-flow check behind
-    # `NativeCallContext#declare_sensitivity`: looks up `origin`'s
-    # sensitivity (unless given) and runs the policy for `authority`.
-    # Returns the label for the data the call returns, whether policy
-    # allowed directly or an Ask was answered Allow. `risk` is the
-    # native's own profile, shown to whoever answers an Ask.
-    def declare_sensitivity(authority : Authority, kind : ProvenanceKind, origin : String, name : String,
-                            risk : RiskProfile, filename : String, line : Int32,
-                            sensitivity : Sensitivity? = nil) : RiskFlowLabel?
-      # Matched, and labelled, as the broker judges a subject: a File
-      # origin as its real path, a Host origin folded.
-      origin = RealPath.of(origin) || origin if kind.file?
-      origin = HostName.fold(origin) if kind.host?
-      resolved_sensitivity = sensitivity || @risk_flow_policy.sensitivity_for(kind, origin)
-      return if resolved_sensitivity.none?
-
-      label = RiskFlowLabel.of(kind, origin, resolved_sensitivity)
-
-      # The subject's own data reaching the subject itself.
-      provenance_tag = ProvenanceTag.new(kind, origin, resolved_sensitivity)
-      action, rule = @risk_flow_policy.action_for(authority, provenance_tag, origin)
-      return label if action.allow?
-
-      matches = [RiskFlowMatch.new(action, rule, provenance_tag)]
-      # Returns only if allowed; otherwise raises.
-      resolve_risk_flow_matches(matches, name, risk, Set{authority}, filename, line, origin)
-      label
-    end
-
-    # Sorts `matches` worst first, builds the decision request, and
-    # raises if it is rejected (directly, by `reject_all`, or by the
-    # host's answer to an Ask). Returns if allowed.
-    private def resolve_risk_flow_matches(matches : Array(RiskFlowMatch), name : String, risk : RiskProfile,
-                                          authorities : Set(Authority),
-                                          filename : String, line : Int32, subject : String? = nil) : Nil
-      # Reject before Ask, then High before Elevated sensitivity.
-      matches = matches.sort_by { |match| {-match.action.value, -match.tag.sensitivity.value} }
-
-      request = RiskFlowDecisionRequest.new(name, risk, authorities, matches, filename, line, subject)
-
-      worst_action = matches.first.action
-      if worst_action.reject?
-        raise_risk_flow_rejected(request, filename, line)
-      else
-        # An Ask always goes to the host's decision callback.
-        decision = @on_risk_flow_decision.call(request)
-        raise_risk_flow_rejected(request, filename, line) if decision.reject?
-      end
-    end
-
-    # Raises RiskFlowRejectedError as a script-catchable error: a
-    # RuntimeError carrying an error object of that class.
-    private def raise_risk_flow_rejected(request : RiskFlowDecisionRequest, filename : String, line : Int32) : NoReturn
-      first = request.matches.first
-      reason = first.rule.try { |rule| "#{rule.authority} (#{first.tag})" } || "reject_all policy (#{first.tag})"
-      diag = Diagnostic.new(
-        code: "F001",
-        primary: Span.new(line: line, filename: filename),
-        data: {"call" => request.call_name, "reason" => reason}
-      )
-      # Scripts may `rescue RiskFlowRejectedError`, whatever the host
-      # is told.
-      cls = builtin_class_by_name("RiskFlowRejectedError")
-      err_val = cls ? make_error_object(cls, diag.summary) : Value.string(diag.summary)
-      raise RuntimeError.new(diag, filename, line, error_value: err_val)
-    end
-
-    # `Foo.new(args)`: a native `new` if the class or an ancestor has
-    # one, which allocates and returns its own object; otherwise a new
-    # RubyObject and its `initialize`.
-    private def construct(cls : RubyClass, args : Array(Value), filename : String, line : Int32, blk : ScriptProc?,
-                          kwargs : Hash(String, Value)? = nil) : Value
-      raise script_diagnostic("R009", {"module" => cls.name}, current_frame) if cls.is_module?
-      if cls.uninstantiable?
-        # `Class.new` and `Module.new` are excluded (U002).
-        raise runtime_diagnostic(
-          Diagnostic.new(
-            code: "U002",
-            primary: frame_span(current_frame),
-            data: {"class" => cls.name}
-          )
-        )
-      end
-      if sym_id = @symbols.lookup("new").try(&.value)
-        if native_new = cls.find_native_singleton_method(sym_id)
-          # A native `new` accepts the keywords in its `kwarg_names`,
-          # like any native call.
-          return call_native(native_new, [Value.rclass(cls)] + args, filename, line, blk, "#{cls.name}.new", has_receiver: true, kwargs: kwargs)
-        end
-      end
-      construct_object(cls, args, filename, line, kwargs)
-    end
-
-    # Allocates a RubyObject and runs `initialize`, if the class or an
-    # ancestor defines one, returning the object whatever
-    # `initialize` returns.
-    private def construct_object(cls : RubyClass, args : Array(Value), filename : String, line : Int32,
-                                 kwargs : Hash(String, Value)? = nil) : Value
-      obj_val = Value.robject(RubyObject.new(cls))
-      if sym_id = @symbols.lookup("initialize").try(&.value)
-        if init = cls.find_method(sym_id)
-          invoke(init, args, self_val: obj_val, kwargs: kwargs)
-          return obj_val
-        end
-      end
-      # Without an `initialize`, as Ruby's BasicObject#initialize, any
-      # argument raises R046 and any keyword R012.
-      raise_arity_error(args.size, "0", "#{cls.name}.new", filename, line) unless args.empty?
-      reject_kwargs!(kwargs, "#{cls.name}.new", filename, line)
-      obj_val
-    end
-
-    # Calls a ScriptProc by pushing its frame, with arguments bound,
-    # and returning a placeholder; the `execute` loop runs the frame,
-    # and Ret pushes the result to the caller.
-    #
-    # `self_val` defaults to the caller's self, as a block needs.
-    # `lexical_override` replaces the proc's lexical scope, for
-    # `invoke`. `blk` is the block passed to `proc`, and `block_outer`
-    # the scopes it closes over, for `yield` inside `proc`. Arity is
-    # checked for a method, or with `lambda_call`, and not for a block.
-    private def call_script_proc(proc : ScriptProc,
-                                 args : Array(Value),
-                                 filename : String,
-                                 blk : ScriptProc? = nil,
-                                 outer : OuterChain? = nil,
-                                 self_val : Value? = nil,
-                                 lexical_scope : RubyClass? = nil,
-                                 lexical_override : Bool = false,
-                                 block_outer : OuterChain? = nil,
-                                 kwargs : Hash(String, Value)? = nil,
-                                 block_yield : ScriptProc? = nil,
-                                 own_yield : ScriptProc? = nil,
-                                 block_yield_outer : OuterChain? = nil,
-                                 own_yield_outer : OuterChain? = nil,
-                                 lambda_call : Bool = false) : Value
-      base = @stack.size
-      inherited_self = self_val || (@frames.empty? ? Value.nil_value : current_frame.self_val)
-      effective_lexical = if lexical_override
-                            lexical_scope
-                          else
-                            proc.lexical_scope || (@frames.empty? ? nil : current_frame.lexical_scope)
-                          end
-      # The call site's line, before the callee's frame replaces it.
-      caller_line = @frames.empty? ? 0 : current_frame.line
-      frame = push_frame(proc, filename, block: blk, stack_base: base, outer: outer, self_val: inherited_self,
-        lexical_scope: effective_lexical, block_outer_locals: block_outer, argc: args.size,
-        block_yield: block_yield, own_yield: own_yield,
-        block_yield_outer: block_yield_outer, own_yield_outer: own_yield_outer)
-      frame.kwarg_names = kwargs.keys.to_set if kwargs
-      bind_args(frame, proc, args, caller_line, kwargs, strict: lambda_call || !proc.is_block?)
-      Value.nil_value # sentinel; Op::Ret will push the real return value
-    end
-
-    # Returns the arguments a block binds, spreading a lone Array across
-    # the block's parameters when it declares more than one, as Ruby
-    # does: `pairs.each { |k, v| }` binds each pair's two elements, and
-    # `|a, *rest|` takes the first element and the rest. A block with one
-    # parameter, or only a splat, keeps the Array whole. Lambdas never
-    # spread; they are called through `invoke_proc`, which does not come
-    # here, so `->(a, b) {}.call([1, 2])` raises R046. Elements keep
-    # their own labels, as `Array#first` returns them.
-    private def spread_block_args(proc : ScriptProc, args : Array(Value),
-                                  kwargs : Hash(String, Value)? = nil) : Array(Value)
-      return args unless proc.is_block? && args.size == 1 && (kwargs.nil? || kwargs.empty?)
-      arr = args[0].as_array?
-      params = proc.ast_params
-      return args unless arr && params
-      positional = params.count { |param| positional_param?(param) }
-      spreads = positional > 1 || (positional == 1 && params.any?(&.splat?))
-      spreads ? arr.to_a : args
-    end
-
-    # Binds a call's arguments into `frame.locals`, as Ruby does:
-    #
-    #   1. With `strict` (a method, or a lambda), a positional count
-    #      outside the proc's arity raises R046. A block instead leaves
-    #      missing arguments nil and drops extras.
-    #   2. Required parameters take arguments first, from both ends of
-    #      the list; optional parameters take what is left, left to
-    #      right; a splat takes the rest as an Array. With
-    #      `def f(a = 1, b)`, `f(5)` binds `b` and leaves `a`.
-    #   3. An optional parameter with no argument stays nil; the
-    #      compiled prologue then evaluates its default.
-    #   4. A keyword parameter is bound by name: from `kwargs`, else
-    #      left for its default, else R011. Unknown keywords raise R012.
-    #
-    # A proc with no `ast_params` binds by position.
-    private def bind_args(frame : Frame, proc : ScriptProc, args : Array(Value), caller_line : Int32,
-                          kwargs : Hash(String, Value)? = nil, strict : Bool = false) : Nil
-      ast_params = proc.ast_params
-      unless ast_params
-        args.each_with_index { |arg, i| frame.locals[i] = arg if i < frame.locals.size }
-        return
-      end
-      check_script_arity!(ast_params, args.size, proc, frame, caller_line) if strict
-      bind_positional(frame, ast_params, args, caller_line)
-      declared_kwargs = Set(String).new
-      ast_params.each_with_index do |param, slot|
-        next unless param.kwarg? && slot < frame.locals.size
-        declared_kwargs << param.name
-        bind_kwarg_param(frame, proc, param, slot, kwargs, caller_line)
-      end
-      if rest_slot = ast_params.index(&.kwrest?)
-        frame.locals[rest_slot] = keyword_rest(kwargs, declared_kwargs) if rest_slot < frame.locals.size
-      else
-        check_unknown_keywords!(kwargs, declared_kwargs, proc, frame, caller_line)
-      end
-    end
-
-    # A keyword-rest parameter's value: a new Hash of the keywords in
-    # `kwargs` that aren't `declared`, with Symbol keys, in the order
-    # passed, labelled with their values' labels and their names'. Each
-    # key carries its names' label, so the keywords keep it when the
-    # Hash is splatted on.
-    private def keyword_rest(kwargs : Hash(String, Value)?, declared : Set(String)) : Value
-      names_label = Keywords.names_label_of(kwargs)
-      pairs = {} of Value => Value
-      kwargs.try do |given|
-        given.each do |name, value|
-          next if declared.includes?(name)
-          pairs[Value.symbol(@symbols.intern(name)).with_label(names_label)] = value
-        end
-      end
-      label = pairs.values.reduce(names_label) { |acc, value| RiskFlowLabel.join(acc, value.label) }
-      Value.new(LabeledHash.new(pairs, label), label)
-    end
-
-    # Binds the positional parameters, steps 2 and 3 of `bind_args`:
-    # each parameter takes the next argument in declared order, except
-    # that an optional parameter takes one only while there are more
-    # arguments than required parameters, and a splat takes those
-    # left over after the optional ones.
-    private def bind_positional(frame : Frame, ast_params : Array(Param), args : Array(Value), caller_line : Int32) : Nil
-      required, optional, has_splat = positional_counts(ast_params)
-      spare = args.size - required
-      optional_filled = spare.clamp(0, optional)
-      splat_size = has_splat ? Math.max(spare - optional, 0) : 0
-      pos = 0 # index into `args`
-      optional_seen = 0
-      ast_params.each_with_index do |param, slot|
-        next if slot >= frame.locals.size || param.kwarg? || param.kwrest? || param.block_param?
-        if param.splat?
-          frame.locals[slot] = collect_splat(args, pos, splat_size, caller_line)
-          pos += splat_size
-        elsif param.default
-          if optional_seen < optional_filled
-            frame.locals[slot] = args[pos]
-            pos += 1
-          end
-          optional_seen += 1
-        else
-          frame.locals[slot] = args[pos] if pos < args.size
-          pos += 1
-        end
-      end
-    end
-
-    # Whether `param` takes a positional argument of its own: neither a
-    # splat, a keyword, a keyword rest nor a block parameter.
-    private def positional_param?(param : Param) : Bool
-      !param.splat? && !param.kwarg? && !param.kwrest? && !param.block_param?
-    end
-
-    # The required and optional positional parameter counts, and
-    # whether there is a splat. A block parameter (U001) counts as none.
-    private def positional_counts(ast_params : Array(Param)) : {Int32, Int32, Bool}
-      positional = ast_params.select { |param| positional_param?(param) }
-      required = positional.count(&.default.nil?)
-      {required, positional.size - required, ast_params.any?(&.splat?)}
-    end
-
-    # Raises R046 unless `given` positional arguments fit the proc's
-    # arity. As in Ruby, the message names any required keywords.
-    private def check_script_arity!(ast_params : Array(Param), given : Int32, proc : ScriptProc,
-                                    frame : Frame, caller_line : Int32) : Nil
-      required, optional, has_splat = positional_counts(ast_params)
-      arity = Arity.new(required, has_splat ? nil : required + optional)
-      return if arity.accepts?(given)
-      expected = arity.to_s
-      required_kwargs = ast_params.select { |param| param.kwarg? && param.default.nil? }.map(&.name)
-      unless required_kwargs.empty?
-        noun = required_kwargs.size == 1 ? "keyword" : "keywords"
-        expected += "; required #{noun}: #{required_kwargs.join(", ")}"
-      end
-      raise_arity_error(given, expected, proc.name, frame.filename, caller_line)
-    end
-
-    # Raises R046, Ruby's ArgumentError for a wrong positional count.
-    # Ruby's `Kernel#loop`: calls the block until a `break` ends the
-    # loop with the break's value, or a `return` leaves the method.
-    # Without a block it raises U022, where Ruby would return an
-    # Enumerator.
-    private def run_loop(blk : ScriptProc?, filename : String, line : Int32) : Value
-      unless block = blk
-        raise runtime_diagnostic(
-          Diagnostic.new(code: "U022", primary: Span.new(line: line, filename: filename), data: {"method" => "Kernel#loop"}),
-          current_frame)
-      end
-      loop { invoke(block, [] of Value) }
-    rescue ex : BlockBreakSignal
-      ex.value
-    end
-
-    # U025 as a RangeError: an Integer result outside 64 bits, which
-    # Adjutant doesn't widen. At `line` of `filename` when given, else
-    # at `frame`'s current line.
-    private def integer_overflow(frame : Frame, filename : String? = nil, line : Int32? = nil) : RuntimeError
-      span = line ? Span.new(line: line, filename: filename) : frame_span(frame)
-      runtime_diagnostic(Diagnostic.new(code: "U025", primary: span), frame, error_class: "RangeError")
-    end
-
-    private def raise_arity_error(given : Int32, expected : String, method : String,
-                                  filename : String, line : Int32) : NoReturn
-      raise runtime_diagnostic(
-        Diagnostic.new(
-          code: "R046",
-          primary: Span.new(line: line, filename: filename),
-          data: {"given" => given.to_s, "expected" => expected, "method" => method}
-        ),
-        current_frame,
-        error_class: "ArgumentError"
-      )
-    end
-
-    # Binds one keyword parameter: the supplied value, else nil for
-    # the default prologue, else R011.
-    private def bind_kwarg_param(frame : Frame, proc : ScriptProc, param : Param, slot : Int32,
-                                 kwargs : Hash(String, Value)?, caller_line : Int32) : Nil
-      if kwargs && (val = kwargs[param.name]?)
-        frame.locals[slot] = val
-      elsif param.default.nil?
-        # Required and not supplied.
-        raise runtime_diagnostic(
-          Diagnostic.new(
-            code: "R011",
-            primary: Span.new(line: caller_line, filename: frame.filename),
-            data: {"name" => param.name, "method" => proc.name}
-          ),
-          current_frame,
-          error_class: "ArgumentError"
-        )
-      end
-      # Otherwise left nil for the default prologue.
-    end
-
-    # Raises R012 for the first keyword `proc` doesn't declare, as
-    # Ruby does.
-    private def check_unknown_keywords!(kwargs : Hash(String, Value)?, declared : Set(String),
-                                        proc : ScriptProc, frame : Frame, caller_line : Int32) : Nil
-      return unless kwargs
-      unknown = kwargs.keys.find { |k| !declared.includes?(k) }
-      return unless unknown
-      raise runtime_diagnostic(
-        Diagnostic.new(
-          code: "R012",
-          primary: Span.new(line: caller_line, filename: frame.filename),
-          data: {"name" => unknown, "method" => proc.name}
-        ),
-        current_frame,
-        error_class: "ArgumentError",
-        label: Keywords.names_label_of(kwargs)
-      )
-    end
-
-    # Raises R012 for the first keyword, at a call with no parameter
-    # list to bind it to: a class with no `initialize`.
-    private def reject_kwargs!(kwargs : Hash(String, Value)?, method : String, filename : String, line : Int32) : Nil
-      return if kwargs.nil? || kwargs.empty?
-      raise runtime_diagnostic(
-        Diagnostic.new(
-          code: "R012",
-          primary: Span.new(line: line, filename: filename),
-          data: {"name" => kwargs.first_key, "method" => method}
-        ),
-        current_frame,
-        error_class: "ArgumentError",
-        label: Keywords.names_label_of(kwargs)
-      )
-    end
-
-    # Raises R012 for the first keyword a native callable doesn't
-    # declare in `kwarg_names`; with none declared, any keyword.
-    private def check_unknown_native_keywords!(kwargs : Hash(String, Value)?, declared : Set(String),
-                                               method : String, filename : String, line : Int32) : Nil
-      return if kwargs.nil? || kwargs.empty?
-      unknown = kwargs.keys.find { |k| !declared.includes?(k) }
-      return unless unknown
-      raise runtime_diagnostic(
-        Diagnostic.new(
-          code: "R012",
-          primary: Span.new(line: line, filename: filename),
-          data: {"name" => unknown, "method" => method}
-        ),
-        current_frame,
-        error_class: "ArgumentError",
-        label: Keywords.names_label_of(kwargs)
-      )
-    end
-
-    # The Array for a splat parameter: up to `count` arguments from
-    # `from`, labelled and logged as MakeArray labels an array literal,
-    # at the call site's `line`.
-    private def collect_splat(args : Array(Value), from : Int32, count : Int32, line : Int32) : Value
-      elements = from < args.size ? args[from, count] : [] of Value
-      joined_label = elements.reduce(nil.as(RiskFlowLabel?)) { |acc, value| RiskFlowLabel.join(acc, value.label) }
-      @risk_flow_log.record("MakeArray", elements.map(&.label), joined_label, line)
-      Value.new(LabeledArray.new(elements, joined_label), joined_label)
-    end
-
-    # Ruby's arity for each operation `exec_builtin` handles.
-    BUILTIN_ARITIES = {
-      "puts" => Arity.any, "print" => Arity.any, "p" => Arity.any,
-      "raise" => Arity.new(0, 3), "require" => Arity.from(1), "<=>" => Arity.from(1),
-      "nil?" => Arity.from(0), "is_a?" => Arity.from(1), "kind_of?" => Arity.from(1),
-      "class" => Arity.from(0), "superclass" => Arity.from(0), "respond_to?" => Arity.new(1, 2),
-      "equal?" => Arity.from(1), "dup" => Arity.from(0), "clone" => Arity.from(0),
-      "==" => Arity.from(1), "!=" => Arity.from(1), "===" => Arity.from(1),
-      "to_s" => Arity.from(0), "inspect" => Arity.from(0), "to_i" => Arity.from(0),
-      "to_f" => Arity.from(0),
-      "+" => Arity.from(1), "-" => Arity.from(1), "*" => Arity.from(1),
-      "/" => Arity.from(1), "%" => Arity.from(1),
-      "loop" => Arity.new(0, 0),
-    }
-
-    # Operations that resolve when nothing else does: output, `raise`,
-    # reflection and the like. Returns nil when `name` isn't one.
-    # `has_receiver` says whether `args` starts with the receiver.
-    # Raises R046 for a positional count outside `BUILTIN_ARITIES`.
-    # ameba:disable Metrics/CyclomaticComplexity
-    private def exec_builtin(name : String,
-                             args : Array(Value),
-                             filename : String, line : Int32,
-                             blk : ScriptProc? = nil,
-                             has_receiver : Bool = false,
-                             kwargs : Hash(String, Value)? = nil) : Value?
-      if arity = BUILTIN_ARITIES[name]?
-        given = has_receiver ? args.size - 1 : args.size
-        raise_arity_error(given, arity.to_s, name, filename, line) unless arity.accepts?(given)
-      end
-      reject_kwargs!(kwargs, name, filename, line)
-      case name
-      when "loop"
-        run_loop(blk, filename, line)
-      when "puts"
-        # Each argument's own `to_s`, so `puts :sym` prints `sym`.
-        str = args.map { |arg| render_to_s(arg, filename, line) }.join("\n")
-        if ef = @effect
-          ef.write_stdout(str + "\n")
-        else
-          STDOUT.puts(str)
-        end
-        Value.nil_value
-      when "print"
-        str = args.map { |arg| render_to_s(arg, filename, line) }.join
-        if ef = @effect
-          ef.write_stdout(str)
-        else
-          STDOUT.print(str)
-        end
-        Value.nil_value
-      when "p"
-        # Each argument's own `inspect`.
-        str = args.map { |arg| render_inspect(arg, filename, line) }.join("\n")
-        if ef = @effect
-          ef.write_stdout(str + "\n")
-        else
-          STDOUT.puts(str)
-        end
-        if args.size == 1
-          args.first
-        else
-          joined_label = args.reduce(nil.as(RiskFlowLabel?)) { |acc, value| RiskFlowLabel.join(acc, value.label) }
-          Value.new(LabeledArray.new(args.dup, joined_label), nil)
-        end
-      when "raise"
-        exception_value = exception_from(args, filename, line)
-        raise RuntimeError.new(error_message(exception_value), filename, line, error_value: exception_value)
-      when "<=>"
-        a = args[0]? || Value.nil_value
-        b = args[1]? || Value.nil_value
-        if a.robject? || b.robject?
-          # Object#<=>, for an object without its own: 0 for the same
-          # object, nil for anything else.
-          identical?(a, b) ? Value.int(0_i64) : Value.nil_value
-        elsif sign = spaceship(a, b, filename, line)
-          Value.int(sign.to_i64)
-        else
-          Value.nil_value
-        end
-      when "require"
-        path = args.first? ? args.first.as_string : ""
-        if interp = @interpreter
-          interp.require_module(path, filename, self)
-        else
-          # A VM without an Interpreter can't `require`: a host
-          # wiring fault (H006), not the script's.
-          raise HostStateError.new(Diagnostic.new(code: "H006"))
-        end
-      when "nil?"
-        # The receiver is `args[0]`.
-        recv = args.first? || Value.nil_value
-        Value.bool(recv.null?)
-      when "is_a?", "kind_of?"
-        # Aliases, as in Ruby.
-        # A target that isn't a class or module raises R053
-        # (TypeError), as it does for `rescue`, which calls `is_a?`.
-        # Without a receiver, `is_a?(Foo)` asks about self.
-        recv = has_receiver ? args.first : current_frame.self_val
-        target = args[has_receiver ? 1 : 0]?.try(&.as_rclass?)
-        unless target
-          raise runtime_diagnostic(
-            Diagnostic.new(code: "R053", primary: Span.new(line: line, filename: filename)),
-            current_frame, error_class: "TypeError")
-        end
-        Value.bool(is_a_target?(recv, target))
-      when "class"
-        # An object's class, a class's class (usually Class), or a
-        # builtin value's class.
-        recv = args.first? || Value.nil_value
-        cls = recv.as_robject?.try(&.rclass) ||
-              recv.as_rclass?.try(&.rclass) ||
-              @interpreter.try(&.builtin_class_for(recv))
-        cls ? Value.rclass(cls) : Value.nil_value
-      when "==", "!=", "==="
-        # The dot-call forms of the operators, `a.==(b)`. Without a
-        # receiver, a bare `==` isn't a call.
-        return unless has_receiver
-        recv = args.first
-        other = args[1]
-        result = case name
-                 when "==" then values_equal?(recv, other)
-                 when "!=" then !values_equal?(recv, other)
-                 else           triple_eq_matches?(recv, other)
-                 end
-        Value.bool(result)
-      when "superclass"
-        # A class's superclass; nil for Object. Anything else, a module
-        # included, has no `superclass`, so dispatch raises
-        # NoMethodError.
-        recv = has_receiver ? args.first : current_frame.self_val
-        if (cls = recv.as_rclass?) && !cls.is_module?
-          sup = cls.superclass
-          sup ? Value.rclass(sup) : Value.nil_value
-        end
-      when "respond_to?"
-        # Whether a call would work: a method dispatch finds, an
-        # operation every object has here, or an operator the
-        # receiver's type has. Private Kernel functions (`puts`) answer
-        # false, as in Ruby. A String name works as well as a Symbol.
-        recv = has_receiver ? args.first : current_frame.self_val
-        method_arg = args[has_receiver ? 1 : 0]? || Value.nil_value
-        method_name = method_arg.as_sym?.try(&.name) || method_arg.as_string?
-        Value.bool(method_name ? value_responds_to?(recv, method_name) : false)
-      when "equal?"
-        # Identity: the same object for a String, container or object,
-        # and equal content for an immediate, as in Ruby.
-        recv = has_receiver ? args.first : current_frame.self_val
-        other = args[has_receiver ? 1 : 0]? || Value.nil_value
-        Value.bool(identical?(recv, other))
-      when "dup", "clone"
-        recv = has_receiver ? args.first : current_frame.self_val
-        copy_value(recv, name, filename, line)
-      when "to_s"
-        recv = args.first? || Value.nil_value
-        Value.string(recv.to_s)
-      when "inspect"
-        # A class's default `inspect`, its qualified name, as `to_s`
-        # gives. Other receivers resolve `inspect` before reaching
-        # here.
-        recv = args.first? || Value.nil_value
-        Value.string(recv.inspect)
-      when "to_i"
-        # nil's: every other builtin with a `to_i` defines it natively,
-        # and a receiver reaching here otherwise has none (NoMethodError).
-        Value.int(0_i64) if has_receiver && args.first.null?
-      when "to_f"
-        Value.float(0.0) if has_receiver && args.first.null?
-      when "+"
-        ValueOps.add(args[0], args[1], error_raiser(current_frame))
-      when "-"
-        ValueOps.op(args[0], args[1], :-, error_raiser(current_frame))
-      when "*"
-        ValueOps.op(args[0], args[1], :*, error_raiser(current_frame))
-      when "/"
-        ValueOps.div(args[0], args[1], error_raiser(current_frame))
-      when "%"
-        ValueOps.mod(args[0], args[1], error_raiser(current_frame))
-      end
-    end
-
-    # --- Operators ------------------------------------------------------------
-    # The arithmetic and comparison logic is in ValueOps. These
-    # wrappers serve NativeCallContext, which calls them by name.
-
-    # `filename` and `line` default to the current frame; a native
-    # caller passes its call site, so R013 points there.
-    protected def compare(a : Value, b : Value, op : Symbol,
-                          filename : String = current_frame.filename,
-                          line : Int32 = current_frame.line) : Bool
-      # An object operand dispatches to its `<=>`, as Ruby's Range and
-      # sorting do; the script-level operators check Comparable first
-      # (`operator_defined?`). Base types are ordered by ValueOps.
-      if a.robject? || b.robject?
-        compare_via_spaceship(a, b, op, filename, line)
-      else
-        ValueOps.compare(a, b, op)
-      end
-    end
-
-    # Ruby's `+` for native code, raising as Add does. An object's
-    # own `+` is not dispatched.
-    protected def add(a : Value, b : Value) : Value
-      ValueOps.add(a, b, error_raiser(current_frame))
-    end
-
-    # `<`/`<=`/`>`/`>=` in script code. Unlike `compare`, which answers
-    # `false` for a pair it cannot order (Range bounds and `===` rely on
-    # that), this raises R044 (`ArgumentError`) for two base-type values
-    # with no order between them, such as `1 < "a"` or two Arrays —
-    # matching Ruby, and turning a silent `false` into a visible error.
-    private def strict_compare(a : Value, b : Value, op : Symbol) : Bool
-      unless a.robject? || b.robject? || ValueOps.orderable?(a, b)
-        raise_incomparable(a, b, current_frame.filename, current_frame.line)
-      end
-      compare(a, b, op)
-    end
-
-    # Orders `a` against `b` as Ruby's `<=>` does: a negative, zero or
-    # positive Int32, or nil when the pair has no order. Arrays compare
-    # element by element, then by length. A RubyObject receiver uses its
-    # own `<=>`, which must return an Integer or nil (R013 otherwise).
-    protected def spaceship(a : Value, b : Value,
-                            filename : String = current_frame.filename,
-                            line : Int32 = current_frame.line) : Int32?
-      if a.array? && b.array?
-        xs = a.as_array
-        ys = b.as_array
-        Math.min(xs.size, ys.size).times do |i|
-          sign = spaceship(xs[i], ys[i], filename, line)
-          return unless sign
-          return sign unless sign == 0
-        end
-        return xs.size <=> ys.size
-      end
-
-      if a.robject?
-        sign_val = call_method(a, "<=>", [b], filename, line)
-        return if sign_val.null?
-        raise_bad_spaceship(a, b, sign_val, filename, line) unless sign_val.int?
-        return sign_val.as_int <=> 0
-      end
-
-      ValueOps.spaceship(a, b)
-    end
-
-    # `spaceship`, raising R044 (`ArgumentError`) when the pair has no
-    # order. For native methods that must order every pair they meet,
-    # such as `Array#sort`.
-    protected def order(a : Value, b : Value, filename : String, line : Int32) : Int32
-      spaceship(a, b, filename, line) || raise_incomparable(a, b, filename, line)
-    end
-
-    private def raise_incomparable(a : Value, b : Value, filename : String, line : Int32) : NoReturn
-      raise runtime_diagnostic(
-        Diagnostic.new(
-          code: "R044",
-          primary: Span.new(line: line, filename: filename),
-          data: {"left" => describe_value(a), "right" => describe_value(b)}
-        ),
-        current_frame,
-        error_class: "ArgumentError"
-      )
-    end
-
-    private def raise_bad_spaceship(a : Value, b : Value, sign_val : Value,
-                                    filename : String, line : Int32) : NoReturn
-      raise runtime_diagnostic(
-        Diagnostic.new(
-          code: "R013",
-          primary: Span.new(line: line, filename: filename),
-          data: {
-            "left"  => describe_value(a),
-            "right" => describe_value(b),
-            "value" => sign_val.inspect,
-          }
-        ),
-        current_frame,
-        error_class: "ArgumentError"
-      )
-    end
-
-    # `a < b` as `a.<=>(b)` compared with zero. An object without
-    # `<=>` raises as for any undefined method.
-    private def compare_via_spaceship(a : Value, b : Value, op : Symbol,
-                                      filename : String, line : Int32) : Bool
-      sign_val = call_method(a, "<=>", [b], filename, line)
-      unless sign_val.int?
-        # A `<=>` result that isn't an Integer raises ArgumentError,
-        # as Comparable does in Ruby.
-        raise_bad_spaceship(a, b, sign_val, filename, line)
-      end
-      sign = sign_val.as_int
-      case op
-      when :<  then sign < 0
-      when :<= then sign <= 0
-      when :>  then sign > 0
-      when :>= then sign >= 0
-      else
-        false
-      end
-    end
-
-    protected def values_equal?(a : Value, b : Value) : Bool
-      ValueOps.equal?(a, b) { |x, y| leaf_values_equal?(x, y) }
-    end
-
-    # `values_equal?` for a pair that isn't two Arrays or two Hashes.
-    private def leaf_values_equal?(a : Value, b : Value) : Bool
-      if range_receiver?(a) && range_receiver?(b)
-        range_values_equal?(a, b)
-      elsif comparable_object?(a)
-        # Comparable's `==`: equal when `<=>` returns 0, and not equal
-        # when it returns anything else or raises. Without Comparable,
-        # an object's `==` is identity.
-        robject_equal_via_spaceship?(a, b)
-      else
-        ValueOps.leaf_equal?(a, b)
-      end
-    end
-
-    # Whether `a.<=>(b)` returns 0. A RuntimeError from `<=>` counts
-    # as not equal, as in Comparable#==; the one place a script's
-    # error is swallowed.
-    private def robject_equal_via_spaceship?(a : Value, b : Value) : Bool
-      sign_val = call_method(a, "<=>", [b])
-      sign_val.int? && sign_val.as_int == 0
-    rescue RuntimeError
-      false
-    end
-
-    # Add and Sub: an object on the left with its own `+` or `-` gets
-    # it called; anything else uses ValueOps, so `1 + 2` never
-    # dispatches.
-    private def exec_add(lhs : Value, rhs : Value, f : Frame) : Value
-      if lhs.robject? && script_responds_to?(lhs, "+")
-        call_method(lhs, "+", [rhs], f.filename, f.line)
-      else
-        ValueOps.add(lhs, rhs, error_raiser(f))
-      end
-    end
-
-    private def exec_sub(lhs : Value, rhs : Value, f : Frame) : Value
-      if lhs.robject? && script_responds_to?(lhs, "-")
-        call_method(lhs, "-", [rhs], f.filename, f.line)
-      else
-        ValueOps.op(lhs, rhs, :-, error_raiser(f))
-      end
-    end
-
-    # `/`, dispatched as in `exec_add`; `Legate::Path#/` uses it.
-    private def exec_div(lhs : Value, rhs : Value, f : Frame) : Value
-      if lhs.robject? && script_responds_to?(lhs, "/")
-        call_method(lhs, "/", [rhs], f.filename, f.line)
-      else
-        ValueOps.div(lhs, rhs, error_raiser(f))
-      end
-    end
-
-    # Range `==`: equal bounds and exclusivity, as in Ruby. Here
-    # rather than in ValueOps, which has no access to the Range class
-    # or the ivar symbols.
-    private def range_values_equal?(a : Value, b : Value) : Bool
-      ao, bo = a.as_robject, b.as_robject
-      min_sym = @symbols.intern("__min").value
-      max_sym = @symbols.intern("__max").value
-      excl_sym = @symbols.intern("__exclusive").value
-      ValueOps.equal?(ao.ivars[min_sym], bo.ivars[min_sym]) &&
-        ValueOps.equal?(ao.ivars[max_sym], bo.ivars[max_sym]) &&
-        ao.ivars[excl_sym].as_bool == bo.ivars[excl_sym].as_bool
-    end
-
-    # --- Index helpers ------------------------------------------------------
-
-    # The method each binary-operator opcode stands for.
-    OPERATOR_NAMES = {
-      Op::Add => "+", Op::Sub => "-", Op::Mul => "*", Op::Div => "/", Op::Mod => "%",
-      Op::BitAnd => "&", Op::BitOr => "|", Op::Xor => "^", Op::Shl => "<<", Op::Shr => ">>",
-      Op::Lt => "<", Op::Lte => "<=", Op::Gt => ">", Op::Gte => ">=",
-    }
-
-    COMPARISONS = {"<", "<=", ">", ">=", "<=>"}
-
-    # The operators each builtin type has as methods in Ruby, by its
-    # class name (`Builtins.builtin_type_name`).
-    LOGIC_OPERATORS   = Set{"&", "|", "^"}
-    BUILTIN_OPERATORS = {
-      "Integer"    => Set{"+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>", "<", "<=", ">", ">=", "<=>"},
-      "Float"      => Set{"+", "-", "*", "/", "%", "<", "<=", ">", ">=", "<=>"},
-      "String"     => Set{"+", "*", "%", "<<", "<", "<=", ">", ">=", "<=>"},
-      "Array"      => Set{"+", "-", "*", "&", "|", "<<", "<=>"},
-      "Hash"       => Set{"<", "<=", ">", ">="},
-      "Symbol"     => Set{"<", "<=", ">", ">=", "<=>"},
-      "NilClass"   => LOGIC_OPERATORS,
-      "TrueClass"  => LOGIC_OPERATORS,
-      "FalseClass" => LOGIC_OPERATORS,
-    }
-
-    # Whether `v` is an object whose class includes Comparable, which
-    # derives `==`, `<`, `<=`, `>` and `>=` from its `<=>`.
-    private def comparable_object?(v : Value) : Bool
-      comparable = builtin_class_by_name("Comparable")
-      !!(comparable && v.as_robject?.try(&.rclass.ancestors.includes?(comparable)))
-    end
-
-    # Whether `v` has the operator `name` as a method, as Ruby decides
-    # between NoMethodError (`nil + 1`) and the receiver's own error
-    # (`"a" + 1`). An object has it if its class defines it, or for a
-    # comparison, `<=>`; a class is left to the operation itself.
-    private def operator_defined?(v : Value, name : String) : Bool
-      if v.robject?
-        script_responds_to?(v, name) || (COMPARISONS.includes?(name) && comparable_object?(v))
-      elsif v.rclass?
-        true
-      else
-        !!BUILTIN_OPERATORS[Builtins.builtin_type_name(v)]?.try(&.includes?(name))
-      end
-    end
-
-    private def exec_binary(inst : Instruction, &block : Value, Value -> Value) : Nil
-      b = pop
-      a = pop
-      if name = OPERATOR_NAMES[inst.op]?
-        f = current_frame
-        raise undefined_method_error(name, a, f.filename, f.line) unless operator_defined?(a, name)
-      end
-      result = block.call(a, b).with_label(RiskFlowLabel.join(a.label, b.label))
-      @risk_flow_log.record(inst.op.to_s, [a.label, b.label], result.label, current_frame.line)
-      push(result)
-    end
-
-    # The `on_error` callback for ValueOps: raises the named error
-    # class ("TypeError", "ZeroDivisionError") through
-    # `runtime_error`.
-    private def error_raiser(frame : Frame) : ValueOps::OnError
-      ->(msg : String, error_class : String) { raise runtime_error(msg, frame, error_class: error_class) }
-    end
-
-    private def runtime_error(msg : String, frame : Frame = current_frame, cause = nil, error_class : String = "RuntimeError") : RuntimeError
-      cls = builtin_class_by_name(error_class)
-      err_val = cls ? make_error_object(cls, msg) : nil
-      RuntimeError.new(msg, frame, cause, error_value: err_val)
-    end
-
-    # `runtime_error` carrying a Diagnostic for the host. The script's
-    # error object gets only the summary as its message, labelled
-    # `label`: the join of the labels of the values the summary quotes.
-    # Spans have a line and no column, since Frame records none.
-    # `error_class` is what a script rescues and must match Ruby's
-    # choice, whatever the code.
-    private def runtime_diagnostic(diag : Diagnostic, frame : Frame = current_frame,
-                                   cause = nil, error_class : String = "RuntimeError",
-                                   label : RiskFlowLabel? = nil) : RuntimeError
-      cls = builtin_class_by_name(error_class)
-      err_val = cls ? make_error_object(cls, Value.string(diag.summary, label)) : nil
-      RuntimeError.new(diag, frame, cause, error_value: err_val)
-    end
-
-    # `ex`, with its error object's message also labelled `label`, for
-    # a message built from values labelled `label`.
-    private def label_error_message(ex : RuntimeError, label : RiskFlowLabel?) : RuntimeError
-      return ex unless label && (obj = ex.error_value.try(&.as_robject?))
-      msg_id = @symbols.intern("message").value
-      if message = obj.ivars[msg_id]?
-        obj.ivars[msg_id] = message.with_label(RiskFlowLabel.join(message.label, label))
-      end
-      ex
-    end
-
-    # Raises a catalog diagnostic for a native method, at the call
-    # site `filename` and `line`, its message labelled `label`. See
-    # `NativeCallContext#raise_error`.
-    protected def raise_native_error(code : String, data : Hash(String, String),
-                                     error_class : String, filename : String, line : Int32,
-                                     label : RiskFlowLabel? = nil) : NoReturn
-      raise runtime_diagnostic(
-        Diagnostic.new(code: code, primary: Span.new(line: line, filename: filename), data: data),
-        current_frame,
-        error_class: error_class,
-        label: label
-      )
-    end
-
-    # Raises `error_class` with a computed message and optional
-    # attributes, as `raise ClassName, "msg"` does. No Diagnostic: the
-    # message is built per call. See
-    # `NativeCallContext#raise_error_class`.
-    protected def raise_native_error_class(message : String, error_class : RubyClass,
-                                           filename : String, line : Int32,
-                                           attributes : Hash(String, Value)? = nil,
-                                           label : RiskFlowLabel? = nil) : NoReturn
-      err_val = make_error_object(error_class, Value.string(message, label), attributes)
-      raise RuntimeError.new(message, filename, line, error_value: err_val)
-    end
-
-    # An unresolved constant. Reports a deliberately excluded name as
-    # such, and anything else as an ordinary uninitialized constant.
-    #
-    # `bare_name` lets a qualified lookup (`Foo::ObjectSpace`) be tested
-    # against the table by its last segment while still reporting the
-    # full path the script wrote.
-    private def undefined_constant(name : String, frame : Frame,
-                                   bare_name : String? = nil) : RuntimeError
-      if code = ErrorCatalog::EXCLUDED_CONSTANTS[bare_name || name]?
-        return excluded_construct(code, name, frame.filename, frame.line)
-      end
-      script_diagnostic("R003", {"name" => name}, frame)
-    end
-
-    # A construct Adjutant will never support, reported as such rather
-    # than as an undefined name.
-    #
-    # Raised as a NameError like R008, and for the same reason: from the
-    # script's side the name genuinely does not resolve, and a script
-    # that rescues NameError should still catch this. The code is what
-    # tells the reader it is never going to resolve.
-    private def excluded_construct(code : String, name : String,
-                                   filename : String, line : Int32) : RuntimeError
-      runtime_diagnostic(
-        Diagnostic.new(
-          code: code,
-          primary: Span.new(line: line, filename: filename),
-          data: {"construct" => name}
-        ),
-        current_frame,
-        error_class: "NameError"
-      )
-    end
-
-    # Shorthand for the ordinary script-fault diagnostics, which all
-    # have the same shape: a code, some substitutions, and the frame.
-    private def script_diagnostic(code : String, data : Hash(String, String), frame : Frame,
-                                  label : RiskFlowLabel? = nil) : RuntimeError
-      runtime_diagnostic(
-        Diagnostic.new(code: code, primary: frame_span(frame), data: data),
-        frame,
-        label: label
-      )
-    end
-
-    # A value's type as a script author would name it, rather than
-    # its Crystal type.
-    private def describe_value(value : Value) : String
-      if obj = value.as_robject?
-        return obj.rclass.name
-      end
-      if cls = value.as_rclass?
-        return cls.name
-      end
-      @interpreter.try(&.builtin_class_for(value)).try(&.name) || "this value"
-    end
-
-    # Shorthand for the internal (`I`) diagnostics raised from inside
-    # the dispatch loop, which all have the same shape: a code, a
-    # couple of substitutions, and the frame in hand.
-    private def internal_diagnostic(code : String, data : Hash(String, String), frame : Frame) : RuntimeError
-      runtime_diagnostic(
-        Diagnostic.new(code: code, primary: frame_span(frame), data: data),
-        frame
-      )
-    end
-
-    # Span for a failure the VM detected, from the frame it happened
-    # in. Line only — see runtime_diagnostic.
-    private def frame_span(frame : Frame) : Span
-      Span.new(line: frame.line, filename: frame.filename)
-    end
-
-    # The error for reassigning a constant. If both values are classes
-    # or modules, this is a reopened class (U003); otherwise an
-    # ordinary reassigned constant (R001).
-    private def constant_reassignment(existing : Value, replacement : Value,
-                                      name : String, frame : Frame) : RuntimeError
-      reopening = !existing.as_rclass?.nil? && !replacement.as_rclass?.nil?
-      runtime_diagnostic(
-        Diagnostic.new(
-          code: reopening ? "U003" : "R001",
-          primary: frame_span(frame),
-          data: {"name" => name}
-        ),
-        frame
-      )
-    end
-
-    # A NameError, as Ruby raises for an unresolved name.
-    private def name_error(msg : String, filename : String, line : Int32, cause = nil) : RuntimeError
-      cls = builtin_class_by_name("NameError")
-      err_val = cls ? make_error_object(cls, msg) : nil
-      RuntimeError.new(msg, filename, line, cause, error_value: err_val)
-    end
-
-    # A class registered by the interpreter, by name: error classes,
-    # Range and the like. Nil if missing.
-    private def builtin_class_by_name(name : String) : RubyClass?
-      sym = @symbols.lookup(name)
-      return unless sym
-      @globals[sym.value]?.try(&.as_rclass?)
-    end
-
-    # A Range object, with its bounds and exclusivity in the `__min`,
-    # `__max` and `__exclusive` ivars, which `builtins/range.cr` reads
-    # by the same names.
-    private def make_range_object(rstart : Value, rend : Value, exclusive : Bool,
-                                  label : RiskFlowLabel?) : Value
-      cls = builtin_class_by_name("Range")
-      unless cls
-        raise runtime_diagnostic(
-          Diagnostic.new(
-            code: "I004",
-            primary: frame_span(current_frame),
-            data: {
-              "class" => "Range",
-            }
-          )
-        )
-      end
-      obj = RubyObject.new(cls)
-      obj.ivars[@symbols.intern("__min").value] = rstart
-      obj.ivars[@symbols.intern("__max").value] = rend
-      obj.ivars[@symbols.intern("__exclusive").value] = Value.bool(exclusive)
-      Value.robject(obj, label)
-    end
-
-    # A Regexp object for MakeRegex. An invalid pattern raises R021
-    # (RegexpError), as `Regexp.new` does.
-    private def make_regexp_object(pattern : String, flags : Int32, label : RiskFlowLabel?) : Value
-      cls = builtin_class_by_name("Regexp")
-      unless cls
-        raise runtime_diagnostic(
-          Diagnostic.new(
-            code: "I004",
-            primary: frame_span(current_frame),
-            data: {
-              "class" => "Regexp",
-            }
-          )
-        )
-      end
-      regex =
-        begin
-          Builtins.compile_regex(pattern, flags, nil)
-        rescue ex : ::Exception
-          raise runtime_diagnostic(
-            Diagnostic.new(
-              code: "R021",
-              primary: frame_span(current_frame),
-              data: {"reason" => ex.message || "invalid pattern"}
-            ),
-            error_class: "RegexpError",
-            label: label
-          )
-        end
-      obj = RegexpObject.new(cls, regex)
-      # `source` carries the pattern's label, as for `Regexp.new`.
-      obj.ivars[@symbols.intern("__source").value] = Value.string(pattern, label)
-      obj.ivars[@symbols.intern("__options").value] = Value.int(flags)
-      Value.robject(obj, label)
-    end
-
-    # A Proc object wrapping a lambda's ScriptProc. Block literals
-    # and def bodies stay bare ScriptProcs.
-    private def make_lambda_object(sproc : ScriptProc, label : RiskFlowLabel?, outer_locals : OuterChain?,
-                                   filename : String, line : Int32) : Value
-      cls = builtin_class_by_name("Proc")
-      unless cls
-        raise runtime_diagnostic(
-          Diagnostic.new(
-            code: "I004",
-            primary: frame_span(current_frame),
-            data: {
-              "class" => "Proc",
-            }
-          )
-        )
-      end
-      obj = RubyObject.new(cls)
-      obj.ivars[@symbols.intern("__sproc").value] = Value.proc(sproc)
-      # Where the lambda was written, for `to_s`, as Ruby reports.
-      obj.ivars[@symbols.intern("__filename").value] = Value.string(filename)
-      obj.ivars[@symbols.intern("__line").value] = Value.int(line.to_i64)
-      # This evaluation's closure; each evaluation of the literal gets
-      # its own.
-      obj.outer_locals = outer_locals
-      Value.robject(obj, label)
-    end
-
-    # An error object of `cls` with its `message`, so a rescue can call
-    # `.message` on any error.
-    private def make_error_object(cls : RubyClass, message : String,
-                                  attributes : Hash(String, Value)? = nil) : Value
-      make_error_object(cls, Value.string(message), attributes)
-    end
-
-    # An error object of `cls` with `message`, a String Value carrying
-    # its label, or nil for none, so its `message` is the class name.
-    private def make_error_object(cls : RubyClass, message : Value?,
-                                  attributes : Hash(String, Value)? = nil) : Value
-      obj = RubyObject.new(cls)
-      obj.ivars[@symbols.intern("message").value] = message if message
-      # Applied after `message`, so a "message" attribute overrides
-      # it.
-      attributes.try &.each do |name, value|
-        obj.ivars[@symbols.intern(name).value] = value
-      end
-      Value.robject(obj)
-    end
-
-    # The error `raise` with `args` raises, as MRI's `make_exception`
-    # decides it. None re-raises the error being handled, else makes a
-    # RuntimeError, "unhandled exception"; a lone String is a
-    # RuntimeError's message; an exception class makes an instance with
-    # only the message that follows, if any; an exception object is
-    # raised as it is, or as a copy carrying the message that follows.
-    # A third argument is the backtrace, checked by `check_backtrace!`.
-    # Anything else raises R064, a TypeError.
-    private def exception_from(args : Array(Value), filename : String, line : Int32) : Value
-      first = args.first?
-      return error_being_handled || builtin_error("RuntimeError", "unhandled exception") unless first
-      return builtin_error("RuntimeError", first) if first.string? && args.size == 1
-      error =
-        if (cls = first.as_rclass?) && exception_class?(cls)
-          new_exception(cls, args[1, 1])
-        elsif (obj = first.as_robject?) && obj.instance_of?("Exception")
-          args.size == 1 ? first : exception_with_message(first, args[1], filename, line)
-        else
-          raise runtime_diagnostic(
-            Diagnostic.new(code: "R064", primary: Span.new(line: line, filename: filename)),
-            error_class: "TypeError")
-        end
-      check_backtrace!(args[2]?, filename, line)
-      error
-    end
-
-    # Raises R066, a TypeError, unless `backtrace` is what MRI's
-    # `rb_check_backtrace` accepts: none, nil, a String or an Array of
-    # Strings. Adjutant keeps no backtrace, so an accepted one is set
-    # aside.
-    private def check_backtrace!(backtrace : Value?, filename : String, line : Int32) : Nil
-      return if backtrace.nil? || backtrace.null? || backtrace.string?
-      return if backtrace.as_array?.try { |items| !items.any? { |item| !item.string? } }
-      raise runtime_diagnostic(
-        Diagnostic.new(code: "R066", primary: Span.new(line: line, filename: filename)),
-        error_class: "TypeError")
-    end
-
-    # Whether `cls` is Exception or a class descending from it.
-    private def exception_class?(cls : RubyClass) : Bool
-      !cls.is_module? && cls.ancestors.any? { |ancestor| ancestor.name == "Exception" }
-    end
-
-    # An error object of the builtin class `class_name` with `message`;
-    # the message alone for a VM built without the class.
-    private def builtin_error(class_name : String, message : String) : Value
-      builtin_error(class_name, Value.string(message))
-    end
-
-    # An error object of the builtin class `class_name` with `message`,
-    # a String Value carrying its label; the message alone for a VM
-    # built without the class.
-    private def builtin_error(class_name : String, message : Value) : Value
-      cls = builtin_class_by_name(class_name)
-      cls ? make_error_object(cls, message) : message
-    end
-
-    # A new instance of the exception class `cls`, as `cls.new(*rest)`:
-    # through its script `initialize` if it has one, else with the first
-    # of `rest` as its message, or the class's name without one.
-    private def new_exception(cls : RubyClass, rest : Array(Value)) : Value
-      if init = script_initialize(cls)
-        inst = Value.robject(RubyObject.new(cls))
-        invoke(init, rest, self_val: inst)
-        return inst
-      end
-      make_error_object(cls, rest.first?.try { |msg| Builtins.exception_message(msg) })
-    end
-
-    # A copy of the exception object `error` carrying `message`, as
-    # Ruby's `Exception#exception(message)` makes for `raise error,
-    # message`. The copy keeps the original's other attributes.
-    private def exception_with_message(error : Value, message : Value, filename : String, line : Int32) : Value
-      copy = copy_value(error, "clone", filename, line) || error
-      ivars = copy.as_robject.ivars
-      msg_id = @symbols.intern("message").value
-      if stored = Builtins.exception_message(message)
-        ivars[msg_id] = stored
-      else
-        ivars.delete(msg_id)
-      end
-      copy
-    end
-
-    # The message of an error value: an object's `message` ivar, a
-    # string itself, or anything else's `to_s`.
-    private def error_message(val : Value) : String
-      if obj = val.as_robject?
-        msg_sym = @symbols.intern("message")
-        m = obj.ivars[msg_sym.value]?
-        m ? (m.string? ? m.as_string : m.to_s) : obj.rclass.name
-      elsif val.string?
-        val.as_string
-      else
-        val.to_s
-      end
-    end
-
-    # Clears the rescue target of the frame's top handler entry, and
-    # pops the entry if it has no ensure, since EnterEnsure never will.
-    private def clear_rescue_portion(frame : Frame) : Nil
-      if top = frame.handlers.last?
-        top.rescue_ip = nil
-        frame.handlers.pop? if top.ensure_ip.nil?
-      end
-    end
-  end
-end
-
-require "./vm_indexing"
+# Scope
+
+Outstanding work: the known defects and gaps. HANDOFF.md says how to
+work; this file says what is left.
+
+Deliberate exclusions are not tracked here; they are in
+[UNSUPPORTED.md](./UNSUPPORTED.md). The closing section explains the
+difference.
+
+An item lives in exactly one of the two sections below, and is removed
+when resolved rather than marked done; the commit log is the history.
+An entry names where to start (a file, a method) and says whether the
+defect was predicted by reading the code or confirmed by a spec or a
+model (HANDOFF.md §3.4).
+
+## Must Fix
+
+Security and policy defects, anything Adjutant accepts and then runs
+differently from Ruby (HANDOFF.md §3.1), and changes that get dearer
+after 1.0. Ordered for working through: security and policy defects
+first, then the Ruby divergences, then design work on policy and
+configuration.
+
+- **Class-method lookup takes a script method from any superclass
+  before a native one nearer.** `find_singleton_method` walks the
+  whole superclass chain before `find_native_singleton_method` is
+  tried, in `dispatch_call` and the static walker, so a script class
+  method on an ancestor wins over a native one of the receiver's own
+  class, where Ruby takes the nearest. The instance-method lookup had
+  the same fault, fixed by `find_any_method`. Predicted by reading the
+  code; reachable only if a script can define a class method on an
+  ancestor of a builtin class with native class methods, which a probe
+  should check first. Fix: a `find_any_singleton_method` walking
+  `singleton_ancestors`, as `dispatch_super` does.
+
+- **Conversions to an Array skip a private `to_a` or `to_ary`.** MRI
+  makes implicit conversions through `rb_check_funcall`, which calls
+  private methods (`CALL_FCALL`, vm_eval.c). The only private methods
+  a script can write are top-level ones (U008), which are methods of
+  Object, so after a top-level `def to_a`, `[*5]` is what it returns,
+  and likewise `to_ary` for `a, b = 5`. `VM#convert_to_array` asks
+  `script_responds_to?`, which counts public methods only, and gives
+  `[5]`. Ruby's side is confirmed from MRI's source; Adjutant's is
+  predicted. Spec: `spec/adjutant/implicit_conversion_spec.cr`. Fix:
+  a lookup that counts private methods and a call that skips the
+  private check, as `rb_check_funcall` does. The same lookup serves
+  the conversions that raise instead (Will Fix, Object model).
+
+- **A block spreads a lone Array, but never converts through
+  `to_ary`.** Ruby gives a block that takes several parameters a lone
+  argument's `to_ary` (`rb_check_array_type` in
+  `vm_callee_setup_block_arg`), so `[pair].map { |a, b| [a, b] }`
+  binds `a` and `b` from it. `VM#spread_block_args` spreads only an
+  Array, so `a` is the object and `b` nil. `for a, b in` takes the
+  same path. Ruby's side is confirmed from MRI's source; Adjutant's is
+  predicted. Spec: `spec/adjutant/implicit_conversion_spec.cr`. Fix:
+  `convert_to_array(arg, "to_ary", ...)` where `spread_block_args`
+  takes `as_array?`.
+
+## Will Fix
+
+Real gaps, not currently blocking anything, no active design conversation
+yet. Promote to `Must Fix` when something starts depending on it.
+
+Grouped by capability so adjacent work is easy to spot — within a group,
+still roughly ordered by how cheap/independent the fix is.
+
+### Parser / lexer gaps
+
+- **`require` parses only as a statement.** `parse_statement`
+  dispatches `KwRequire` to `parse_require`, but `parse_primary`
+  doesn't accept it, so `loaded = require "x"` and `require("x") if
+  ok` raise P002. Found writing the require specs. The call already
+  returns true or false, which a script can't yet capture. Fix: parse
+  `require` (and `load`) as a primary expression.
+
+- **Parentheses hold exactly one expression.** The `LParen` branch of
+  `parse_primary` calls `parse_expression` once, and
+  `parse_multi_assign` is reached only from `parse_statement`, so
+  `if (a, b = ary)` raises P001 at the comma. Ruby parses statements
+  between parentheses, so `()` is nil, `(a; b)` is `b`, and a
+  modifier works there: `(123 if true)` is 123. `()` raises P002, and
+  `(x if c)`, `(x unless c)`, `(x while c)` and `(x rescue y)` raise
+  P001 at the modifier; `(a; b)` is predicted to fail too. A multiple
+  assignment's value is its right-hand side, so `(a, b = nil)` is
+  falsy. Confirmed by `spec/scripts/rubyspec/language/if.rb` and by
+  probing the other modifiers. Fix: parse a statement sequence up to
+  `)`.
+
+- **`then` after an `if`, `elsif` or `unless` condition doesn't parse.**
+  `parse_if` and `parse_unless` go from the condition straight to the
+  body, so `if x then 1 end` raises P002 at `then`; only `when` takes
+  one (`match(TokenKind::KwThen)` in the `case` parser). Confirmed by
+  `spec/scripts/rubyspec/language/if.rb`, and by probing `elsif` and
+  `unless`. Fix: match an optional `then` after each condition, as
+  `when` does.
+
+- **Loops parse only as statements.** `parse_statement` dispatches
+  `loop`, `while`, `until` and `for`, but `parse_primary` doesn't, so
+  `x = loop do ... end`, `(loop { ... })` and `f(loop { ... })` raise
+  P002, as do `while`, `until` and `for` in those places. `if`, `case`
+  and `begin` already work there. In Ruby a loop is an expression:
+  `loop` and `while` give `break`'s value, or nil, and `for` gives its
+  collection. Confirmed by `spec/scripts/rubyspec/loop.rb`, and by
+  probing the others. Fix: parse them as primary expressions.
+
+- **`redo` takes no modifier.** `parse_statement` builds a `RedoNode`
+  and returns, so `redo if a.size < 2` leaves `if` to start a new
+  statement, which then wants an `end` of its own (P002 or P003).
+  `next if` and `break if` work, through `parse_break`. Confirmed by
+  `spec/scripts/rubyspec/redo.rb`; the files there spell each live
+  `redo if` as an `if` block until this is fixed. Fix: let `redo` reach
+  the modifier handling that `parse_expr_statement` does.
+
+- **A multiple assignment takes only plain and splat targets.**
+  `a, (b, c) = x` raises P001, `a, = x` and the anonymous splat
+  `a, * = x` raise P002, and `a, o.t = 1, 2` raises C001: a nested
+  pattern, a trailing comma, a bare `*` and an attribute are all valid
+  Ruby targets. `for` takes none but plain targets, so
+  `for i, *r in`, `for i, (j, k) in`, `for i, in` and `for o.t in`
+  fail too. Confirmed by `spec/scripts/rubyspec/for.rb` and by
+  probing. Fix: `parse_multi_assign` and `emit_store`, then
+  `deal_targets` for the nesting; `for` could compile its targets as
+  a multiple assignment from one block parameter.
+
+- **`class` and `module` are statements whose value is nil.** In Ruby
+  each is an expression giving its body's last value:
+  `x = class Foo; 42; end` sets `x` to 42. Adjutant raises P002 there,
+  and the compiler gives the statement nil. Confirmed by
+  `spec/scripts/rubyspec/for.rb`, whose test ends with `true` until
+  this is fixed, and by probing.
+
+- **`return`, `break` and `next` take one value.** `return 1, 2`,
+  `next 1, 2, 3` and `return *a` raise P002; Ruby collects the values
+  into an Array. `parse_return` and `parse_break` read one expression.
+  Confirmed by `spec/scripts/rubyspec/next.rb` and by probing. Fix:
+  `parse_multi_rhs`, which gathers values and splats as an assignment's
+  right-hand side does.
+
+- **`super` takes no block.** `super { break 1 }` and `super do ... end`
+  raise P002, and in `super() { 2 }` the `{` is read as a Hash
+  (P001). Ruby passes the block to the superclass method; with none
+  given, `super` passes on the current method's block. Confirmed by
+  `spec/scripts/rubyspec/break.rb` and by probing.
+
+- **`class A::B` reads only `A`.** `parse_class` takes one constant as
+  the name, so `class Outer::Inner` opens `Outer` again (U003, a
+  misleading message) and then reads `::Inner` as its body's first
+  statement. Ruby defines `Inner` inside `Outer`. Found while
+  enforcing U014.
+
+- **A lambda's parameters must be parenthesised.** `-> x { x + 1 }`
+  and `-> x, y { ... }` raise P001 ("expected `do`") where Ruby accepts
+  them; `->(x) { ... }` works. Confirmed by
+  `spec/scripts/rubyspec/case.rb`. Fix: in `parse_lambda`, read bare
+  parameters up to `{` or `do`.
+
+- **`defined?` and `Module#const_defined?` don't exist.** Found in the
+  mruby sweep (`test/t/syntax.rb`, `spec/scripts/mruby/float.rb`).
+  `defined?` lexes as an ordinary method name (`lexer.cr`), so
+  `defined?(x) ? x : default` raises instead of answering. It needs a
+  keyword, parser support, and a check per operand kind: expression,
+  `self`, local, method and constant (globals are excluded, U011).
+  `Object.const_defined?(:Float)` is separate work, an ordinary native
+  method.
+
+- **`%W[]`/`%I[]` (interpolating word/symbol arrays) and `%q`/`%Q`/`%r`
+  (the general delimited-literal forms) aren't supported — only plain
+  `%w[]`/`%i[]` are.** Added 2026-08-19 alongside `%w[]`/`%i[]` itself
+  going in for the first time (see `DEVELOPMENT.md`'s "The Lexer"
+  writeup) — a deliberate scoping decision, not a later-discovered
+  gap: `%w[]`/`%i[]` cover the common "word array"/"symbol array"
+  idiom the Must Fix entry was written against, and the interpolating/
+  general forms are rare enough in practice to leave for whoever wants
+  a follow-up. Mechanically similar to add: `%W`/`%I` would need the
+  word-splitting step to also watch for `#{...}` per word (closer to
+  the heredoc interpolation path than the plain `%w` one), and `%q`/
+  `%Q`/`%r` are just `'...'`/`"..."`/`/.../ ` with an arbitrary
+  delimiter instead of the fixed one.
+
+- **A bare `next`, `break` or `return` directly before `}`, `end` or
+  `else` fails to parse.** `jump_value_follows?` (parser.cr) treats
+  only a newline, `;`, end of file and a modifier `if`/`unless` as "no
+  value here", so in `items.each { |x| next }`, `if a; break end` and
+  `if a; break else next end` the parser tries to read `}`, `end` or
+  `else` as the keyword's value (P002). Ruby accepts all three.
+  Confirmed by `spec/scripts/rubyspec/break.rb` and `next.rb` and by
+  probing; the files there spell each live one with a `;`
+  (`{ break; }`) until this is fixed. Fix: add `RBrace`, `KwEnd` and
+  `KwElse` to that list.
+
+- **Do `class`/`module` bodies want the same implicit `rescue`/`else`/
+  `ensure` treatment `def` bodies just got?** Open question, not a
+  confirmed gap — flagged 2026-08-10 when `def`'s own version shipped
+  (see `DEVELOPMENT.md`'s "Method-body (implicit) rescue" section).
+  Real Ruby's grammar treats `def`, `class`, `module`, and top-level
+  program bodies uniformly as an implicit `begin` ("bodystmt") — so
+  plausibly yes, `class Foo; risky; rescue; end` is valid Ruby too —
+  but this hasn't actually been confirmed against real Ruby the way
+  the `else`-without-`rescue`/duplicate-`else` behaviors were
+  (`irb`-confirmed, see `parse_begin_else`'s own comments). If
+  confirmed, the fix is likely the same shape `parse_def`'s just used
+  — `parse_class`/`parse_module` (`parser.cr`) wrapping their own
+  parsed body in a synthetic `BeginNode` via the same
+  `parse_rescue_else_ensure` helper, reusing the identical
+  compile/runtime path with no new compiler or VM work either.
+
+- **Assignment through `&.` ignores or refuses the `&.`.**
+  `obj&.name = x` builds an AttrAssign without the safe flag, so a nil
+  `obj` raises NoMethodError where Ruby skips the call and gives nil;
+  `obj&.count += 1` and `h&.[](k) ||= v` fall to the variable path and
+  raise C001. Predicted by reading the code. Fix: a safe flag on
+  AttrAssign, and `compound_target` taking `&.` targets, both jumping
+  past the call when the receiver is nil, as `SafeCall` does.
+
+- **Keywords are named by Symbols only.** `f(**{"a" => 1})` raises
+  R012, even where `f` takes `**opts`, which Ruby fills with the String
+  key; `keywords_from` rejects any key that isn't a Symbol, since
+  `@pending_kwargs` is keyed by name. Fix: carry the keywords as a
+  Hash of Values, with Symbol keys for keyword parameters.
+
+- **No anonymous rest parameters, `**nil`, or `...` forwarding.**
+  `def f(*)`, `def f(**)` and `def f(**nil)` don't parse, nor does
+  `def f(...); g(...); end`, Ruby's spelling of
+  `(*args, **opts, &blk)`. `...` also needs a block parameter (U001).
+  Fix: anonymous Params the forwarding call reads, and `**nil` as a
+  parameter that refuses every keyword.
+
+- **Keywords never become a positional Hash.** Ruby passes keywords
+  to a method that declares none as a trailing positional Hash:
+  `def f(h) = h; f(a: 1)` gives `{a: 1}`, and so does `f(**{a: 1})`.
+  `check_unknown_keywords!` raises R012 instead. Predicted by reading
+  the code. Fix: in `bind_args`, for a method with no keyword or
+  keyword-rest parameter, append the keywords to the positional
+  arguments as one Hash with Symbol keys.
+
+- **`super` and `yield` take no keywords.** `super(k: 1)`,
+  `super(**opts)` and `yield k: 1` raise P001 or P002, since
+  `parse_paren_positional_args` and `parse_bare_positional_args` read
+  positional arguments only, and SuperNode and YieldNode hold no
+  keywords. Predicted by reading the code. Fix: parse them as a call's
+  arguments are, and stage them as `compile_kwargs` does.
+
+- **A splat is accepted only where a list spreads it.** Call arguments,
+  `yield` and `super` arguments, Array literals, an assignment's values
+  and `when` lists take `*x`; an index (`a[*i]`), a `rescue` list
+  (`rescue *ERRORS`) and an index assignment's value (`h[k] = *a`)
+  raise P002, as Ruby does not. Predicted by reading the code. Fix:
+  `parse_splat` at each site, then `compile_spread` and a spread index.
+- **An operator Symbol right after `:` in a ternary lexes as a Symbol.**
+  The lexer reads `:+`, `:<=>` and the other operator Symbols wherever
+  an expression can start, so `x ? a :-1` lexes `:-` as a Symbol and
+  fails to parse. Ruby reads it as a ternary. Spacing it as
+  `x ? a : -1` works. The fix is tracking an open `?` in the lexer.
+
+- **`x -1` after a local `x` is read as a call.** In Ruby a local
+  before `-1` or `+1` makes the sign binary, so `x = 5; x -1` is 4.
+  `parse_identifier_or_call` checks `known_local?` before `[`, `&` and
+  `*`, but not before `signed_literal_starts_bare_call?`, so it builds
+  a call of `x` with `-1`, which raises NoMethodError. Predicted by
+  reading the code. Fix: the same `known_local?` test.
+
+- **`and` and `or` are accepted where Ruby's grammar takes an `arg`.**
+  `when` lists, `return`, `next` and `break` values, Array and Hash
+  literal elements, index arguments, parameter defaults and `rescue`
+  class lists are parsed at precedence 0, so `when 1 or 2`,
+  `return a or b`, `[a or b]`, `h[a or b]`, `def f(x = a or b)` and
+  `rescue A or B` run where Ruby raises a SyntaxError. No program Ruby
+  accepts runs differently, so this only lets a mistaken script run.
+  Predicted by reading the code. Fix: `parse_positional_arg`, which
+  calls, `yield`, `super` and `raise` already use, in `parse_case`,
+  `parse_return`, `parse_break`, `parse_array_literal`,
+  `parse_hash_or_block_brace`, `parse_postfix`'s index branch,
+  `parse_param` and `parse_rescue_clause`.
+- **A `do` block inside a loop header's brackets raises.**
+  `@no_do_block` holds for the whole of a `while`, `until` or `for`
+  header, so `while (items.any? do |i| i > 2 end)`, or a `do` block
+  inside a brace block in the header, raises a parse error. Ruby
+  suspends the loop's claim on `do` inside `(`, `[` and `{`
+  (`COND_PUSH(0)` in parse.y). Fix: save and clear the flag inside
+  each bracket, restoring it after, as `@no_pipe` is suspended inside
+  a nested block.
+
+### Verified only up to compile time, never actually run
+
+Constructs the parser and compiler both have real, non-trivial code
+paths for, but with zero test coverage that actually executes them
+through the VM — so "does this work" is currently an assumption, not a
+checked fact. Worth taking seriously as its own category rather than
+folding into ordinary missing-feature gaps: this exact shape (a
+complete-looking implementation nobody had ever actually run) is
+precisely what `redo`'s `LoopScope#body_pos` bug and
+`compile_modifier_while`'s check-last-for-everything bug both turned
+out to be, found 2026-08-06 only because that session's fix happened
+to need a test that finally exercised them. Nothing here is *known*
+broken — only unconfirmed, which the pattern above suggests is not the
+same as fine.
+
+Empty as of 2026-08-06 — `case`/`when` was this category's one
+remaining entry (found earlier the same day, no VM-level test anywhere in the
+repo despite a real, seemingly complete `compile_case`), and this
+session's `===` work closed it properly: `control_flow/vm_spec.cr` now
+covers literal matching, `else` fallthrough, `Class#===`, `Range#===`
+(inclusive and exclusive), and the plain-`==` fallback. Confirms the
+category's own framing was right to take seriously — this wasn't
+"probably fine," it was hiding the exact `===` fallback bug the
+adjacent `Must Fix` item existed to fix, undiscovered specifically
+because nothing had ever run it.
+
+### Error reporting
+
+- **Runtime diagnostics have a line but no column, so no caret.** The
+  AST carries columns, but `Instruction` (`bytecode.cr`) and `Frame`
+  (`vm.cr`) record only a line. On a dense line (`foo(bar.baz, qux[i])`)
+  the reader can't tell which call failed. A column on every
+  instruction costs memory per instruction; a table from instruction
+  index to column, filled only where the compiler emits a call, may be
+  cheaper.
+
+- **`ParseError` and `CompileError` keep a message-only constructor
+  nothing uses.** Every raise site in `parser.cr` and `compiler.cr`
+  builds a `Diagnostic`; `ParseError.new(message, line, column)` and
+  `CompileError.new(message, line, column)` are reached only by
+  `diagnostic_spec.cr:172`. `HostStateError.new(message)`
+  (`diagnostic.cr`) likewise has only a spec caller. Removing them
+  makes `diagnostic` non-nilable on those classes and lets callers
+  drop their nil handling. `InternalError.new(message)` is still used
+  and stays.
+
+- **U008, U009, U012, U013, U015's `undef` and U021 are decided but
+  not enforced.**
+  See `UNSUPPORTED.md` for each. Using one falls through to a generic
+  undefined-name, undefined-method or parse error that doesn't name
+  the construct, the failure shape `UNSUPPORTED.md`'s second principle
+  forbids. U021 costs the most in practice: a model reaching for
+  `File.read` or `ENV` is told the constant is uninitialized, not that
+  `Legate.read` or `Legate.env` is the way. Enforcing U021 is mostly
+  entries in `ErrorCatalog::EXCLUDED_CONSTANTS` (`File`, `ENV`, ...)
+  and `EXCLUDED_METHODS` (`system`, `exec`, ...), which are consulted
+  only after resolution fails. U008, U009 and U021 are
+  lookup-after-resolution-fails checks, the mechanism U005–U007 use
+  (`dispatch_call` and constant resolution, `vm.cr`); U012, U013 and
+  U015's `undef` fail in the parser today, so each needs its own
+  enforcement point. U015's hooks are enforced at compile time.
+  Backticks and `%x{}` have no case in the lexer at all, so theirs is
+  there.
+
+- **U007's reflection exclusion is a category, not a list, so only
+  `ObjectSpace` is enforced.** Added 2026-07-29 while enforcing U005–U007.
+  `UNSUPPORTED.md`'s U007 entry describes "arbitrary FFI,
+  `ObjectSpace`-style introspection, and similar" — a shape rather than an
+  enumerated set. `ObjectSpace` could be enforced because it is named;
+  everything else reflective (`binding`, `methods`, `instance_variables`,
+  `instance_variable_get`, and so on) still reports as an ordinary
+  undefined name.
+
+  Deliberately not enumerated during that work: deciding which names are
+  permanently excluded is a scope decision, and making it while writing
+  the enforcement would have settled it by implementation rather than by
+  choice. The same applies to `class_eval`/`module_eval`/`instance_exec`
+  under U006 — the same hazard as `eval`, but not currently declared.
+
+  Worth a short scoping conversation to settle both lists, after which
+  enforcement is a one-line table addition each.
+
+
+Quality-of-diagnostic gaps in the `Diagnostic`/`ErrorCatalog` system
+(see [ERRORS.md](./ERRORS.md)). None affect correctness — every one is
+"the error is right, but says less than it could."
+
+- **`@def_depth` counts nesting but doesn't record what the enclosing
+  scope was, so U004 can't name it.** Added 2026-07-28 while migrating
+  U004 to a diagnostic. The guard in `Compiler#compile_def` fires on
+  `@def_depth > 0`, which is enough to know a `def` is nested inside
+  *something* deferred but not whether that something was a `def` or a
+  lambda, nor its name. The message therefore says "inside another
+  method's body" generically, where it could say "inside method
+  `foo`" and point a secondary span at `foo`'s own definition —
+  materially more useful when the two are far apart in a long file, or
+  when the nesting was accidental.
+
+  The fix is to make `@def_depth` a small stack of
+  `{kind, name, line, column}` rather than an `Int32`, threaded
+  through `compile_proc` the same way the counter already is. Depth
+  then becomes the stack's size, so the existing guard condition is
+  unchanged. Deliberately deferred when U004 was migrated: it turns a
+  counter into a data structure across every `compile_proc` call site,
+  which is a wider change than the migration it would have ridden
+  along inside.
+
+  Would also give U004 its first real use of a secondary span, which
+  nothing exercises yet.
+
+- **`Interpreter#render_error` won't take an error rescued with
+  others.** Its parameter is the union of `ParseError`,
+  `CompileError`, `RuntimeError`, `HostArgumentError`,
+  `HostStateError`, `InternalError` and
+  `AmbiguousRiskFlowPolicyError`. A variable bound by
+  `rescue ex : ParseError | CompileError` is typed as their common
+  parent, `Exception`, which that restriction refuses at compile time,
+  so a host rescuing several in one clause must dispatch on each type
+  first, as `Worker#raised` does. Fix: take `Exception`, returning nil
+  for a type with no diagnostic, as it already does for one whose
+  diagnostic is nil. Found writing the Worker.
+
+### Object model
+
+- **Indexing can't reach a script-defined `[]` or `[]=`.**
+  `vm_indexing.cr` calls an object's native `[]` and `[]=`, and a
+  Proc's `call`, synchronously from inside the index opcodes. A script
+  method would need a frame pushed and the dispatch loop to resume it,
+  which those opcodes can't do. Nothing needs it today: a script can't
+  define `[]` or `[]=` at all (U017). If that changes, the index
+  opcodes need to dispatch through the ordinary call path.
+
+- **`*`, `%` and the bitwise operators don't dispatch to an object's
+  own method.** `exec_add`, `exec_sub` and `exec_div` (`vm.cr`) call a
+  left-hand object's own `+`, `-` or `/` (Time uses the first two,
+  `Legate::Path` the third); `Op::Mul`, `Op::Mod`, `Op::BitAnd` and
+  the rest go straight to `ValueOps`. No builtin or Legate class
+  defines one of those, and a script can't (U017), so today an object
+  gets NoMethodError from `operator_defined?`. A native class that
+  defines one would get a TypeError instead of its method.
+
+- **No `Numeric` ancestor class in the `RubyClass` hierarchy, so
+  `5.is_a?(Numeric)` fails rather than returning `true`.** Long-
+  standing, untriaged since the original 2026-07-14 handoff bundle —
+  reworded 2026-08-10 on review: the previous framing implied this
+  silently returns a wrong answer, which isn't what actually happens.
+  No class named `Numeric` is registered anywhere (`grep` confirms),
+  so referencing it at all fails at constant resolution first — a
+  clean, loud `R006` (undefined constant), not a silent `false`. Real
+  gap, genuinely missing feature, but the loud-failure kind rather
+  than the incorrect-in-normal-use kind. Narrowed 2026-08-06,
+  separately from this rewording: `<=>` itself already works for
+  `Integer`/`Float`/`String` (`ValueOps.spaceship`, `exec_builtin`'s
+  `"<=>"` case), which was this item's original practical motivation
+  and is no longer the gap — what's left is specifically the
+  class-hierarchy piece.
+
+- **Bare `new` (implicit `self`, no explicit receiver) doesn't
+  dispatch inside a class method.** Found 2026-08-10, writing test
+  coverage for the method-body-rescue fix — `def self.run; c = new;
+  ...; end` raises `R008` ("undefined method or variable `new`"),
+  while the exact same call written as `ClassName.new` works fine.
+  `VM#dispatch_call`'s explicit-receiver branch has its own hardcoded
+  `if recv.rclass? && name == "new"` special case for object
+  construction — the implicit-self branch (self already IS the class,
+  inside a class method) walks `find_singleton_method`/
+  `find_native_singleton_method` normally instead, and `new` isn't
+  actually registered in either of those tables; it only exists as
+  that explicit-receiver special case. Not yet traced further than
+  that — likely needs the same special-casing mirrored into the
+  implicit-self branch, or `new` registered as a real native singleton
+  method both branches would find the same way.
+
+- **Top-level `extend` doesn't work — deliberately still excluded,
+  not yet a real gap fix.** Bare top-level `include M` shipped
+  2026-08-16 (see `DEVELOPMENT.md`'s "Bare `include` at the top level
+  of a script" writeup for the full build-out) — this item is the
+  narrower remainder, `extend` specifically, left out of that work on
+  purpose rather than folded in. Confirmed against real `irb`:
+  top-level `extend M` writes to a genuine PER-OBJECT singleton class
+  belonging to `main` alone — `Object`'s own ancestors stay untouched,
+  sibling `Object.new` instances are unaffected, and `Object.foo`
+  doesn't pick up the extended method either (all three behaviors
+  confirmed directly, not inferred). `RubyObject` has no storage for
+  a per-instance singleton method table at all today — only
+  `RubyClass` carries one (`singleton_methods`/`extended_modules`) —
+  so `extend`'s existing mechanism (`RubyClass#extend_module`,
+  consulted by `find_singleton_method`/`find_native_singleton_method`)
+  has nowhere correct to target from `main`: writing into `Object`'s
+  own `extended_modules` would make `Object.foo`-style calls work
+  (wrong — real Ruby doesn't) while leaving bare calls at the top
+  level unaffected (also wrong — that's the actual goal), the exact
+  opposite of what's needed. Fix shape, if taken on: give `RubyObject`
+  a genuinely new field (a `singleton_methods`/native counterpart,
+  `nil` for every object except `main`), and a new lookup step in
+  `dispatch_call`'s implicit-self `RubyObject` branch — checked BEFORE
+  `cls.find_method`, matching the real `irb`-confirmed resolution
+  order (`self.hello` found the extended method ahead of anything
+  `Object` itself could offer) — gated on `self_val.same?(interp.main)`,
+  the same restriction the shipped `include` fix already uses. Real,
+  separate plumbing, not a small addition to the `include` mechanism —
+  worth its own session rather than a quick follow-on.
+
+Per-instance singleton methods became a deliberate non-goal 2026-07-27
+(see [UNSUPPORTED.md](./UNSUPPORTED.md), U004). Implicit-`self`
+privacy/visibility (`private`/`public`/`protected`) became a deliberate
+non-goal 2026-08-05 (see UNSUPPORTED.md, U008) — this remains true for
+visibility as a general, declarative feature; top-level `def` shipped
+its own narrow, always-on private treatment 2026-08-16, not a
+reopening of that decision (see DEVELOPMENT.md's "Top-level `def` is
+implicitly private" writeup for the distinction). `Class.new(kwargs)` →
+`initialize` binding was promoted to `Must Fix` 2026-08-05 and has
+since shipped (see git history/`DEVELOPMENT.md`'s "Argument binding"
+section).
+
+- **Conversions that raise where Ruby converts.** Three conversions
+  MRI makes through `rb_check_funcall` raise a TypeError here: `**x`
+  with a private (top-level) `to_hash` raises R065, where
+  `rb_to_hash_type` calls it; `raise obj` for an object defining
+  `exception` raises R064, where `make_exception` raises what that
+  method returns; and `raise obj` for an object with `to_str` raises
+  R064, where `make_exception` raises a RuntimeError with that
+  message (`rb_check_string_type`). Fix: the private-method lookup
+  from Must Fix's Array conversion entry, and `VM#exception_from`
+  calling `exception` and `to_str` as `make_exception` does.
+
+### Data & builtin types
+
+- **`Array` has no `#count` at all** (`#length`/`#size` exist, `#count`
+  doesn't — checked `array.cr` directly). Found 2026-08-24 writing a
+  `Legate::Stream` spec that called `.to_a.count` out of habit. Real
+  Ruby's `#count` is `#size`'s more common spelling in idiomatic code
+  and also overloads to count matching elements (`#count { }` /
+  `#count(x)`, unlike plain `#size`) — worth adding both the bare
+  alias and the block/argument forms together rather than just the
+  alias, since an LLM reaching for `#count` is at least as likely to
+  want the filtered form.
+
+- **A TypeError from a binary operator renders a nil right-hand side as
+  nothing.** `ValueOps` builds its messages with `#{a}` and `#{b}`, and
+  `Value#to_s` of nil is the empty string, so `1 + nil` reports
+  `cannot add 1 and `. The gap is where the answer is. `inspect` gives
+  `cannot add 1 and nil`. (A nil left-hand side now raises
+  NoMethodError before `ValueOps` runs.)
+
+- **`Integer`/`Float` are both missing `#divmod`.** Found 2026-08-13
+  triaging `spec/scripts/mruby/float.rb`'s commented-out `Float#divmod`
+  block. Real Ruby's `#divmod` returns `[quotient, remainder]` as a
+  single call — `/` and `%` already work individually (opcode-level,
+  `ValueOps.div`/`.mod`) so this is purely a convenience wrapper
+  around two things that already work correctly on their own, not a
+  new arithmetic primitive. Lower priority than the other Data &
+  builtin types entries here — no known common idiom depends on it
+  the way `Integer#times` or `Array#first` did.
+
+- **`Range` beyond `Integer` (and whatever else has a working
+  `#succ`) — String ranges, custom-object ranges — isn't supported.**
+  Long-standing, untriaged since the original 2026-07-14 handoff
+  bundle — split out 2026-08-10 on review. `Range#each`'s advance
+  mechanism (`vm.cr`, the `#succ`-calling case) is already generic
+  over anything with a working `#succ`, not hardcoded to `Integer` —
+  so this narrows to whatever's still missing beyond that (bound-type
+  validation at construction, `#include?`/`#cover?` for non-`Integer`
+  bounds, string ranges specifically since `String#succ` needs its
+  own char-advance logic Ruby has and Adjutant may not). Not yet
+  traced further than that — worth confirming exactly which piece is
+  missing (a quick `("a".."e").each` test) before scoping the fix,
+  rather than assuming the whole feature is absent when `#each`'s own
+  mechanism already generalizes.
+
+- **String repetition** (`"ab" * 3`). `ValueOps.op` (the method backing
+  `*`, see `value_ops.cr`) has real `Integer`/`Float` cases but no
+  `String` one — `+`, `==`, and `<`/`<=`/`>`/`>=` all DO already work for
+  strings at the opcode level (see `ValueOps.add`/`.equal?`/`.compare`),
+  so this is narrowly about `*` specifically. Noticed while bootstrapping
+  the `String` builtin class (Phase 4a of base types); out of scope there
+  since that work only wires up native METHODS, not opcodes.
+
+- **No structured audit-trail export beyond `RiskFlowLog` itself.**
+  Nothing turns a `RiskFlowLog` into a saved/replayable session record.
+- **The approval cache** (avoid re-prompting for an already-approved
+  origin→sink flow within one script run) — still not designed. More
+  pressing since risk-flow checks moved to each subject: `fetch` asks
+  per redirect hop, and `mv` per authority. If the cache's scope (per
+  run, per origin and subject) needs the host's say, it changes the
+  decision callback's contract, and belongs in Must Fix.
+
+- **No `Exception#cause` or `#backtrace`.** Ruby sets `cause` to the
+  error being handled when a rescue body raises, or to `raise`'s
+  `cause:`, and `backtrace` to the frames, or to `raise`'s third
+  argument. Neither method exists, so each raises R047. `raise` checks
+  its third argument as Ruby does and sets it aside, and raises R012
+  for `cause:`.
+
+### Standard library surface
+
+- **`catch`/`throw` (Kernel non-local jump, tagged block).** Found
+  2026-08-05 in the mruby full-repo sweep — mruby packages this as an
+  optional gem (`mruby-catch`) rather than core language, which is the
+  right call for Adjutant too: `catch`/`throw` are `Kernel` methods in
+  real Ruby, not keywords, so nothing about the language grammar needs
+  to change. Buildable as a native module on top of the exception
+  machinery already built for `raise`/`rescue` (a tagged non-local
+  jump is structurally close to a targeted raise) rather than needing
+  new opcodes — natural fit for the core-API-library work rather than
+  a standalone language-layer item. Filed here rather than under a
+  language-gap group for that reason.
+
+- **`block_given?` and `LocalJumpError` don't exist.** Both raise
+  (R008, R003). What Adjutant does where Ruby raises LocalJumpError,
+  such as `break` from a block whose method has returned, is
+  unverified. Found with `spec/scripts/rubyspec/break.rb`.
+
+- **`Array#clear` and `#delete`, and `Integer#upto`, don't exist.**
+  Each raises R047 (for `#count`, see Data & builtin types). Found with
+  `spec/scripts/rubyspec/break.rb` and `redo.rb`.
+
+- **`Kernel#local_variables` doesn't exist.** It raises R008. Found
+  with `spec/scripts/rubyspec/for.rb`.
+
+- **`Object#then` and `#yield_self` don't exist.** `x.then { |v| ... }`
+  raises R047. Both yield the receiver and return the block's value.
+  Found with `spec/scripts/rubyspec/case.rb`.
+
+- **`Integer#[]` takes only a bit index.** `n[i, len]` and `n[i..j]`
+  (Ruby 2.7) raise ArgumentError and TypeError (R046, R048) rather
+  than returning the bits.
+
+- **Optional arguments Adjutant doesn't implement raise ArgumentError.**
+  Each builtin method declares the arity it implements, so an argument
+  Ruby accepts and Adjutant would ignore raises R046 instead of
+  producing a different answer: `Array#pop(n)`, `#min(n)`, `#max(n)`,
+  `#any?(pattern)`, `#all?(pattern)`;
+  `Range#min(n)`, `#max(n)`, `#last(n)`; `String#to_i(base)`,
+  `#upcase`/`#downcase`/`#capitalize` options, several prefixes to
+  `#start_with?`/`#end_with?`, `#match(str, pos)`; `Regexp#match` and
+  `#match?` with a position; `MatchData#[](start, length)`;
+  `Time.at`'s unit; `Time.utc`/`local`'s ten-argument form;
+  `Time#localtime(offset)`, `#getlocal(offset)`; `Comparable#clamp`
+  with a Range; `include` and
+  `extend` with several modules. Each is supported by
+  implementing the argument and widening the declared arity.
+
+### Streamed fetch on Windows
+
+- **A script that raises inside a streamed `Legate.fetch` walk
+  terminates the host process on Windows.** Found 2026-09-04 via CI.
+  Exit `0xC0000409` — a fail-fast during exception unwinding, aborting
+  inside MSVC's `FindAndUnlinkFrame`, which is an integrity check on
+  the registered SEH frame list. Uncatchable by construction: it fires
+  before any handler, and rescuing every exception changes nothing.
+
+  **Believed to be a Crystal runtime defect rather than an Adjutant
+  one**, on this evidence. Each of the three ingredients passes alone
+  and only the combination dies: a raise unwinding through VM frames
+  is fine (`begin_rescue_ensure/vm_spec.cr`), the same shape over a
+  FILE-backed stream is fine (`open_sources_spec.cr`'s "closes a
+  stream whose walk raised"), and cancelling a socket-backed stream
+  without unwinding is fine (a `break` instead of a `raise`). It
+  reproduces on Crystal 1.20 and latest, and does NOT need the test's
+  in-process server — it crashes just the same against a static file
+  server in another process, so it reaches real deployments rather
+  than only the harness. Six standalone reproductions were attempted
+  and none crashed; the trigger needs something structural the VM
+  supplies that a small program does not.
+
+  `verbs/fetch_stream_spec.cr`'s "closes the connection when the
+  script raises mid-walk" is `pending` under `flag?(:windows)` —
+  skipped, not deleted, so the coverage returns when the runtime is
+  fixed. **Windows is therefore not a supported host for streamed
+  `fetch`.** Buffered `fetch` was never tested and may or may not be
+  affected. Not blocking on macOS or Linux, which is where the early
+  access work is aimed.
+
+  Parked deliberately: there is no sound fix available in this repo,
+  and the investigation has already cost more than the platform is
+  currently worth. To pick it up, the route that worked was cutting
+  DOWN from the crashing spec, not building UP from a small program.
+
+  **Leading lead, unverified.** The Supervisor's specs died the same
+  way on Windows, and were fixed by not waiting on other fibers inside
+  a Crystal `rescue` or `ensure` (DEVELOPMENT.md, "Crystal's own
+  `rescue` and `ensure` on Windows"). `Interpreter#eval`'s `ensure`
+  closes every open stream source while a script's error propagates,
+  and closing a socket-backed stream can wait on the event loop. That
+  fits two of the ingredients above: the raise supplies the exception
+  in flight, the socket the wait. What supplies a fiber that raises
+  during the wait is the open question, and may be what the small
+  programs lacked. To test it: rescue into a variable in `eval`, close
+  the sources after the handler, re-raise, and un-pend the spec.
+
+### Providers
+
+- **Effect providers are named, not loaded.** Each provider claims
+  and parses its own keys in the policy document, but
+  `Policy.default_sections` lists core's and Legate's,
+  `Policy.grants_from` assembles their shares into a
+  `Legate::Grants`, and the `Interpreter` builds Legate's broker
+  itself. A second provider would edit all three. Loading providers
+  generically would hand each its `PolicyShare` and let it build its
+  own broker. There is no second provider to design that against.
+  `Authority` stays a closed enum whatever is loaded: it keys
+  `RiskFlowRule`, `RiskFlowPolicy.reject_all` must cover every
+  member, and the manifest's vocabulary must not depend on which
+  providers are present.
+
+### Risk-flow tracking
+
+- **A branch decided by a labelled value leaves no record.** Adjutant
+  tracks explicit flows only (`research/IFC_DESIGN.md`), so `hit = c if
+  secrets.include?(c)` followed by sending `hit` leaks through control
+  flow, though nothing labelled leaves. `Op::JumpIfFalse` and
+  `Op::JumpIfTrue` record nothing in the risk-flow log, so not even an
+  audit after the run shows it. Fix: record a `Branch` event when a
+  conditional jump pops a labelled value, ideally one entry per line and
+  label with a count, since a loop repeats it. A record for review, not
+  a prompt: many scripts legitimately branch on sensitive data.
+
+### Static risk assessment
+
+- **Calls a script makes implicitly are not walked.** RiskWalker walks
+  a script method's body where a call names it, so a method reached
+  without a call by name escapes it: a splat's `to_a`, an
+  interpolation's `to_s`, an operator a script class defines. A
+  `to_a` that reads a file shows no risk at `[*obj]`. The Broker still
+  enforces grants when it runs. Predicted by reading the code. Fix:
+  where the receiver's type is known, walk the conversion or operator
+  method it would reach. What to report where it isn't is open, since
+  nearly every interpolation would qualify.
+
+- **LEGATE.md §10's static analyser isn't built.** No grant
+  inference, exception gate, inclusion ledger or raise-set inference
+  exists, and `risk_walker.cr` doesn't mention Legate. Nothing depends
+  on it for safety: §9.2's fatal tier is uncatchable at runtime
+  whatever the analyser does. Building it starts with a design
+  question, what the "effectful surface" is. §10.4 counts 19 verbs
+  (§4.1 to §4.5); 16 declare an `Authority`; 25 exist. The answer sets
+  what grant inference and raise-set inference cover. §10.1 keys
+  inference on registered providers, not on Legate alone.
+
+### Legate
+
+- **Legate verbs don't check positional arity.** Verbs are registered
+  with `define_native_singleton_method`, whose arity defaults to any
+  count, so `Legate.read(path, extra)` ignores `extra`. Missing
+  arguments already raise each verb's own code (R035, R040, R041,
+  R043). Declaring each verb's arity would make extras raise R046 like
+  the Legate classes' methods, which do declare theirs.
+
+- **A script can't take over a body-less redirect.** With `redirects:
+  0`, a redirect raises `Legate::TransportError`; only a request with a
+  body gets `Legate::RedirectError`, which carries `status` and
+  `location`. Since a cross-origin hop drops every header but four
+  defaults and those `net.redirect_headers` names, a script whose target
+  needs another has no way to re-issue the request itself. Fix: raise
+  `Legate::RedirectError` whenever the redirect budget is spent at 0.
+  Wait for a live case before building it.
+
+- **`Legate::Path#under?` doesn't resolve `..`.** It compares
+  components lexically, so `Legate::Path.new("/work/../etc")` is
+  `under?` `/work`, and `split_path` splits on `/` only, so a Windows
+  path is one component. The broker doesn't use it, since grants
+  resolve with `realpath`, so this is no escape; but a script using
+  it as a boundary check, as LEGATE.md §5.1 invites, gets a wrong
+  answer. The fix is normalising `.` and `..` before comparing, and
+  refusing (or documenting) a relative path that climbs above its
+  start.
+
+- **Audit records lack §8.7's bytes, duration and argument detail.**
+  LEGATE.md §8.7 asks for bytes moved, duration, and arguments with
+  bodies hashed; its status table already says "narrower than
+  specified". An `AuditRecord` has timestamp, verb, subject,
+  authority, decision and exception class. The broker writes it before
+  the effect runs, so bytes and duration aren't known yet; meeting §8.7
+  needs the record completed after the verb finishes, or a second
+  record. Unchecked: whether a stream's re-iteration writes a distinct
+  record, and whether a fatal exception is recorded before unwinding,
+  both of which §8.7 also requires.
+
+- **`Legate::Stream` implements 9 of the ~35 operations §6
+  specifies.** Found 2026-09-21 in the census for the agent skill.
+  `stream.cr` defines `map`, `select`, `reject`, `take`, `first`,
+  `each`, `count`, `sum` and `to_a`; the rest of §6.2–§6.4 (`each_slice`,
+  `with_index`, `find`, `min`/`max`, `reduce`, `top_by`, `tally`,
+  `sort_by`, `group_by`, …) do not exist, yet LEGATE.md §0 marks §6
+  "Built". §0 now says "Partial" and lists the nine. Build the rest by
+  what the skill exam shows models actually reach for.
+
+- **`Stream#to_a`'s `TooLargeError` hint names methods that don't
+  exist.** Found alongside the above. The message recommends
+  `each_slice`, `top_by` or `tally`, none of which a stream has, so a
+  model that follows the diagnostic gets a second error. LEGATE.md §9's
+  `TooLargeError`/`TooManyError` rows have the same problem. Until those
+  operations exist, the hint should name what does: `each`, `take` or
+  `first(n)`.
+
+- **The pinned socket's TLS path is only exercised when a transcript
+  is RECORDED.** Found 2026-08-30. The plain socket half is covered
+  offline: `http_client_pinning_canary_spec.cr`
+  stands up a loopback HTTP server and pins to it from a client whose
+  hostname (`canary.invalid`) cannot resolve, so a response can only
+  arrive if the pinned address was used and the name never consulted.
+  What that spec does NOT cover is the `OpenSSL::SSL::Socket::Client`
+  branch — SNI and certificate verification against the logical
+  hostname while connected to the pinned address — because that needs
+  a local TLS server with a certificate the client will accept. Will
+  Fix. The practical verification meanwhile is re-recording: deleting
+  a transcript under `spec/transcripts/` and re-running with
+  `WIRETAP_RECORD=1` forces a real TLS handshake through the pinning
+  override. Fix shape: a
+  self-signed certificate generated per-run plus a client context
+  trusting it, which is a chunk of setup worth doing deliberately
+  rather than inline in a spec.
+
+- **`Legate.fetch`'s `body:` does not stream an Enumerable.** Found
+  2026-08-30. §4.5 says `body:` accepts a String or an Enumerable "so
+  uploads stream"; an Array is currently joined into a single String
+  before the request is built, so the memory saving the sentence
+  promises does not happen. Will Fix. The response half of streaming
+  has since landed (`Utils::HttpResponseStream` plus `stream: true`),
+  and this is the remaining half: it needs the REQUEST body written
+  incrementally to the connection rather than materialised first,
+  which `HTTP::Request` accepts as an `IO` but Legate does not yet
+  supply. Note the interaction already settled in §4.5 — a redirect on
+  a request that carried a body is handed to the script, so a
+  single-pass upload stream never has to be replayed.
+
+- **`Legate.records` cannot consume a stream.** Found 2026-08-30,
+  logged 2026-08-31 after `stream: true` landed.
+  `Legate.records(path, format:)` opens the path itself, so a body
+  from `Legate.fetch(..., stream: true)` cannot be fed to it — a
+  script wanting to pull JSONL rows off a network response has to
+  buffer the whole thing first, which defeats the streaming it just
+  asked for. Will Fix. The plumbing is closer than it looks: both
+  parsers already consume an iterator rather than a file specifically
+  (`:jsonl` builds on `Lines::LineIterator`, `:csv` on
+  `CSV::Parser`), so what is missing is a second entry point.
+  Undecided whether that is `Legate.records(stream, format:)` or
+  `response.records(format:)`; the second reads better at a call site
+  but puts a parsing concern on `Response`.
+
+- **`Response#json` cannot parse a streamed body.** Found 2026-08-30,
+  logged 2026-08-31. `#json` raises `Legate::MalformedError` on a
+  non-String body, so `stream: true` and `.json` are mutually
+  exclusive. Correct as it stands — the alternative is silently
+  buffering a body the script explicitly asked not to buffer — but it
+  means a large JSON document has no streaming path at all. Will Fix
+  eventually, and materially harder than the `records` entry above: it
+  needs an incremental JSON parser, not just a different entry point,
+  and Crystal's `JSON::PullParser` over a chunk iterator is the
+  obvious starting point rather than a settled design.
+
+- **No wall-clock bound on a script or on a held-open stream.** Found
+  2026-08-30 designing `stream: true`. `Legate.fetch`'s `timeout:`
+  becomes the client's connect and read timeouts, which bound each
+  individual READ but not total duration: a server dribbling one byte
+  every few seconds keeps a connection open indefinitely without ever
+  tripping a read timeout, and a script holding that stream stays
+  alive with it. `Limits#wall_clock` exists and is unenforced for the
+  same reason. Will Fix, and deliberately NOT solved inside one verb —
+  this is the same problem as an infinite loop in a script, and wants
+  one watchdog at the `Interpreter#eval` boundary rather than a
+  duration check invented separately in `fetch`, `exec`, and every
+  future long-running verb. The run-teardown seam added for
+  `open_sources` is the natural place to hang it, since it already
+  owns "this run is over, release everything."
+
+- **IPv6 literals can't be written in a `net.hosts` rule.** Found
+  2026-08-30 building `net_rule.cr`. The scalar parser splits a
+  `host:port` entry on the colon, which is unambiguous for a DNS name
+  and hopeless for `2001:db8::1`; bracketed forms
+  (`[2001:db8::1]:8443`) aren't handled either. The parser *rejects*
+  both loudly with an `ArgumentError` at policy-load time rather than
+  mis-splitting on the first colon, so nothing silently misbehaves — a
+  policy naming an IPv6 literal fails to load instead of quietly
+  building a rule for a host that doesn't exist and then denying every
+  real connection to it with a baffling reason. Will Fix rather than
+  Must Fix: the same grant is expressible by hostname today, and the
+  failure mode is loud and immediate. Fix shape: bracket-aware
+  splitting in `NetRule.parse`, plus a decision on whether a bare IPv6
+  address should be grantable at all, given §8.2's address-range
+  checks are about to reject most of the interesting ones anyway.
+
+- **§2.7's `include Legate::Read` submodule-include feature (dropping
+  the `Legate.` prefix, e.g. `include Legate::Read; read("x")`) isn't
+  implemented at all — no code references it anywhere.** Found
+  2026-08-27, systematic audit of the read-verb slice against
+  LEGATE.md. Not a bug — nothing currently shipped is broken by this
+  — just real, specified surface (§2.7's own worked example) with
+  zero implementation, worth tracking explicitly rather than
+  rediscovering later. Will Fix rather than Must Fix: every verb is
+  already reachable fully-qualified (`Legate.read(...)`, §2.7's own
+  "available fully qualified, always, with no setup"), so the
+  submodule form is sugar, not something currently blocking a script
+  from doing anything. Fix shape not yet scoped — likely needs each
+  grant-category submodule (`Legate::Read`, `Legate::Write`, ...) to
+  actually exist as an includable module whose methods delegate to
+  the same native singleton methods already bootstrapped on `Legate`
+  itself, rather than a second copy of each verb's implementation.
+
+- **`Legate.grep`'s documented `TimeoutError` (LEGATE.md §4.1) doesn't
+  actually raise `Legate::TimeoutError`.** Found 2026-08-27 implementing
+  `grep.cr`: unlike every other §4.1 verb, grep's own Raises list
+  includes `TimeoutError` — the only sensible reading is that a scan
+  across a large fileset should be able to notice it's taking too long
+  MID-scan, not just at the single up-front broker call every other verb
+  makes once. What `grep.cr` actually does is call
+  `Budget#check_wall_clock!` once per file in its scan loop (real,
+  working protection against a runaway multi-file scan) — but that
+  raises the FATAL, unrescuable `Legate::FatalSignal(:exhausted, ...)`
+  (budget.cr), not the script-catchable `Legate::TimeoutError`
+  RuntimeError class (exceptions.cr) LEGATE.md's own text names. No
+  kwarg or default duration for a SEPARATE, grep-local, recoverable
+  timeout is documented anywhere — inventing a second, independent timer
+  with its own semantics felt like more new, unspecified design surface
+  than one verb's implementation should decide unilaterally. Needs a
+  real decision: either LEGATE.md's text is describing the existing
+  fatal wall-clock mechanism loosely (in which case the doc should stop
+  implying a script can `rescue` it), or grep genuinely needs its own
+  recoverable per-call deadline (in which case its kwarg/default need
+  designing first).
+
+- **No terse, agent-facing reference doc for Legate (and Adjutant's
+  Ruby subset generally) exists yet.** `LEGATE.md`/`ERRORS.md`/
+  `SCOPE.md` are correctness/completeness documents for a human
+  implementer, not what a small model (target: 16K+ context) should
+  read to learn what to write — different audience, different job,
+  and padding a small model's context with design rationale it can't
+  act on costs it real task room. Deliberately deferred, not
+  overlooked: nothing about the verb surface is stable yet, so
+  anything written now would describe intent rather than real
+  signatures/errors/edge cases, and the actual hard-to-infer-from-
+  Ruby-subset-syntax spots won't be known until scripts are written
+  against a real implementation. Revisit once `Legate` verbs exist and
+  are being dogfooded — likely worth generating this doc from
+  `LEGATE.md` (e.g. via a machine-extractable annotation convention on
+  verb signatures) rather than hand-authoring a parallel prose doc, so
+  the two can't silently drift apart.
+
+- **`Legate.log` is `Legate.log(message, fields = {})`, not the
+  spec'd `Legate.log(message, **fields)`.** Built 2026-09-08 (§4 step
+  2). Adjutant's native-call dispatch has no wildcard-kwarg mechanism
+  — every native method declares a FIXED `kwarg_names : Set(String)`
+  (`NativeCallable#kwarg_names`), and `VM#check_unknown_native_
+  keywords!` rejects any name outside it; an empty declared set (the
+  default, and every native method until now) rejects every kwarg
+  name outright. There is no "accept anything" escape hatch. Building
+  real support for that — a sentinel `kwarg_names` value, or a
+  parallel dispatch path — would be a genuine VM-level change, and
+  doing it for the sake of one convenience verb's exact spelling felt
+  disproportionate; the positional-Hash form carries identical
+  information (`Legate.log("done", {status: "ok"})` vs the spec'd
+  `Legate.log("done", status: "ok")` — same data, different
+  punctuation). Worth doing properly — generalized native kwarg
+  support — if a second verb ever wants the same thing; not before.
+  `legate/verbs/log.cr`'s own top comment has the full reasoning.
+
+  **Addendum, confirmed against a live `crystal build` the same day:**
+  the positional-Hash form turned out not to be merely a dispatch
+  workaround — it's load-bearing for a SECOND, independent reason.
+  `Log::Metadata`'s own top-level entries are `Symbol`-keyed
+  (`Log::Metadata#setup`, Crystal stdlib), and Crystal symbols cannot
+  be created dynamically at runtime AT ALL — only from a literal
+  known at compile time. `fields`' keys are chosen by the SCRIPT at
+  runtime, so they could never have been Metadata's own top-level
+  entry names regardless of how they arrived (kwarg spray or Hash
+  argument) — a real `**fields` implementation would have hit this
+  exact wall too. The fix (`legate/verbs/log.cr`): nest the whole
+  `fields` Hash one level down, under the single Symbol key `:fields`
+  — a literal in that file, known at compile time — since `Log::
+  Metadata::Value::Type` explicitly allows a String-keyed Hash as a
+  NESTED value, just not as Metadata's own top-level keys. Worth
+  knowing for whoever eventually builds generalized native kwarg
+  support per the paragraph above: it would face the identical
+  Symbol-key wall at the Log layer, unrelated to and not solved by
+  fixing VM dispatch.
+
+- **`Legate.scratch`'s directory is emptied at the end of every
+  `Interpreter#eval` call, not at the end of an agent's whole
+  session.** Built 2026-09-08. §4.7 says scratch "is emptied when the
+  script exits," and this codebase's own existing vocabulary already
+  settles what "the script" means for exactly this kind of resource:
+  `OpenSources`'s own comment ("SCOPE IS THE RUN, NOT THE PROCESS")
+  defines it as one `eval` call, specifically because an Interpreter
+  is long-lived and may run many. Applied the same rule to scratch
+  for consistency, but it is a real product decision with a real
+  cost: an agent doing multi-step work across several `eval` calls on
+  one Interpreter (exactly DEVELOPMENT.md's own description of the
+  intended use) gets a FRESH scratch directory every call, so
+  anything written to scratch in one step is gone by the next. If
+  that turns out to matter in practice, the fix is either a
+  session-scoped scratch dir with its own (currently nonexistent)
+  session-end teardown hook, or leaning on a real `write:` root for
+  anything meant to survive across steps and reserving `scratch` for
+  genuinely single-call incidental space. `legate/broker.cr`'s
+  `@scratch_dir` comment has the full reasoning; not revisited here.
+
+- **`Legate.now` reuses the core `Time` class rather than a
+  `Legate::Time`, and its RubyClass is looked up at CALL time, not
+  bootstrap time.** Built 2026-09-08. Worth recording as a pattern,
+  not just a fact about this one verb: `Interpreter#bootstrap_
+  builtin_classes` registers `Time` (and any other core builtin
+  reached via `register_builtin_class` outside `bootstrap_legate`
+  itself) AFTER `bootstrap_legate` runs, not before — so any FUTURE
+  Legate verb that needs to construct a value of some OTHER
+  core-builtin type will hit the identical ordering hazard, and the
+  identical fix (`interp.get_global(name)` inside the native block,
+  deferred to call time) applies. Didn't reorder `bootstrap_builtin_
+  classes` itself to register `Time` earlier — it's a shared sequence
+  this file doesn't own, and the call-time lookup sidesteps the
+  problem entirely for a fraction of the risk. Also: `Legate.now`'s
+  "frozen" is aspirational, same as `Legate::Response`'s own
+  documented "frozen" claim (`legate/response.cr`) — Adjutant freezes
+  only Strings, and has no `freeze`/`frozen?`; a script can still
+  mutate the returned value via `#utc`/`#gmtime`/`#localtime`. Not specific to this verb,
+  just newly relevant to it.
+
+- **`Compiler::OVERLOADABLE_OPERATOR_NAMES` names the opposite of
+  what it holds.** It lists the operator method names a script may
+  not define (U017), because each compiles to a fixed opcode. For the
+  code-cleanup phase: rename it (`FIXED_OPCODE_OPERATORS`, say).
+
+- **Legate keeps aliases for types that moved to core.**
+  `legate/open_sources.cr`, `legate/audit_log.cr` and
+  `legate/budget.cr` exist only to alias `Closable`, `OpenSources`,
+  `AuditRecord`, `AuditLog` and `Budget` under `Legate::` names, and
+  28 references in `src/` and `spec/` still use them. For the
+  code-cleanup phase: rename the references to the core names and
+  delete the three files.
+
+## Deliberate non-goals
+
+Permanent exclusions are in [UNSUPPORTED.md](./UNSUPPORTED.md), a
+reference rather than a work queue. To decide where something belongs:
+an item here is expected to leave by being fixed; an entry there leaves
+only if the reasoning that excluded it stops holding, which is a design
+conversation of its own.
