@@ -59,6 +59,34 @@ module Adjutant
       eval(src).as_string.should eq %([["#<Probe>", String], "bad"])
     end
 
+    it "reaches Object's public script methods from a builtin value" do
+      src = <<-RUBY
+        module Helpers
+          def doubled
+            self * 2
+          end
+        end
+        include Helpers
+        5.doubled.inspect
+        RUBY
+      eval(src).as_string.should eq "10"
+    end
+
+    it "raises NoMethodError for a top-level def called on a builtin value" do
+      src = <<-RUBY
+        def doubled
+          self * 2
+        end
+
+        begin
+          5.doubled
+        rescue NoMethodError => e
+          e.class.inspect
+        end
+        RUBY
+      eval(src).as_string.should eq "NoMethodError"
+    end
+
     it "runs a subclass's script method over its superclass's native" do
       src = <<-RUBY
         class AppError < StandardError
