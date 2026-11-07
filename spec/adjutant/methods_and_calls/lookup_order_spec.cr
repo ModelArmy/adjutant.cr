@@ -87,6 +87,16 @@ module Adjutant
       eval(src).as_string.should eq "NoMethodError"
     end
 
+    it "runs a class's own native class method over one defined on Object" do
+      src = <<-RUBY
+        def Object.now
+          :script
+        end
+        [Time.now.class, Object.now].inspect
+        RUBY
+      eval(src).as_string.should eq "[Time, :script]"
+    end
+
     it "runs a subclass's script method over its superclass's native" do
       src = <<-RUBY
         class AppError < StandardError
